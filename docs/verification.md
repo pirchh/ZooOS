@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX step 1
-section (version 0.10.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The POSIX step 2
+section (version 0.11.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,48 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 2 results: address space (version 0.11.0)
+
+Design: docs/posix2-design.md. Calls 32–37 (ABI version 6), `zoo_rt::vm`,
+and the test program MoleHandler, which Zookeeper runs at boot (pid 10,
+with four child processes 11–14 that must crash; desktop and model cases'
+process ids moved up by 5).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 588 s,
+`ZOO_OS BOOT version=0.11.0`; every case as expected (normal 5.4 s,
+desktop 13.9 s, assistant 23.5 s, assistant-model 31.3 s, inference
+440.5 s; `assistant-live` `SKIP`). Then `--accel whpx --case
+assistant-live`: pass in 61.3 s.
+
+The normal case requires these kernel lines in order (the crash lines are
+matched exactly, including access type and cause):
+
+    ZOO_OS PROC start pid=10 name=mole-handler
+    ZOO_OS PROC start pid=11 name=mole-handler
+    ZOO_OS PROC crash pid=11 name=mole-handler fault=page-fault access=read cause=not-present addr=0x0000000040000000
+    ZOO_OS PROC start pid=12 name=mole-handler
+    ZOO_OS PROC crash pid=12 name=mole-handler fault=page-fault access=write cause=protection addr=0x0000000040000000
+    ZOO_OS PROC start pid=13 name=mole-handler
+    ZOO_OS PROC crash pid=13 name=mole-handler fault=page-fault access=execute cause=protection addr=0x0000000040000000
+    ZOO_OS PROC start pid=14 name=mole-handler
+    ZOO_OS PROC crash pid=14 name=mole-handler fault=page-fault access=write cause=not-present addr=0x0000000040000000
+    ZOO_OS PROC exit pid=10 name=mole-handler code=0
+
+and MoleHandler logs `all address-space checks passed` (its in-process
+checks are listed in the design, §5). `TEST process-cleanup ok` holds.
+
+**Negative controls** (normal case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| `vm_commit`/`vm_protect` never set the execute permission | `FAIL normal`: `PROC crash pid=10 name=mole-handler fault=page-fault access=execute cause=protection addr=0x0000000040200000` (the generated-code check) |
+| `vm_decommit`/`vm_release` free no pages | `FAIL normal`: `mole-handler code=16`, `check 16 failed: decommitted pages reserved again` |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings after replacing six `% PAGE != 0` with
+`is_multiple_of`. `cargo test -p zoo-infer -p zoo-abi -p xtask --locked`:
+all passed. Not run: a clean-copy verify.
 
 ## POSIX step 1 results: threads (version 0.10.0)
 

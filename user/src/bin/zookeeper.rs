@@ -162,6 +162,17 @@ fn startup_checks() -> u8 {
         }
         Err(_) => return 29,
     }
+    // POSIX step 2: address-space reservations and protection.
+    match spawn("mole-handler", None).map(|h| (wait(h), h)) {
+        Ok((Ok(0), h)) => {
+            let _ = close(h);
+        }
+        Ok((other, _)) => {
+            zoo_rt::log!("MoleHandler did not pass: {:?}", other);
+            return 31;
+        }
+        Err(_) => return 31,
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }

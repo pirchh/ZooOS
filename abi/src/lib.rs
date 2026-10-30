@@ -10,8 +10,9 @@ pub mod tar;
 /// Returned by syscall 0. Bumped when calls are added or change meaning.
 /// Version 2 (M4) added calls 11-16 and errors 13-14; version 3 (M5a)
 /// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17;
-/// version 5 (POSIX step 1) added calls 27-31 and error 18.
-pub const ABI_VERSION: u64 = 5;
+/// version 5 (POSIX step 1) added calls 27-31 and error 18; version 6
+/// (POSIX step 2) added calls 32-37.
+pub const ABI_VERSION: u64 = 6;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -47,6 +48,12 @@ pub mod sys {
     pub const FUTEX_WAIT: u64 = 29;
     pub const FUTEX_WAKE: u64 = 30;
     pub const SET_FS_BASE: u64 = 31;
+    pub const VM_RESERVE: u64 = 32;
+    pub const VM_COMMIT: u64 = 33;
+    pub const VM_PROTECT: u64 = 34;
+    pub const VM_DECOMMIT: u64 = 35;
+    pub const VM_RELEASE: u64 = 36;
+    pub const VM_QUERY: u64 = 37;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -198,6 +205,42 @@ impl FsEntry {
         let n = (self.name_len as usize).min(MAX_FS_NAME);
         core::str::from_utf8(&self.name[..n]).unwrap_or("?")
     }
+}
+
+/// Address-space window for `vm_*` calls (docs/posix2-design.md §2):
+/// between the program image and the heap.
+pub const VM_START: u64 = 0x0000_0000_4000_0000;
+pub const VM_END: u64 = 0x0000_1000_0000_0000;
+/// Kernel-chosen reservations are aligned to this (as on Windows).
+pub const VM_GRANULE: u64 = 64 * 1024;
+/// Most committed bytes per process through `vm_commit`.
+pub const VM_COMMIT_LIMIT: u64 = 1 << 30;
+/// Most reservations per process.
+pub const VM_MAX_RESERVATIONS: usize = 256;
+
+/// Page protection for `vm_commit` and `vm_protect`; must include READ.
+pub mod prot {
+    pub const READ: u64 = 1;
+    pub const WRITE: u64 = 2;
+    pub const EXEC: u64 = 4;
+}
+
+pub const VM_FREE: u64 = 0;
+pub const VM_RESERVED: u64 = 1;
+pub const VM_COMMITTED: u64 = 2;
+
+/// Filled in by `vm_query`: the run of pages from the queried address that
+/// share one state (and, if committed, one protection).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VmInfo {
+    pub base: u64,
+    pub len: u64,
+    pub state: u64,
+    pub prot: u64,
+    /// The enclosing reservation (0, 0 when free).
+    pub reservation: u64,
+    pub reservation_len: u64,
 }
 
 /// Rights of a directory handle (docs/m5c1-design.md §2).
