@@ -8,8 +8,9 @@ pub mod elf;
 pub mod tar;
 
 /// Returned by syscall 0. Bumped when calls are added or change meaning.
-/// Version 2 (M4) added calls 11-16 and errors 13-14.
-pub const ABI_VERSION: u64 = 2;
+/// Version 2 (M4) added calls 11-16 and errors 13-14; version 3 (M5a)
+/// added calls 17-18.
+pub const ABI_VERSION: u64 = 3;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -30,6 +31,8 @@ pub mod sys {
     pub const DISPLAY_ACQUIRE: u64 = 14;
     pub const INPUT_READ: u64 = 15;
     pub const FS_STAT: u64 = 16;
+    pub const MEM_ALLOC: u64 = 17;
+    pub const FS_MAP: u64 = 18;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -127,6 +130,20 @@ pub struct DisplayInfo {
     pub stride: u64,
     pub bytes_per_pixel: u64,
     pub format: u64,
+}
+
+/// Where `mem_alloc` places a process's heap, and its per-process limit.
+pub const HEAP_BASE: u64 = 0x0000_1000_0000_0000;
+pub const HEAP_LIMIT: u64 = 1 << 30;
+/// Where `fs_map` places read-only file mappings.
+pub const MAP_BASE: u64 = 0x0000_2000_0000_0000;
+
+/// Filled in by `fs_map`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MapInfo {
+    pub addr: u64,
+    pub len: u64,
 }
 
 /// Filled in by `fs_stat`.

@@ -51,3 +51,8 @@ pub fn entry(index: usize) -> Option<(&'static str, usize, usize)> {
     let offset = e.data.as_ptr() as usize - data.as_ptr() as usize;
     Some((e.name, e.data.len(), offset))
 }
+
+/// Kernel virtual address where the archive starts.
+pub fn base() -> Option<u64> {
+    INITRD.get().map(|d| d.as_ptr() as u64)
+}

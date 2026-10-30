@@ -45,6 +45,8 @@ Files:
 - docs/console-design.md: interim screen, keyboard and debug shell design.
 - docs/m3-design.md: processes, system calls, IPC and Zookeeper.
 - docs/m4-design.md: the window server, desktop apps and session.
+- docs/m5a-design.md: floating point, user heap and file mapping for M5.
+- tools/models/: model provenance (weights are downloaded, not committed).
 - docs/feasibility/: Wine-hosting and GPU desk studies (both BLOCKED today).
 - docs/verification.md: commands, versions and results actually observed.
 - tools/firmware/README.md: QEMU and firmware setup and provenance.

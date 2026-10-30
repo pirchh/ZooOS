@@ -8,8 +8,10 @@ use std::sync::OnceLock;
 pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
 const KERNEL_PACKAGE: &str = "zoo-os-kernel";
 const USER_PACKAGE: &str = "zoo-user";
+/// Custom user-program target (`user/x86_64-zoo.json`).
+const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 7] = [
+pub const USER_PROGRAMS: [&str; 8] = [
     "zookeeper",
     "lion-handler",
     "monkey-handler",
@@ -17,6 +19,7 @@ pub const USER_PROGRAMS: [&str; 7] = [
     "peacock-handler",
     "owl-handler",
     "chimp-handler",
+    "beaver-handler",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,25 +85,21 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
     let target_dir = root.join("target").join("user");
     let mut cmd = Command::new(&tools.cargo);
     cmd.current_dir(root)
+        .args(["build", "--package", USER_PACKAGE, "--release", "--locked"])
+        // User programs use SSE (docs/m5a-design.md §1): a custom target
+        // with core/alloc rebuilt for it. Static, non-relocatable output.
+        .arg("--target")
+        .arg(root.join("user").join(format!("{USER_TARGET}.json")))
         .args([
-            "build",
-            "--package",
-            USER_PACKAGE,
-            "--target",
-            KERNEL_TARGET,
-            "--release",
-            "--locked",
+            "-Zjson-target-spec",
+            "-Zbuild-std=core,alloc,compiler_builtins",
+            "-Zbuild-std-features=compiler-builtins-mem",
         ])
         .arg("--target-dir")
         .arg(&target_dir);
     for var in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"] {
         cmd.env_remove(var);
     }
-    // Only user programs are built with this; the kernel keeps its own flags.
-    cmd.env(
-        "CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS",
-        "-C relocation-model=static",
-    );
     println!("[build] user programs -> {}", target_dir.display());
     let status = cmd
         .status()
@@ -110,7 +109,7 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
     }
     let mut archive = Vec::new();
     for name in USER_PROGRAMS {
-        let path = target_dir.join(KERNEL_TARGET).join("release").join(name);
+        let path = target_dir.join(USER_TARGET).join("release").join(name);
         let data =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let entry = format!("bin/{name}");

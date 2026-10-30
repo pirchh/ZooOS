@@ -16,6 +16,8 @@ pub const VEC_INVALID_OPCODE: u64 = 6;
 pub const VEC_STACK_SEGMENT: u64 = 12;
 pub const VEC_GENERAL_PROTECTION: u64 = 13;
 pub const VEC_PAGE_FAULT: u64 = 14;
+pub const VEC_X87: u64 = 16;
+pub const VEC_SIMD: u64 = 19;
 pub const VEC_TIMER: u64 = 32;
 pub const VEC_SYSCALL: u64 = 0x80;
 
@@ -147,6 +149,8 @@ stub!(stub_invalid_opcode, VEC_INVALID_OPCODE);
 stub!(stub_stack_segment, VEC_STACK_SEGMENT, error_code);
 stub!(stub_general_protection, VEC_GENERAL_PROTECTION, error_code);
 stub!(stub_page_fault, VEC_PAGE_FAULT, error_code);
+stub!(stub_x87, VEC_X87);
+stub!(stub_simd, VEC_SIMD);
 stub!(stub_timer, VEC_TIMER);
 stub!(stub_syscall, VEC_SYSCALL);
 

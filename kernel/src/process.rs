@@ -7,6 +7,7 @@
 //! `without_interrupts`. Lock order: `SCHED`, then `memory::with`.
 
 use crate::console;
+use crate::fpu::{self, FxArea};
 use crate::gdt;
 use crate::initrd;
 use crate::interrupts;
@@ -16,6 +17,7 @@ use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
 };
 use crate::trap::{self, TrapFrame};
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -30,7 +32,8 @@ use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB, FsEntry,
-    MAX_FS_NAME, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, NO_HANDLE, elf, sys,
+    HEAP_BASE, HEAP_LIMIT, MAP_BASE, MAX_FS_NAME, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo,
+    NO_HANDLE, elf, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -107,6 +110,15 @@ struct Task {
     sleep_until: Option<u64>,
     /// Framebuffer pages mapped at `DISPLAY_BASE` (0 if none).
     display_pages: u64,
+    /// x87/SSE register state while switched out; `None` for the kernel.
+    fpu: Option<Box<FxArea>>,
+    /// Next free heap address and bytes of heap mapped (`mem_alloc`).
+    heap_next: u64,
+    /// Next free address in the file-mapping region (`fs_map`).
+    map_next: u64,
+    /// Read-only file mappings of ramdisk pages: (address, pages). Never
+    /// freed through the frame allocator; unmapped before the space is freed.
+    file_maps: Vec<(u64, u64)>,
 }
 
 impl Task {
@@ -123,6 +135,10 @@ impl Task {
             generation: [0; MAX_HANDLES],
             sleep_until: None,
             display_pages: 0,
+            fpu: None,
+            heap_next: HEAP_BASE,
+            map_next: MAP_BASE,
+            file_maps: Vec::new(),
         }
     }
 
@@ -407,6 +423,7 @@ impl Scheduler {
         // writable and belongs to this task alone; the frame fits at its top.
         unsafe { (frame_addr as *mut TrapFrame).write(frame) };
         task.frame = frame_addr;
+        task.fpu = Some(Box::new(fpu::new_state()));
         task.p4 = Some(p4);
         task.kstack = Some((slot, top));
         self.tasks[index] = Some(task);
@@ -452,6 +469,10 @@ impl Scheduler {
                     // Device memory: unmap, never hand to the frame allocator.
                     mem.unmap_user_keep(p4, DISPLAY_BASE, t.display_pages);
                 }
+                for &(va, pages) in &t.file_maps {
+                    // Ramdisk pages: likewise never freed.
+                    mem.unmap_user_keep(p4, va, pages);
+                }
                 mem.free_address_space(p4);
             }
             if let Some((slot, _)) = t.kstack {
@@ -485,6 +506,9 @@ impl Scheduler {
             let t = self.task(i);
             let frame = t.frame as *mut TrapFrame;
             if !t.restart {
+                if let Some(area) = &t.fpu {
+                    fpu::restore(area);
+                }
                 return frame;
             }
             t.restart = false;
@@ -494,10 +518,16 @@ impl Scheduler {
             match self.syscall(i, f, mem) {
                 Outcome::Ret(v) => {
                     f.rax = v as u64;
+                    if let Some(area) = &self.task(i).fpu {
+                        fpu::restore(area);
+                    }
                     return frame;
                 }
                 Outcome::Yield => {
                     f.rax = 0;
+                    if let Some(area) = &self.task(i).fpu {
+                        fpu::restore(area);
+                    }
                     return frame;
                 }
                 Outcome::Block => {
@@ -824,6 +854,70 @@ impl Scheduler {
                 unsafe { (a2 as *mut FsEntry).write_unaligned(e) };
                 Outcome::Ret(0)
             }
+            sys::MEM_ALLOC => {
+                if a1 == 0 || a1 > HEAP_LIMIT {
+                    return err(Error::Inval);
+                }
+                let pages = a1.div_ceil(4096);
+                let t = self.task(i);
+                let start = t.heap_next;
+                if start - HEAP_BASE + pages * 4096 > HEAP_LIMIT {
+                    return err(Error::NoMem);
+                }
+                for k in 0..pages {
+                    if mem
+                        .map_user_page(p4, start + k * 4096, true, false)
+                        .is_err()
+                    {
+                        mem.unmap_user_free(p4, start, k);
+                        return err(Error::NoMem);
+                    }
+                }
+                self.task(i).heap_next = start + pages * 4096;
+                Outcome::Ret(start as i64)
+            }
+            sys::FS_MAP => {
+                let size = core::mem::size_of::<MapInfo>() as u64;
+                if !ok(a2, size, true) {
+                    return err(Error::Fault);
+                }
+                let (Some((_, len, offset)), Some(base)) =
+                    (initrd::entry(a1 as usize), initrd::base())
+                else {
+                    return err(Error::NotFound);
+                };
+                let data = base + offset as u64;
+                let first = data & !0xFFF;
+                let end = (data + len as u64).div_ceil(4096) * 4096;
+                let pages = (end - first) / 4096;
+                let va = self.task(i).map_next;
+                for k in 0..pages {
+                    let phys = mem.mapper.translate_addr(VirtAddr::new(first + k * 4096));
+                    let mapped = phys.map(|p| {
+                        mem.map_user_frame(
+                            p4,
+                            va + k * 4096,
+                            PhysFrame::containing_address(p),
+                            false,
+                        )
+                    });
+                    if !matches!(mapped, Some(Ok(()))) {
+                        mem.unmap_user_keep(p4, va, k);
+                        return err(Error::NoMem);
+                    }
+                }
+                let t = self.task(i);
+                t.file_maps.push((va, pages));
+                // Leave an unmapped page between mappings.
+                t.map_next = va + (pages + 1) * 4096;
+                let info = MapInfo {
+                    addr: va + (data & 0xFFF),
+                    len: len as u64,
+                };
+                // SAFETY: checked writable user range of `size` bytes.
+                unsafe { (a2 as *mut MapInfo).write_unaligned(info) };
+                Outcome::Ret(0)
+            }
             sys::CLOSE => match self.task(i).take(a1) {
                 Some(entry) => {
                     release(entry);
@@ -839,7 +933,11 @@ impl Scheduler {
     /// Saves the current frame and switches to the next ready task.
     fn switch_away(&mut self, frame: *mut TrapFrame, mem: &mut Memory) -> *mut TrapFrame {
         let cur = self.current;
-        self.task(cur).frame = frame as u64;
+        let t = self.task(cur);
+        t.frame = frame as u64;
+        if let Some(area) = &mut t.fpu {
+            fpu::save(area);
+        }
         let next = self.pick_next();
         if next == cur && self.task(cur).state == State::Ready {
             return frame;

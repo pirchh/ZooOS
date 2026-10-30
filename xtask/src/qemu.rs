@@ -47,7 +47,7 @@ fn machine_args(
         "-smp".into(),
         "1".into(),
         "-m".into(),
-        "512M".into(),
+        "2G".into(),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,unit=0,readonly=on,file={}",

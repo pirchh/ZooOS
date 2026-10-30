@@ -176,6 +176,22 @@ impl Memory {
         }
     }
 
+    /// Unmaps `pages` user pages from `va` in `p4` and frees their frames
+    /// (allocator-owned memory, e.g. a heap extension being rolled back).
+    pub fn unmap_user_free(&mut self, p4: PhysFrame, va: u64, pages: u64) {
+        for i in 0..pages {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va + i * 4096));
+            // SAFETY: `p4` is a live process table; a temporary mapper is
+            // created per page so it does not overlap the frame allocator
+            // borrow below.
+            let unmapped = unsafe { self.space(p4).unmap(page) };
+            if let Ok((frame, flush)) = unmapped {
+                flush.flush();
+                let _ = self.frames.deallocate(frame);
+            }
+        }
+    }
+
     /// True if `p4`'s kernel half is identical to the kernel's table.
     pub fn shares_kernel_half(&self, p4: PhysFrame) -> bool {
         // SAFETY: `p4` is a live process table; both tables are only read.
