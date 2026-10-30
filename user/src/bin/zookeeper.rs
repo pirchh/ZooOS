@@ -173,6 +173,17 @@ fn startup_checks() -> u8 {
         }
         Err(_) => return 31,
     }
+    // POSIX step 3: exception delivery to the program's handler.
+    match spawn("gecko-handler", None).map(|h| (wait(h), h)) {
+        Ok((Ok(0), h)) => {
+            let _ = close(h);
+        }
+        Ok((other, _)) => {
+            zoo_rt::log!("GeckoHandler did not pass: {:?}", other);
+            return 32;
+        }
+        Err(_) => return 32,
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }

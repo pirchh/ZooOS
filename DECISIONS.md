@@ -136,6 +136,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX layer step 3: exceptions (2026-10-30)
+
+Design: docs/posix3-design.md.
+
+- One handler per process, an optional exception stack per thread; the
+  kernel writes a full register context (including FXSAVE) and the handler
+  resumes with `exception_return`, possibly after editing it, or declares
+  the fault unhandled.
+- Faults inside a handler are always fatal; returned contexts are checked
+  (user-half `rip`/`rsp`/FS base, valid MXCSR, only arithmetic and
+  direction flags taken from `rflags`).
+- Guard pages are left to user space (reserved pages committed by the
+  handler) instead of a kernel no-access page state.
+- Calls 38–40, ABI version 7. Version 0.12.0.
+
 ## POSIX layer step 2: address space (2026-10-30)
 
 Design: docs/posix2-design.md.

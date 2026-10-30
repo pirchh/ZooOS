@@ -97,7 +97,7 @@ and verification:
 | --- | --- | --- |
 | 1 | Threads, futexes, thread-local storage (docs/posix1-design.md) | done 2026-10-30 |
 | 2 | Address space: reserve/commit/protect/decommit/release/query (docs/posix2-design.md) | done 2026-10-30 |
-| 3 | User exception delivery (fault address and registers to a handler) | proposed |
+| 3 | User exception delivery to a handler, resume with edited registers (docs/posix3-design.md) | done 2026-10-30 |
 | 4 | Writable files (create, write, rename, delete) | proposed |
 | 5 | C toolchain and libc port (needs a toolchain download: owner approval) | proposed |
 

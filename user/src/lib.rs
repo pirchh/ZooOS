@@ -13,6 +13,7 @@ pub use zoo_abi::{
 };
 
 pub mod app;
+pub mod exception;
 mod heap;
 pub mod thread;
 pub mod vm;
