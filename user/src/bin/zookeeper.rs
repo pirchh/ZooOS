@@ -151,6 +151,17 @@ fn startup_checks() -> u8 {
     if let Err(code) = check_directories() {
         return code;
     }
+    // POSIX step 1: threads, futexes, thread-local storage.
+    match spawn("ant-handler", None).map(|h| (wait(h), h)) {
+        Ok((Ok(0), h)) => {
+            let _ = close(h);
+        }
+        Ok((other, _)) => {
+            zoo_rt::log!("AntHandler did not pass: {:?}", other);
+            return 29;
+        }
+        Err(_) => return 29,
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }

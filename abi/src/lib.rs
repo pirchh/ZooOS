@@ -9,8 +9,9 @@ pub mod tar;
 
 /// Returned by syscall 0. Bumped when calls are added or change meaning.
 /// Version 2 (M4) added calls 11-16 and errors 13-14; version 3 (M5a)
-/// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17.
-pub const ABI_VERSION: u64 = 4;
+/// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17;
+/// version 5 (POSIX step 1) added calls 27-31 and error 18.
+pub const ABI_VERSION: u64 = 5;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -41,6 +42,11 @@ pub mod sys {
     pub const DIR_CREATE: u64 = 24;
     pub const DIR_REMOVE: u64 = 25;
     pub const SPAWN_WITH: u64 = 26;
+    pub const THREAD_CREATE: u64 = 27;
+    pub const THREAD_EXIT: u64 = 28;
+    pub const FUTEX_WAIT: u64 = 29;
+    pub const FUTEX_WAKE: u64 = 30;
+    pub const SET_FS_BASE: u64 = 31;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -64,6 +70,7 @@ pub enum Error {
     Exists = 15,
     NotEmpty = 16,
     NotDir = 17,
+    TimedOut = 18,
 }
 
 impl Error {
@@ -91,6 +98,7 @@ impl Error {
             -15 => Error::Exists,
             -16 => Error::NotEmpty,
             -17 => Error::NotDir,
+            -18 => Error::TimedOut,
             _ => return None,
         })
     }
@@ -114,6 +122,7 @@ impl Error {
             Error::Exists => "EXISTS",
             Error::NotEmpty => "NOTEMPTY",
             Error::NotDir => "NOTDIR",
+            Error::TimedOut => "TIMEDOUT",
         }
     }
 }
@@ -281,6 +290,7 @@ mod tests {
             Error::Exists,
             Error::NotEmpty,
             Error::NotDir,
+            Error::TimedOut,
         ] {
             assert!(e.as_return() < 0);
             assert_eq!(Error::from_return(e.as_return()), Some(e));

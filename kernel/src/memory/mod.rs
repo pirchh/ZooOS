@@ -33,7 +33,7 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 pub const KSTACK_REGION: u64 = 0xFFFF_C000_8000_0000;
 pub const KSTACK_SLOT: u64 = 64 * 1024;
 pub const KSTACK_SIZE: u64 = 16 * 1024;
-pub const KSTACK_SLOTS: usize = 16;
+pub const KSTACK_SLOTS: usize = 32;
 
 /// Kernel virtual layout (design §3). The first page is the heap's lower
 /// guard; the page after the heap is its upper guard. Neither is mapped.

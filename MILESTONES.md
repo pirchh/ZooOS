@@ -87,6 +87,20 @@ checked file search/folder creation. Acceptance: real results, scoped operations
 path escape rejection, cancellation, bounded resources, useful failure reporting,
 and responsive desktop while inference runs. Text first; speech later.
 
+## POSIX layer (prerequisite for M6, owner decision 2026-10-30)
+
+Strategy A in docs/feasibility/wine-hosting.md: grow ZooOS until Wine's Unix
+side can be ported. Steps are taken one at a time, each with its own design
+and verification:
+
+| Step | Content | Status |
+| --- | --- | --- |
+| 1 | Threads, futexes, thread-local storage (docs/posix1-design.md) | done 2026-10-30 |
+| 2 | Memory mapping calls: map/unmap/protect at chosen addresses, large reservations | proposed |
+| 3 | User exception delivery (fault address and registers to a handler) | proposed |
+| 4 | Writable files (create, write, rename, delete) | proposed |
+| 5 | C toolchain and libc port (needs a toolchain download: owner approval) | proposed |
+
 ## M6 — Windows application stages
 
 Minimal console, simple GUI, installer/multiprocess program, then selected Opera

@@ -58,6 +58,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "ant-handler"
+path = "src/bin/ant-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "otter-handler"
 path = "src/bin/otter-handler.rs"
 test = false

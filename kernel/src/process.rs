@@ -30,6 +30,7 @@ use spin::Mutex;
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts as cpu_interrupts;
 use x86_64::registers::control::{Cr2, Cr3};
+use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB,
@@ -45,6 +46,10 @@ const RIGHT_RECV: u8 = 2;
 const RIGHT_WAIT: u8 = 4;
 const RIGHT_KILL: u8 = 8;
 const RFLAGS_IF: u64 = 1 << 9;
+/// First id given to an additional thread.
+const FIRST_EXTRA_TID: u64 = 0x1_0000;
+/// User addresses are below this (the canonical lower half).
+const USER_HALF_END: u64 = memory::USER_END;
 const RFLAGS_RESERVED: u64 = 1 << 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +85,10 @@ enum Object {
     Dir {
         node: usize,
     },
+    /// A thread of the same process (docs/posix1-design.md).
+    Thread {
+        tid: u64,
+    },
 }
 
 #[derive(Clone)]
@@ -98,27 +107,17 @@ fn release(entry: HandleEntry) {
     }
 }
 
-struct Task {
+/// What the threads of one process share: address space, handles and
+/// memory regions (docs/posix1-design.md §2).
+struct Proc {
     pid: u64,
     name: String,
-    state: State,
-    /// Saved `*mut TrapFrame` (as an address), valid while not running.
-    frame: u64,
-    /// Re-run the system call in `frame` when next scheduled.
-    restart: bool,
-    /// `None` for the kernel task.
-    p4: Option<PhysFrame>,
-    /// (slot, stack top); `None` for the kernel task.
-    kstack: Option<(usize, u64)>,
+    p4: PhysFrame,
     handles: [Option<HandleEntry>; MAX_HANDLES],
     generation: [u16; MAX_HANDLES],
-    /// Deadline (in ticks) of an unfinished `sleep`.
-    sleep_until: Option<u64>,
     /// Framebuffer pages mapped at `DISPLAY_BASE` (0 if none).
     display_pages: u64,
-    /// x87/SSE register state while switched out; `None` for the kernel.
-    fpu: Option<Box<FxArea>>,
-    /// Next free heap address and bytes of heap mapped (`mem_alloc`).
+    /// Next free heap address (`mem_alloc`).
     heap_next: u64,
     /// Next free address in the file-mapping region (`fs_map`).
     map_next: u64,
@@ -127,27 +126,81 @@ struct Task {
     file_maps: Vec<(u64, u64)>,
     /// May still call `fs_root` (started by the kernel, not yet called).
     root_ok: bool,
+    /// Threads that have not exited.
+    live: usize,
+    /// Threads not yet reaped; the address space is freed when this is 0.
+    members: usize,
+    /// Set once the process has ended (exit, crash or kill).
+    ended: bool,
+}
+
+/// One thread. Each user thread belongs to a `Proc`; the kernel task does not.
+struct Task {
+    /// The process id (copied from the `Proc`, for logs and lookups).
+    pid: u64,
+    /// Thread id, unique across the system; the first thread's equals `pid`.
+    tid: u64,
+    name: String,
+    /// Index into `Scheduler::procs`; `None` for the kernel task.
+    proc: Option<usize>,
+    state: State,
+    /// Saved `*mut TrapFrame` (as an address), valid while not running.
+    frame: u64,
+    /// Re-run the system call in `frame` when next scheduled.
+    restart: bool,
+    /// The process's page table (copied); `None` for the kernel task.
+    p4: Option<PhysFrame>,
+    /// (slot, stack top); `None` for the kernel task.
+    kstack: Option<(usize, u64)>,
+    /// Deadline (in ticks) of an unfinished `sleep` or timed `futex_wait`.
+    sleep_until: Option<u64>,
+    /// x87/SSE register state while switched out; `None` for the kernel.
+    fpu: Option<Box<FxArea>>,
+    /// User FS base (thread-local storage), loaded when the thread runs.
+    fs_base: u64,
+    /// Address this thread waits on in `futex_wait`.
+    futex: Option<u64>,
+    /// Set by `futex_wake`; the restarted `futex_wait` then returns 0.
+    futex_woken: bool,
 }
 
 impl Task {
-    fn new(pid: u64, name: &str) -> Task {
+    fn new(pid: u64, tid: u64, name: &str) -> Task {
         Task {
             pid,
+            tid,
             name: String::from(name),
+            proc: None,
             state: State::Ready,
             frame: 0,
             restart: false,
             p4: None,
             kstack: None,
+            sleep_until: None,
+            fpu: None,
+            fs_base: 0,
+            futex: None,
+            futex_woken: false,
+        }
+    }
+}
+
+impl Proc {
+    fn new(pid: u64, name: &str, p4: PhysFrame) -> Proc {
+        Proc {
+            pid,
+            name: String::from(name),
+            p4,
             handles: [const { None }; MAX_HANDLES],
             generation: [0; MAX_HANDLES],
-            sleep_until: None,
             display_pages: 0,
-            fpu: None,
             heap_next: HEAP_BASE,
             map_next: MAP_BASE,
             file_maps: Vec::new(),
             root_ok: false,
+            live: 1,
+            members: 1,
+            ended: false,
         }
     }
 
@@ -192,6 +245,8 @@ enum Outcome {
     Block,
     Yield,
     Exit(u8),
+    /// This thread ends; the process ends with it if it was the last.
+    ThreadExit(u8),
 }
 
 fn err(e: Error) -> Outcome {
@@ -200,8 +255,15 @@ fn err(e: Error) -> Outcome {
 
 struct Scheduler {
     tasks: Vec<Option<Task>>,
+    procs: Vec<Option<Proc>>,
+    /// (pid, tid, code) of exited threads, for `wait` on a thread handle;
+    /// dropped when the process is freed.
+    thread_exits: Vec<(u64, u64, u8)>,
     current: usize,
     next_pid: u64,
+    /// Ids for threads after a process's first (whose id is the pid), from
+    /// their own range so process ids do not depend on thread counts.
+    next_tid: u64,
     exits: Vec<(u64, ExitStatus)>,
     zombies: Vec<usize>,
     kstack_used: [bool; KSTACK_SLOTS],
@@ -239,11 +301,14 @@ fn with_sched<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> R {
 pub fn init() {
     cpu_interrupts::without_interrupts(|| {
         let mut tasks = Vec::with_capacity(MAX_TASKS);
-        tasks.push(Some(Task::new(0, "kernel")));
+        tasks.push(Some(Task::new(0, 0, "kernel")));
         *SCHED.lock() = Some(Scheduler {
             tasks,
+            procs: Vec::new(),
+            thread_exits: Vec::new(),
             current: 0,
             next_pid: 1,
+            next_tid: FIRST_EXTRA_TID,
             exits: Vec::new(),
             zombies: Vec::new(),
             kstack_used: [false; KSTACK_SLOTS],
@@ -271,7 +336,7 @@ pub fn user_tasks() -> usize {
 pub fn spawn_from_kernel(name: &str) -> Result<u64, Error> {
     with_sched(|s, m| {
         let (i, pid) = s.spawn(m, name, [None, None])?;
-        s.task(i).root_ok = true;
+        s.proc(i).root_ok = true;
         Ok(pid)
     })
 }
@@ -333,7 +398,7 @@ pub fn start_session() -> Result<u64, Error> {
             rights,
         };
         let (i, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
-        s.task(i).root_ok = true;
+        s.proc(i).root_ok = true;
         if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
             release(old);
         }
@@ -351,6 +416,51 @@ fn valid_name(name: &str) -> bool {
 impl Scheduler {
     fn task(&mut self, i: usize) -> &mut Task {
         self.tasks[i].as_mut().expect("task slot in use")
+    }
+
+    /// The process task `i` belongs to (a user task).
+    fn proc(&mut self, i: usize) -> &mut Proc {
+        let p = self.task(i).proc.expect("user task");
+        self.procs[p].as_mut().expect("process slot in use")
+    }
+
+    /// A free task slot and kernel stack slot, or `NOMEM`.
+    fn free_task_slots(&mut self) -> Result<(usize, usize), Error> {
+        let index = match self.tasks.iter().position(|t| t.is_none()) {
+            Some(i) => i,
+            None if self.tasks.len() < MAX_TASKS => {
+                self.tasks.push(None);
+                self.tasks.len() - 1
+            }
+            None => return Err(Error::NoMem),
+        };
+        let slot = self
+            .kstack_used
+            .iter()
+            .position(|u| !u)
+            .ok_or(Error::NoMem)?;
+        Ok((index, slot))
+    }
+
+    /// Writes a first user frame at the top of kernel stack `top`.
+    fn first_frame(top: u64, rip: u64, rsp: u64, rdi: u64, rsi: u64) -> u64 {
+        let sel = gdt::selectors();
+        let frame = TrapFrame {
+            rip,
+            cs: sel.user_code.0 as u64,
+            rflags: RFLAGS_IF | RFLAGS_RESERVED,
+            rsp,
+            ss: sel.user_data.0 as u64,
+            rdi,
+            rsi,
+            ..TrapFrame::default()
+        };
+        let frame_addr = top - core::mem::size_of::<TrapFrame>() as u64;
+        // SAFETY: the kernel stack `[top - KSTACK_SIZE, top)` was just mapped
+        // writable and belongs to this new task alone; the frame fits at its
+        // top.
+        unsafe { (frame_addr as *mut TrapFrame).write(frame) };
+        frame_addr
     }
 
     fn wake_all(&mut self) {
@@ -390,20 +500,7 @@ impl Scheduler {
             kprintln!("ZOO_OS INFO spawn {} rejected: {:?}", name, e);
             Error::Inval
         })?;
-        let index = match self.tasks.iter().position(|t| t.is_none()) {
-            Some(i) => i,
-            None if self.tasks.len() < MAX_TASKS => {
-                self.tasks.push(None);
-                self.tasks.len() - 1
-            }
-            None => return Err(Error::NoMem),
-        };
-        let slot = self
-            .kstack_used
-            .iter()
-            .position(|u| !u)
-            .ok_or(Error::NoMem)?;
-
+        let (index, slot) = self.free_task_slots()?;
         let p4 = mem.new_address_space().map_err(|_| Error::NoMem)?;
         if load_image(mem, p4, file, &image).is_err() {
             mem.free_address_space(p4);
@@ -417,44 +514,60 @@ impl Scheduler {
 
         let pid = self.next_pid;
         self.next_pid += 1;
-        let mut task = Task::new(pid, name);
+        let mut proc = Proc::new(pid, name, p4);
         let [arg, arg2] = give.map(|g| match g {
-            Some(entry) => task.insert(entry).expect("new task has free handle slots"),
+            Some(entry) => proc
+                .insert(entry)
+                .expect("new process has free handle slots"),
             None => NO_HANDLE,
         });
-        let sel = gdt::selectors();
-        let frame = TrapFrame {
-            rip: image.entry,
-            cs: sel.user_code.0 as u64,
-            rflags: RFLAGS_IF | RFLAGS_RESERVED,
-            // SysV: at function entry, rsp + 8 is 16-byte aligned.
-            rsp: USER_STACK_TOP - 8,
-            ss: sel.user_data.0 as u64,
-            rdi: arg,
-            rsi: arg2,
-            ..TrapFrame::default()
+        let pidx = match self.procs.iter().position(|p| p.is_none()) {
+            Some(k) => k,
+            None => {
+                self.procs.push(None);
+                self.procs.len() - 1
+            }
         };
-        let frame_addr = top - core::mem::size_of::<TrapFrame>() as u64;
-        // SAFETY: the kernel stack `[top - KSTACK_SIZE, top)` was just mapped
-        // writable and belongs to this task alone; the frame fits at its top.
-        unsafe { (frame_addr as *mut TrapFrame).write(frame) };
-        task.frame = frame_addr;
+        self.procs[pidx] = Some(proc);
+        let mut task = Task::new(pid, pid, name);
+        // SysV: at function entry, rsp + 8 is 16-byte aligned.
+        task.frame = Self::first_frame(top, image.entry, USER_STACK_TOP - 8, arg, arg2);
         task.fpu = Some(Box::new(fpu::new_state()));
         task.p4 = Some(p4);
+        task.proc = Some(pidx);
         task.kstack = Some((slot, top));
         self.tasks[index] = Some(task);
         kprintln!("ZOO_OS PROC start pid={} name={}", pid, name);
         Ok((index, pid))
     }
 
-    /// Ends task `i`: closes its handles, records the status, wakes waiters.
-    /// Its memory is reclaimed later by `reap`, off its own stack.
+    /// Ends the whole process task `i` belongs to: every thread stops, its
+    /// handles close, the status is recorded and waiters wake. Memory is
+    /// reclaimed later by `reap`, off the threads' own stacks.
     fn finish(&mut self, i: usize, status: ExitStatus) {
-        let t = self.task(i);
-        t.state = State::Exited;
-        t.restart = false;
-        let (pid, name) = (t.pid, t.name.clone());
-        let handles: Vec<HandleEntry> = t.handles.iter_mut().filter_map(Option::take).collect();
+        let Some(pidx) = self.task(i).proc else {
+            return;
+        };
+        let (pid, name, handles) = {
+            let p = self.procs[pidx].as_mut().expect("process slot in use");
+            if p.ended {
+                return;
+            }
+            p.ended = true;
+            p.live = 0;
+            let handles: Vec<HandleEntry> = p.handles.iter_mut().filter_map(Option::take).collect();
+            (p.pid, p.name.clone(), handles)
+        };
+        for k in 0..self.tasks.len() {
+            if let Some(t) = &mut self.tasks[k]
+                && t.proc == Some(pidx)
+                && t.state != State::Exited
+            {
+                t.state = State::Exited;
+                t.restart = false;
+                self.zombies.push(k);
+            }
+        }
         handles.into_iter().for_each(release);
         if let ExitStatus::Code(code) = status {
             kprintln!("ZOO_OS PROC exit pid={} name={} code={}", pid, name, code);
@@ -466,11 +579,38 @@ impl Scheduler {
             kprintln!("ZOO_OS DISPLAY released pid={}", pid);
         }
         self.exits.push((pid, status));
+        self.wake_all();
+    }
+
+    /// Ends thread `i` only; the last thread's exit ends the process with
+    /// the same code.
+    fn finish_thread(&mut self, i: usize, code: u8) {
+        let last = {
+            let p = self.proc(i);
+            p.live -= 1;
+            p.live == 0
+        };
+        if last {
+            self.finish(i, ExitStatus::Code(code));
+            return;
+        }
+        let t = self.task(i);
+        t.state = State::Exited;
+        t.restart = false;
+        let (pid, tid) = (t.pid, t.tid);
+        kprintln!(
+            "ZOO_OS INFO thread exit pid={} tid={} code={}",
+            pid,
+            tid,
+            code
+        );
+        self.thread_exits.push((pid, tid, code));
         self.zombies.push(i);
         self.wake_all();
     }
 
-    /// Frees exited tasks that are not the current one.
+    /// Frees exited tasks that are not the current one, and a process's
+    /// memory once its last thread is freed.
     fn reap(&mut self, mem: &mut Memory) {
         let current = self.current;
         let mut keep = Vec::new();
@@ -480,21 +620,27 @@ impl Scheduler {
                 continue;
             }
             let t = self.tasks[i].take().expect("zombie task present");
-            if let Some(p4) = t.p4 {
-                if t.display_pages > 0 {
-                    // Device memory: unmap, never hand to the frame allocator.
-                    mem.unmap_user_keep(p4, DISPLAY_BASE, t.display_pages);
-                }
-                for &(va, pages) in &t.file_maps {
-                    // Ramdisk pages: likewise never freed.
-                    mem.unmap_user_keep(p4, va, pages);
-                }
-                mem.free_address_space(p4);
-            }
             if let Some((slot, _)) = t.kstack {
                 mem.free_kernel_stack(slot);
                 self.kstack_used[slot] = false;
             }
+            let Some(pidx) = t.proc else { continue };
+            let p = self.procs[pidx].as_mut().expect("process slot in use");
+            p.members -= 1;
+            if p.members > 0 {
+                continue;
+            }
+            let p = self.procs[pidx].take().expect("process slot in use");
+            if p.display_pages > 0 {
+                // Device memory: unmap, never hand to the frame allocator.
+                mem.unmap_user_keep(p.p4, DISPLAY_BASE, p.display_pages);
+            }
+            for &(va, pages) in &p.file_maps {
+                // Ramdisk pages: likewise never freed.
+                mem.unmap_user_keep(p.p4, va, pages);
+            }
+            mem.free_address_space(p.p4);
+            self.thread_exits.retain(|&(pid, _, _)| pid != p.pid);
         }
         self.zombies = keep;
     }
@@ -520,6 +666,11 @@ impl Scheduler {
             }
             self.current = i;
             let t = self.task(i);
+            if t.p4.is_some() {
+                // User FS base (thread-local storage). Kernel code does not
+                // use FS, so it can stay loaded while in the kernel.
+                FsBase::write(VirtAddr::new_truncate(t.fs_base));
+            }
             let frame = t.frame as *mut TrapFrame;
             if !t.restart {
                 if let Some(area) = &t.fpu {
@@ -552,6 +703,7 @@ impl Scheduler {
                     t.restart = true;
                 }
                 Outcome::Exit(code) => self.finish(i, ExitStatus::Code(code)),
+                Outcome::ThreadExit(code) => self.finish_thread(i, code),
             }
             i = self.pick_next();
         }
@@ -587,7 +739,7 @@ impl Scheduler {
                 if !ok(a1, 16, true) {
                     return err(Error::Fault);
                 }
-                let t = self.task(i);
+                let t = self.proc(i);
                 if t.free_slots() < 2 {
                     return err(Error::NoMem);
                 }
@@ -626,7 +778,7 @@ impl Scheduler {
                     return err(Error::Inval);
                 };
                 let name = String::from(name);
-                let t = self.task(i);
+                let t = self.proc(i);
                 if t.free_slots() < 1 {
                     return err(Error::NoMem);
                 }
@@ -640,7 +792,7 @@ impl Scheduler {
                 };
                 match self.spawn(mem, &name, [give, None]) {
                     Ok((_, pid)) => {
-                        let t = self.task(i);
+                        let t = self.proc(i);
                         if a3 != NO_HANDLE {
                             // Moved into the child: removed here, not released.
                             let _ = t.take(a3);
@@ -660,7 +812,7 @@ impl Scheduler {
                 if a3 > MAX_MESSAGE as u64 {
                     return err(Error::Inval);
                 }
-                let (chan, side) = match self.task(i).get(a1) {
+                let (chan, side) = match self.proc(i).get(a1) {
                     None => return err(Error::BadHandle),
                     Some(HandleEntry {
                         object: Object::Endpoint { chan, side },
@@ -688,7 +840,7 @@ impl Scheduler {
                 Outcome::Ret(0)
             }
             sys::RECV | sys::TRY_RECV => {
-                let (chan, side) = match self.task(i).get(a1) {
+                let (chan, side) = match self.proc(i).get(a1) {
                     None => return err(Error::BadHandle),
                     Some(HandleEntry {
                         object: Object::Endpoint { chan, side },
@@ -719,8 +871,18 @@ impl Scheduler {
                 Outcome::Ret(len as i64)
             }
             sys::WAIT => {
-                let pid = match self.task(i).get(a1) {
+                let pid = match self.proc(i).get(a1) {
                     None => return err(Error::BadHandle),
+                    Some(HandleEntry {
+                        object: Object::Thread { tid },
+                        rights,
+                    }) if rights & RIGHT_WAIT != 0 => {
+                        let tid = *tid;
+                        return match self.thread_exits.iter().find(|e| e.1 == tid) {
+                            Some(&(_, _, code)) => Outcome::Ret(code as i64),
+                            None => Outcome::Block,
+                        };
+                    }
                     Some(HandleEntry {
                         object: Object::Process { pid },
                         rights,
@@ -735,7 +897,7 @@ impl Scheduler {
                 }
             }
             sys::KILL => {
-                let pid = match self.task(i).get(a1) {
+                let pid = match self.proc(i).get(a1) {
                     None => return err(Error::BadHandle),
                     Some(HandleEntry {
                         object: Object::Process { pid },
@@ -749,8 +911,8 @@ impl Scheduler {
                     .iter()
                     .position(|t| matches!(t, Some(t) if t.pid == pid && t.state != State::Exited));
                 match target {
-                    // Killing yourself is an exit.
-                    Some(j) if j == i => Outcome::Exit(0),
+                    // Killing your own process is an exit (all its threads).
+                    Some(_) if pid == by => Outcome::Exit(0),
                     Some(j) => {
                         let name = self.task(j).name.clone();
                         kprintln!("ZOO_OS PROC killed pid={} name={} by={}", pid, name, by);
@@ -798,7 +960,7 @@ impl Scheduler {
                     return err(Error::Busy);
                 }
                 let pages = (len as u64).div_ceil(4096);
-                if self.task(i).display_pages == 0 {
+                if self.proc(i).display_pages == 0 {
                     for k in 0..pages {
                         let Some(phys) = mem.mapper.translate_addr(VirtAddr::new(virt + k * 4096))
                         else {
@@ -814,7 +976,7 @@ impl Scheduler {
                             return err(Error::NoMem);
                         }
                     }
-                    self.task(i).display_pages = pages;
+                    self.proc(i).display_pages = pages;
                 }
                 self.display_owner = Some(me);
                 DISPLAY_OWNED.store(true, Ordering::Relaxed);
@@ -875,7 +1037,7 @@ impl Scheduler {
                     return err(Error::Inval);
                 }
                 let pages = a1.div_ceil(4096);
-                let t = self.task(i);
+                let t = self.proc(i);
                 let start = t.heap_next;
                 if start - HEAP_BASE + pages * 4096 > HEAP_LIMIT {
                     return err(Error::NoMem);
@@ -889,7 +1051,7 @@ impl Scheduler {
                         return err(Error::NoMem);
                     }
                 }
-                self.task(i).heap_next = start + pages * 4096;
+                self.proc(i).heap_next = start + pages * 4096;
                 Outcome::Ret(start as i64)
             }
             sys::FS_MAP => {
@@ -906,7 +1068,7 @@ impl Scheduler {
                 let first = data & !0xFFF;
                 let end = (data + len as u64).div_ceil(4096) * 4096;
                 let pages = (end - first) / 4096;
-                let va = self.task(i).map_next;
+                let va = self.proc(i).map_next;
                 for k in 0..pages {
                     let phys = mem.mapper.translate_addr(VirtAddr::new(first + k * 4096));
                     let mapped = phys.map(|p| {
@@ -922,7 +1084,7 @@ impl Scheduler {
                         return err(Error::NoMem);
                     }
                 }
-                let t = self.task(i);
+                let t = self.proc(i);
                 t.file_maps.push((va, pages));
                 // Leave an unmapped page between mappings.
                 t.map_next = va + (pages + 1) * 4096;
@@ -934,8 +1096,115 @@ impl Scheduler {
                 unsafe { (a2 as *mut MapInfo).write_unaligned(info) };
                 Outcome::Ret(0)
             }
-            sys::FS_ROOT => {
+            sys::THREAD_CREATE => {
+                // a1 = entry, a2 = stack top (16-byte aligned), a3 = argument.
+                if a1 >= USER_HALF_END || a2 >= USER_HALF_END || a2 % 16 != 0 || a2 == 0 {
+                    return err(Error::Inval);
+                }
+                if self.proc(i).free_slots() < 1 {
+                    return err(Error::NoMem);
+                }
+                let (index, slot) = match self.free_task_slots() {
+                    Ok(x) => x,
+                    Err(e) => return err(e),
+                };
+                let Ok(top) = mem.map_kernel_stack(slot) else {
+                    return err(Error::NoMem);
+                };
+                self.kstack_used[slot] = true;
+                let tid = self.next_tid;
+                self.next_tid += 1;
+                let (pid, pidx, name) = {
+                    let t = self.task(i);
+                    (t.pid, t.proc, t.name.clone())
+                };
+                let mut task = Task::new(pid, tid, &name);
+                // SysV: at function entry, rsp + 8 is 16-byte aligned.
+                task.frame = Self::first_frame(top, a1, a2 - 8, a3, 0);
+                task.fpu = Some(Box::new(fpu::new_state()));
+                task.p4 = Some(p4);
+                task.proc = pidx;
+                task.kstack = Some((slot, top));
+                self.tasks[index] = Some(task);
+                let p = self.proc(i);
+                p.live += 1;
+                p.members += 1;
+                let h = p
+                    .insert(HandleEntry {
+                        object: Object::Thread { tid },
+                        rights: RIGHT_WAIT,
+                    })
+                    .expect("checked a free slot");
+                kprintln!("ZOO_OS INFO thread start pid={} tid={}", pid, tid);
+                Outcome::Ret(h as i64)
+            }
+            sys::THREAD_EXIT if a1 > 255 => err(Error::Inval),
+            sys::THREAD_EXIT => Outcome::ThreadExit(a1 as u8),
+            sys::SET_FS_BASE => {
+                if a1 >= USER_HALF_END {
+                    return err(Error::Inval);
+                }
+                self.task(i).fs_base = a1;
+                FsBase::write(VirtAddr::new_truncate(a1));
+                Outcome::Ret(0)
+            }
+            sys::FUTEX_WAIT => {
+                // a1 = address of a u32, a2 = expected value, a3 = timeout in
+                // ticks (0: none). Returns 0 when woken or the value differs.
+                if a1 % 4 != 0 || !ok(a1, 4, false) {
+                    return err(Error::Fault);
+                }
+                let now = interrupts::ticks();
                 let t = self.task(i);
+                if t.futex_woken {
+                    t.futex_woken = false;
+                    t.futex = None;
+                    t.sleep_until = None;
+                    return Outcome::Ret(0);
+                }
+                // SAFETY: four readable, aligned user bytes in the active
+                // address space (checked above); other threads may write it,
+                // hence a volatile read.
+                let value = unsafe { core::ptr::read_volatile(a1 as *const u32) };
+                if value as u64 != a2 & 0xFFFF_FFFF {
+                    t.futex = None;
+                    t.sleep_until = None;
+                    return Outcome::Ret(0);
+                }
+                if a3 > 0 {
+                    let deadline = *t.sleep_until.get_or_insert(now.saturating_add(a3));
+                    if now >= deadline {
+                        t.futex = None;
+                        t.sleep_until = None;
+                        return err(Error::TimedOut);
+                    }
+                }
+                t.futex = Some(a1);
+                Outcome::Block
+            }
+            sys::FUTEX_WAKE => {
+                let pidx = self.task(i).proc;
+                let mut woken = 0u64;
+                for t in self.tasks.iter_mut().flatten() {
+                    if woken == a2 {
+                        break;
+                    }
+                    // A waiter may already be Ready (restarted by a general
+                    // wake-up) but not yet re-run; it still counts.
+                    if t.proc == pidx
+                        && t.futex == Some(a1)
+                        && !t.futex_woken
+                        && t.state != State::Exited
+                    {
+                        t.futex_woken = true;
+                        t.state = State::Ready;
+                        woken += 1;
+                    }
+                }
+                Outcome::Ret(woken as i64)
+            }
+            sys::FS_ROOT => {
+                let t = self.proc(i);
                 if !t.root_ok {
                     return err(Error::Rights);
                 }
@@ -981,7 +1250,7 @@ impl Scheduler {
                 if values[0] != NO_HANDLE && values[0] == values[1] {
                     return err(Error::Inval);
                 }
-                let t = self.task(i);
+                let t = self.proc(i);
                 let mut give = [None, None];
                 for (g, &v) in give.iter_mut().zip(&values) {
                     if v != NO_HANDLE {
@@ -998,7 +1267,7 @@ impl Scheduler {
                 }
                 match self.spawn(mem, &name, give) {
                     Ok((_, pid)) => {
-                        let t = self.task(i);
+                        let t = self.proc(i);
                         for &v in &values {
                             if v != NO_HANDLE {
                                 // Moved into the child: removed, not released.
@@ -1016,7 +1285,7 @@ impl Scheduler {
                     Err(e) => err(e),
                 }
             }
-            sys::CLOSE => match self.task(i).take(a1) {
+            sys::CLOSE => match self.proc(i).take(a1) {
                 Some(entry) => {
                     release(entry);
                     self.wake_all();
@@ -1033,7 +1302,7 @@ impl Scheduler {
     fn dir_call(&mut self, i: usize, number: u64, a1: u64, a2: u64, mem: &mut Memory) -> Outcome {
         let p4 = self.task(i).p4.expect("system call from a user task");
         let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
-        let (node, rights) = match self.task(i).get(a1) {
+        let (node, rights) = match self.proc(i).get(a1) {
             Some(HandleEntry {
                 object: Object::Dir { node },
                 rights,
@@ -1081,7 +1350,7 @@ impl Scheduler {
                 if fs::with(|f| f.kind(target)) != Some(fs::Kind::Dir) {
                     return err(Error::NotDir);
                 }
-                match self.task(i).insert(HandleEntry {
+                match self.proc(i).insert(HandleEntry {
                     object: Object::Dir { node: target },
                     rights: args.arg as u8,
                 }) {
@@ -1281,6 +1550,10 @@ pub fn on_syscall(frame: *mut TrapFrame) -> *mut TrapFrame {
             }
             Outcome::Exit(code) => {
                 s.finish(cur, ExitStatus::Code(code));
+                s.switch_away(frame, m)
+            }
+            Outcome::ThreadExit(code) => {
+                s.finish_thread(cur, code);
                 s.switch_away(frame, m)
             }
         }

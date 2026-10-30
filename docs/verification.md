@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The M5c-2 section
-(version 0.9.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The POSIX step 1
+section (version 0.10.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,61 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 1 results: threads (version 0.10.0)
+
+Design: docs/posix1-design.md. Process/thread split in the kernel, calls
+27–31 (ABI version 5), `zoo_rt::thread`, and the test program AntHandler,
+which Zookeeper runs at every boot (pid 9; desktop and model cases' process
+ids moved up by one).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 501 s,
+`ZOO_OS BOOT version=0.10.0`; every case as expected (normal 5.3 s,
+desktop 14.0 s, assistant 23.2 s, assistant-model 27.5 s, inference
+368.8 s; `assistant-live` reported `SKIP` without an accelerator). Then
+`--accel whpx --case assistant-live`: pass in 49.1 s.
+
+From the normal case's serial log:
+
+    ZOO_OS PROC start pid=9 name=ant-handler
+    ZOO_OS INFO thread start pid=9 tid=65536
+    ...
+    [9:ant-handler] AntHandler: 4 threads x 20000 rounds: counter 80000, lock waited 3 times, 4 handovers, TLS errors 0, main TLS 100, 34 ticks
+    [9:ant-handler] AntHandler: all thread checks passed; exiting with a thread still running
+    ZOO_OS PROC exit pid=9 name=ant-handler code=0
+    ZOO_OS TEST process-cleanup ok
+
+The last two lines show that a process exiting with a thread still running
+ends cleanly with no leaked frames.
+
+**Negative controls** (normal case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| Kernel does not load the thread's FS base on a switch | `FAIL normal … ant-handler code=6`; `TLS errors 123, main TLS 3` |
+| `futex_wake` wakes nobody | `FAIL normal … ant-handler code=10`; `futex_wake woke 0 (expected 1)` |
+
+The first version of the futex check **passed** with `futex_wake` disabled:
+the kernel's general wake-ups restart blocked calls, and the waiters then
+saw the lock word changed. The check was replaced by one where only
+`futex_wake` can release the waiter (value never changes, exactly one waiter
+reported), and the kernel was fixed to count waiters that a general wake-up
+had already made runnable.
+
+Two findings while building the test:
+
+- With a busy loop inside the locked region and no sleeping, the lock was
+  never found taken under TCG (0 waits in two runs, although threads did
+  interleave). The test now sleeps while holding the lock every 5,000
+  rounds, so contention is deterministic; why timer preemption never landed
+  inside the busy loop was not investigated further.
+- Thread ids first came from the process-id counter, which shifted every
+  later process id by the number of threads (the desktop and model cases
+  failed). Extra threads now use ids from 65536.
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed. Not run: a clean-copy verify.
 
 ## M5c-2 results (version 0.9.0)
 
