@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Disk-image builder. UEFI only: the BIOS path is unused and needs extra
+# custom targets. Must match the kernel's bootloader_api version exactly.
+bootloader = { version = "=0.11.17", default-features = false, features = ["uefi"] }
+sha2 = "0.11.1"

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["kernel", "xtask"]
+# Plain `cargo build` at the root only builds the host tool. The kernel is
+# always built by `cargo xtask build` with an explicit --target.
+default-members = ["xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Abort on panic everywhere: the kernel has no unwinder. (Cargo ignores this
+# for build scripts and test harnesses, so host tests still work.)
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

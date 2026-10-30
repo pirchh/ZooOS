@@ -1,0 +1,10 @@
+# `cargo xtask <cmd>` runs the host build utility with the locked dependency set.
+[alias]
+xtask = "run --package xtask --locked --"
+
+# There is intentionally no [build] target here: host tools (xtask) must build
+# for the host. The kernel target is passed explicitly by xtask, and any
+# kernel-only compiler flags belong in this target-scoped section so they can
+# never leak into host builds.
+[target.x86_64-unknown-none]
+rustflags = []

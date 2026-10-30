@@ -1,0 +1,6 @@
+# Cargo output (host tool and kernel builds)
+/target/
+# Generated boot images, per-run firmware variable stores and serial logs
+/build/
+# Local firmware/QEMU copies, if a developer keeps them in the tree
+/tools/firmware/*.fd
