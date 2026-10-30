@@ -6,7 +6,8 @@ Status: initial implementation defaults, with feasibility checks noted below.
 
 - Independent kernel, not a Windows or Linux kernel fork.
 - Rust-first kernel, no_std and no_main; minimal architecture-specific assembly.
-- Architecture: x86-64, one virtual CPU, UEFI; QEMU q35 machine, 512 MiB RAM.
+- Architecture: x86-64, one virtual CPU, UEFI; QEMU q35 machine, 512 MiB RAM
+  (2 GiB since M5a).
 - Kernel format: ELF for x86_64-unknown-none. Not a UEFI application pretending
   to be a kernel; execution must occur after firmware boot services have ended.
 - Bootloader: bootloader crate 0.11.17 with matching bootloader_api 0.11.17 as the
@@ -122,6 +123,33 @@ or a user-space shell.
 - `cargo xtask run` now opens a QEMU window (keyboard input goes there);
   `verify` stays headless.
 - Version 0.3.0. Normal boots add `ZOO_OS SHELL ready` after `READY`.
+
+## Owner decisions (2026-10-30)
+
+- M5 uses a real instruct model, Qwen2.5-0.5B-Instruct (GGUF `q4_0`,
+  Apache-2.0); the download was approved (tools/models/README.md).
+  Software emulation is too slow for it; WHPX acceleration is available on
+  the development host and may be used for inference, never required by
+  verify.
+- Opera/WoW stay as long-term goals, reached by building a POSIX layer
+  milestone by milestone. GPU reference hardware and test bed undecided.
+- The owner asked for autonomous progress: implement, verify, merge and
+  continue without asking until told to stop.
+
+## Resolved in M5a (2026-10-30)
+
+Design: docs/m5a-design.md.
+
+- User programs are built for `user/x86_64-zoo.json` (SSE enabled, normal
+  float ABI, static, small code model) with `-Zbuild-std`. The kernel stays
+  soft-float on `x86_64-unknown-none`.
+- Eager per-task FXSAVE/FXRSTOR when switching between user tasks; x87 and
+  SIMD faults end only the faulting process.
+- `mem_alloc` (syscall 17): grow-only heap at `0x0000_1000_0000_0000`,
+  1 GiB per process. `fs_map` (18): read-only, zero-copy initrd file
+  mappings at `0x0000_2000_0000_0000`. ABI version 3.
+- Guest RAM 2 GiB (was 512 MiB).
+- Version 0.7.0.
 
 ## Feasibility outcomes (2026-10-30)
 

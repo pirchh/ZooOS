@@ -6,6 +6,8 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 use zoo_rt::{Error, Handle, channel_create, close, kill, log, recv, send, spawn, wait};
 
 zoo_rt::entry!(main);
@@ -125,6 +127,14 @@ fn startup_checks() -> u8 {
         }
     }
     let _ = close(hamster);
+
+    // M5a: file mapping, and per-process floating-point state.
+    if let Err(code) = check_file_mapping() {
+        return code;
+    }
+    if let Err(code) = check_beavers() {
+        return code;
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }
@@ -158,4 +168,61 @@ fn ping(h: Handle, msg: &str) -> bool {
         core::str::from_utf8(reply).unwrap_or("<not utf-8>")
     );
     ok
+}
+
+/// Maps `bin/zookeeper` and checks it is this ELF file, whole.
+fn check_file_mapping() -> Result<(), u8> {
+    let index = zoo_rt::fs_find("bin/zookeeper").ok_or(22)?;
+    let size = zoo_rt::fs_stat(index).map_err(|_| 22)?.size;
+    let data = zoo_rt::fs_map(index).map_err(|_| 22)?;
+    if data.len() as u64 != size || !data.starts_with(b"ELF") {
+        return Err(22);
+    }
+    zoo_rt::log!("mapped bin/zookeeper: {} bytes, ELF magic ok", data.len());
+    Ok(())
+}
+
+/// Two BeaverHandlers compute floating-point series at the same time; each
+/// result must equal the reference computed here first, bit for bit
+/// (docs/m5a-design.md §5).
+fn check_beavers() -> Result<(), u8> {
+    const PARAMS: [f64; 2] = [3.25, 7.5];
+    const ITERATIONS: u64 = 3_000_000;
+    let mut expected = [0u64; 2];
+    for (e, p) in expected.iter_mut().zip(PARAMS) {
+        let mut trace = alloc::vec::Vec::new();
+        *e = zoo_rt::beaver_series(p, ITERATIONS, &mut trace).to_bits();
+    }
+    let mut workers = [(0u64, 0u64); 2];
+    for (w, p) in workers.iter_mut().zip(PARAMS) {
+        let (mine, theirs) = channel_create().map_err(|_| 23)?;
+        let process = spawn("beaver-handler", Some(theirs)).map_err(|_| 23)?;
+        send(mine, &p.to_bits().to_le_bytes()).map_err(|_| 23)?;
+        *w = (mine, process);
+    }
+    for (i, &(chan, process)) in workers.iter().enumerate() {
+        let mut buf = [0u8; 16];
+        let n = recv(chan, &mut buf).map_err(|_| 24)?;
+        let got = u64::from_le_bytes(buf[..8].try_into().map_err(|_| 24)?);
+        if n != 8 || got != expected[i] {
+            zoo_rt::log!(
+                "BeaverHandler {} result {:#x}, expected {:#x}",
+                i,
+                got,
+                expected[i]
+            );
+            return Err(24);
+        }
+        if wait(process) != Ok(0) {
+            return Err(25);
+        }
+        let _ = close(chan);
+        let _ = close(process);
+    }
+    zoo_rt::log!(
+        "both BeaverHandlers matched the reference bits ({:#x}, {:#x})",
+        expected[0],
+        expected[1]
+    );
+    Ok(())
 }

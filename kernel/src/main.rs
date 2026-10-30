@@ -24,6 +24,7 @@ extern crate alloc;
 mod console;
 mod cpu;
 mod faults;
+mod fpu;
 mod gdt;
 mod initrd;
 mod interrupts;
@@ -126,6 +127,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
 
     gdt::init();
+    fpu::init();
     interrupts::init_idt(boot_info.kernel_stack_bottom);
     let mem = memory::init(boot_info);
     kprintln!(

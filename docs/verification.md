@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0–M4 and the interim console verified on the host below on
+Status: M0–M4, M5a and the interim console verified on the host below on
 2026-10-30. Logs and screenshots are generated under `build/` (ignored by
-Git); rerun the commands to reproduce them. The M4 section (version 0.6.0) is
-the current state.
+Git); rerun the commands to reproduce them. The M5a section (version 0.7.0)
+is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,50 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M5a results (version 0.7.0)
+
+Design: docs/m5a-design.md. User programs now use SSE (custom target
+`user/x86_64-zoo.json`, built with `-Zbuild-std`), have a growing heap
+(`mem_alloc`) and can map initrd files read-only (`fs_map`). The kernel saves
+and restores each user task's x87/SSE state on switches. Guest RAM: 2 GiB.
+
+`cargo xtask verify` from a clean copy of the tracked files (path with spaces
+and a comma, empty `target/` and `build/`, so `core`/`alloc` were rebuilt for
+the new user target): exit 0 in 141 s, all 11 cases as expected (normal
+4.8 s, desktop 13.5 s), `ZOO_OS BOOT version=0.7.0`. An earlier run in the
+main checkout gave the same outcomes. The normal case now also requires
+`PROC start pid=6/7 name=beaver-handler` and both exits (in any order); the
+desktop case's process ids moved up by 2.
+
+From the normal case's serial log:
+
+    [1:zookeeper] mapped bin/zookeeper: 33480 bytes, ELF magic ok
+    ZOO_OS PROC start pid=6 name=beaver-handler
+    ZOO_OS PROC start pid=7 name=beaver-handler
+    ZOO_OS PROC exit pid=6 name=beaver-handler code=0
+    ZOO_OS PROC exit pid=7 name=beaver-handler code=0
+    [1:zookeeper] both BeaverHandlers matched the reference bits (0x40e4abd67fe8c90c, 0x410b85587192e697)
+
+- **FPU state is per process:** the two BeaverHandlers ran the same 3-million-
+  step floating-point series at the same time (preempted many times) with
+  different parameters, and each result equals the reference Zookeeper
+  computed alone, bit for bit.
+- **Heap:** each BeaverHandler fills a 4 MiB `Vec`, which needs the
+  allocator to grow past its first 1 MiB with `mem_alloc`.
+- **File mapping:** `fs_map` returns exactly the file's bytes (length equals
+  `fs_stat`, ELF magic present).
+- **No leaks:** `TEST process-cleanup ok` still holds with heap pages and
+  ramdisk mappings in play.
+- **SSE really used:** `llvm-objdump` of `beaver-handler` shows 22
+  `mulsd`/`divsd`/`addsd`/`cvtsi2sd` instructions and no soft-float helper
+  calls.
+
+**Negative control (FPU switching).** With `fpu::save` and `fpu::restore` turned into no-ops, the normal image was booted headless: both BeaverHandlers exited 0, but Zookeeper logged `BeaverHandler 0 result 0x40e4abd67fe8c960, expected 0x40e4abd67fe8c90c` and exited with code 24 instead of 0, so the verifier's `PROC exit pid=1 name=zookeeper code=0` marker cannot match. Reverted before the runs above.
+
+**WHPX:** the same normal image boots to READY with `-accel whpx` on the
+development host; the timer self-test spun about 13× more than under TCG.
+Verify does not use it.
 
 ## M4 results (version 0.6.0)
 

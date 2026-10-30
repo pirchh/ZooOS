@@ -4,11 +4,14 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use core::arch::asm;
 use core::fmt;
-pub use zoo_abi::{DisplayInfo, Error, FsEntry, NO_HANDLE, sys};
+pub use zoo_abi::{DisplayInfo, Error, FsEntry, MapInfo, NO_HANDLE, sys};
 
 pub mod app;
+mod heap;
 
 /// A handle value as returned by the kernel.
 pub type Handle = u64;
@@ -166,6 +169,51 @@ pub fn fs_stat(index: u64) -> Result<FsEntry, Error> {
         0,
     ))?;
     Ok(e)
+}
+
+/// Maps `len` bytes of new zeroed heap memory; returns its address.
+pub fn mem_alloc(len: u64) -> Result<u64, Error> {
+    result(syscall(sys::MEM_ALLOC, len, 0, 0))
+}
+
+/// Maps the `index`-th initial-filesystem file read-only and returns its
+/// contents. The mapping lasts for the life of the process.
+pub fn fs_map(index: u64) -> Result<&'static [u8], Error> {
+    let mut info = MapInfo::default();
+    result(syscall(
+        sys::FS_MAP,
+        index,
+        &mut info as *mut MapInfo as u64,
+        0,
+    ))?;
+    // SAFETY: the kernel mapped `len` readable bytes at `addr` for the rest
+    // of this process's life and never changes them.
+    Ok(unsafe { core::slice::from_raw_parts(info.addr as *const u8, info.len as usize) })
+}
+
+/// Index of the initial-filesystem file named `name`, if present.
+pub fn fs_find(name: &str) -> Option<u64> {
+    (0..)
+        .map_while(|i| fs_stat(i).ok().map(|e| (i, e)))
+        .find(|(_, e)| e.name() == name)
+        .map(|(i, _)| i)
+}
+
+/// The floating-point workload used to check that x87/SSE state is kept
+/// per process (docs/m5a-design.md §5). Deterministic: the same `param`
+/// always gives the same bits. Keeps every 1024th partial sum in `trace`.
+pub fn beaver_series(param: f64, n: u64, trace: &mut alloc::vec::Vec<f64>) -> f64 {
+    let mut acc = 0.0f64;
+    let mut x = 1.0f64;
+    for i in 0..n {
+        let fi = i as f64;
+        x = (fi * param + 1.0) / (1.0 + fi * 0.5) + x * 1e-3;
+        acc = acc * 0.999 + x * x;
+        if i % 1024 == 0 {
+            trace.push(acc);
+        }
+    }
+    acc + trace.iter().sum::<f64>() * 1e-9
 }
 
 pub fn close(h: Handle) -> Result<(), Error> {

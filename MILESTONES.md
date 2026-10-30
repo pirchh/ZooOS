@@ -75,6 +75,9 @@ Opera/WoW plan and must be allowed to report that honestly.
 
 ## M5 — local assistant prototype
 
+Status: in progress. M5a (floating point, user heap, file mapping) done
+2026-10-30 (docs/m5a-design.md). Next: M5b inference engine, M5c assistant.
+
 Port a small runtime, benchmark a selected local model and implement permission-
 checked file search/folder creation. Acceptance: real results, scoped operations,
 path escape rejection, cancellation, bounded resources, useful failure reporting,

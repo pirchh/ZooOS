@@ -48,7 +48,6 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     idt.segment_not_present.set_handler_fn(segment_not_present);
     idt.alignment_check.set_handler_fn(alignment_check);
     idt.machine_check.set_handler_fn(machine_check);
-    idt.simd_floating_point.set_handler_fn(simd_floating_point);
     // SAFETY: the IST index refers to the double-fault stack installed in the
     // TSS by `gdt::init`, which is not used by any other vector.
     unsafe {
@@ -69,6 +68,10 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
         idt.general_protection_fault
             .set_handler_addr(addr(trap::stub_general_protection));
         idt.page_fault.set_handler_addr(addr(trap::stub_page_fault));
+        idt.x87_floating_point
+            .set_handler_addr(addr(trap::stub_x87));
+        idt.simd_floating_point
+            .set_handler_addr(addr(trap::stub_simd));
         idt[TIMER_VECTOR].set_handler_addr(addr(trap::stub_timer));
         // The only gate user code may invoke directly.
         idt[trap::VEC_SYSCALL as u8]
@@ -209,10 +212,6 @@ extern "x86-interrupt" fn machine_check(frame: InterruptStackFrame) -> ! {
     fatal("machine-check", &frame, None)
 }
 
-extern "x86-interrupt" fn simd_floating_point(frame: InterruptStackFrame) {
-    fatal("simd-floating-point", &frame, None)
-}
-
 /// Short name of a trap vector handled by `trap.rs`, for fault reports.
 pub fn fault_name(vector: u64) -> &'static str {
     match vector {
@@ -221,6 +220,8 @@ pub fn fault_name(vector: u64) -> &'static str {
         trap::VEC_STACK_SEGMENT => "stack-segment-fault",
         trap::VEC_GENERAL_PROTECTION => "general-protection",
         trap::VEC_PAGE_FAULT => "page-fault",
+        trap::VEC_X87 => "x87-floating-point",
+        trap::VEC_SIMD => "simd-floating-point",
         _ => "unknown-trap",
     }
 }
