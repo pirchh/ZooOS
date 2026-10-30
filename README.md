@@ -46,6 +46,8 @@ Files:
 - docs/m3-design.md: processes, system calls, IPC and Zookeeper.
 - docs/m4-design.md: the window server, desktop apps and session.
 - docs/m5a-design.md: floating point, user heap and file mapping for M5.
+- docs/m5b-design.md: the local inference engine (infer/).
+- infer/: the inference engine; tools/reference/: its NumPy cross-check.
 - tools/models/: model provenance (weights are downloaded, not committed).
 - docs/feasibility/: Wine-hosting and GPU desk studies (both BLOCKED today).
 - docs/verification.md: commands, versions and results actually observed.

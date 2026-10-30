@@ -15,6 +15,18 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(50);
 const KILL_BOUND: Duration = Duration::from_secs(10);
 
+static ACCEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Selects the QEMU accelerator for this run (`tcg` unless set). Hardware
+/// acceleration is optional and never required (DECISIONS.md).
+pub fn set_accel(name: &str) {
+    let _ = ACCEL.set(name.to_string());
+}
+
+fn accel() -> String {
+    ACCEL.get().cloned().unwrap_or_else(|| "tcg".into())
+}
+
 /// QEMU splits option values on `,`; a literal comma is written as `,,`.
 fn opt_path(p: &Path) -> Result<String, String> {
     let s = p
@@ -33,6 +45,7 @@ fn machine_args(
     vars: &Path,
     headless: bool,
 ) -> Result<Vec<OsString>, String> {
+    let accel = accel();
     let code = tools
         .ovmf_code
         .as_deref()
@@ -41,9 +54,7 @@ fn machine_args(
         "-machine".to_string(),
         "q35".into(),
         "-accel".into(),
-        "tcg".into(),
-        "-cpu".into(),
-        "qemu64".into(),
+        accel.clone(),
         "-smp".into(),
         "1".into(),
         "-m".into(),
@@ -63,6 +74,11 @@ fn machine_args(
         "none".into(),
         "-no-reboot".into(),
     ];
+    // TCG uses the fixed `qemu64` model. With a hardware accelerator QEMU's
+    // default model is used: `-cpu max` made OVMF fault under WHPX.
+    if accel == "tcg" {
+        args.extend(["-cpu".into(), "qemu64".into()]);
+    }
     if headless {
         args.extend(["-display".into(), "none".into()]);
     }

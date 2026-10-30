@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0–M4, M5a and the interim console verified on the host below on
-2026-10-30. Logs and screenshots are generated under `build/` (ignored by
-Git); rerun the commands to reproduce them. The M5a section (version 0.7.0)
-is the current state.
+Status: M0–M4, M5a, M5b and the interim console verified on the host below
+on 2026-10-30. Logs and screenshots are generated under `build/` (ignored by
+Git); rerun the commands to reproduce them. The M5b section (version 0.7.0,
+unchanged from M5a) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,58 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M5b results (version 0.7.0)
+
+Design: docs/m5b-design.md. New crate `zoo-infer` (GGUF reader, Q4_0/Q8_0,
+Qwen2 forward pass, byte-level BPE tokenizer, ChatML); new program
+ElephantHandler; new verify case `inference` using the model image. The
+version number was not bumped: the kernel and the boot path are unchanged
+from M5a.
+
+Model: `tools/models/qwen2.5-0.5b-instruct-q4_0.gguf`, 428,730,208 bytes,
+SHA-256 `7671c0c3…daf6ed` (full value and source in tools/models/README.md;
+checked before every use).
+
+**Independent reference** — `cargo xtask infer-check` (Rust engine vs
+`tools/reference/qwen_ref.py`, NumPy 2.3.4, Python 3.12), exit 0 in 76 s:
+
+| Prompt | Prompt tokens | Output tokens | Top-5 logit max diff |
+| --- | --- | --- | --- |
+| What is the capital of France? | 26 (same) | 7 (same) | 0.00006 |
+| List three animals found in a zoo, one per line. | 31 (same) | 7 (same) | 0.00004 |
+| Compute 12 + 30 and explain in one sentence. | 33 (same) | 11 (same) | 0.00007 |
+| Translate 'café' to English; don't explain. | 31 (same) | 1 (same) | 0.00004 |
+| Create a folder named Projects/2026 in my home directory. | 34 (same) | 24 (same) | 0.00005 |
+
+"Same" means the token id sequences are identical; the threshold is 0.02.
+
+**Full `cargo xtask verify`** on commit `0a96884` (TCG): exit 0 in 431 s, all
+12 cases as expected (11 earlier cases unchanged, plus `inference` 350.5 s).
+The host engine's answer for the guest prompt was
+`The capital of France is Paris.` (ids 785, 6722, 315, 9625, 374, 12095, 13).
+From the inference case's serial log:
+
+    [8:elephant-handler] ElephantHandler: answer `The capital of France is Paris.`
+    [8:elephant-handler] ElephantHandler: prefill 26 tokens in 26390 ticks, generated 7 tokens in 7632 ticks (100 ticks = 1 s)
+    [8:elephant-handler] ElephantHandler: tokens match the host engine exactly
+    ZOO_OS PROC exit pid=8 name=elephant-handler code=0
+
+Timings are observations on this host, not performance claims:
+
+| Where | Prompt (26 tokens) | Generation (7 tokens) | Case |
+| --- | --- | --- | --- |
+| Guest, TCG (run above) | 263.9 s | 76.3 s | 350.5 s |
+| Guest, TCG (earlier run, same code) | 394.4 s | 104.2 s | 510.8 s |
+| Guest, `--accel whpx --case inference` | 9.0 s | 2.4 s | 18.3 s |
+| Host engine (release, one thread) | ≈ 5.9 tokens/s overall | | |
+
+**Negative checks of the engine:** every truncation of a synthetic GGUF file
+is rejected without a panic (unit test). ElephantHandler compares its ids with
+`test/elephant.txt` and exits non-zero on a difference, and only exit 0
+satisfies the marker; a deliberately wrong expectation was **not** run as a
+separate case in this step. `--skip-model` reports the case as `SKIP`, never
+`OK`.
 
 ## M5a results (version 0.7.0)
 

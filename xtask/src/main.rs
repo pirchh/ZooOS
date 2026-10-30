@@ -3,6 +3,7 @@
 mod config;
 mod doctor;
 mod image;
+mod infer;
 mod markers;
 mod process;
 mod qemu;
@@ -26,9 +27,17 @@ commands:
                             build one mode (default normal), then boot it in QEMU
                             with COM1 on this terminal
                             (Ctrl+C stops QEMU; no timeout unless given)
+  infer [--prompt TEXT] [--tokens N]
+                            run the model on the host (tools/models/), print
+                            prompt/output token ids, top logits and timing
+  infer-check [--tokens N]  compare the engine with the NumPy reference
+                            (tools/reference/) on several prompts
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
+         [--accel tcg|whpx|kvm] [--skip-model] [--case NAME]
                             build every mode, then run all positive and negative
-                            cases headlessly (defaults: 30, 5, 1000)
+                            cases headlessly (defaults: 30, 5, 1000). The
+                            inference case needs tools/models/; --skip-model
+                            reports it as not run instead of failing.
 
 configuration (environment):
   QEMU_X86_64               path to qemu-system-x86_64
@@ -83,12 +92,66 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         }
         "verify" => {
             let tools = config::Tools::resolve_for_qemu()?;
+            if let Some(a) = &opts.accel {
+                qemu::set_accel(a);
+            }
             let settings = verify::Settings {
+                skip_model: opts.skip_model,
+                only: opts.case.clone(),
                 timeout: opts.timeout.unwrap_or(Duration::from_secs(30)),
                 negative_timeout: opts.negative_timeout.unwrap_or(Duration::from_secs(5)),
                 settle: opts.settle.unwrap_or(Duration::from_millis(1000)),
             };
             verify::run(&root, &tools, &settings)
+        }
+        "infer" => {
+            let data = infer::load_model(&root)?;
+            let prompt = opts
+                .prompt
+                .clone()
+                .unwrap_or_else(|| "What is the capital of France?".into());
+            let system = match &opts.system_file {
+                Some(f) => {
+                    std::fs::read_to_string(f).map_err(|e| format!("cannot read {f}: {e}"))?
+                }
+                None => infer::SYSTEM.to_string(),
+            };
+            let r = infer::run_with_system(&data, &system, &prompt, opts.tokens.unwrap_or(16))?;
+            println!("prompt_ids={}", infer::ids(&r.prompt_ids));
+            println!("output_ids={}", infer::ids(&r.output_ids));
+            print!("first_top=");
+            for (i, (id, l)) in r.first_top.iter().enumerate() {
+                print!("{}{id}:{l:.4}", if i == 0 { "" } else { "," });
+            }
+            println!();
+            println!("text={:?}", r.text);
+            println!(
+                "prefill {} tokens in {:.2}s ({:.2} tok/s); decoded {} tokens in {:.2}s ({:.2} tok/s)",
+                r.prompt_ids.len(),
+                r.prefill_secs,
+                r.prompt_ids.len() as f64 / r.prefill_secs,
+                r.output_ids.len(),
+                r.decode_secs,
+                r.output_ids.len() as f64 / r.decode_secs.max(1e-9)
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        "model-image" => {
+            let tools = config::Tools::resolve_build_only();
+            let data = infer::load_model(&root)?;
+            let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
+            image::build_model_image(&root, &tools, &data, infer::GUEST_PROMPT, &r.output_ids)?;
+            println!("expected output ids: {}", infer::ids(&r.output_ids));
+            Ok(ExitCode::SUCCESS)
+        }
+        "infer-check" => {
+            let ok = infer::check(&root, opts.tokens.unwrap_or(24))?;
+            println!("infer-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
@@ -113,6 +176,12 @@ struct Options {
     timeout: Option<Duration>,
     negative_timeout: Option<Duration>,
     settle: Option<Duration>,
+    prompt: Option<String>,
+    tokens: Option<usize>,
+    accel: Option<String>,
+    skip_model: bool,
+    case: Option<String>,
+    system_file: Option<String>,
 }
 
 impl Options {
@@ -128,6 +197,21 @@ impl Options {
             match a.as_str() {
                 "--mode" => o.mode = Some(value("--mode")?),
                 "--panic" => o.panic = true,
+                "--skip-model" => o.skip_model = true,
+                "--case" => o.case = Some(value("--case")?),
+                "--system-file" => o.system_file = Some(value("--system-file")?),
+                "--accel" => {
+                    let v = value("--accel")?;
+                    if v != "tcg" && v != "whpx" && v != "kvm" {
+                        return Err(format!("invalid --accel `{v}` (tcg, whpx or kvm)"));
+                    }
+                    o.accel = Some(v);
+                }
+                "--prompt" => o.prompt = Some(value("--prompt")?),
+                "--tokens" => {
+                    let v = value("--tokens")?;
+                    o.tokens = Some(v.parse().map_err(|_| format!("invalid --tokens `{v}`"))?);
+                }
                 "--timeout-secs" => o.timeout = Some(secs(&value("--timeout-secs")?)?),
                 "--negative-timeout-secs" => {
                     o.negative_timeout = Some(secs(&value("--negative-timeout-secs")?)?)

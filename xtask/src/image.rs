@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 8] = [
+pub const USER_PROGRAMS: [&str; 9] = [
     "zookeeper",
     "lion-handler",
     "monkey-handler",
@@ -20,6 +20,7 @@ pub const USER_PROGRAMS: [&str; 8] = [
     "owl-handler",
     "chimp-handler",
     "beaver-handler",
+    "elephant-handler",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,5 +205,73 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
         .create_disk_image(&img)
         .map_err(|e| format!("failed to create UEFI disk image {}: {e:#}", img.display()))?;
     println!("[build] image ({}) -> {}", mode.name(), img.display());
+    Ok(img)
+}
+
+/// The model image (docs/m5b-design.md §5): the normal kernel with an
+/// initrd that also holds the model and `test/elephant.txt` (the prompt and
+/// the token ids the host engine produced for it). Kept separate so the
+/// other cases do not carry 430 MB each.
+pub fn build_model_image(
+    root: &Path,
+    tools: &Tools,
+    model: &[u8],
+    prompt: &str,
+    expected: &[u32],
+) -> Result<PathBuf, String> {
+    let normal = build(root, tools, Mode::Normal)?;
+    let _ = normal;
+    let base = initrd(root, tools)?;
+    let mut archive =
+        std::fs::read(&base).map_err(|e| format!("cannot read {}: {e}", base.display()))?;
+    // Drop the two end-of-archive blocks, append, then end again.
+    archive.truncate(archive.len().saturating_sub(2 * zoo_abi::tar::BLOCK));
+    let ids: Vec<String> = expected.iter().map(u32::to_string).collect();
+    let spec = format!(
+        "{prompt}
+{}
+",
+        ids.join(",")
+    );
+    for (name, data) in [
+        ("models/qwen2.5-0.5b-instruct-q4_0.gguf", model),
+        ("test/elephant.txt", spec.as_bytes()),
+    ] {
+        let header = zoo_abi::tar::header(name, data.len())
+            .ok_or_else(|| format!("cannot make a tar header for {name}"))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(data);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+    }
+    archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
+    let count = zoo_abi::tar::read(&archive)
+        .map(|e| e.map_err(|e| format!("model initrd self-check failed: {e:?}")))
+        .collect::<Result<Vec<_>, _>>()?
+        .len();
+    let out_dir = root.join("build").join("normal-model");
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
+    let initrd_path = out_dir.join("initrd-model.tar");
+    std::fs::write(&initrd_path, &archive)
+        .map_err(|e| format!("cannot write {}: {e}", initrd_path.display()))?;
+    let elf = root
+        .join("target")
+        .join(format!("kernel-{}", Mode::Normal.name()))
+        .join(KERNEL_TARGET)
+        .join("release")
+        .join(KERNEL_PACKAGE);
+    let img = out_dir.join("zoo-os-normal-model-uefi.img");
+    bootloader::UefiBoot::new(&elf)
+        .set_ramdisk(&initrd_path)
+        .create_disk_image(&img)
+        .map_err(|e| format!("failed to create {}: {e:#}", img.display()))?;
+    println!(
+        "[build] model image ({count} files, initrd {} MB) -> {}",
+        archive.len() >> 20,
+        img.display()
+    );
     Ok(img)
 }

@@ -246,6 +246,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
+
+[[package]]
 name = "linked_list_allocator"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -577,6 +583,7 @@ dependencies = [
  "noto-sans-mono-bitmap",
  "sha2",
  "zoo-abi",
+ "zoo-infer",
 ]
 
 [[package]]
@@ -588,6 +595,13 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 [[package]]
 name = "zoo-abi"
 version = "0.7.0"
+
+[[package]]
+name = "zoo-infer"
+version = "0.7.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "zoo-os-kernel"
@@ -611,4 +625,5 @@ dependencies = [
  "noto-sans-mono-bitmap",
  "pc-keyboard",
  "zoo-abi",
+ "zoo-infer",
 ]
