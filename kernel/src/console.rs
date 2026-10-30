@@ -6,8 +6,9 @@
 
 use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use noto_sans_mono_bitmap::{FontWeight, RasterHeight, get_raster, get_raster_width};
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 pub const MARGIN: usize = 8;
 pub const LINE_HEIGHT: usize = 18;
@@ -26,6 +27,29 @@ pub struct Console {
 
 static CONSOLE: Mutex<Option<Console>> = Mutex::new(None);
 
+/// True while a user process owns the display (docs/m4-design.md §2): the
+/// console stops drawing; serial output continues.
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+/// The framebuffer as handed over by the bootloader: (virtual start, byte
+/// length, info). Recorded once, for `display_acquire`.
+static REGION: Once<(u64, usize, FrameBufferInfo)> = Once::new();
+
+pub fn framebuffer_region() -> Option<(u64, usize, FrameBufferInfo)> {
+    REGION.get().copied()
+}
+
+/// Stops drawing (a user process now owns the framebuffer).
+pub fn suspend() {
+    SUSPENDED.store(true, Ordering::Relaxed);
+}
+
+/// Takes the screen back: clears it and draws again from the top.
+pub fn resume() {
+    SUSPENDED.store(false, Ordering::Relaxed);
+    with(|c| c.clear());
+}
+
 /// Takes ownership of the framebuffer and clears it. Returns a description
 /// for the boot log, or why the screen console is disabled.
 pub fn init(fb: Option<FrameBuffer>) -> Result<FrameBufferInfo, &'static str> {
@@ -40,8 +64,10 @@ pub fn init(fb: Option<FrameBuffer>) -> Result<FrameBufferInfo, &'static str> {
     if cols == 0 || rows == 0 {
         return Err("framebuffer too small for text");
     }
+    let buf = fb.into_buffer();
+    REGION.call_once(|| (buf.as_ptr() as u64, buf.len(), info));
     let mut console = Console {
-        buf: fb.into_buffer(),
+        buf,
         info,
         cols,
         rows,
@@ -62,6 +88,9 @@ pub fn size() -> Option<(usize, usize)> {
 /// `try_lock` (never `lock`) so that a fault or panic raised while the
 /// console is being drawn cannot deadlock its own report.
 pub fn with<R>(f: impl FnOnce(&mut Console) -> R) -> Option<R> {
+    if SUSPENDED.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut guard = CONSOLE.try_lock()?;
     guard.as_mut().map(f)
 }

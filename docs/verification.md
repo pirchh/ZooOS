@@ -1,8 +1,8 @@
 # Verification record
 
-Status: M0, M1, M2, the interim console and M3 verified on the host below
-on 2026-10-30. Logs and screenshots are generated under `build/` (ignored by
-Git); rerun the commands to reproduce them. The M3 section (version 0.5.0) is
+Status: M0–M4 and the interim console verified on the host below on
+2026-10-30. Logs and screenshots are generated under `build/` (ignored by
+Git); rerun the commands to reproduce them. The M4 section (version 0.6.0) is
 the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
@@ -22,6 +22,7 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 | Crates (kernel) | bootloader_api 0.11.17, x86_64 0.15.5, pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3, noto-sans-mono-bitmap 0.3.2, pc-keyboard 0.9.0 (full set in `Cargo.lock`) |
 | Crates (host, since console) | noto-sans-mono-bitmap 0.3.2 (re-renders text to check screenshots) |
 | Workspace crates (since M3) | `zoo-abi` (shared ABI, ELF and initrd parsers, no dependencies), `zoo-user` (runtime + programs) |
+| User programs (M4) | adds peacock-handler 66,144 B (plus an 8.8 MB zero-filled back buffer in `.bss`), owl-handler 16,336 B, chimp-handler 15,184 B; initrd 151,552 B |
 | User programs (M3) | zookeeper 18,496 B; monkey-handler 14,392 B; lion-handler 10,616 B; hamster-handler 3,192 B (static ELF at `0x200000`); initrd 51,200 B |
 | QEMU | 11.1.0, firmware as recorded in `tools/firmware/README.md` |
 | Kernel ELF | M1: 11,504 bytes. M2: normal 60,512 bytes, fault modes 40–46 KB (release); crate `zoo-os-kernel` since 0.4.0 |
@@ -38,6 +39,92 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M4 results (version 0.6.0)
+
+Design: docs/m4-design.md. A user-space window server (PeacockHandler), two
+applications (OwlHandler: Files; ChimpHandler: crash test) and Zookeeper's
+session mode, started with the shell command `desktop`.
+
+Clean copy of the tracked files at `…\OriginsOS\build\clean checkout, spaces\`, empty
+`target/` and `build/`, at version 0.6.0:
+
+    cargo xtask doctor     -> ready, exit 0
+    cargo xtask verify     -> exit 0 (70 s including builds)
+
+| Case | Expected | Got | Time |
+| --- | --- | --- | --- |
+| normal | pass | pass | 3.1 s |
+| panic | pass | pass | 3.1 s |
+| fault-write-protect | pass | pass | 2.9 s |
+| fault-heap-guard | pass | pass | 2.9 s |
+| fault-stack-overflow | pass | pass | 2.8 s |
+| keyboard | pass | pass | 5.0 s |
+| scroll | pass | pass | 5.6 s |
+| desktop (new) | pass | pass | 11.9 s |
+| negative-wrong-marker | unexpected-marker | unexpected-marker | 1.9 s |
+| negative-timeout | timeout | timeout | 5.0 s |
+| negative-triple-fault | early-exit | early-exit | 2.0 s |
+
+Afterwards: tracked files unchanged, firmware templates matched their
+recorded hashes, no QEMU running.
+
+The `desktop` case types into the guest through QMP in five phases, checks
+the kernel markers between them (including two unordered groups where a
+window server's apps exit while its replacement starts), and checks five
+screenshots. Each screenshot check finds exact text by colour and also
+requires a deliberately wrong string to be absent:
+
+    1-desktop:        menu `ZooOS` at (8, 4), focused title `Files` at (32, 52), selected
+                      `bin/zookeeper` at (32, 80), Chimp window shown; wrong text rejected
+    2-details:        details of the 3rd file: `Name: bin/monkey-handler` at (32, 80),
+                      `Size:` at (32, 100); wrong file rejected
+    3-app-restart:    status `ChimpHandler crashed; restarted (1 of 3)` at (8, 780),
+                      focused `Chimp` at (660, 52), Files details unchanged
+    4-server-restart: fresh desktop after the window-server crash: `ZooOS` at (8, 4),
+                      `Files` focused at (32, 52), list reset at (32, 80)
+    5-console:        kernel console back: `Desktop session ended.` row 5,
+                      `zoo> echo back` row 6, `back` row 7; no desktop left
+
+Against the M4 acceptance criteria:
+
+- **Keyboard navigation:** `Down`, `Enter`, `Tab` and `Esc` drive the
+  desktop; screenshots 1–3 show the selection, the details view and the
+  focus change.
+- **Basic file browsing:** Files lists all seven programs in the initial
+  filesystem with sizes, and opens the third one's details.
+- **Crash recovery:** ChimpHandler's fault ends only ChimpHandler; the window
+  server restarts it and Files keeps its state (screenshot 3). The window
+  server's own fault (test key F12) releases the display; Zookeeper restarts
+  it and a fresh desktop appears (screenshot 4).
+- **Stable redraw:** frames are drawn into a back buffer and copied whole.
+  All five screenshots were taken mid-session and every checked string was
+  complete. This shows complete frames at those moments; it is not a frame-
+  timing measurement.
+- **Not a static screenshot:** the case is interactive end to end, and leaving
+  the desktop returns a working kernel shell.
+
+**Negative control (app restart).** With PeacockHandler's restart limit set to
+0, the `desktop` case failed: `timeout: no ZOO_OS PROC start pid=10
+name=chimp-handler within 90s`. Reverted before the runs above.
+
+**Bug found by the first run.** The first full run failed only on screenshot
+5: the shell printed its prompt before Zookeeper's last lines, so `echo back`
+landed on a line of its own. Fixed (docs/m4-design.md §10); the next run
+passed.
+
+### M4 additional checks
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p xtask --locked` | 21 passed (adds unordered marker groups and coloured text search) |
+| `cargo test -p zoo-abi` | 8 passed |
+| `cargo clippy`: kernel in all 6 modes, `zoo-user`, `zoo-abi`, xtask | 0 warnings |
+| `cargo fmt --all --check` | clean |
+
+Not covered by automated checks: typing printable characters into an app
+(no app uses them yet), the session's restart limit for the window server
+itself (only one restart is exercised), and the `uptime` clock text.
 
 ## M3 results (version 0.5.0)
 

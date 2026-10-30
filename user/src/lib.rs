@@ -6,7 +6,9 @@
 
 use core::arch::asm;
 use core::fmt;
-pub use zoo_abi::{Error, NO_HANDLE, sys};
+pub use zoo_abi::{DisplayInfo, Error, FsEntry, NO_HANDLE, sys};
+
+pub mod app;
 
 /// A handle value as returned by the kernel.
 pub type Handle = u64;
@@ -107,6 +109,63 @@ pub fn wait(h: Handle) -> Result<u8, Error> {
 /// Ends the process behind a process handle (the supervisor's last resort).
 pub fn kill(h: Handle) -> Result<(), Error> {
     result(syscall(sys::KILL, h, 0, 0)).map(|_| ())
+}
+
+/// Timer ticks (100 Hz) since boot.
+pub fn ticks() -> u64 {
+    syscall(sys::TICKS, 0, 0, 0) as u64
+}
+
+/// Blocks for at least `ticks` timer ticks.
+pub fn sleep(ticks: u64) {
+    syscall(sys::SLEEP, ticks, 0, 0);
+}
+
+/// Like `recv`, but returns `Err(Again)` instead of blocking.
+pub fn try_recv(h: Handle, buf: &mut [u8]) -> Result<usize, Error> {
+    result(syscall(
+        sys::TRY_RECV,
+        h,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
+    .map(|n| n as usize)
+}
+
+/// Takes the display and keyboard; the framebuffer is mapped at
+/// `info.base`.
+pub fn display_acquire() -> Result<DisplayInfo, Error> {
+    let mut info = DisplayInfo::default();
+    result(syscall(
+        sys::DISPLAY_ACQUIRE,
+        &mut info as *mut DisplayInfo as u64,
+        0,
+        0,
+    ))?;
+    Ok(info)
+}
+
+/// Copies waiting keyboard scancode bytes (display owner only).
+pub fn input_read(buf: &mut [u8]) -> Result<usize, Error> {
+    result(syscall(
+        sys::INPUT_READ,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    ))
+    .map(|n| n as usize)
+}
+
+/// Describes the `index`-th file of the initial filesystem.
+pub fn fs_stat(index: u64) -> Result<FsEntry, Error> {
+    let mut e = FsEntry::default();
+    result(syscall(
+        sys::FS_STAT,
+        index,
+        &mut e as *mut FsEntry as u64,
+        0,
+    ))?;
+    Ok(e)
 }
 
 pub fn close(h: Handle) -> Result<(), Error> {

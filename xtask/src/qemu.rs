@@ -185,17 +185,28 @@ pub struct CaseRun {
     pub log: PathBuf,
     /// How QEMU was stopped; a halted guest is expected to be `Killed`.
     pub shutdown: String,
-    /// PPM screenshot taken after the markers passed, if requested.
-    pub screenshot: Option<PathBuf>,
+    /// Screenshots taken by `Action::Screenshot`, as (name, PPM path).
+    pub screenshots: Vec<(String, PathBuf)>,
 }
 
-/// Keyboard input to type through QMP once `trigger` appears on serial, and
-/// whether to take a screenshot after all markers have been seen.
+/// One step of driving the guest through QMP (docs/m4-design.md §8).
+pub enum Action {
+    /// Wait until this complete serial line appears after the previous
+    /// `WaitFor` match.
+    WaitFor(String),
+    /// Press and release these QEMU qcodes, one at a time.
+    Keys(Vec<&'static str>),
+    /// Wait until the serial log has not grown for this long (the guest has
+    /// finished reacting), then a little more for the screen to be drawn.
+    Settle(Duration),
+    /// Save `<name>.ppm` (checked by the case) and `<name>.png` (for people).
+    Screenshot(&'static str),
+}
+
+/// Steps to perform, in order, while the case runs. All of them must finish
+/// before the case can pass.
 pub struct Interaction {
-    pub trigger: String,
-    /// QEMU qcodes, pressed and released one at a time.
-    pub keys: Vec<&'static str>,
-    pub screenshot: bool,
+    pub steps: Vec<Action>,
 }
 
 const KEY_GAP: Duration = Duration::from_millis(40);
@@ -270,31 +281,78 @@ pub fn run_case(
                     elapsed: start.elapsed(),
                     log,
                     shutdown: "terminated by harness".into(),
-                    screenshot: None,
+                    screenshots: Vec::new(),
                 });
             }
         }
     }
-    let mut typed = false;
+    let mut step = 0usize;
+    // Byte offset in the log just past the last `WaitFor` match.
+    let mut cursor = 0usize;
+    let mut last_len = 0usize;
+    let mut last_growth = Instant::now();
+    let mut step_started = Instant::now();
+    let mut screenshots = Vec::new();
+    let steps: &[Action] = interaction.map_or(&[], |i| &i.steps);
     let mut passed_at: Option<Instant> = None;
     let outcome = loop {
         let text = fs::read(&log)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
-        if let (Some(inter), Some(q), false) = (interaction, qmp_conn.as_mut(), typed) {
-            // Only complete lines count, as for markers.
-            let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
-            if complete.lines().any(|l| l.trim_end() == inter.trigger) {
-                typed = true;
-                if let Err(e) = type_keys(q, &inter.keys) {
-                    break Outcome::HarnessError(e);
+        if text.len() != last_len {
+            last_len = text.len();
+            last_growth = Instant::now();
+        }
+        // Run as many interaction steps as are ready now.
+        let mut harness_error = None;
+        while let (Some(action), Some(q)) = (steps.get(step), qmp_conn.as_mut()) {
+            let done = match action {
+                Action::WaitFor(line) => {
+                    // Only complete lines count, as for markers.
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    match find_line(complete, cursor, line) {
+                        Some(end) => {
+                            cursor = end;
+                            true
+                        }
+                        None => false,
+                    }
                 }
-                continue;
+                Action::Keys(keys) => match type_keys(q, keys) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
+                Action::Settle(quiet) => {
+                    last_growth.elapsed() >= *quiet && step_started.elapsed() >= *quiet
+                }
+                Action::Screenshot(name) => match screenshot(q, &dir, name) {
+                    Ok(ppm) => {
+                        screenshots.push((name.to_string(), ppm));
+                        true
+                    }
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
+            };
+            if !done {
+                break;
             }
+            step += 1;
+            step_started = Instant::now();
+        }
+        if let Some(e) = harness_error {
+            break Outcome::HarnessError(e);
         }
         let verdict = markers::evaluate(exp, &text);
         match verdict {
             Verdict::Unexpected(why) => break Outcome::UnexpectedMarker(why),
+            // Markers alone are not enough while steps remain.
+            Verdict::Pass if step < steps.len() => {}
             Verdict::Pass => {
                 let t = *passed_at.get_or_insert_with(Instant::now);
                 if t.elapsed() >= settle {
@@ -320,35 +378,18 @@ pub fn run_case(
         }
         if passed_at.is_none() && start.elapsed() >= timeout {
             let next = match verdict {
-                Verdict::Pending(n) => n,
-                _ => "?".into(),
+                Verdict::Pending(n) => format!("`{n}`"),
+                _ => match steps.get(step) {
+                    Some(Action::WaitFor(l)) => format!("serial line `{l}` (step {})", step + 1),
+                    Some(_) => format!("interaction step {} to finish", step + 1),
+                    None => "?".into(),
+                },
             };
-            break Outcome::Timeout(format!("no `{next}` within {timeout:?}"));
+            break Outcome::Timeout(format!("no {next} within {timeout:?}"));
         }
         std::thread::sleep(POLL);
     };
     let elapsed = start.elapsed();
-    let mut outcome = outcome;
-    let mut screenshot = None;
-    if let (Some(inter), Some(q), Outcome::Pass) = (interaction, qmp_conn.as_mut(), &outcome)
-        && inter.screenshot
-    {
-        let ppm = dir.join("screen.ppm");
-        match q.screendump(&ppm, "ppm") {
-            Ok(()) if ppm.is_file() => {
-                // A PNG copy for people to look at; not used for checks.
-                if let Err(e) = q.screendump(&dir.join("screen.png"), "png") {
-                    eprintln!("[verify] note: PNG screenshot failed: {e}");
-                }
-                screenshot = Some(ppm);
-            }
-            Ok(()) => {
-                outcome =
-                    Outcome::HarnessError("screendump reported success but wrote no file".into())
-            }
-            Err(e) => outcome = Outcome::HarnessError(e),
-        }
-    }
     drop(qmp_conn);
     let shutdown = match guard.shutdown(KILL_BOUND)? {
         Shutdown::Killed => "terminated by harness".to_string(),
@@ -360,8 +401,36 @@ pub fn run_case(
         elapsed,
         log,
         shutdown,
-        screenshot,
+        screenshots,
     })
+}
+
+/// Finds a complete line equal to `want` starting at or after byte `from`;
+/// returns the offset just past it.
+fn find_line(text: &str, from: usize, want: &str) -> Option<usize> {
+    let mut pos = from.min(text.len());
+    for line in text[pos..].split_inclusive('\n') {
+        pos += line.len();
+        if line.trim_end() == want {
+            return Some(pos);
+        }
+    }
+    None
+}
+
+/// Saves `<name>.ppm` (for checks) and `<name>.png` (for people).
+fn screenshot(q: &mut Qmp, dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let ppm = dir.join(format!("{name}.ppm"));
+    q.screendump(&ppm, "ppm")?;
+    if !ppm.is_file() {
+        return Err(format!(
+            "screendump reported success but wrote no {name}.ppm"
+        ));
+    }
+    if let Err(e) = q.screendump(&dir.join(format!("{name}.png")), "png") {
+        eprintln!("[verify] note: PNG screenshot {name} failed: {e}");
+    }
+    Ok(ppm)
 }
 
 fn type_keys(q: &mut Qmp, keys: &[&str]) -> Result<(), String> {

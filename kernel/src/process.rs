@@ -1,13 +1,16 @@
 //! Processes, scheduling, handles, channels and system calls
-//! (docs/m3-design.md §3–§6).
+//! (docs/m3-design.md §3–§6; display, input, sleep and files added by
+//! docs/m4-design.md §2).
 //!
 //! All state lives in `SCHED`, locked only with interrupts disabled: from the
 //! trap dispatcher (interrupts are off there) or from kernel-task code inside
 //! `without_interrupts`. Lock order: `SCHED`, then `memory::with`.
 
+use crate::console;
 use crate::gdt;
 use crate::initrd;
 use crate::interrupts;
+use crate::keyboard;
 use crate::kprintln;
 use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
@@ -17,14 +20,17 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bootloader_api::info::PixelFormat;
 use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use x86_64::VirtAddr;
 use x86_64::instructions::interrupts as cpu_interrupts;
 use x86_64::registers::control::{Cr2, Cr3};
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
-    ABI_VERSION, CHANNEL_DEPTH, Error, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, NO_HANDLE, elf, sys,
+    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB, FsEntry,
+    MAX_FS_NAME, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, NO_HANDLE, elf, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -97,6 +103,10 @@ struct Task {
     kstack: Option<(usize, u64)>,
     handles: [Option<HandleEntry>; MAX_HANDLES],
     generation: [u16; MAX_HANDLES],
+    /// Deadline (in ticks) of an unfinished `sleep`.
+    sleep_until: Option<u64>,
+    /// Framebuffer pages mapped at `DISPLAY_BASE` (0 if none).
+    display_pages: u64,
 }
 
 impl Task {
@@ -111,6 +121,8 @@ impl Task {
             kstack: None,
             handles: [const { None }; MAX_HANDLES],
             generation: [0; MAX_HANDLES],
+            sleep_until: None,
+            display_pages: 0,
         }
     }
 
@@ -168,6 +180,19 @@ struct Scheduler {
     exits: Vec<(u64, ExitStatus)>,
     zombies: Vec<usize>,
     kstack_used: [bool; KSTACK_SLOTS],
+    /// Pid of the process that owns the display and keyboard.
+    display_owner: Option<u64>,
+    /// The kernel's end of the current desktop session's control channel,
+    /// with that session's Zookeeper pid.
+    control: Option<(u64, HandleEntry)>,
+}
+
+/// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
+static DISPLAY_OWNED: AtomicBool = AtomicBool::new(false);
+
+/// True while a user process owns the display and keyboard.
+pub fn display_owned() -> bool {
+    DISPLAY_OWNED.load(Ordering::Relaxed)
 }
 
 static SCHED: Mutex<Option<Scheduler>> = Mutex::new(None);
@@ -197,6 +222,8 @@ pub fn init() {
             exits: Vec::new(),
             zombies: Vec::new(),
             kstack_used: [false; KSTACK_SLOTS],
+            display_owner: None,
+            control: None,
         });
     });
 }
@@ -231,6 +258,56 @@ pub fn for_each_task(mut f: impl FnMut(u64, &str, &str)) {
             };
             f(t.pid, &t.name, state);
         }
+    })
+}
+
+/// True while the current desktop session's Zookeeper has not exited.
+pub fn session_running() -> bool {
+    with_sched(|s, _| match &s.control {
+        Some((pid, _)) => s
+            .tasks
+            .iter()
+            .flatten()
+            .any(|t| t.pid == *pid && t.state != State::Exited),
+        None => false,
+    })
+}
+
+/// Starts a desktop session: Zookeeper in session mode, with a control
+/// channel whose first message is `session` (docs/m4-design.md §2).
+pub fn start_session() -> Result<u64, Error> {
+    with_sched(|s, m| {
+        if let Some((pid, _)) = &s.control
+            && s.tasks
+                .iter()
+                .flatten()
+                .any(|t| t.pid == *pid && t.state != State::Exited)
+        {
+            return Err(Error::Busy);
+        }
+        let chan = Arc::new(Mutex::new(Channel {
+            queues: [VecDeque::new(), VecDeque::new()],
+            open: [true, true],
+        }));
+        // Side 1 is Zookeeper's: its receive queue holds the mode.
+        chan.lock().queues[1].push_back(b"session".to_vec());
+        let rights = RIGHT_SEND | RIGHT_RECV;
+        let kernel_end = HandleEntry {
+            object: Object::Endpoint {
+                chan: chan.clone(),
+                side: 0,
+            },
+            rights,
+        };
+        let zookeeper_end = HandleEntry {
+            object: Object::Endpoint { chan, side: 1 },
+            rights,
+        };
+        let (_, pid, _) = s.spawn(m, "zookeeper", Some(zookeeper_end))?;
+        if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
+            release(old);
+        }
+        Ok(pid)
     })
 }
 
@@ -349,6 +426,12 @@ impl Scheduler {
         if let ExitStatus::Code(code) = status {
             kprintln!("ZOO_OS PROC exit pid={} name={} code={}", pid, name, code);
         }
+        if self.display_owner == Some(pid) {
+            self.display_owner = None;
+            DISPLAY_OWNED.store(false, Ordering::Relaxed);
+            console::resume();
+            kprintln!("ZOO_OS DISPLAY released pid={}", pid);
+        }
         self.exits.push((pid, status));
         self.zombies.push(i);
         self.wake_all();
@@ -365,6 +448,10 @@ impl Scheduler {
             }
             let t = self.tasks[i].take().expect("zombie task present");
             if let Some(p4) = t.p4 {
+                if t.display_pages > 0 {
+                    // Device memory: unmap, never hand to the frame allocator.
+                    mem.unmap_user_keep(p4, DISPLAY_BASE, t.display_pages);
+                }
                 mem.free_address_space(p4);
             }
             if let Some((slot, _)) = t.kstack {
@@ -554,7 +641,7 @@ impl Scheduler {
                 self.wake_all();
                 Outcome::Ret(0)
             }
-            sys::RECV => {
+            sys::RECV | sys::TRY_RECV => {
                 let (chan, side) = match self.task(i).get(a1) {
                     None => return err(Error::BadHandle),
                     Some(HandleEntry {
@@ -568,10 +655,12 @@ impl Scheduler {
                 }
                 let mut c = chan.lock();
                 let Some(len) = c.queues[side].front().map(Vec::len) else {
-                    return if c.open[1 - side] {
-                        Outcome::Block
-                    } else {
+                    return if !c.open[1 - side] {
                         err(Error::PeerClosed)
+                    } else if number == sys::TRY_RECV {
+                        err(Error::Again)
+                    } else {
+                        Outcome::Block
                     };
                 };
                 if len as u64 > a3 {
@@ -625,6 +714,115 @@ impl Scheduler {
                     // Already ended: nothing to do.
                     None => Outcome::Ret(0),
                 }
+            }
+            sys::TICKS => Outcome::Ret(interrupts::ticks() as i64),
+            sys::SLEEP => {
+                let now = interrupts::ticks();
+                let t = self.task(i);
+                let deadline = *t.sleep_until.get_or_insert(now.saturating_add(a1));
+                if now >= deadline {
+                    t.sleep_until = None;
+                    Outcome::Ret(0)
+                } else {
+                    Outcome::Block
+                }
+            }
+            sys::DISPLAY_ACQUIRE => {
+                let size = core::mem::size_of::<DisplayInfo>() as u64;
+                if !ok(a1, size, true) {
+                    return err(Error::Fault);
+                }
+                let Some((virt, len, fb)) = console::framebuffer_region() else {
+                    return err(Error::NotFound);
+                };
+                let format = match fb.pixel_format {
+                    PixelFormat::Rgb => FORMAT_RGB,
+                    PixelFormat::Bgr => FORMAT_BGR,
+                    _ => return err(Error::Inval),
+                };
+                let me = self.task(i).pid;
+                if let Some(owner) = self.display_owner
+                    && owner != me
+                    && self
+                        .tasks
+                        .iter()
+                        .flatten()
+                        .any(|t| t.pid == owner && t.state != State::Exited)
+                {
+                    return err(Error::Busy);
+                }
+                let pages = (len as u64).div_ceil(4096);
+                if self.task(i).display_pages == 0 {
+                    for k in 0..pages {
+                        let Some(phys) = mem.mapper.translate_addr(VirtAddr::new(virt + k * 4096))
+                        else {
+                            mem.unmap_user_keep(p4, DISPLAY_BASE, k);
+                            return err(Error::Inval);
+                        };
+                        let frame = PhysFrame::containing_address(phys);
+                        if mem
+                            .map_user_frame(p4, DISPLAY_BASE + k * 4096, frame, true)
+                            .is_err()
+                        {
+                            mem.unmap_user_keep(p4, DISPLAY_BASE, k);
+                            return err(Error::NoMem);
+                        }
+                    }
+                    self.task(i).display_pages = pages;
+                }
+                self.display_owner = Some(me);
+                DISPLAY_OWNED.store(true, Ordering::Relaxed);
+                console::suspend();
+                let name = self.task(i).name.clone();
+                kprintln!("ZOO_OS DISPLAY acquired pid={} name={}", me, name);
+                let info = DisplayInfo {
+                    base: DISPLAY_BASE,
+                    width: fb.width as u64,
+                    height: fb.height as u64,
+                    stride: fb.stride as u64,
+                    bytes_per_pixel: fb.bytes_per_pixel as u64,
+                    format,
+                };
+                // SAFETY: checked writable user range of `size` bytes in the
+                // active space; unaligned because user pointers may be.
+                unsafe { (a1 as *mut DisplayInfo).write_unaligned(info) };
+                Outcome::Ret(0)
+            }
+            sys::INPUT_READ => {
+                let me = self.task(i).pid;
+                if self.display_owner != Some(me) {
+                    return err(Error::Rights);
+                }
+                if !ok(a1, a2, true) {
+                    return err(Error::Fault);
+                }
+                let mut n = 0u64;
+                while n < a2 {
+                    let Some(b) = keyboard::pop() else { break };
+                    // SAFETY: inside the writable user range checked above.
+                    unsafe { ((a1 + n) as *mut u8).write(b) };
+                    n += 1;
+                }
+                Outcome::Ret(n as i64)
+            }
+            sys::FS_STAT => {
+                let size = core::mem::size_of::<FsEntry>() as u64;
+                if !ok(a2, size, true) {
+                    return err(Error::Fault);
+                }
+                let Some((name, len, _)) = initrd::entry(a1 as usize) else {
+                    return err(Error::NotFound);
+                };
+                let mut e = FsEntry {
+                    size: len as u64,
+                    ..FsEntry::default()
+                };
+                let n = name.len().min(MAX_FS_NAME);
+                e.name[..n].copy_from_slice(&name.as_bytes()[..n]);
+                e.name_len = n as u64;
+                // SAFETY: checked writable user range of `size` bytes.
+                unsafe { (a2 as *mut FsEntry).write_unaligned(e) };
+                Outcome::Ret(0)
             }
             sys::CLOSE => match self.task(i).take(a1) {
                 Some(entry) => {
@@ -722,6 +920,12 @@ fn dispatch_locked<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> Optio
 pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
     dispatch_locked(|s, m| {
         s.reap(m);
+        let now = interrupts::ticks();
+        for t in s.tasks.iter_mut().flatten() {
+            if t.state == State::Blocked && t.sleep_until.is_some_and(|d| now >= d) {
+                t.state = State::Ready;
+            }
+        }
         if s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
             return frame;
         }

@@ -9,8 +9,11 @@ keyboard input (docs/console-design.md), which is a diagnostic tool, not the
 desktop. M3 adds the first parts of "Process loader and address spaces",
 "Thread scheduler" (single-threaded processes), "First user process and
 service supervisor" (Zookeeper), "Versioned syscalls and IPC", "Validated
-handles" and a read-only initial filesystem (docs/m3-design.md). Every other
-component is proposed.
+handles" and a read-only initial filesystem (docs/m3-design.md). M4 adds a
+first "Compositor and window server" (PeacockHandler: two side-by-side
+windows, keyboard focus, back-buffered frames) and two native applications
+(docs/m4-design.md); the scene graph, design system, toolkit and
+accessibility are still proposed. Every other component is proposed.
 Updated: 2026-10-30
 
 ## Product direction

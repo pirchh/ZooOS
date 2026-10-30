@@ -42,3 +42,12 @@ pub fn for_each(mut f: impl FnMut(&str, usize)) {
         }
     }
 }
+
+/// The `index`-th file as (name, size, byte offset of its data in the
+/// archive), if it exists.
+pub fn entry(index: usize) -> Option<(&'static str, usize, usize)> {
+    let data = INITRD.get()?;
+    let e = tar::read(data).flatten().nth(index)?;
+    let offset = e.data.as_ptr() as usize - data.as_ptr() as usize;
+    Some((e.name, e.data.len(), offset))
+}

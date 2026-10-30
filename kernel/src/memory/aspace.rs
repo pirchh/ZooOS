@@ -129,6 +129,53 @@ impl Memory {
         true
     }
 
+    /// Maps an existing frame (not from the allocator, e.g. the framebuffer)
+    /// at user address `va` in `p4`: user-accessible, no-execute.
+    pub fn map_user_frame(
+        &mut self,
+        p4: PhysFrame,
+        va: u64,
+        frame: PhysFrame,
+        writable: bool,
+    ) -> Result<(), SpaceError> {
+        debug_assert!(va < USER_END);
+        let mut flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        if writable {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        let parents =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va));
+        // SAFETY: `p4` is a live process table; `frame` is device memory the
+        // caller hands out deliberately (it is not in the allocator, so it is
+        // never freed through this mapping; see `unmap_user_keep`).
+        let result = unsafe {
+            let mut space = self.space(p4);
+            space.map_to_with_table_flags(page, frame, flags, parents, &mut self.frames)
+        };
+        match result {
+            Ok(flush) => {
+                flush.flush();
+                Ok(())
+            }
+            Err(_) => Err(SpaceError::AlreadyMapped),
+        }
+    }
+
+    /// Unmaps `pages` user pages from `va` in `p4` without freeing their
+    /// frames (for memory the allocator does not own, like the framebuffer).
+    pub fn unmap_user_keep(&mut self, p4: PhysFrame, va: u64, pages: u64) {
+        // SAFETY: `p4` is a live process table that is not active.
+        let mut space = unsafe { self.space(p4) };
+        for i in 0..pages {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va + i * 4096));
+            if let Ok((_, flush)) = space.unmap(page) {
+                flush.ignore();
+            }
+        }
+    }
+
     /// True if `p4`'s kernel half is identical to the kernel's table.
     pub fn shares_kernel_half(&self, p4: PhysFrame) -> bool {
         // SAFETY: `p4` is a live process table; both tables are only read.

@@ -8,14 +8,15 @@ Read in order: AGENTS.md, ARCHITECTURE.md, DECISIONS.md, BUILD.md,
 MILESTONES.md, COMPATIBILITY.md. Then use CLAUDE_PROMPT.md.
 
 The architecture is a proposal. The first authorized implementation scope is M0
-and M1 only. Status (2026-10-30): M0–M3 are implemented, plus an interim console pulled
-forward from M4. The kernel boots under QEMU/UEFI, sets up its own CPU
+and M1 only. Status (2026-10-30): M0–M4 are implemented, plus the interim console. The kernel boots under QEMU/UEFI, sets up its own CPU
 tables, memory management and a preemptive scheduler, and runs isolated user
 programs from a read-only initial filesystem: the Zookeeper supervisor and
 its handlers talk over channels, survive a crashing handler and stop one that
 never yields. Then a small debug shell appears on screen (`help` lists its
-commands; `ps`, `ls`, `run`). Everything else in ARCHITECTURE.md is
-unimplemented.
+commands; `ps`, `ls`, `run`). Type `desktop` for the first graphical desktop:
+a menu bar, a Files window and a crash-test window, driven by the keyboard
+(Tab, arrows, Enter, Backspace; Esc returns to the shell). Everything else in
+ARCHITECTURE.md is unimplemented.
 
 Quick start (after installing the prerequisites in tools/firmware/README.md):
 
@@ -43,6 +44,7 @@ Files:
 - docs/m2-design.md: M2 memory, interrupt and timer design.
 - docs/console-design.md: interim screen, keyboard and debug shell design.
 - docs/m3-design.md: processes, system calls, IPC and Zookeeper.
+- docs/m4-design.md: the window server, desktop apps and session.
 - docs/verification.md: commands, versions and results actually observed.
 - tools/firmware/README.md: QEMU and firmware setup and provenance.
 

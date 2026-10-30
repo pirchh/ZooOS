@@ -131,6 +131,51 @@ pub fn find_row(img: &Image, text: &str) -> Option<usize> {
     (0..rows(img)).find(|&r| row_matches(img, text, r))
 }
 
+/// Blends glyph intensity `i` between `bg` and `fg` (0xRRGGBB), exactly as
+/// the window server does (docs/m4-design.md §7).
+pub fn blend(bg: u32, fg: u32, i: u8) -> [u8; 3] {
+    let i = i as u32;
+    let ch = |shift: u32| {
+        let b = (bg >> shift) & 0xFF;
+        let f = (fg >> shift) & 0xFF;
+        ((b * (255 - i) + f * i + 127) / 255) as u8
+    };
+    [ch(16), ch(8), ch(0)]
+}
+
+/// Finds `text` drawn with `fg` on `bg` anywhere on screen: every pixel of
+/// every glyph cell must match exactly. Returns the top-left corner.
+pub fn find_text(img: &Image, text: &str, fg: u32, bg: u32) -> Option<(usize, usize)> {
+    let mut lit = Vec::new();
+    let mut flat = Vec::new();
+    for (col, c) in text.chars().enumerate() {
+        for (dy, row) in glyph(c).raster().iter().enumerate() {
+            for (dx, &i) in row.iter().enumerate() {
+                let p = (col * CHAR_WIDTH + dx, dy, blend(bg, fg, i));
+                if i > 0 { lit.push(p) } else { flat.push(p) }
+            }
+        }
+    }
+    // Check glyph pixels first: they rule out almost every position at once.
+    lit.extend(flat);
+    let width = text.chars().count() * CHAR_WIDTH;
+    let height = 16;
+    if width == 0 || img.width < width || img.height < height {
+        return None;
+    }
+    for y in 0..=img.height - height {
+        for x in 0..=img.width - width {
+            if lit
+                .iter()
+                .all(|&(dx, dy, c)| img.pixel(x + dx, y + dy) == Some(c))
+            {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
 /// Number of non-black pixels, as a sanity figure for reports.
 pub fn lit_pixels(img: &Image) -> usize {
     img.rgb
@@ -159,6 +204,28 @@ mod tests {
         let img = Image::blank(640, 120);
         assert!(!row_matches(&img, "ZOO_OS", 0));
         assert_eq!(lit_pixels(&img), 0);
+    }
+
+    #[test]
+    fn coloured_text_is_found_and_wrong_text_is_not() {
+        let (fg, bg) = (0x202020, 0xCFE3F7);
+        let mut img = Image::blank(300, 60);
+        for p in img.rgb.chunks_mut(3) {
+            p.copy_from_slice(&[0x1E, 0x3A, 0x4C]);
+        }
+        // Paint "Files" at (37, 21) with the window server's blend.
+        for (col, c) in "Files".chars().enumerate() {
+            for (dy, row) in glyph(c).raster().iter().enumerate() {
+                for (dx, &i) in row.iter().enumerate() {
+                    let (x, y) = (37 + col * CHAR_WIDTH + dx, 21 + dy);
+                    let o = (y * img.width + x) * 3;
+                    img.rgb[o..o + 3].copy_from_slice(&blend(bg, fg, i));
+                }
+            }
+        }
+        assert_eq!(find_text(&img, "Files", fg, bg), Some((37, 21)));
+        assert_eq!(find_text(&img, "Filez", fg, bg), None);
+        assert_eq!(find_text(&img, "Files", 0xFFFFFF, bg), None);
     }
 
     #[test]
