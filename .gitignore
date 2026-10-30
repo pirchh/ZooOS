@@ -9,3 +9,6 @@
 /tools/models/*.gguf
 /tools/models/*.part
 /tools/models/.pending-commit
+
+# Python reference environment (tools/reference/README.md)
+/tools/reference/.venv/

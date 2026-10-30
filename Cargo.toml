@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["abi", "kernel", "user", "xtask"]
+members = ["abi", "infer", "kernel", "user", "xtask"]
 # Plain `cargo build` at the root only builds the host tool. The kernel is
 # always built by `cargo xtask build` with an explicit --target.
 default-members = ["xtask"]
@@ -18,3 +18,11 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+# Inference is far too slow unoptimised; build it optimised even in dev
+# profile (host tests and xtask).
+[profile.dev.package.zoo-infer]
+opt-level = 3
+
+[profile.dev.package.libm]
+opt-level = 3

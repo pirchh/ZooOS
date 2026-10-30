@@ -17,6 +17,11 @@ const QUIET: Duration = Duration::from_millis(1200);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub struct Settings {
+    /// Report the inference case as not run when the model is missing.
+    pub skip_model: bool,
+    /// Run only the case with this name (for iterating; the full set is the
+    /// acceptance run).
+    pub only: Option<String>,
     pub timeout: Duration,
     pub negative_timeout: Duration,
     pub settle: Duration,
@@ -28,6 +33,8 @@ type ScreenCheck = fn(&screen::Image) -> Result<String, String>;
 struct Case {
     name: &'static str,
     mode: Mode,
+    /// Boot this image instead of the mode's own (the model image).
+    custom_image: Option<std::path::PathBuf>,
     expectation: Expectation,
     timeout: Duration,
     /// The outcome kind this case must produce for verification to succeed.
@@ -110,11 +117,51 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mut never = normal.clone();
     never.then(&["ZOO_OS NEVER-EMITTED"]);
     let desktop = desktop_expectation(&normal);
+    let mut inference = normal.clone();
+    inference.then(&[
+        "ZOO_OS SHELL line=run elephant-handler",
+        "ZOO_OS PROC start pid=8 name=elephant-handler",
+        "ZOO_OS PROC exit pid=8 name=elephant-handler code=0",
+    ]);
+    let model_image = match crate::infer::load_model(root) {
+        Ok(data) => {
+            let r = crate::infer::run(
+                &data,
+                crate::infer::GUEST_PROMPT,
+                crate::infer::GUEST_TOKENS,
+            )?;
+            println!(
+                "[verify] host engine: `{}` -> {:?} ({})",
+                crate::infer::GUEST_PROMPT,
+                r.text,
+                crate::infer::ids(&r.output_ids)
+            );
+            Some(image::build_model_image(
+                root,
+                tools,
+                &data,
+                crate::infer::GUEST_PROMPT,
+                &r.output_ids,
+            )?)
+        }
+        Err(e) if s.skip_model => {
+            println!(
+                "[verify] model unavailable ({e}); the inference case will NOT run (--skip-model)"
+            );
+            None
+        }
+        Err(e) => {
+            return Err(format!(
+                "{e}\n(use --skip-model to run verify without the inference case)"
+            ));
+        }
+    };
 
     let cases = [
         Case {
             name: "normal",
             mode: Mode::Normal,
+            custom_image: None,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "pass",
@@ -125,6 +172,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "panic",
             mode: Mode::Panic,
+            custom_image: None,
             expectation: expect(Mode::Panic, &with_tests("ZOO_OS PANIC intentional-test")),
             timeout: s.timeout,
             want: "pass",
@@ -135,6 +183,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "fault-write-protect",
             mode: Mode::FaultWriteProtect,
+            custom_image: None,
             expectation: expect(
                 Mode::FaultWriteProtect,
                 &[
@@ -150,6 +199,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "fault-heap-guard",
             mode: Mode::FaultHeapGuard,
+            custom_image: None,
             expectation: expect(
                 Mode::FaultHeapGuard,
                 &[
@@ -165,6 +215,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "fault-stack-overflow",
             mode: Mode::FaultStackOverflow,
+            custom_image: None,
             expectation: expect(
                 Mode::FaultStackOverflow,
                 &["ZOO_OS EXCEPTION double-fault stack-guard-hit"],
@@ -178,6 +229,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "keyboard",
             mode: Mode::Normal,
+            custom_image: None,
             expectation: keyboard,
             timeout: s.timeout,
             want: "pass",
@@ -212,6 +264,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "scroll",
             mode: Mode::Normal,
+            custom_image: None,
             expectation: scroll,
             timeout: s.timeout,
             want: "pass",
@@ -230,6 +283,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "desktop",
             mode: Mode::Normal,
+            custom_image: None,
             expectation: desktop,
             // Boot, five interaction phases, two restarts: allow longer.
             timeout: s.timeout * 3,
@@ -245,8 +299,37 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "inference",
+            mode: Mode::Normal,
+            custom_image: model_image.clone(),
+            expectation: inference,
+            // Software emulation runs the 0.5B model at a fraction of a token
+            // per second; allow for loading, tokenizer setup and 33 passes.
+            timeout: s.timeout * 60,
+            want: "pass",
+            purpose: "ElephantHandler runs Qwen2.5-0.5B in the guest; its tokens must equal the host engine's",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(
+                        "run elephant-handler"
+                            .chars()
+                            .map(|c| match c {
+                                ' ' => "spc",
+                                '-' => "minus",
+                                c => KEYS[(c as u8 - b'a') as usize],
+                            })
+                            .chain(["ret"])
+                            .collect(),
+                    ),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "negative-wrong-marker",
             mode: Mode::Panic,
+            custom_image: None,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "unexpected-marker",
@@ -257,6 +340,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "negative-timeout",
             mode: Mode::Normal,
+            custom_image: None,
             expectation: never,
             timeout: s.negative_timeout,
             want: "timeout",
@@ -267,6 +351,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "negative-triple-fault",
             mode: Mode::TripleFault,
+            custom_image: None,
             expectation: expect(Mode::TripleFault, &["ZOO_OS READY"]),
             timeout: s.timeout,
             want: "early-exit",
@@ -278,12 +363,30 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
 
     let mut report = String::new();
     let mut all_ok = true;
+    if let Some(only) = &s.only
+        && !cases.iter().any(|c| c.name == only)
+    {
+        return Err(format!("no case named `{only}`"));
+    }
     for c in &cases {
+        if s.only.as_ref().is_some_and(|o| o != c.name) {
+            continue;
+        }
+        if c.name == "inference" && c.custom_image.is_none() {
+            let line = format!(
+                "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
         let img = &images
             .iter()
             .find(|(m, _)| *m == c.mode)
             .expect("every mode was built")
             .1;
+        let img = c.custom_image.as_ref().unwrap_or(img);
         println!(
             "[verify] case {} ({}; timeout {:?})",
             c.name, c.purpose, c.timeout
@@ -612,3 +715,9 @@ fn check_console_back(img: &screen::Image) -> Result<String, String> {
         row + 1
     ))
 }
+
+/// QEMU key names for `a`..`z`.
+const KEYS: [&str; 26] = [
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z",
+];

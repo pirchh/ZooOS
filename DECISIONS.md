@@ -136,6 +136,26 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Resolved in M5b (2026-10-30)
+
+Design: docs/m5b-design.md.
+
+- Inference engine `zoo-infer`: `no_std` + `alloc`, no unsafe code, one
+  dependency (`libm`). The same code runs in the guest and on the host.
+- Supported formats: F32, Q4_0, Q8_0 (all the chosen GGUF uses). Weights are
+  read in place from the `fs_map`ped file; only norms and biases are
+  expanded.
+- Correctness evidence: unit tests, plus an independent NumPy reference
+  (`tools/reference/`, project-local venv, numpy 2.3.4) compared token for
+  token by `cargo xtask infer-check`, plus the in-guest `inference` case
+  that must reproduce the host engine's tokens exactly.
+- The model travels in a separate model image; other cases keep the small
+  image. Missing model: verify stops unless `--skip-model` (case reported
+  as not run).
+- Verify options `--accel tcg|whpx|kvm` (default tcg; accelerators optional)
+  and `--case NAME` (iteration only). Under accelerators QEMU's default CPU
+  model is used (`-cpu max` made OVMF fault under WHPX).
+
 ## Resolved in M5a (2026-10-30)
 
 Design: docs/m5a-design.md.

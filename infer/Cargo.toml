@@ -1,0 +1,14 @@
+[package]
+name = "zoo-infer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Local language-model inference (docs/m5b-design.md): GGUF reading, the
+# Q4_0/Q8_0/F32 formats, the Qwen2 transformer and its byte-level BPE
+# tokenizer. `no_std` + `alloc`, so the same code runs in ZooOS user
+# programs and on the host (tests, reference comparison, benchmarks).
+
+[dependencies]
+libm = "=0.2.16"
