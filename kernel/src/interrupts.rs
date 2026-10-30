@@ -6,7 +6,8 @@
 
 use crate::cpu;
 use crate::gdt;
-use crate::serial_println;
+use crate::keyboard;
+use crate::kprintln;
 use core::sync::atomic::{AtomicU64, Ordering};
 use pic8259::ChainedPics;
 use spin::{LazyLock, Mutex};
@@ -17,6 +18,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = 40;
 const TIMER_VECTOR: u8 = PIC_1_OFFSET; // IRQ0
+const KEYBOARD_VECTOR: u8 = PIC_1_OFFSET + 1; // IRQ1
 const SPURIOUS_MASTER_VECTOR: u8 = PIC_1_OFFSET + 7; // IRQ7
 const SPURIOUS_SLAVE_VECTOR: u8 = PIC_2_OFFSET + 7; // IRQ15
 
@@ -56,6 +58,7 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
     }
     idt[TIMER_VECTOR].set_handler_fn(timer);
+    idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_irq);
     idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
     idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
     idt
@@ -87,6 +90,19 @@ pub fn init_timer() {
     }
 }
 
+/// Drains stale keyboard bytes and unmasks IRQ1. Safe to call with
+/// interrupts on: the PIC lock is taken with interrupts disabled, so the
+/// timer handler cannot spin on it.
+pub fn enable_keyboard() -> usize {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let drained = keyboard::drain_controller();
+        // SAFETY: only IRQ0 (timer) and IRQ1 (keyboard) are opened; both
+        // vectors have handlers in the IDT.
+        unsafe { PICS.lock().write_masks(0b1111_1100, 0b1111_1111) };
+        drained
+    })
+}
+
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
@@ -106,6 +122,13 @@ extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
     // SAFETY: TIMER_VECTOR is the vector the PIC raised. Main code only
     // holds PICS with interrupts disabled, so this lock cannot deadlock.
     unsafe { PICS.lock().notify_end_of_interrupt(TIMER_VECTOR) };
+}
+
+extern "x86-interrupt" fn keyboard_irq(_frame: InterruptStackFrame) {
+    keyboard::on_interrupt();
+    // SAFETY: KEYBOARD_VECTOR is the vector the PIC raised; same lock rule
+    // as the timer handler.
+    unsafe { PICS.lock().notify_end_of_interrupt(KEYBOARD_VECTOR) };
 }
 
 /// Reads a PIC's in-service register (OCW3 0x0B, then read command port).
@@ -142,13 +165,13 @@ extern "x86-interrupt" fn spurious_slave(_frame: InterruptStackFrame) {
 // ---- fatal --------------------------------------------------------------
 
 fn fatal(name: &str, frame: &InterruptStackFrame, error: Option<u64>) -> ! {
-    serial_println!("ORIGINS_OS EXCEPTION {}", name);
+    kprintln!("ORIGINS_OS EXCEPTION {}", name);
     details(frame, error);
     cpu::halt_forever()
 }
 
 fn details(frame: &InterruptStackFrame, error: Option<u64>) {
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO exception rip={:#018x} rsp={:#018x} error={:#x}",
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),
@@ -202,7 +225,7 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
     } else {
         "not-present"
     };
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
         access,
         cause,
@@ -219,11 +242,11 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, error: u64) -
     let cr2 = Cr2::read_raw();
     let bottom = STACK_BOTTOM.load(Ordering::Relaxed);
     if bottom != 0 && (bottom - 4096..bottom).contains(&cr2) {
-        serial_println!("ORIGINS_OS EXCEPTION double-fault stack-guard-hit");
+        kprintln!("ORIGINS_OS EXCEPTION double-fault stack-guard-hit");
     } else {
-        serial_println!("ORIGINS_OS EXCEPTION double-fault cr2={:#018x}", cr2);
+        kprintln!("ORIGINS_OS EXCEPTION double-fault cr2={:#018x}", cr2);
     }
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO double_fault cr2={:#018x} stack_bottom={:#018x}",
         cr2,
         bottom

@@ -1,12 +1,14 @@
-//! OriginsOS kernel (M2): boots via the bootloader crate's UEFI loader, sets up
-//! its own GDT/IDT, memory ownership, heap and timer, runs self-tests, and
-//! reports on COM1. See docs/m2-design.md.
+//! OriginsOS kernel: boots via the bootloader crate's UEFI loader, sets up
+//! its own GDT/IDT, memory ownership, heap and timer (M2), runs self-tests,
+//! then starts a debug shell on the screen and keyboard (interim console).
+//! Output goes to COM1 and the framebuffer. See docs/m2-design.md and
+//! docs/console-design.md.
 
 #![no_std]
 #![no_main]
 // `extern "x86-interrupt"` handlers; avoids hand-written assembly stubs.
 #![feature(abi_x86_interrupt)]
-// Fault-test kernels stop before the timer and idle loop, so those are unused.
+// Fault-test kernels stop before the timer and shell, so those are unused.
 #![cfg_attr(
     any(
         feature = "fault-write-protect",
@@ -19,13 +21,16 @@
 
 extern crate alloc;
 
+mod console;
 mod cpu;
 mod faults;
 mod gdt;
 mod interrupts;
+mod keyboard;
 mod memory;
 mod selftest;
 mod serial;
+mod shell;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::MemoryRegionKind;
@@ -92,10 +97,23 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 /// interrupts disabled, the kernel mapped and a stack set up. Never returns.
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
-    serial_println!("ORIGINS_OS BOOT version={}", VERSION);
+    // Before the first line, so BOOT is on the first screen row.
+    let screen = console::init(boot_info.framebuffer.take());
+    kprintln!("ORIGINS_OS BOOT version={}", VERSION);
+    match screen {
+        Ok(fb) => kprintln!(
+            "ORIGINS_OS INFO console {}x{} format={:?} cols={} rows={}",
+            fb.width,
+            fb.height,
+            fb.pixel_format,
+            console::size().map_or(0, |s| s.0),
+            console::size().map_or(0, |s| s.1)
+        ),
+        Err(why) => kprintln!("ORIGINS_OS INFO console disabled: {}", why),
+    }
 
     let (regions, usable_bytes) = usable_memory(boot_info);
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO mode={} memory_regions={} usable_bytes={}",
         MODE,
         regions,
@@ -105,7 +123,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     gdt::init();
     interrupts::init_idt(boot_info.kernel_stack_bottom);
     let mem = memory::init(boot_info);
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
         mem.phys_offset,
         mem.stack_bottom,
@@ -154,8 +172,8 @@ fn run(mut mem: memory::Memory) -> ! {
     if cfg!(feature = "panic-test") {
         panic!("intentional-test");
     }
-    serial_println!("ORIGINS_OS READY");
-    cpu::idle_forever()
+    kprintln!("ORIGINS_OS READY");
+    shell::run(mem)
 }
 
 /// Returns (total region count, sum of usable region sizes in bytes).
@@ -169,14 +187,14 @@ fn usable_memory(boot_info: &BootInfo) -> (usize, u64) {
     (regions.len(), usable)
 }
 
-/// Abort-style panic handler: stop interrupts, report on serial, halt. No
-/// unwinding and no reboot.
+/// Abort-style panic handler: stop interrupts, report on serial and screen,
+/// halt. No unwinding and no reboot.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     x86_64::instructions::interrupts::disable();
-    serial_println!("ORIGINS_OS PANIC {}", info.message());
+    kprintln!("ORIGINS_OS PANIC {}", info.message());
     if let Some(loc) = info.location() {
-        serial_println!(
+        kprintln!(
             "ORIGINS_OS INFO panic_location={}:{}",
             loc.file(),
             loc.line()

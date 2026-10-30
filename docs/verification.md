@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0, M1 and M2 verified on the host below on 2026-10-30. Logs are
-generated under `build/` (ignored by Git); rerun the commands to reproduce
-them. The M2 section is the current state; the M1 section records the
-version 0.1.0 results.
+Status: M0, M1, M2 and the interim console verified on the host below on
+2026-10-30. Logs and screenshots are generated under `build/` (ignored by
+Git); rerun the commands to reproduce them. The console section is the
+current state (version 0.3.0); the M2 and M1 sections record earlier results.
 
 ## Host and versions
 
@@ -14,7 +14,8 @@ version 0.1.0 results.
 | Components | rust-src, llvm-tools, rustfmt, clippy; target `x86_64-unknown-none` |
 | Linker (host) | MSVC `link.exe` from the existing Visual Studio Build Tools install |
 | Crates (host) | bootloader 0.11.17 (UEFI feature only), sha2 0.11.1 |
-| Crates (kernel) | bootloader_api 0.11.17, x86_64 0.15.5, pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3 (full set in `Cargo.lock`) |
+| Crates (kernel) | bootloader_api 0.11.17, x86_64 0.15.5, pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3, noto-sans-mono-bitmap 0.3.2, pc-keyboard 0.9.0 (full set in `Cargo.lock`) |
+| Crates (host, since console) | noto-sans-mono-bitmap 0.3.2 (re-renders text to check screenshots) |
 | QEMU | 11.1.0, firmware as recorded in `tools/firmware/README.md` |
 | Kernel ELF | M1: 11,504 bytes. M2: normal 60,512 bytes, fault modes 40–46 KB (release) |
 
@@ -30,6 +31,78 @@ version 0.1.0 results.
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Interim console results (version 0.3.0)
+
+Design: docs/console-design.md. Normal boots now start a debug shell on the
+framebuffer and PS/2 keyboard after `READY`, and print `ORIGINS_OS SHELL
+ready`. Verify cases that type keys add `-qmp tcp:127.0.0.1:<free
+port>,server=on,wait=off` to the QEMU command line and use QMP `send-key`
+and `screendump`.
+
+Clean copy of the tracked and new files at
+`…\OriginsOS\build\clean checkout, spaces\`, empty `target/` and `build/`:
+
+    cargo xtask doctor     -> ready, exit 0
+    cargo xtask verify     -> exit 0 (55 s including builds)
+
+| Case | Expected | Got | Time |
+| --- | --- | --- | --- |
+| normal | pass | pass | 3.1 s |
+| panic | pass | pass | 3.1 s |
+| fault-write-protect | pass | pass | 3.0 s |
+| fault-heap-guard | pass | pass | 3.0 s |
+| fault-stack-overflow | pass | pass | 3.0 s |
+| keyboard | pass | pass | 3.7 s |
+| scroll | pass | pass | 4.3 s |
+| negative-wrong-marker | unexpected-marker | unexpected-marker | 2.0 s |
+| negative-timeout | timeout | timeout | 5.0 s |
+| negative-triple-fault | early-exit | early-exit | 2.1 s |
+
+Afterwards: tracked files unchanged, firmware templates matched their
+recorded hashes, no QEMU running. Two earlier runs in the main checkout gave
+the same outcomes (the first before the `scroll` case existed).
+
+Screen checks reported by the run in the main checkout:
+
+    keyboard: 1280x800, 21362 lit pixels; row 0 = BOOT line, row 15 = `origins> echo hi`,
+              row 16 = `hi`; wrong version rejected
+    scroll:   43 rows; rows 40-42 = `origins> echo end`, `end`, prompt; BOOT scrolled off
+
+"Row N = text" means every pixel of those glyph cells equals the text
+re-rendered on the host with the same font and layout. The deliberately
+wrong string `ORIGINS_OS BOOT version=9.9.9` is checked against row 0 in
+the same run and does not match.
+
+Serial log of the keyboard case after the shell starts (`^H` is the
+backspace echo):
+
+    ORIGINS_OS SHELL ready
+    Type 'help' for commands.
+    origins> echx^H ^Ho hi
+    ORIGINS_OS SHELL line=echo hi
+    hi
+    origins> mem
+    ORIGINS_OS SHELL line=mem
+    frames: 127911 free of 128172 (511644 KiB free)
+    heap:   16 bytes used of 1048576
+    origins>
+
+The 16 heap bytes are the shell's line buffer, which keeps its capacity
+after `clear()`.
+
+### Console additional checks
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p xtask --locked` | 19 passed (adds screenshot render/compare and PPM parsing tests) |
+| `cargo clippy` on the kernel in all 6 modes, and on xtask | 0 warnings |
+| `cargo fmt --all --check` | clean |
+| `cargo xtask run` | not re-run with the window in this record; it now opens a QEMU window instead of running headless |
+
+Not covered by automated checks: what the panic and fault kernels draw on
+screen (their serial output is checked), `clear`, `uptime`, `keys`,
+`panic` and `reboot` typed at the prompt.
 
 ## M2 results (version 0.2.0)
 
@@ -209,3 +282,7 @@ Tail of the panic serial log:
 - The double-fault IST stack is a static array with no guard page of its own.
 - Out-of-memory in the heap is not exercised by a test case; by design it
   panics (Rust's default `no_std` allocation-failure handling).
+- The console scrolls by copying video memory, which is fine in QEMU but slow
+  on real hardware. Only the PS/2 keyboard is supported; most real PCs need
+  USB input. QMP uses a free localhost port picked just before QEMU starts,
+  which leaves a small race if another program takes it first.

@@ -98,6 +98,31 @@ Full design: docs/m2-design.md. Evidence: docs/verification.md.
   pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3 (0.10.0 was
   yanked).
 
+## Interim console, pulled forward from M4 (2026-10-30)
+
+The user chose to make the system visible and interactive before M3. Design:
+docs/console-design.md. This is a kernel-mode debug console, not the desktop
+or a user-space shell.
+
+- Text drawn into the UEFI framebuffer with `noto-sans-mono-bitmap` 0.3.2
+  (crate MIT, glyphs from Noto Sans Mono under the SIL OFL), regular 16 px,
+  grey on black, 8 px margin, 18 px lines. The bootloader already depends on
+  this font family.
+- `kprintln!` writes to COM1 and the screen; markers stay on serial for the
+  verifier. Panic and fault handlers use `try_lock` on the console so a fault
+  while drawing cannot deadlock the report.
+- PS/2 keyboard on IRQ1; the handler only queues bytes in a lock-free
+  single-producer/single-consumer ring. Decoding uses `pc-keyboard` 0.9.0
+  (scancode set 1, US layout) in the shell loop.
+- The in-kernel shell owns the `Memory` value, so `mem` reports live state.
+- Verification drives the real guest through QMP (`send-key`, `screendump`)
+  and checks screenshots pixel for pixel against text re-rendered on the host
+  with the same font. A wrong string is checked in the same run to prove the
+  comparison can fail.
+- `cargo xtask run` now opens a QEMU window (keyboard input goes there);
+  `verify` stays headless.
+- Version 0.3.0. Normal boots add `ORIGINS_OS SHELL ready` after `READY`.
+
 ## M0 must resolve and record
 
 (Resolved above; kept for reference.)

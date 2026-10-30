@@ -12,12 +12,3 @@ pub fn halt_forever() -> ! {
         hlt();
     }
 }
-
-/// Idles with interrupts enabled, so the timer keeps running.
-pub fn idle_forever() -> ! {
-    loop {
-        // `sti; hlt` as one pair, so an interrupt cannot slip in between and
-        // leave the CPU halted until the next one.
-        interrupts::enable_and_hlt();
-    }
-}
