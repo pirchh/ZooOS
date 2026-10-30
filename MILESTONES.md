@@ -65,6 +65,10 @@ A static screenshot is not an interactive desktop acceptance test.
 
 ## Early feasibility tracks — begin after required infrastructure exists
 
+Status: desk studies done 2026-10-30 (docs/feasibility/). Outcome: Wine
+hosting, GPU and graphics translation are **BLOCKED**; continuing toward
+Opera/WoW needs owner decisions on scope, host and reference hardware.
+
 Study Wine host dependencies and real GPU driver portability before UI polish.
 Use COMPATIBILITY.md for explicit outcomes. These studies may invalidate the
 Opera/WoW plan and must be allowed to report that honestly.

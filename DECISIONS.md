@@ -123,6 +123,21 @@ or a user-space shell.
   `verify` stays headless.
 - Version 0.3.0. Normal boots add `ZOO_OS SHELL ready` after `READY`.
 
+## Feasibility outcomes (2026-10-30)
+
+Desk studies: docs/feasibility/wine-hosting.md, docs/feasibility/gpu.md.
+
+- Wine hosting: BLOCKED. Wine's Unix side needs a POSIX-like host (libc,
+  threads, memory mapping, exceptions to user handlers, sockets, a writable
+  filesystem, a display driver). Recommended path if kept: grow a POSIX layer
+  and port Wine (as Haiku did), not a native re-implementation.
+- GPU and graphics translation: BLOCKED. WoW needs DXVK/vkd3d-proton over a
+  Vulkan driver over a kernel GPU driver; none exist, and stock QEMU on a
+  Windows host offers no 3D test bed. Recommended reference GPU if pursued:
+  current AMD Radeon (open driver stack).
+- **Open for the owner:** whether to keep Opera/WoW as goals with that
+  programme, which test bed and reference GPU, or to narrow the goals.
+
 ## Resolved in M4 (2026-10-30)
 
 Design: docs/m4-design.md. Evidence: docs/verification.md.

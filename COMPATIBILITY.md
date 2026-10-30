@@ -1,7 +1,8 @@
 # Compatibility and feasibility register
 
 All entries start UNTESTED. This document is a research/test plan, not evidence
-of support. Native Windows applications must execute on the independent guest;
+of support. Desk studies (2026-10-30): docs/feasibility/wine-hosting.md and
+docs/feasibility/gpu.md. Native Windows applications must execute on the independent guest;
 running them on the host, inside Windows, or on a Linux VM is not a pass.
 
 ## Required result format
@@ -14,14 +15,14 @@ workflow and does not mean vendor support or future compatibility.
 
 ## Infrastructure gates
 
-| Gate | Questions and evidence |
-| --- | --- |
-| Wine hosting | Required host APIs, threading, signals/exceptions, memory mappings, executable loading, synchronization, sockets, files, fonts, GUI and build dependencies; compile and run a minimal console executable |
-| Windows behavior | Required PE imports, process environment, registry, COM/services, installers and 32-bit helpers; do not infer coverage from 64-bit kernel support |
-| GPU | Selected device, firmware/license, command submission, memory management, display, synchronization, reset and recovery; runnable accelerated sample |
-| Graphics translation | Exact DirectX needs and translation component host/API requirements; demonstrate rendered frames and correctness on the guest |
-| Local inference | Runtime host assumptions, threads, atomics, allocator, file mappings and CPU features; real local inference with measured memory/latency |
-| Phone | Current official iOS APIs and companion-app constraints; paired, authenticated transfer and revocation on real devices |
+| Gate | Questions and evidence | Status (2026-10-30) |
+| --- | --- | --- |
+| Wine hosting | Required host APIs, threading, signals/exceptions, memory mappings, executable loading, synchronization, sockets, files, fonts, GUI and build dependencies; compile and run a minimal console executable | **BLOCKED**: host facilities missing (wine-hosting.md §3) |
+| Windows behavior | Required PE imports, process environment, registry, COM/services, installers and 32-bit helpers; do not infer coverage from 64-bit kernel support | UNTESTED (needs a PE loader first) |
+| GPU | Selected device, firmware/license, command submission, memory management, display, synchronization, reset and recovery; runnable accelerated sample | **BLOCKED**: no driver path or 3D test bed (gpu.md) |
+| Graphics translation | Exact DirectX needs and translation component host/API requirements; demonstrate rendered frames and correctness on the guest | **BLOCKED** by GPU and Wine gates |
+| Local inference | Runtime host assumptions, threads, atomics, allocator, file mappings and CPU features; real local inference with measured memory/latency | UNTESTED (M5) |
+| Phone | Current official iOS APIs and companion-app constraints; paired, authenticated transfer and revocation on real devices | UNTESTED (later) |
 
 Compatibility code reuse needs a license/dependency inventory. A Vulkan library
 or translation layer alone is not a GPU driver. Treat GPU and Wine portability
