@@ -1,8 +1,10 @@
 //! In-kernel debug shell (docs/console-design.md §3). Temporary: a
 //! diagnostic console until user-space programs exist, not the future shell.
 
-use crate::memory::{self, Memory, heap};
-use crate::{console, cpu, interrupts, keyboard, kprint, kprintln, serial_println};
+use crate::memory::{self, heap};
+use crate::{
+    console, cpu, initrd, interrupts, keyboard, kprint, kprintln, process, serial_println,
+};
 use alloc::string::String;
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, PS2Keyboard, ScancodeSet1};
@@ -11,7 +13,7 @@ use x86_64::instructions::interrupts as cpu_interrupts;
 const PROMPT: &str = "zoo> ";
 const MAX_LINE: usize = 120;
 
-pub fn run(mut mem: Memory) -> ! {
+pub fn run() -> ! {
     let drained = interrupts::enable_keyboard();
     serial_println!("ZOO_OS INFO keyboard irq=1 drained={}", drained);
     kprintln!("ZOO_OS SHELL ready");
@@ -32,7 +34,7 @@ pub fn run(mut mem: Memory) -> ! {
             '\n' => {
                 kprint!("\n");
                 serial_println!("ZOO_OS SHELL line={}", line);
-                execute(line.trim(), &mut mem);
+                execute(line.trim());
                 line.clear();
                 kprint!("{}", PROMPT);
             }
@@ -61,11 +63,13 @@ fn next_byte() -> u8 {
             cpu_interrupts::enable();
             return b;
         }
-        cpu_interrupts::enable_and_hlt();
+        // Idle point: user processes may run while the shell waits.
+        process::idle_hlt();
+        cpu_interrupts::enable();
     }
 }
 
-fn execute(line: &str, mem: &mut Memory) {
+fn execute(line: &str) {
     let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
     match cmd {
         "" => {}
@@ -75,14 +79,16 @@ fn execute(line: &str, mem: &mut Memory) {
             kprintln!("mem             physical frames and heap use");
             kprintln!("uptime          time since the timer started");
             kprintln!("keys            keyboard bytes received/dropped");
+            kprintln!("ps              list processes");
+            kprintln!("ls              list the initial filesystem");
+            kprintln!("run <program>   start a program from /bin");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");
         }
         "echo" => kprintln!("{}", rest),
         "mem" => {
-            let free = mem.frames.available();
-            let total = mem.frames.total();
+            let (free, total) = memory::with(|m| (m.frames.available(), m.frames.total()));
             kprintln!("frames: {} free of {} ({} KiB free)", free, total, free * 4);
             kprintln!(
                 "heap:   {} bytes used of {}",
@@ -99,6 +105,14 @@ fn execute(line: &str, mem: &mut Memory) {
             let (received, dropped) = keyboard::stats();
             kprintln!("received {} bytes, dropped {}", received, dropped);
         }
+        "ps" => process::for_each_task(|pid, name, state| {
+            kprintln!("{:>4}  {:<16} {}", pid, name, state);
+        }),
+        "ls" => initrd::for_each(|name, size| kprintln!("{:>8}  {}", size, name)),
+        "run" => match process::spawn_from_kernel(rest.trim()) {
+            Ok(pid) => kprintln!("started pid {}", pid),
+            Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
+        },
         "clear" => {
             console::with(|c| c.clear());
         }

@@ -36,12 +36,29 @@ struct Case {
     screen_check: Option<ScreenCheck>,
 }
 
-const SELF_TESTS: [&str; 5] = [
+const SELF_TESTS: [&str; 6] = [
     "ZOO_OS TEST breakpoint ok",
     "ZOO_OS TEST frames ok",
     "ZOO_OS TEST paging ok",
+    "ZOO_OS TEST address-spaces ok",
     "ZOO_OS TEST heap ok",
     "ZOO_OS TEST timer ok",
+];
+
+/// The M3 start-up scenario (docs/m3-design.md §9). Every line is printed by
+/// the kernel, and Zookeeper's sequential plan fixes their order.
+const BOOT_PROCESSES: [&str; 11] = [
+    "ZOO_OS PROC start pid=1 name=zookeeper",
+    "ZOO_OS PROC start pid=2 name=lion-handler",
+    "ZOO_OS PROC start pid=3 name=monkey-handler",
+    "ZOO_OS PROC crash pid=3 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000",
+    "ZOO_OS PROC start pid=4 name=monkey-handler",
+    "ZOO_OS PROC crash pid=4 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000",
+    "ZOO_OS PROC start pid=5 name=hamster-handler",
+    "ZOO_OS PROC killed pid=5 name=hamster-handler by=1",
+    "ZOO_OS PROC exit pid=2 name=lion-handler code=0",
+    "ZOO_OS PROC exit pid=1 name=zookeeper code=0",
+    "ZOO_OS TEST process-cleanup ok",
 ];
 
 fn with_tests(last: &str) -> Vec<&str> {
@@ -60,8 +77,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         images.push((mode, image::build(root, tools, mode)?));
     }
 
-    let mut normal_tail = with_tests("ZOO_OS READY");
-    normal_tail.push("ZOO_OS SHELL ready");
+    let mut normal_tail = SELF_TESTS.to_vec();
+    normal_tail.extend(BOOT_PROCESSES);
+    normal_tail.extend(["ZOO_OS READY", "ZOO_OS SHELL ready"]);
     let normal = expect(Mode::Normal, &normal_tail);
     let mut keyboard_tail = normal_tail.clone();
     keyboard_tail.extend(["ZOO_OS SHELL line=echo hi", "ZOO_OS SHELL line=mem"]);
@@ -80,7 +98,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "pass",
-            purpose: "BOOT, INFO, five self-tests, READY; no PANIC or EXCEPTION",
+            purpose: "self-tests, the Zookeeper process scenario, READY; no PANIC or EXCEPTION",
             interaction: None,
             screen_check: None,
         },
@@ -165,7 +183,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 ],
                 screenshot: true,
             }),
-            screen_check: Some(check_boot_and_echo),
+            screen_check: Some(check_echo),
         },
         Case {
             name: "scroll",
@@ -304,24 +322,32 @@ fn scroll_keys() -> Vec<&'static str> {
 
 /// Checks the keyboard case's screenshot against text re-rendered with the
 /// kernel's font and layout (docs/console-design.md §4).
-fn check_boot_and_echo(img: &screen::Image) -> Result<String, String> {
-    let boot = format!("ZOO_OS BOOT version={VERSION}");
-    if !screen::row_matches(img, &boot, 0) {
-        return Err(format!("row 0 does not show `{boot}`"));
-    }
-    // The same comparison must reject a wrong string, or it proves nothing.
-    if screen::row_matches(img, "ZOO_OS BOOT version=9.9.9", 0) {
-        return Err("row 0 also matches a wrong version; the check is not discriminating".into());
-    }
+fn check_echo(img: &screen::Image) -> Result<String, String> {
+    // Since M3 the boot log is longer than one screen, so anchor on lines
+    // that stay visible: READY, then the typed command and its output.
+    let ready = screen::find_row(img, "ZOO_OS READY").ok_or("no row shows `ZOO_OS READY`")?;
     let row = screen::find_row(img, "zoo> echo hi").ok_or("no row shows `zoo> echo hi`")?;
+    if row <= ready {
+        return Err(format!(
+            "`zoo> echo hi` (row {row}) is not below READY (row {ready})"
+        ));
+    }
     if !screen::row_matches(img, "hi", row + 1) {
         return Err(format!(
             "row {} below the command does not show `hi`",
             row + 1
         ));
     }
+    let last = screen::rows(img) - 1;
+    if !screen::row_matches(img, "zoo> ", last) {
+        return Err(format!("last row {last} does not show the prompt"));
+    }
+    // The same comparison must reject a wrong string, or it proves nothing.
+    if screen::find_row(img, "zoo> echo ho").is_some() {
+        return Err("a wrong string matched; the check is not discriminating".into());
+    }
     Ok(format!(
-        "{}x{}, {} lit pixels; row 0 = BOOT line, row {row} = `zoo> echo hi`, row {} = `hi`; wrong version rejected",
+        "{}x{}, {} lit pixels; row {ready} = READY, row {row} = `zoo> echo hi`, row {} = `hi`, row {last} = prompt; wrong text rejected",
         img.width,
         img.height,
         screen::lit_pixels(img),

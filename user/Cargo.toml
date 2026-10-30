@@ -1,0 +1,43 @@
+[package]
+name = "zoo-user"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# User programs for ZooOS and their runtime (docs/m3-design.md §9). Built
+# by `cargo xtask build` for x86_64-unknown-none with
+# `-C relocation-model=static`, then packed into the initial filesystem.
+
+[lib]
+name = "zoo_rt"
+path = "src/lib.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "zookeeper"
+path = "src/bin/zookeeper.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "lion-handler"
+path = "src/bin/lion-handler.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "hamster-handler"
+path = "src/bin/hamster-handler.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "monkey-handler"
+path = "src/bin/monkey-handler.rs"
+test = false
+bench = false
+
+[dependencies]
+zoo-abi = { path = "../abi" }

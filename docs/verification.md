@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0, M1, M2 and the interim console verified on the host below on
-2026-10-30, then re-verified after the rename to ZooOS (version 0.4.0). Logs
-and screenshots are generated under `build/` (ignored by Git); rerun the
-commands to reproduce them. The 0.4.0 section is the current state.
+Status: M0, M1, M2, the interim console and M3 verified on the host below
+on 2026-10-30. Logs and screenshots are generated under `build/` (ignored by
+Git); rerun the commands to reproduce them. The M3 section (version 0.5.0) is
+the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -21,6 +21,8 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 | Crates (host) | bootloader 0.11.17 (UEFI feature only), sha2 0.11.1 |
 | Crates (kernel) | bootloader_api 0.11.17, x86_64 0.15.5, pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3, noto-sans-mono-bitmap 0.3.2, pc-keyboard 0.9.0 (full set in `Cargo.lock`) |
 | Crates (host, since console) | noto-sans-mono-bitmap 0.3.2 (re-renders text to check screenshots) |
+| Workspace crates (since M3) | `zoo-abi` (shared ABI, ELF and initrd parsers, no dependencies), `zoo-user` (runtime + programs) |
+| User programs (M3) | zookeeper 18,496 B; monkey-handler 14,392 B; lion-handler 10,616 B; hamster-handler 3,192 B (static ELF at `0x200000`); initrd 51,200 B |
 | QEMU | 11.1.0, firmware as recorded in `tools/firmware/README.md` |
 | Kernel ELF | M1: 11,504 bytes. M2: normal 60,512 bytes, fault modes 40–46 KB (release); crate `zoo-os-kernel` since 0.4.0 |
 
@@ -36,6 +38,106 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M3 results (version 0.5.0)
+
+Design: docs/m3-design.md. User processes in separate address spaces,
+`int 0x80` system calls, channels with handles, an ustar initrd, and the
+Zookeeper scenario run at boot.
+
+Clean copy of the tracked files at `…\OriginsOS\build\clean checkout, spaces\`, empty
+`target/` and `build/` (so the user programs and initrd were built from
+scratch):
+
+    cargo xtask doctor     -> ready, exit 0
+    cargo xtask verify     -> exit 0 (67 s including builds)
+
+| Case | Expected | Got | Time |
+| --- | --- | --- | --- |
+| normal | pass | pass | 3.8 s |
+| panic | pass | pass | 3.4 s |
+| fault-write-protect | pass | pass | 3.4 s |
+| fault-heap-guard | pass | pass | 3.4 s |
+| fault-stack-overflow | pass | pass | 3.4 s |
+| keyboard | pass | pass | 4.2 s |
+| scroll | pass | pass | 5.0 s |
+| negative-wrong-marker | unexpected-marker | unexpected-marker | 2.5 s |
+| negative-timeout | timeout | timeout | 5.0 s |
+| negative-triple-fault | early-exit | early-exit | 2.4 s |
+
+Afterwards: tracked files unchanged, firmware templates matched their
+recorded hashes, no QEMU running. That run was made just before the version
+bump (its kernel printed `version=0.4.0`); `cargo xtask verify` was then
+rerun in the main checkout on the 0.5.0 build (`ZOO_OS BOOT version=0.5.0`)
+with the same ten outcomes.
+
+The normal case now requires, in order, the six self-tests (including the
+new `TEST address-spaces ok`), then these kernel markers, then READY:
+
+    ZOO_OS PROC start pid=1 name=zookeeper
+    ZOO_OS PROC start pid=2 name=lion-handler
+    ZOO_OS PROC start pid=3 name=monkey-handler
+    ZOO_OS PROC crash pid=3 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000
+    ZOO_OS PROC start pid=4 name=monkey-handler
+    ZOO_OS PROC crash pid=4 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000
+    ZOO_OS PROC start pid=5 name=hamster-handler
+    ZOO_OS PROC killed pid=5 name=hamster-handler by=1
+    ZOO_OS PROC exit pid=2 name=lion-handler code=0
+    ZOO_OS PROC exit pid=1 name=zookeeper code=0
+    ZOO_OS TEST process-cleanup ok
+
+User-process log lines from the same run (not markers; printed as
+`[pid:name]`):
+
+    [1:zookeeper] sent `ping 1`, got `pong: ping 1`
+    [3:monkey-handler] ZOO-OS PANIC forged marker from user space
+    [1:zookeeper] MonkeyHandler crashed (run 1 of 2)
+    [1:zookeeper] restart policy allows it: restarting MonkeyHandler
+    [1:zookeeper] restart limit reached: giving up on MonkeyHandler
+    [5:hamster-handler] HamsterHandler: running on the wheel, never yielding
+    [1:zookeeper] sent `ping 2`, got `pong: ping 2`
+    [1:zookeeper] HamsterHandler stopped by the supervisor
+    [1:zookeeper] Zookeeper: all checks passed
+
+What these show, against the M3 acceptance criteria:
+
+- **Two isolated processes communicate:** Zookeeper and LionHandler exchange
+  `ping`/`pong` over a channel. `TEST address-spaces ok` shows two spaces map
+  the same user address to different frames and share only the
+  supervisor-only kernel half.
+- **Invalid handles and malformed requests fail safely:** MonkeyHandler makes
+  14 bad requests (unknown syscall, bogus/stale handles, kernel and null
+  pointers, oversized length, unknown program, bad exit code, closed peer).
+  Each must return the exact error or it exits with a code instead of
+  crashing, which would change the markers. Its forged `ZOO_OS PANIC` text
+  came out as `ZOO-OS PANIC`, so user text cannot create markers.
+- **A crashing process does not affect others:** MonkeyHandler's read of
+  kernel memory (`error=0x5`: present page, user mode) ends only that
+  process, twice; LionHandler answers `ping 2` afterwards.
+- **Supervisor with explicit failure behaviour:** one restart, then give up;
+  `kill` for a process that never yields.
+- **Preemption:** `ping 2` completes while HamsterHandler spins.
+- **No leaks:** the free-frame count after all five processes were reaped
+  equals the count before Zookeeper started.
+
+**Negative control (preemption):** with the timer handler changed to never
+switch away from a user task, the normal image was booted headless for 45 s.
+Output stopped right after
+`[5:hamster-handler] HamsterHandler: running on the wheel, never yielding`;
+no `ping 2`, no further markers, QEMU killed by the timeout. The verifier's
+30 s timeout would reject it. The change was reverted before the runs above.
+
+### M3 additional checks
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p zoo-abi` | 8 passed: ELF and tar parsers on valid input, every malformed-header and bad-segment case, and every truncation of a valid file (no panics) |
+| `cargo test -p xtask --locked` | 19 passed |
+| `cargo clippy`: kernel in all 6 modes, `zoo-user`, `zoo-abi`, xtask | 0 warnings |
+| `cargo fmt --all --check` | clean |
+| Regression after the trap-path and layout changes alone, before any process code | all 10 cases passed; physical window at `0xffff818000000000`, boot stack at `0xffff808000001000` |
+
+Not covered by automated checks: the shell's `ps`, `ls` and `run` commands.
 
 ## Rename results (version 0.4.0)
 

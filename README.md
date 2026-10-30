@@ -8,12 +8,14 @@ Read in order: AGENTS.md, ARCHITECTURE.md, DECISIONS.md, BUILD.md,
 MILESTONES.md, COMPATIBILITY.md. Then use CLAUDE_PROMPT.md.
 
 The architecture is a proposal. The first authorized implementation scope is M0
-and M1 only. Status (2026-10-30): M0, M1 and M2 are implemented, plus an interim
-console pulled forward from M4. The kernel boots under QEMU/UEFI, sets up its
-own GDT/IDT, exception handlers, physical frame allocator, page mappings, a
-1 MiB heap and a 100 Hz timer, runs self-tests, then shows a small debug shell
-on the screen that you can type into (`help` lists its commands). Everything
-else in ARCHITECTURE.md is unimplemented.
+and M1 only. Status (2026-10-30): M0–M3 are implemented, plus an interim console pulled
+forward from M4. The kernel boots under QEMU/UEFI, sets up its own CPU
+tables, memory management and a preemptive scheduler, and runs isolated user
+programs from a read-only initial filesystem: the Zookeeper supervisor and
+its handlers talk over channels, survive a crashing handler and stop one that
+never yields. Then a small debug shell appears on screen (`help` lists its
+commands; `ps`, `ls`, `run`). Everything else in ARCHITECTURE.md is
+unimplemented.
 
 Quick start (after installing the prerequisites in tools/firmware/README.md):
 
@@ -35,9 +37,12 @@ Files:
 - AGENTS.md: instructions for implementing agents.
 - COMPATIBILITY.md: application and infrastructure feasibility investigations.
 - CLAUDE_PROMPT.md: ready-to-use kickoff prompt.
-- kernel/, xtask/: M1 kernel and host build/run/verify tool.
+- kernel/, xtask/: the kernel and the host build/run/verify tool.
+- abi/: system call ABI and the ELF and initrd parsers, shared by all.
+- user/: the user runtime (`zoo_rt`) and programs (Zookeeper, handlers).
 - docs/m2-design.md: M2 memory, interrupt and timer design.
 - docs/console-design.md: interim screen, keyboard and debug shell design.
+- docs/m3-design.md: processes, system calls, IPC and Zookeeper.
 - docs/verification.md: commands, versions and results actually observed.
 - tools/firmware/README.md: QEMU and firmware setup and provenance.
 
