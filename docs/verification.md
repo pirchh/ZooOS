@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0–M4, M5a, M5b and the interim console verified on the host below
-on 2026-10-30. Logs and screenshots are generated under `build/` (ignored by
-Git); rerun the commands to reproduce them. The M5b section (version 0.7.0,
-unchanged from M5a) is the current state.
+Status: M0–M4, M5a, M5b, M5c-1 and the interim console verified on the host
+below on 2026-10-30. Logs and screenshots are generated under `build/`
+(ignored by Git); rerun the commands to reproduce them. The M5c-1 section
+(version 0.8.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,59 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M5c-1 results (version 0.8.0)
+
+Design: docs/m5c1-design.md. In-memory filesystem (`kernel/src/fs.rs`),
+directory capabilities and system calls 19–26 (ABI version 4), and the
+action broker OtterHandler. The initrd now holds 10 programs and 4 seed
+files (411,136 bytes); the kernel logs `ZOO_OS INFO fs seeded files=14
+nodes=22`.
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 442 s, all
+12 cases as expected (normal 4.6 s, desktop 13.5 s, inference 356.0 s),
+`ZOO_OS BOOT version=0.8.0`. The normal case now also requires
+`PROC start pid=8 name=otter-handler` and its exit with code 0; the desktop
+and inference cases' process ids moved up by 1. From the normal case's
+serial log:
+
+    [1:zookeeper] directory capabilities enforced (paths stay inside their handle)
+    ZOO_OS PROC start pid=8 name=otter-handler
+    [1:zookeeper] broker `search pancake` -> ok
+    [1:zookeeper] broker `search FLOUR` -> ok
+    [1:zookeeper] broker `list` -> ok
+    [1:zookeeper] broker `inspect Documents` -> ok
+    [1:zookeeper] broker `plan Projects/2026` -> ok
+    [1:zookeeper] broker `inspect Projects` -> err not found
+    [1:zookeeper] broker `create Projects/2026` -> ok
+    [1:zookeeper] broker `list Projects` -> ok
+    [1:zookeeper] broker `undo` -> ok
+    [1:zookeeper] broker `inspect Projects` -> err not found
+    [1:zookeeper] broker `undo` -> err nothing to undo
+    [1:zookeeper] broker `create Documents` -> err already exists
+    [1:zookeeper] broker `list ../bin` -> err path escapes home
+    [1:zookeeper] broker `inspect /bin` -> err path escapes home
+    [1:zookeeper] broker `delete Documents` -> err unknown tool
+    [1:zookeeper] broker `create Projects/2027` -> ok
+    [1:zookeeper] broker `undo` -> ok
+    ZOO_OS PROC exit pid=8 name=otter-handler code=0
+    [1:zookeeper] OtterHandler answered 17 scripted requests exactly
+
+Each `->` line is logged only after every reply line of that request matched
+the expected text exactly (`broker_step` in `user/src/bin/zookeeper.rs`).
+`TEST process-cleanup ok` still holds.
+
+**Negative controls** (normal case only, each reverted before the run above):
+
+| Change | Result |
+| --- | --- |
+| Kernel path check accepts `..` (`valid_component` in `kernel/src/fs.rs`) | `FAIL normal … got ZOO_OS PROC exit pid=1 name=zookeeper code=26`; log: `dir_open ../bin: expected INVAL, got Err(NotFound)` |
+| OtterHandler `undo` removes in creation order (parents first) | `FAIL normal … code=27`; log: ``broker `undo` reply 0: got `| not empty, left in place: Projects`, expected `| removed Projects/2026` `` |
+
+Other checks: `cargo clippy` on the kernel, `zoo-user` (user target),
+`xtask`, `zoo-abi` and `zoo-infer`: 0 warnings. `cargo test -p zoo-abi -p
+xtask -p zoo-infer --locked`: all passed. Not run this step: a clean-copy
+verify (the model image needs the 428 MB model copied in).
 
 ## M5b results (version 0.7.0)
 

@@ -135,6 +135,10 @@ fn startup_checks() -> u8 {
     if let Err(code) = check_beavers() {
         return code;
     }
+    // M5c-1: directory capabilities and the action broker.
+    if let Err(code) = check_directories() {
+        return code;
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }
@@ -224,5 +228,222 @@ fn check_beavers() -> Result<(), u8> {
         expected[0],
         expected[1]
     );
+    Ok(())
+}
+
+/// Expects `call` to fail with `want`; logs and returns `code` otherwise.
+fn expect_err<T: core::fmt::Debug>(
+    what: &str,
+    got: Result<T, Error>,
+    want: Error,
+    code: u8,
+) -> Result<(), u8> {
+    match got {
+        Err(e) if e == want => Ok(()),
+        other => {
+            zoo_rt::log!("{}: expected {}, got {:?}", what, want.name(), other);
+            Err(code)
+        }
+    }
+}
+
+/// Directory capabilities enforced by the kernel, then OtterHandler driven
+/// through a fixed script with exact replies (docs/m5c1-design.md §5).
+fn check_directories() -> Result<(), u8> {
+    use zoo_rt::{dir_create, dir_open, dir_remove, dir_rights as r, dir_stat, file_read, fs_root};
+    let root = fs_root().map_err(|_| 26)?;
+    expect_err("second fs_root", fs_root(), Error::Rights, 26)?;
+    let home = dir_open(root, "home/user", r::ALL).map_err(|_| 26)?;
+    expect_err(
+        "dir_open ../bin",
+        dir_open(home, "../bin", r::READ),
+        Error::Inval,
+        26,
+    )?;
+    expect_err(
+        "dir_open /bin",
+        dir_open(home, "/bin", r::READ),
+        Error::Inval,
+        26,
+    )?;
+    expect_err(
+        "dir_open a//b",
+        dir_open(home, "Documents//recipes", r::READ),
+        Error::Inval,
+        26,
+    )?;
+    expect_err(
+        "dir_open of a file",
+        dir_open(home, "Documents/notes.txt", r::READ),
+        Error::NotDir,
+        26,
+    )?;
+    let read_only = dir_open(home, "", r::READ).map_err(|_| 26)?;
+    expect_err(
+        "create via read-only handle",
+        dir_create(read_only, "x"),
+        Error::Rights,
+        26,
+    )?;
+    expect_err(
+        "widen rights",
+        dir_open(read_only, "Documents", r::ALL),
+        Error::Rights,
+        26,
+    )?;
+    expect_err(
+        "create in /bin",
+        dir_create(root, "bin/x"),
+        Error::Rights,
+        26,
+    )?;
+    expect_err(
+        "remove non-empty",
+        dir_remove(home, "Documents"),
+        Error::NotEmpty,
+        26,
+    )?;
+    expect_err(
+        "remove own directory",
+        dir_remove(home, ""),
+        Error::Inval,
+        26,
+    )?;
+    let mut text = [0u8; 256];
+    let n = file_read(read_only, "Documents/recipes/pancakes.txt", 0, &mut text).map_err(|_| 26)?;
+    if !text[..n].starts_with(b"Pancakes") {
+        return Err(26);
+    }
+    // A handle to a removed directory sees NOTFOUND, never a reused node.
+    dir_create(home, "Scratch").map_err(|_| 26)?;
+    let scratch = dir_open(home, "Scratch", r::READ).map_err(|_| 26)?;
+    dir_remove(home, "Scratch").map_err(|_| 26)?;
+    expect_err("stale handle", dir_stat(scratch, ""), Error::NotFound, 26)?;
+    for h in [scratch, read_only, root] {
+        let _ = close(h);
+    }
+    let _ = log("directory capabilities enforced (paths stay inside their handle)");
+
+    let (mine, theirs) = channel_create().map_err(|_| 27)?;
+    let otter_home = dir_open(home, "", r::ALL).map_err(|_| 27)?;
+    let otter =
+        zoo_rt::spawn_with("otter-handler", [Some(theirs), Some(otter_home)]).map_err(|_| 27)?;
+    let script: &[(&str, &[&str])] = &[
+        (
+            "search pancake",
+            &["| Documents/recipes/pancakes.txt", "ok"],
+        ),
+        (
+            "search FLOUR",
+            &[
+                "| Documents/notes.txt",
+                "| Documents/recipes/pancakes.txt",
+                "ok",
+            ],
+        ),
+        (
+            "list",
+            &[
+                "| folder Documents",
+                "| folder Music",
+                "| folder Photos",
+                "ok",
+            ],
+        ),
+        (
+            "inspect Documents",
+            &["| Documents: folder, 2 entries", "ok"],
+        ),
+        (
+            "plan Projects/2026",
+            &[
+                "| would create Projects",
+                "| would create Projects/2026",
+                "ok",
+            ],
+        ),
+        ("inspect Projects", &["err not found"]),
+        (
+            "create Projects/2026",
+            &["| created Projects", "| created Projects/2026", "ok"],
+        ),
+        ("list Projects", &["| folder 2026", "ok"]),
+        (
+            "undo",
+            &["| removed Projects/2026", "| removed Projects", "ok"],
+        ),
+        ("inspect Projects", &["err not found"]),
+        ("undo", &["err nothing to undo"]),
+        (
+            "create Documents",
+            &["| exists Documents", "err already exists"],
+        ),
+        ("list ../bin", &["err path escapes home"]),
+        ("inspect /bin", &["err path escapes home"]),
+        ("delete Documents", &["err unknown tool"]),
+        (
+            "create Projects/2027",
+            &["| created Projects", "| created Projects/2027", "ok"],
+        ),
+    ];
+    for &(req, want) in script {
+        broker_step(mine, req, want)?;
+    }
+    // Something added inside a created folder must survive `undo`.
+    dir_create(home, "Projects/2027/Keep").map_err(|_| 27)?;
+    broker_step(
+        mine,
+        "undo",
+        &[
+            "| not empty, left in place: Projects/2027",
+            "| not empty, left in place: Projects",
+            "ok",
+        ],
+    )?;
+    if !dir_stat(home, "Projects/2027/Keep").is_ok_and(|e| e.is_dir()) {
+        return Err(27);
+    }
+    for p in ["Projects/2027/Keep", "Projects/2027", "Projects"] {
+        dir_remove(home, p).map_err(|_| 27)?;
+    }
+    send(mine, b"quit").map_err(|_| 28)?;
+    if wait(otter) != Ok(0) {
+        return Err(28);
+    }
+    for h in [mine, otter, home] {
+        let _ = close(h);
+    }
+    zoo_rt::log!(
+        "OtterHandler answered {} scripted requests exactly",
+        script.len() + 1
+    );
+    Ok(())
+}
+
+/// Sends `req` to OtterHandler and requires exactly the reply lines `want`.
+fn broker_step(chan: Handle, req: &str, want: &[&str]) -> Result<(), u8> {
+    send(chan, req.as_bytes()).map_err(|_| 27)?;
+    let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+    for (k, expected) in want.iter().enumerate() {
+        let n = recv(chan, &mut buf).map_err(|_| 27)?;
+        let got = core::str::from_utf8(&buf[..n]).unwrap_or("<not utf-8>");
+        if got != *expected {
+            zoo_rt::log!(
+                "broker `{}` reply {}: got `{}`, expected `{}`",
+                req,
+                k,
+                got,
+                expected
+            );
+            return Err(27);
+        }
+        let last = k + 1 == want.len();
+        let done = got == "ok" || got.starts_with("err ");
+        if last != done {
+            zoo_rt::log!("broker `{}`: reply ended at line {}", req, k);
+            return Err(27);
+        }
+    }
+    zoo_rt::log!("broker `{}` -> {}", req, want[want.len() - 1]);
     Ok(())
 }

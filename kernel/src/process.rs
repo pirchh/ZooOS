@@ -8,6 +8,7 @@
 
 use crate::console;
 use crate::fpu::{self, FxArea};
+use crate::fs;
 use crate::gdt;
 use crate::initrd;
 use crate::interrupts;
@@ -31,9 +32,10 @@ use x86_64::instructions::interrupts as cpu_interrupts;
 use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
-    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB, FsEntry,
-    HEAP_BASE, HEAP_LIMIT, MAP_BASE, MAX_FS_NAME, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo,
-    NO_HANDLE, elf, sys,
+    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB,
+    FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT, KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME,
+    MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, dir_rights,
+    elf, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -74,6 +76,10 @@ enum Object {
     Process {
         pid: u64,
     },
+    /// A directory in the in-memory filesystem; rights are `dir_rights`.
+    Dir {
+        node: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -83,7 +89,7 @@ struct HandleEntry {
 }
 
 /// Releases what a handle held. Channel ends close (the peer sees
-/// `PEERCLOSED`); process handles hold nothing.
+/// `PEERCLOSED`); process and directory handles hold nothing.
 fn release(entry: HandleEntry) {
     if let Object::Endpoint { chan, side } = entry.object {
         let mut c = chan.lock();
@@ -119,6 +125,8 @@ struct Task {
     /// Read-only file mappings of ramdisk pages: (address, pages). Never
     /// freed through the frame allocator; unmapped before the space is freed.
     file_maps: Vec<(u64, u64)>,
+    /// May still call `fs_root` (started by the kernel, not yet called).
+    root_ok: bool,
 }
 
 impl Task {
@@ -139,6 +147,7 @@ impl Task {
             heap_next: HEAP_BASE,
             map_next: MAP_BASE,
             file_maps: Vec::new(),
+            root_ok: false,
         }
     }
 
@@ -260,7 +269,11 @@ pub fn user_tasks() -> usize {
 
 /// Starts `name` from the kernel task (no parent handle). Returns its pid.
 pub fn spawn_from_kernel(name: &str) -> Result<u64, Error> {
-    with_sched(|s, m| s.spawn(m, name, None).map(|(_, pid, _)| pid))
+    with_sched(|s, m| {
+        let (i, pid) = s.spawn(m, name, [None, None])?;
+        s.task(i).root_ok = true;
+        Ok(pid)
+    })
 }
 
 /// One line per task, for the shell's `ps`.
@@ -319,7 +332,8 @@ pub fn start_session() -> Result<u64, Error> {
             object: Object::Endpoint { chan, side: 1 },
             rights,
         };
-        let (_, pid, _) = s.spawn(m, "zookeeper", Some(zookeeper_end))?;
+        let (i, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
+        s.task(i).root_ok = true;
         if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
             release(old);
         }
@@ -357,14 +371,15 @@ impl Scheduler {
             .unwrap_or(0)
     }
 
-    /// Loads, maps and readies program `name`; `give` becomes its start-up
-    /// handle. Returns (task index, pid, start-up handle value).
+    /// Loads, maps and readies program `name`; `give` become its start-up
+    /// handles (in `rdi` and `rsi`, `NO_HANDLE` where absent). Returns
+    /// (task index, pid).
     fn spawn(
         &mut self,
         mem: &mut Memory,
         name: &str,
-        give: Option<HandleEntry>,
-    ) -> Result<(usize, u64, u64), Error> {
+        give: [Option<HandleEntry>; 2],
+    ) -> Result<(usize, u64), Error> {
         if !valid_name(name) || name.len() > MAX_PATH {
             return Err(Error::Inval);
         }
@@ -403,10 +418,10 @@ impl Scheduler {
         let pid = self.next_pid;
         self.next_pid += 1;
         let mut task = Task::new(pid, name);
-        let arg = match give {
+        let [arg, arg2] = give.map(|g| match g {
             Some(entry) => task.insert(entry).expect("new task has free handle slots"),
             None => NO_HANDLE,
-        };
+        });
         let sel = gdt::selectors();
         let frame = TrapFrame {
             rip: image.entry,
@@ -416,6 +431,7 @@ impl Scheduler {
             rsp: USER_STACK_TOP - 8,
             ss: sel.user_data.0 as u64,
             rdi: arg,
+            rsi: arg2,
             ..TrapFrame::default()
         };
         let frame_addr = top - core::mem::size_of::<TrapFrame>() as u64;
@@ -428,7 +444,7 @@ impl Scheduler {
         task.kstack = Some((slot, top));
         self.tasks[index] = Some(task);
         kprintln!("ZOO_OS PROC start pid={} name={}", pid, name);
-        Ok((index, pid, arg))
+        Ok((index, pid))
     }
 
     /// Ends task `i`: closes its handles, records the status, wakes waiters.
@@ -622,8 +638,8 @@ impl Scheduler {
                         None => return err(Error::BadHandle),
                     }
                 };
-                match self.spawn(mem, &name, give) {
-                    Ok((_, pid, _)) => {
+                match self.spawn(mem, &name, [give, None]) {
+                    Ok((_, pid)) => {
                         let t = self.task(i);
                         if a3 != NO_HANDLE {
                             // Moved into the child: removed here, not released.
@@ -918,6 +934,88 @@ impl Scheduler {
                 unsafe { (a2 as *mut MapInfo).write_unaligned(info) };
                 Outcome::Ret(0)
             }
+            sys::FS_ROOT => {
+                let t = self.task(i);
+                if !t.root_ok {
+                    return err(Error::Rights);
+                }
+                match t.insert(HandleEntry {
+                    object: Object::Dir { node: fs::ROOT },
+                    rights: dir_rights::ALL as u8,
+                }) {
+                    Some(h) => {
+                        t.root_ok = false;
+                        Outcome::Ret(h as i64)
+                    }
+                    None => err(Error::NoMem),
+                }
+            }
+            sys::DIR_OPEN
+            | sys::DIR_LIST
+            | sys::DIR_STAT
+            | sys::FILE_READ
+            | sys::DIR_CREATE
+            | sys::DIR_REMOVE => self.dir_call(i, number, a1, a2, mem),
+            sys::SPAWN_WITH => {
+                if a2 == 0 || a2 > MAX_PATH as u64 {
+                    return err(Error::Inval);
+                }
+                if !ok(a1, a2, false) || !ok(a3, 16, false) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: checked readable user ranges in the active space;
+                // unaligned reads because user pointers need not be aligned.
+                let (raw, values) = unsafe {
+                    (
+                        core::slice::from_raw_parts(a1 as *const u8, a2 as usize),
+                        [
+                            (a3 as *const u64).read_unaligned(),
+                            ((a3 + 8) as *const u64).read_unaligned(),
+                        ],
+                    )
+                };
+                let Ok(name) = core::str::from_utf8(raw) else {
+                    return err(Error::Inval);
+                };
+                let name = String::from(name);
+                if values[0] != NO_HANDLE && values[0] == values[1] {
+                    return err(Error::Inval);
+                }
+                let t = self.task(i);
+                let mut give = [None, None];
+                for (g, &v) in give.iter_mut().zip(&values) {
+                    if v != NO_HANDLE {
+                        match t.get(v) {
+                            Some(h) => *g = Some(h.clone()),
+                            None => return err(Error::BadHandle),
+                        }
+                    }
+                }
+                // Moving a handle frees its slot, so the process handle
+                // always fits when any were given.
+                if t.free_slots() < 1 && give.iter().all(Option::is_none) {
+                    return err(Error::NoMem);
+                }
+                match self.spawn(mem, &name, give) {
+                    Ok((_, pid)) => {
+                        let t = self.task(i);
+                        for &v in &values {
+                            if v != NO_HANDLE {
+                                // Moved into the child: removed, not released.
+                                let _ = t.take(v);
+                            }
+                        }
+                        let h = t
+                            .insert(HandleEntry {
+                                object: Object::Process { pid },
+                                rights: RIGHT_WAIT | RIGHT_KILL,
+                            })
+                            .expect("a slot was free or freed");
+                        Outcome::Ret(h as i64)
+                    }
+                    Err(e) => err(e),
+                }
+            }
             sys::CLOSE => match self.task(i).take(a1) {
                 Some(entry) => {
                     release(entry);
@@ -927,6 +1025,133 @@ impl Scheduler {
                 None => err(Error::BadHandle),
             },
             _ => err(Error::NoSys),
+        }
+    }
+
+    /// System calls 20-25: `a1` is a directory handle, `a2` points at an
+    /// `FsArgs` (docs/m5c1-design.md §3).
+    fn dir_call(&mut self, i: usize, number: u64, a1: u64, a2: u64, mem: &mut Memory) -> Outcome {
+        let p4 = self.task(i).p4.expect("system call from a user task");
+        let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+        let (node, rights) = match self.task(i).get(a1) {
+            Some(HandleEntry {
+                object: Object::Dir { node },
+                rights,
+            }) => (*node, *rights as u64),
+            Some(_) | None => return err(Error::BadHandle),
+        };
+        if !ok(a2, core::mem::size_of::<FsArgs>() as u64, false) {
+            return err(Error::Fault);
+        }
+        // SAFETY: checked readable user range of the struct's size.
+        let args = unsafe { (a2 as *const FsArgs).read_unaligned() };
+        if args.path_len > MAX_FS_PATH as u64 {
+            return err(Error::Inval);
+        }
+        if !ok(args.path, args.path_len, false) {
+            return err(Error::Fault);
+        }
+        // SAFETY: checked readable user range. Copied into kernel memory
+        // before it is checked, so later user writes cannot change it.
+        let raw =
+            unsafe { core::slice::from_raw_parts(args.path as *const u8, args.path_len as usize) };
+        let Ok(path) = core::str::from_utf8(raw) else {
+            return err(Error::Inval);
+        };
+        let path = String::from(path);
+        let need = match number {
+            sys::DIR_OPEN => 0, // checked below: the new rights must be a subset
+            sys::DIR_CREATE => dir_rights::CREATE,
+            sys::DIR_REMOVE => dir_rights::REMOVE,
+            _ => dir_rights::READ,
+        };
+        if rights & need != need {
+            return err(Error::Rights);
+        }
+        let entry_size = core::mem::size_of::<DirEntry>() as u64;
+        match number {
+            sys::DIR_OPEN => {
+                if args.arg & !dir_rights::ALL != 0 || args.arg & !rights != 0 {
+                    return err(Error::Rights);
+                }
+                let target = match fs::with(|f| f.resolve(node, &path)) {
+                    Ok(t) => t,
+                    Err(e) => return err(e),
+                };
+                if fs::with(|f| f.kind(target)) != Some(fs::Kind::Dir) {
+                    return err(Error::NotDir);
+                }
+                match self.task(i).insert(HandleEntry {
+                    object: Object::Dir { node: target },
+                    rights: args.arg as u8,
+                }) {
+                    Some(h) => Outcome::Ret(h as i64),
+                    None => err(Error::NoMem),
+                }
+            }
+            sys::DIR_LIST | sys::DIR_STAT => {
+                if args.buf_len < entry_size {
+                    return err(Error::TooSmall);
+                }
+                if !ok(args.buf, entry_size, true) {
+                    return err(Error::Fault);
+                }
+                let found = fs::with(|f| {
+                    let target = f.resolve(node, &path)?;
+                    let (name, kind, size) = if number == sys::DIR_LIST {
+                        f.entry(target, args.arg as usize)?
+                    } else {
+                        let kind = f.kind(target).ok_or(Error::NotFound)?;
+                        ("", kind, f.size(target))
+                    };
+                    let mut e = DirEntry {
+                        kind: if kind == fs::Kind::Dir {
+                            KIND_DIR
+                        } else {
+                            KIND_FILE
+                        },
+                        size: size as u64,
+                        ..DirEntry::default()
+                    };
+                    let n = name.len().min(MAX_DIR_NAME);
+                    e.name[..n].copy_from_slice(&name.as_bytes()[..n]);
+                    e.name_len = n as u64;
+                    Ok(e)
+                });
+                match found {
+                    Ok(e) => {
+                        // SAFETY: checked writable user range of the size.
+                        unsafe { (args.buf as *mut DirEntry).write_unaligned(e) };
+                        Outcome::Ret(0)
+                    }
+                    Err(e) => err(e),
+                }
+            }
+            sys::FILE_READ => {
+                if !ok(args.buf, args.buf_len, true) {
+                    return err(Error::Fault);
+                }
+                let data = match fs::with(|f| f.resolve(node, &path).and_then(|t| f.data(t))) {
+                    Ok(d) => d,
+                    Err(e) => return err(e),
+                };
+                let start = (args.arg as usize).min(data.len());
+                let n = (data.len() - start).min(args.buf_len as usize);
+                // SAFETY: `n` bytes fit the checked writable user range; the
+                // source is initrd memory that user code cannot reach.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(data[start..].as_ptr(), args.buf as *mut u8, n)
+                };
+                Outcome::Ret(n as i64)
+            }
+            sys::DIR_CREATE => match fs::with(|f| f.create_dir(node, &path)) {
+                Ok(_) => Outcome::Ret(0),
+                Err(e) => err(e),
+            },
+            _ => match fs::with(|f| f.remove_dir(node, &path)) {
+                Ok(()) => Outcome::Ret(0),
+                Err(e) => err(e),
+            },
         }
     }
 

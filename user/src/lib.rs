@@ -8,7 +8,9 @@ extern crate alloc;
 
 use core::arch::asm;
 use core::fmt;
-pub use zoo_abi::{DisplayInfo, Error, FsEntry, MapInfo, NO_HANDLE, sys};
+pub use zoo_abi::{
+    DirEntry, DisplayInfo, Error, FsArgs, FsEntry, MapInfo, NO_HANDLE, dir_rights, sys,
+};
 
 pub mod app;
 mod heap;
@@ -216,6 +218,78 @@ pub fn beaver_series(param: f64, n: u64, trace: &mut alloc::vec::Vec<f64>) -> f6
     acc + trace.iter().sum::<f64>() * 1e-9
 }
 
+/// The root directory handle; only for a process the kernel started, once.
+pub fn fs_root() -> Result<Handle, Error> {
+    result(syscall(sys::FS_ROOT, 0, 0, 0))
+}
+
+fn dir_call(number: u64, dir: Handle, path: &str, arg: u64, buf: &mut [u8]) -> Result<u64, Error> {
+    let args = FsArgs {
+        path: path.as_ptr() as u64,
+        path_len: path.len() as u64,
+        arg,
+        buf: buf.as_mut_ptr() as u64,
+        buf_len: buf.len() as u64,
+    };
+    result(syscall(number, dir, &args as *const FsArgs as u64, 0))
+}
+
+fn entry_call(number: u64, dir: Handle, path: &str, arg: u64) -> Result<DirEntry, Error> {
+    let mut e = DirEntry::default();
+    // SAFETY: `DirEntry` is plain `repr(C)` integers and bytes; any bytes
+    // the kernel writes are a valid value. The slice covers exactly `e`.
+    let buf = unsafe {
+        core::slice::from_raw_parts_mut(
+            &mut e as *mut DirEntry as *mut u8,
+            core::mem::size_of::<DirEntry>(),
+        )
+    };
+    dir_call(number, dir, path, arg, buf)?;
+    Ok(e)
+}
+
+/// A handle to the directory at `path` under `dir`, with `rights` (no wider
+/// than `dir`'s).
+pub fn dir_open(dir: Handle, path: &str, rights: u64) -> Result<Handle, Error> {
+    dir_call(sys::DIR_OPEN, dir, path, rights, &mut [])
+}
+
+/// The `index`-th entry of the directory at `path`; `NOTFOUND` past the end.
+pub fn dir_list(dir: Handle, path: &str, index: u64) -> Result<DirEntry, Error> {
+    entry_call(sys::DIR_LIST, dir, path, index)
+}
+
+/// Kind and size of `path` (its name is left empty).
+pub fn dir_stat(dir: Handle, path: &str) -> Result<DirEntry, Error> {
+    entry_call(sys::DIR_STAT, dir, path, 0)
+}
+
+/// Reads file `path` from `offset` into `buf`; returns the bytes read.
+pub fn file_read(dir: Handle, path: &str, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
+    dir_call(sys::FILE_READ, dir, path, offset, buf).map(|n| n as usize)
+}
+
+pub fn dir_create(dir: Handle, path: &str) -> Result<(), Error> {
+    dir_call(sys::DIR_CREATE, dir, path, 0, &mut []).map(|_| ())
+}
+
+/// Removes the empty directory at `path`.
+pub fn dir_remove(dir: Handle, path: &str) -> Result<(), Error> {
+    dir_call(sys::DIR_REMOVE, dir, path, 0, &mut []).map(|_| ())
+}
+
+/// Starts `name`, moving up to two handles into it (its `main` receives
+/// them). Returns a process handle.
+pub fn spawn_with(name: &str, give: [Option<Handle>; 2]) -> Result<Handle, Error> {
+    let values = give.map(|h| h.unwrap_or(NO_HANDLE));
+    result(syscall(
+        sys::SPAWN_WITH,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        values.as_ptr() as u64,
+    ))
+}
+
 pub fn close(h: Handle) -> Result<(), Error> {
     result(syscall(sys::CLOSE, h, 0, 0)).map(|_| ())
 }
@@ -278,6 +352,19 @@ macro_rules! entry {
         #[unsafe(no_mangle)]
         pub extern "C" fn _start(start_handle: u64) -> ! {
             let code: u8 = $main(start_handle);
+            $crate::exit(code)
+        }
+    };
+}
+
+/// Like `entry!`, for programs started by `spawn_with`: `main(first,
+/// second) -> u8` receives both start-up handles.
+#[macro_export]
+macro_rules! entry2 {
+    ($main:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn _start(first: u64, second: u64) -> ! {
+            let code: u8 = $main(first, second);
             $crate::exit(code)
         }
     };

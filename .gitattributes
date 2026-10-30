@@ -1,0 +1,3 @@
+# Sample documents and checksum files are byte-exact on every platform.
+seed/** -text
+*.sha256 text eol=lf

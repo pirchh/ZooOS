@@ -136,6 +136,26 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Resolved in M5c-1 (2026-10-30)
+
+Design: docs/m5c1-design.md.
+
+- In-memory filesystem in the kernel: `/bin` (read-only) and `/home/user`
+  (seeded from `seed/home/user/`, writable). Not persistent; a disk driver
+  and crash consistency stay deferred.
+- Directory capabilities with rights READ/CREATE/REMOVE. Paths are always
+  relative to a handle; empty, `.` and `..` components and absolute paths are
+  rejected, so no path can leave its handle's subtree. No symbolic links.
+- `fs_root` only for processes the kernel started (boot Zookeeper, session
+  Zookeeper, programs the shell `run`s), once each.
+- Calls 19–26; directory calls take an `FsArgs` struct pointer. ABI
+  version 4. Version 0.8.0.
+- The action broker is a separate process (OtterHandler) holding the home
+  handle the assistant will act through; its `undo` removes only folders its
+  last `create` made, and only while empty. No delete or file-write tool.
+- `seed/` files are stored byte-exact (`.gitattributes`: `-text`) so their
+  sizes do not depend on the checkout's line-ending settings.
+
 ## Resolved in M5b (2026-10-30)
 
 Design: docs/m5b-design.md.
