@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX step 2
-section (version 0.11.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The POSIX step 3
+section (version 0.12.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,48 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 3 results: exceptions (version 0.12.0)
+
+Design: docs/posix3-design.md. Calls 38–40 (ABI version 7),
+`zoo_rt::exception`, and the test program GeckoHandler, run by Zookeeper
+at boot (pid 15, children 16–18; desktop and model cases' process ids
+moved up by 4).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 626 s,
+`ZOO_OS BOOT version=0.12.0`; every case as expected (normal 5.5 s,
+desktop 14.1 s, assistant 23.2 s, assistant-model 31.7 s, inference
+473.6 s; `assistant-live` `SKIP`). Then `--accel whpx --case
+assistant-live`: pass in 60.4 s.
+
+The normal case requires, in order:
+
+    ZOO_OS PROC start pid=15 name=gecko-handler
+    ZOO_OS PROC start pid=16 name=gecko-handler
+    ZOO_OS PROC crash pid=16 name=gecko-handler fault=page-fault access=write cause=not-present addr=0x0000000000000010
+    ZOO_OS PROC start pid=17 name=gecko-handler
+    ZOO_OS PROC crash pid=17 name=gecko-handler fault=page-fault access=read cause=not-present addr=0x0000000000000020
+    ZOO_OS PROC start pid=18 name=gecko-handler
+    ZOO_OS PROC exit pid=18 name=gecko-handler code=103
+    ZOO_OS PROC exit pid=15 name=gecko-handler code=0
+
+Pid 16's fault was declared unhandled; pid 17's crash is the fault raised
+inside its handler (address 0x20, not the original 0x10); pid 18's handler
+returned a kernel-half `rip`, which the kernel refused. The kernel logged 33
+deliveries to pid 15: 16 demand-commit faults on the main thread, one
+divide error, and 16 on the second thread. GeckoHandler logs
+`all exception checks passed`; `TEST process-cleanup ok` holds.
+
+**Negative controls** (normal case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| `exception_return` does not reload the FPU/SSE state | `FAIL normal`: `gecko-handler code=22`, `check 22 failed: SSE register restored` |
+| No guard against faults inside a handler | first try: **passed** (the re-delivered contexts stacked downwards until the thread's stack ran out, which also ended in a crash). The child now uses a fixed exception stack; rerun: `FAIL normal … got=timeout 30.0s`, 10,583 deliveries to pid 17 |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed. Not run: a clean-copy verify.
 
 ## POSIX step 2 results: address space (version 0.11.0)
 

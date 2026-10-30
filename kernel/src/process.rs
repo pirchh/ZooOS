@@ -33,11 +33,11 @@ use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
-    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB,
-    FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT, KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME,
-    MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE,
-    VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED,
-    VM_START, VmInfo, dir_rights, elf, prot, sys,
+    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, EXC_RESUME, EXC_UNHANDLED,
+    Error, ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT,
+    KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME, MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES,
+    MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE,
+    VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED, VM_START, VmInfo, dir_rights, elf, prot, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -138,6 +138,8 @@ struct Proc {
     vmas: Vec<(u64, u64)>,
     /// Pages committed through `vm_commit`.
     committed: u64,
+    /// User exception handler entry (docs/posix3-design.md); 0 if none.
+    exc_handler: u64,
 }
 
 /// One thread. Each user thread belongs to a `Proc`; the kernel task does not.
@@ -168,6 +170,10 @@ struct Task {
     futex: Option<u64>,
     /// Set by `futex_wake`; the restarted `futex_wait` then returns 0.
     futex_woken: bool,
+    /// Top of this thread's exception stack (0: below the faulting `rsp`).
+    exc_stack: u64,
+    /// Running its exception handler; a fault now is fatal.
+    in_exception: bool,
 }
 
 impl Task {
@@ -187,6 +193,8 @@ impl Task {
             fs_base: 0,
             futex: None,
             futex_woken: false,
+            exc_stack: 0,
+            in_exception: false,
         }
     }
 }
@@ -209,6 +217,7 @@ impl Proc {
             ended: false,
             vmas: Vec::new(),
             committed: 0,
+            exc_handler: 0,
         }
     }
 
@@ -255,6 +264,11 @@ enum Outcome {
     Exit(u8),
     /// This thread ends; the process ends with it if it was the last.
     ThreadExit(u8),
+    /// Return to user mode with the frame as the call left it (`rax`
+    /// included): `exception_return`.
+    Resume,
+    /// The process crashes (a handler declared its exception unhandled).
+    Crash,
 }
 
 fn err(e: Error) -> Outcome {
@@ -712,6 +726,9 @@ impl Scheduler {
                 }
                 Outcome::Exit(code) => self.finish(i, ExitStatus::Code(code)),
                 Outcome::ThreadExit(code) => self.finish_thread(i, code),
+                // Neither blocks, so a restarted call never returns these.
+                Outcome::Resume => return frame,
+                Outcome::Crash => self.finish(i, ExitStatus::Crashed),
             }
             i = self.pick_next();
         }
@@ -1217,6 +1234,21 @@ impl Scheduler {
             | sys::VM_DECOMMIT
             | sys::VM_RELEASE
             | sys::VM_QUERY => self.vm_call(i, number, a1, a2, a3, p4, mem),
+            sys::SET_EXCEPTION_HANDLER => {
+                if a1 >= USER_HALF_END {
+                    return err(Error::Inval);
+                }
+                self.proc(i).exc_handler = a1;
+                Outcome::Ret(0)
+            }
+            sys::SET_EXCEPTION_STACK => {
+                if a1 >= USER_HALF_END || !a1.is_multiple_of(16) {
+                    return err(Error::Inval);
+                }
+                self.task(i).exc_stack = a1;
+                Outcome::Ret(0)
+            }
+            sys::EXCEPTION_RETURN => self.exception_return(i, f, a1, a2, p4, mem),
             sys::FS_ROOT => {
                 let t = self.proc(i);
                 if !t.root_ok {
@@ -1309,6 +1341,150 @@ impl Scheduler {
             },
             _ => err(Error::NoSys),
         }
+    }
+
+    /// `exception_return(ctx, how)`: resumes the interrupted thread from the
+    /// (possibly edited) context, or crashes the process (docs/posix3-design.md).
+    fn exception_return(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        a1: u64,
+        a2: u64,
+        p4: PhysFrame,
+        mem: &mut Memory,
+    ) -> Outcome {
+        if !self.task(i).in_exception {
+            return err(Error::Inval);
+        }
+        let size = core::mem::size_of::<ExceptionContext>() as u64;
+        if !mem.user_range_ok(p4, a1, size, false) {
+            return err(Error::Fault);
+        }
+        // SAFETY: checked readable user range of the struct's size; copied
+        // into the kernel before anything is checked.
+        let ctx = unsafe { (a1 as *const ExceptionContext).read_unaligned() };
+        if a2 == EXC_UNHANDLED {
+            let t = self.task(i);
+            t.in_exception = false;
+            let line = crash_line(t.pid, &t.name, ctx.vector, ctx.error, ctx.addr, ctx.rip);
+            kprintln!("{}", line);
+            kprintln!("ZOO_OS INFO crash declared unhandled by the program");
+            return Outcome::Crash;
+        }
+        if a2 != EXC_RESUME
+            || ctx.rip >= USER_HALF_END
+            || ctx.rsp >= USER_HALF_END
+            || ctx.fs_base >= USER_HALF_END
+        {
+            return err(Error::Inval);
+        }
+        let Some(fx) = fpu::from_user(&ctx.fx) else {
+            return err(Error::Inval);
+        };
+        // Only arithmetic and direction flags come from the program;
+        // interrupts stay on and privileged bits stay clear.
+        const USER_FLAGS: u64 = 0xCD5; // CF PF AF ZF SF DF OF
+        f.rflags = (ctx.rflags & USER_FLAGS) | RFLAGS_IF | RFLAGS_RESERVED;
+        f.rip = ctx.rip;
+        f.rsp = ctx.rsp;
+        f.rax = ctx.rax;
+        f.rbx = ctx.rbx;
+        f.rcx = ctx.rcx;
+        f.rdx = ctx.rdx;
+        f.rsi = ctx.rsi;
+        f.rdi = ctx.rdi;
+        f.rbp = ctx.rbp;
+        f.r8 = ctx.r8;
+        f.r9 = ctx.r9;
+        f.r10 = ctx.r10;
+        f.r11 = ctx.r11;
+        f.r12 = ctx.r12;
+        f.r13 = ctx.r13;
+        f.r14 = ctx.r14;
+        f.r15 = ctx.r15;
+        fpu::restore(&fx);
+        let t = self.task(i);
+        t.fs_base = ctx.fs_base;
+        FsBase::write(VirtAddr::new_truncate(ctx.fs_base));
+        t.in_exception = false;
+        Outcome::Resume
+    }
+
+    /// Delivers a user fault to the process's handler: writes the context
+    /// on the exception stack and redirects the thread. Returns false when
+    /// there is no handler, the thread is already handling one, or the
+    /// context does not fit; the caller then crashes the process.
+    fn deliver_exception(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        addr: u64,
+        mem: &mut Memory,
+    ) -> bool {
+        let handler = self.proc(i).exc_handler;
+        let t = self.task(i);
+        if handler == 0 || t.in_exception {
+            return false;
+        }
+        let Some(p4) = t.p4 else { return false };
+        let size = core::mem::size_of::<ExceptionContext>() as u64;
+        // Below the red zone of the interrupted stack unless the thread set
+        // its own exception stack.
+        let top = if t.exc_stack != 0 {
+            t.exc_stack
+        } else {
+            f.rsp.wrapping_sub(128)
+        };
+        let ctx_addr = top.wrapping_sub(size) & !15;
+        if top >= USER_HALF_END || ctx_addr > top || !mem.user_range_ok(p4, ctx_addr, size, true) {
+            return false;
+        }
+        let mut fx = fpu::new_state();
+        fpu::save(&mut fx);
+        let ctx = ExceptionContext {
+            vector: f.vector,
+            error: f.error,
+            addr,
+            rip: f.rip,
+            rsp: f.rsp,
+            rflags: f.rflags,
+            rax: f.rax,
+            rbx: f.rbx,
+            rcx: f.rcx,
+            rdx: f.rdx,
+            rsi: f.rsi,
+            rdi: f.rdi,
+            rbp: f.rbp,
+            r8: f.r8,
+            r9: f.r9,
+            r10: f.r10,
+            r11: f.r11,
+            r12: f.r12,
+            r13: f.r13,
+            r14: f.r14,
+            r15: f.r15,
+            fs_base: t.fs_base,
+            fx: *fpu::bytes(&fx),
+        };
+        // SAFETY: checked writable user range of the struct's size in the
+        // active address space; unaligned write for safety although the
+        // address is 16-byte aligned.
+        unsafe { (ctx_addr as *mut ExceptionContext).write_unaligned(ctx) };
+        t.in_exception = true;
+        kprintln!(
+            "ZOO_OS INFO exception pid={} tid={} vector={} addr={:#x} delivered",
+            t.pid,
+            t.tid,
+            f.vector,
+            addr
+        );
+        // SysV: at function entry, rsp + 8 is 16-byte aligned.
+        f.rsp = ctx_addr - 8;
+        f.rip = handler;
+        f.rdi = ctx_addr;
+        f.rflags = RFLAGS_IF | RFLAGS_RESERVED;
+        true
     }
 
     /// System calls 32-37: reserve, commit, protect, decommit, release and
@@ -1773,36 +1949,54 @@ pub fn on_syscall(frame: *mut TrapFrame) -> *mut TrapFrame {
                 s.finish_thread(cur, code);
                 s.switch_away(frame, m)
             }
+            Outcome::Resume => frame,
+            Outcome::Crash => {
+                s.finish(cur, ExitStatus::Crashed);
+                s.switch_away(frame, m)
+            }
         }
     })
     .expect("system call before the scheduler started")
 }
 
+/// The kernel's crash marker line for a user fault.
+fn crash_line(pid: u64, name: &str, vector: u64, error: u64, addr: u64, rip: u64) -> String {
+    let mut line = String::new();
+    let _ = write!(line, "ZOO_OS PROC crash pid={} name={} ", pid, name);
+    if vector == trap::VEC_PAGE_FAULT {
+        let (access, cause) = interrupts::page_fault_kind(error);
+        let _ = write!(
+            line,
+            "fault=page-fault access={} cause={} addr={:#018x}",
+            access, cause, addr
+        );
+    } else {
+        let _ = write!(
+            line,
+            "fault={} rip={:#018x}",
+            interrupts::fault_name(vector),
+            rip
+        );
+    }
+    line
+}
+
 pub fn on_user_fault(frame: *mut TrapFrame) -> *mut TrapFrame {
     dispatch_locked(|s, m| {
         let cur = s.current;
-        // SAFETY: the frame was just pushed for this trap.
-        let f = unsafe { &*frame };
-        let t = s.task(cur);
-        let mut line = String::new();
-        let _ = write!(line, "ZOO_OS PROC crash pid={} name={} ", t.pid, t.name);
-        if f.vector == trap::VEC_PAGE_FAULT {
-            let (access, cause) = interrupts::page_fault_kind(f.error);
-            let _ = write!(
-                line,
-                "fault=page-fault access={} cause={} addr={:#018x}",
-                access,
-                cause,
-                Cr2::read_raw()
-            );
+        // SAFETY: the frame was just pushed for this trap on this thread's
+        // kernel stack.
+        let f = unsafe { &mut *frame };
+        let addr = if f.vector == trap::VEC_PAGE_FAULT {
+            Cr2::read_raw()
         } else {
-            let _ = write!(
-                line,
-                "fault={} rip={:#018x}",
-                interrupts::fault_name(f.vector),
-                f.rip
-            );
+            0
+        };
+        if s.deliver_exception(cur, f, addr, m) {
+            return frame;
         }
+        let t = s.task(cur);
+        let line = crash_line(t.pid, &t.name, f.vector, f.error, addr, f.rip);
         kprintln!("{}", line);
         kprintln!(
             "ZOO_OS INFO crash rip={:#018x} rsp={:#018x} error={:#x}",

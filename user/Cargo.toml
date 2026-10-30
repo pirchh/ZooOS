@@ -58,6 +58,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "gecko-handler"
+path = "src/bin/gecko-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "mole-handler"
 path = "src/bin/mole-handler.rs"
 test = false

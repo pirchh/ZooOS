@@ -55,6 +55,28 @@ pub fn save(area: &mut FxArea) {
     unsafe { asm!("fxsave64 [{}]", in(reg) area, options(nostack)) };
 }
 
+/// The 512 bytes of an FXSAVE image.
+pub fn bytes(area: &FxArea) -> &[u8; 512] {
+    &area.0
+}
+
+/// An area from user-supplied bytes, if its MXCSR has no bits the CPU
+/// rejects (`fxrstor64` would fault in the kernel otherwise).
+pub fn from_user(bytes: &[u8; 512]) -> Option<FxArea> {
+    let template = TEMPLATE.get().expect("fpu::init not called");
+    let word =
+        |a: &[u8; 512], at: usize| u32::from_le_bytes([a[at], a[at + 1], a[at + 2], a[at + 3]]);
+    // MXCSR_MASK at offset 28; 0 means the architectural default 0xFFBF.
+    let mask = match word(&template.0, 28) {
+        0 => 0xFFBF,
+        m => m,
+    };
+    if word(bytes, 24) & !mask != 0 {
+        return None;
+    }
+    Some(FxArea(*bytes))
+}
+
 /// Loads the x87/SSE registers from `area`.
 pub fn restore(area: &FxArea) {
     // SAFETY: reads 512 bytes from a 16-byte-aligned area produced by

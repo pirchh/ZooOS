@@ -11,8 +11,9 @@ pub mod tar;
 /// Version 2 (M4) added calls 11-16 and errors 13-14; version 3 (M5a)
 /// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17;
 /// version 5 (POSIX step 1) added calls 27-31 and error 18; version 6
-/// (POSIX step 2) added calls 32-37.
-pub const ABI_VERSION: u64 = 6;
+/// (POSIX step 2) added calls 32-37; version 7 (POSIX step 3) added calls
+/// 38-40.
+pub const ABI_VERSION: u64 = 7;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -54,6 +55,9 @@ pub mod sys {
     pub const VM_DECOMMIT: u64 = 35;
     pub const VM_RELEASE: u64 = 36;
     pub const VM_QUERY: u64 = 37;
+    pub const SET_EXCEPTION_HANDLER: u64 = 38;
+    pub const SET_EXCEPTION_STACK: u64 = 39;
+    pub const EXCEPTION_RETURN: u64 = 40;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -242,6 +246,46 @@ pub struct VmInfo {
     pub reservation: u64,
     pub reservation_len: u64,
 }
+
+/// What a user exception handler receives (docs/posix3-design.md §2): the
+/// fault, and the interrupted thread's registers, which `exception_return`
+/// restores (possibly edited).
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct ExceptionContext {
+    /// CPU exception vector (0 divide, 6 invalid opcode, 13 general
+    /// protection, 14 page fault, 16 x87, 19 SIMD, ...).
+    pub vector: u64,
+    pub error: u64,
+    /// Faulting address for page faults (CR2), else 0.
+    pub addr: u64,
+    pub rip: u64,
+    pub rsp: u64,
+    pub rflags: u64,
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub fs_base: u64,
+    /// The FXSAVE image of the x87/SSE registers.
+    pub fx: [u8; 512],
+}
+
+/// `exception_return`'s second argument.
+pub const EXC_RESUME: u64 = 0;
+/// The handler gives up: the process crashes as if it had no handler.
+pub const EXC_UNHANDLED: u64 = 1;
 
 /// Rights of a directory handle (docs/m5c1-design.md §2).
 pub mod dir_rights {
