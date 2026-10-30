@@ -52,6 +52,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "otter-handler"
+path = "src/bin/otter-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "beaver-handler"
 path = "src/bin/beaver-handler.rs"
 test = false

@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 9] = [
+pub const USER_PROGRAMS: [&str; 10] = [
     "zookeeper",
     "lion-handler",
     "monkey-handler",
@@ -21,7 +21,43 @@ pub const USER_PROGRAMS: [&str; 9] = [
     "chimp-handler",
     "beaver-handler",
     "elephant-handler",
+    "otter-handler",
 ];
+
+/// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
+const SEED_DIR: &str = "seed/home/user";
+
+/// Files under `dir`, as paths relative to it with `/` separators, sorted.
+fn seed_files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut out = Vec::new();
+    let mut stack = vec![(String::new(), dir.to_path_buf())];
+    while let Some((rel, path)) = stack.pop() {
+        let entries =
+            std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|n| format!("seed file name is not UTF-8: {n:?}"))?;
+            let child = if rel.is_empty() {
+                name
+            } else {
+                format!("{rel}/{name}")
+            };
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("cannot stat {}: {e}", entry.path().display()))?;
+            if kind.is_dir() {
+                stack.push((child, entry.path()));
+            } else if kind.is_file() {
+                out.push((child, entry.path()));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -123,13 +159,27 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
             0,
         );
     }
+    let seeds = seed_files(&root.join(SEED_DIR))?;
+    for (rel, path) in &seeds {
+        let data =
+            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let entry = format!("home/user/{rel}");
+        let header = zoo_abi::tar::header(&entry, data.len())
+            .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(&data);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+    }
     archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
     // The kernel's reader must accept exactly what we wrote.
     let count = zoo_abi::tar::read(&archive)
         .map(|e| e.map_err(|e| format!("initrd self-check failed: {e:?}")))
         .collect::<Result<Vec<_>, _>>()?
         .len();
-    if count != USER_PROGRAMS.len() {
+    if count != USER_PROGRAMS.len() + seeds.len() {
         return Err(format!("initrd self-check found {count} files"));
     }
     let out_dir = root.join("build");
@@ -138,7 +188,9 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
     let out = out_dir.join("initrd.tar");
     std::fs::write(&out, &archive).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     println!(
-        "[build] initrd ({count} programs, {} bytes) -> {}",
+        "[build] initrd ({} programs, {} home files, {} bytes) -> {}",
+        USER_PROGRAMS.len(),
+        seeds.len(),
         archive.len(),
         out.display()
     );

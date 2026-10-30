@@ -25,6 +25,7 @@ mod console;
 mod cpu;
 mod faults;
 mod fpu;
+mod fs;
 mod gdt;
 mod initrd;
 mod interrupts;
@@ -186,6 +187,8 @@ fn run(mut mem: memory::Memory) -> ! {
     }
     memory::install(mem);
     process::init();
+    let (files, nodes) = fs::init();
+    kprintln!("ZOO_OS INFO fs seeded files={} nodes={}", files, nodes);
     run_boot_processes();
     kprintln!("ZOO_OS READY");
     shell::run()
