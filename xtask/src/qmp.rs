@@ -82,9 +82,16 @@ impl Qmp {
     }
 
     /// Presses and releases one key, named by its QEMU `qcode`.
+    /// Presses one key, or several together when joined by `+`
+    /// (`shift+p`).
     pub fn send_key(&mut self, qcode: &str) -> Result<(), String> {
+        let keys: Vec<String> = qcode
+            .split('+')
+            .map(|k| format!(r#"{{"type":"qcode","data":"{k}"}}"#))
+            .collect();
         let cmd = format!(
-            r#"{{"execute":"send-key","arguments":{{"keys":[{{"type":"qcode","data":"{qcode}"}}]}}}}"#
+            r#"{{"execute":"send-key","arguments":{{"keys":[{}]}}}}"#,
+            keys.join(",")
         );
         self.command(&cmd).map(|_| ())
     }

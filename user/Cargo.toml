@@ -52,6 +52,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "parrot-handler"
+path = "src/bin/parrot-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "otter-handler"
 path = "src/bin/otter-handler.rs"
 test = false

@@ -1,9 +1,9 @@
 # Verification record
 
-Status: M0–M4, M5a, M5b, M5c-1 and the interim console verified on the host
-below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The M5c-1 section
-(version 0.8.0) is the current state.
+Status: M0–M5 (M5 as a prototype) and the interim console verified on the
+host below on 2026-10-30. Logs and screenshots are generated under `build/`
+(ignored by Git); rerun the commands to reproduce them. The M5c-2 section
+(version 0.9.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,82 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## M5c-2 results (version 0.9.0)
+
+Design: docs/m5c2-design.md. New: ParrotHandler (the Assistant window),
+ElephantHandler's service mode, guided tool choice (`infer/src/assist.rs`),
+three verify cases and `cargo xtask assist-check`. The initrd holds 11
+programs and 4 seed files (473,088 bytes).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 485 s,
+`ZOO_OS BOOT version=0.9.0`.
+
+| Case | Result | Time | Notes |
+| --- | --- | --- | --- |
+| normal, panic, 3 fault modes, keyboard, scroll | OK | 2.7–6.7 s | unchanged |
+| desktop | OK | 12.9 s | three windows now; process ids for the restarts moved (Parrot is one more app) |
+| assistant | OK | 22.2 s | typed commands, plan + `y`, undo, not found, escape refused, "model is not installed" |
+| assistant-model | OK | 25.3 s | see below |
+| assistant-live | **SKIP** | — | `not run: needs a hardware accelerator (--accel whpx or kvm)` |
+| inference | OK | 356.7 s | unchanged |
+| 3 negative cases | rejected as intended | 1.8–5.0 s | unchanged |
+
+Screen checks (exact text and colours, with a wrong string that must not
+match):
+
+    screen 1-plan: `Assistant` focused at (660, 416); search result at (660, 504); plan shown and confirmation asked at (660, 444); nothing created yet
+    screen 2-transcript: created at (660, 544), undone at (660, 584), then not found; escape refused at (660, 684); missing model reported at (660, 724); wrong text rejected
+    screen 1-busy: while the model works (status `Thinking:` at (660, 444)), Files took focus at (32, 52) and its selection moved to the 3rd entry at (32, 120)
+    screen 2-cancelled: `Cancelled.` at (660, 504), ready again at (660, 444), no longer thinking
+
+**Cancellation under TCG** (assistant-model serial log). The request was
+cancelled while the system prompt was being computed; the service noticed
+at its next token, 756 ticks (7.6 s) after Parrot sent `cancel`:
+
+    [13:parrot-handler] ParrotHandler: cancel sent at tick 1038
+    [14:elephant-handler] ElephantHandler: cancel seen at tick 1794, 1024 ticks into the request
+    [14:elephant-handler] ElephantHandler: request cancelled
+
+An earlier run of the same case gave 818 ticks. These are observations, not
+performance claims.
+
+**`--accel whpx --case assistant-live`** on the final code: exit 0 in 65 s
+(case 47.0 s):
+
+    [14:elephant-handler] ElephantHandler: system prompt 55 tokens in 1908 ticks
+    [14:elephant-handler] ElephantHandler: `Find my pancake recipe`: margin 3, 10 request + 3 argument tokens, 2402 ticks
+    [14:elephant-handler] ElephantHandler: chose search `pancake recipe`
+    [14:elephant-handler] ElephantHandler: `Make a folder called Projects/2026`: margin 140, 15 request + 6 argument tokens, 762 ticks
+    [14:elephant-handler] ElephantHandler: chose create `Projects/2026`
+    screen 1-live: model chose `search pancake recipe` at (660, 504) (result shown) and `create Projects/2026` at (660, 564), created after `y` at (660, 644)
+
+**`cargo xtask assist-check`** (host engine, same code): PASS, 8 of 8, in
+39 s. The first request's tool margin is small (0.04 on the host, 3/100 in
+the guest), so that choice is the least certain one.
+
+| Request | Choice | Margin |
+| --- | --- | --- |
+| Find my pancake recipe | search `pancake recipe` | 0.04 |
+| Search for files that mention flour | search `flour` | 2.72 |
+| What is in my Documents folder? | list `Documents` | 1.53 |
+| Show me what's inside Music | list `Music` | 0.29 |
+| How big is Documents/notes.txt? | inspect `Documents/notes.txt` | 0.32 |
+| Make a folder called Projects/2026 | create `Projects/2026` | 1.40 |
+| Create a new folder named Invoices | create `Invoices` | 4.14 |
+| Please create the folder Photos/Holidays | create `Photos/Holidays` | 5.37 |
+
+**Negative controls:**
+
+| Change | Result |
+| --- | --- |
+| ElephantHandler ignores `cancel` (temporary edit, reverted) | `FAIL assistant-model … got=timeout 300.0s`; the log shows `cancel sent` and no `request cancelled` |
+| `assist-check` expecting `search "pancake"` (its first version) | `FAIL "Find my pancake recipe" -> search "pancake recipe" … expected search "pancake"`; exit 1. The expectation now accepts both, and OtterHandler's search matches all words against paths, so both find the recipe |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed (2 new tests for `assist`). Not run: a clean-copy
+verify.
 
 ## M5c-1 results (version 0.8.0)
 

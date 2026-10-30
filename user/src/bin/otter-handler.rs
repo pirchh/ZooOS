@@ -3,6 +3,9 @@
 //! channel. Whoever talks to it (later, the assistant model) never gets
 //! file access of its own.
 //!
+//! `search` matches an entry when every word of the query appears in its
+//! path or (for files) its first 64 KiB, ignoring case.
+//!
 //! Protocol: one request per message (`search <text>`, `list <path>`,
 //! `inspect <path>`, `plan <path>`, `create <path>`, `undo`, `quit`). Each
 //! reply is zero or more `| <line>` messages, then `ok` or `err <reason>`.
@@ -179,9 +182,10 @@ impl Otter {
         if text.is_empty() {
             return Err("nothing to search for");
         }
+        let words: Vec<&[u8]> = text.split_whitespace().map(str::as_bytes).collect();
         let mut found = Vec::new();
         let mut truncated = false;
-        self.walk("", 0, text.as_bytes(), &mut found, &mut truncated)
+        self.walk("", 0, &words, &mut found, &mut truncated)
             .map_err(reason)?;
         for path in &found {
             self.line(format_args!("{}", path))
@@ -205,7 +209,7 @@ impl Otter {
         &self,
         dir: &str,
         depth: usize,
-        needle: &[u8],
+        words: &[&[u8]],
         found: &mut Vec<String>,
         truncated: &mut bool,
     ) -> Result<(), Error> {
@@ -214,8 +218,7 @@ impl Otter {
         }
         for e in self.entries(dir)? {
             let path = join(dir, e.name());
-            let hit = contains_ignore_case(e.name().as_bytes(), needle)
-                || (!e.is_dir() && self.file_contains(&path, needle));
+            let hit = self.matches(&path, e.is_dir(), words);
             if hit {
                 if found.len() == MAX_RESULTS {
                     *truncated = true;
@@ -224,18 +227,33 @@ impl Otter {
                 found.push(path.clone());
             }
             if e.is_dir() {
-                self.walk(&path, depth + 1, needle, found, truncated)?;
+                self.walk(&path, depth + 1, words, found, truncated)?;
             }
         }
         Ok(())
     }
 
-    fn file_contains(&self, path: &str, needle: &[u8]) -> bool {
-        let mut buf = alloc::vec![0u8; SEARCH_BYTES];
-        match file_read(self.home, path, 0, &mut buf) {
-            Ok(n) => contains_ignore_case(&buf[..n], needle),
-            Err(_) => false,
+    /// Every word appears in the path, or in the file's first 64 KiB.
+    fn matches(&self, path: &str, is_dir: bool, words: &[&[u8]]) -> bool {
+        let mut content = None;
+        for w in words {
+            if contains_ignore_case(path.as_bytes(), w) {
+                continue;
+            }
+            if is_dir {
+                return false;
+            }
+            let data = content.get_or_insert_with(|| {
+                let mut buf = alloc::vec![0u8; SEARCH_BYTES];
+                let n = file_read(self.home, path, 0, &mut buf).unwrap_or(0);
+                buf.truncate(n);
+                buf
+            });
+            if !contains_ignore_case(data, w) {
+                return false;
+            }
         }
+        true
     }
 
     /// `plan` (`apply` false) reports what `create` would do; `create`

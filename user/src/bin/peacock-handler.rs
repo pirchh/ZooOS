@@ -1,7 +1,12 @@
 //! PeacockHandler: the window server (docs/m4-design.md §4). Owns the
-//! display and keyboard, runs two applications (Files and Chimp) over
-//! channels, draws a menu bar, two windows and a status line, routes keys to
-//! the focused window, and restarts applications that crash.
+//! display and keyboard, runs three applications (Files, Chimp and the
+//! Assistant, docs/m5c2-design.md) over channels, draws a menu bar, the
+//! windows and a status line, routes keys to the focused window, and
+//! restarts applications that crash.
+//!
+//! Its second start-up handle is the home directory (from Zookeeper); each
+//! start of the Assistant gets a fresh copy, which it passes on to the file
+//! broker.
 
 #![no_std]
 #![no_main]
@@ -13,10 +18,11 @@ use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1}
 use zoo_abi::{FORMAT_BGR, MAX_MESSAGE};
 use zoo_rt::app::{Key, MAX_LINES};
 use zoo_rt::{
-    Error, Line, channel_create, close, display_acquire, input_read, log, spawn, try_recv, wait,
+    Error, Line, channel_create, close, dir_open, dir_rights, display_acquire, input_read, log,
+    spawn, spawn_with, try_recv, wait,
 };
 
-zoo_rt::entry!(main);
+zoo_rt::entry2!(main);
 
 // ---- colours (docs/m4-design.md §7), as 0xRRGGBB ----------------------
 const DESKTOP: u32 = 0x1E3A4C;
@@ -77,6 +83,8 @@ struct App {
     /// Shown in the status line, e.g. "ChimpHandler".
     label: &'static str,
     program: &'static str,
+    /// Gets a copy of the home directory handle as its second handle.
+    wants_home: bool,
     chan: u64,
     process: u64,
     running: bool,
@@ -88,10 +96,11 @@ struct App {
 }
 
 impl App {
-    const fn new(label: &'static str, program: &'static str) -> App {
+    const fn new(label: &'static str, program: &'static str, wants_home: bool) -> App {
         App {
             label,
             program,
+            wants_home,
             chan: 0,
             process: 0,
             running: false,
@@ -103,11 +112,26 @@ impl App {
         }
     }
 
-    fn start(&mut self) -> bool {
+    fn start(&mut self, home: u64) -> bool {
         let Ok((mine, theirs)) = channel_create() else {
             return false;
         };
-        match spawn(self.program, Some(theirs)) {
+        let started = if self.wants_home && home != zoo_rt::NO_HANDLE {
+            match dir_open(home, "", dir_rights::ALL) {
+                Ok(copy) => {
+                    let r = spawn_with(self.program, [Some(theirs), Some(copy)]);
+                    if r.is_err() {
+                        let _ = close(copy);
+                        let _ = close(theirs);
+                    }
+                    r
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            spawn(self.program, Some(theirs))
+        };
+        match started {
             Ok(p) => {
                 self.chan = mine;
                 self.process = p;
@@ -235,7 +259,9 @@ fn blend(bg: u32, fg: u32, i: u8) -> u32 {
 
 struct Desktop {
     screen: Screen,
-    apps: [App; 2],
+    apps: [App; 3],
+    /// Home directory handle; copies go to the Assistant.
+    home: u64,
     focus: usize,
     status: Line,
 }
@@ -262,12 +288,17 @@ impl Desktop {
             16 * CHAR_W,
         );
 
-        // Two windows side by side.
+        // Files on the left; Chimp and the Assistant stacked on the right.
         let win_w = (w - 3 * MARGIN) / 2;
-        let win_y = BAR_H + MARGIN;
-        let win_h = h - win_y - BAR_H - MARGIN;
+        let top_y = BAR_H + MARGIN;
+        let full_h = h - top_y - BAR_H - MARGIN;
+        let half_h = (full_h - MARGIN) / 2;
         for (i, app) in self.apps.iter().enumerate() {
-            let x = MARGIN + i * (win_w + MARGIN);
+            let (x, win_y, win_h) = match i {
+                0 => (MARGIN, top_y, full_h),
+                1 => (2 * MARGIN + win_w, top_y, half_h),
+                _ => (2 * MARGIN + win_w, top_y + half_h + MARGIN, half_h),
+            };
             let (tbg, tfg) = if i == self.focus {
                 (TITLE_FOCUSED, TITLE_FOCUSED_TEXT)
             } else {
@@ -351,7 +382,7 @@ impl Desktop {
                 app.restarts,
                 APP_RESTARTS
             );
-            app.start();
+            app.start(self.home);
         } else {
             let _ = write!(status, "{} ended; restart limit reached", app.label);
         }
@@ -360,7 +391,7 @@ impl Desktop {
     }
 }
 
-fn main(_start_handle: u64) -> u8 {
+fn main(_start_handle: u64, home: u64) -> u8 {
     let info = match display_acquire() {
         Ok(i) => i,
         Err(e) => {
@@ -392,9 +423,11 @@ fn main(_start_handle: u64) -> u8 {
             back: &mut back[..w * h],
         },
         apps: [
-            App::new("OwlHandler", "owl-handler"),
-            App::new("ChimpHandler", "chimp-handler"),
+            App::new("OwlHandler", "owl-handler", false),
+            App::new("ChimpHandler", "chimp-handler", false),
+            App::new("ParrotHandler", "parrot-handler", true),
         ],
+        home,
         focus: 0,
         status: Line::new(),
     };
@@ -403,7 +436,7 @@ fn main(_start_handle: u64) -> u8 {
         "Tab: next window   Arrows/Enter/Backspace: use window   Esc: leave the desktop"
     );
     for app in desk.apps.iter_mut() {
-        if !app.start() {
+        if !app.start(home) {
             zoo_rt::log!("PeacockHandler: cannot start {}", app.program);
         }
     }

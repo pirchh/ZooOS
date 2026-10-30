@@ -75,11 +75,12 @@ Opera/WoW plan and must be allowed to report that honestly.
 
 ## M5 — local assistant prototype
 
-Status: in progress. M5a (floating point, user heap, file mapping), M5b
-(inference engine, docs/m5b-design.md) and M5c-1 (filesystem, directory
-capabilities, action broker, docs/m5c1-design.md) done 2026-10-30. Next:
-M5c-2, the assistant UI and model loop (cancellation, budgets, desktop
-responsiveness while inference runs).
+Status: prototype complete 2026-10-30. M5a (floating point, user heap, file
+mapping), M5b (inference engine, docs/m5b-design.md), M5c-1 (filesystem,
+directory capabilities, action broker, docs/m5c1-design.md) and M5c-2
+(Assistant window, model service, guided tool choice, cancellation, budgets,
+docs/m5c2-design.md). Limits: one command per request, no persistence,
+model quality checked on 8 fixed requests only; speech not started.
 
 Port a small runtime, benchmark a selected local model and implement permission-
 checked file search/folder creation. Acceptance: real results, scoped operations,

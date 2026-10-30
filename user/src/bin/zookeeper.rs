@@ -33,10 +33,22 @@ fn main(start_handle: u64) -> u8 {
 /// Desktop session (docs/m4-design.md §3): run the window server, restart it
 /// if it ends abnormally, finish when it exits cleanly.
 fn session() -> u8 {
+    use zoo_rt::dir_rights as r;
     let _ = log("Zookeeper: starting the desktop session");
+    // The desktop gets the user's home folder, nothing above it
+    // (docs/m5c2-design.md §2).
+    let home = match zoo_rt::fs_root() {
+        Ok(root) => {
+            let home = zoo_rt::dir_open(root, "home/user", r::ALL).ok();
+            let _ = close(root);
+            home
+        }
+        Err(_) => None,
+    };
     let mut restarts = 0;
     loop {
-        let Ok(peacock) = spawn("peacock-handler", None) else {
+        let copy = home.and_then(|h| zoo_rt::dir_open(h, "", r::ALL).ok());
+        let Ok(peacock) = zoo_rt::spawn_with("peacock-handler", [None, copy]) else {
             return 2;
         };
         let outcome = wait(peacock);
@@ -333,6 +345,11 @@ fn check_directories() -> Result<(), u8> {
             "search pancake",
             &["| Documents/recipes/pancakes.txt", "ok"],
         ),
+        (
+            "search pancake recipe",
+            &["| Documents/recipes/pancakes.txt", "ok"],
+        ),
+        ("search zebra vet", &["| Documents/notes.txt", "ok"]),
         (
             "search FLOUR",
             &[
