@@ -3,9 +3,9 @@
 
 use std::fmt;
 
-pub const PREFIX: &str = "ORIGINS_OS ";
-const INFO: &str = "ORIGINS_OS INFO ";
-const INFO_MODE: &str = "ORIGINS_OS INFO mode=";
+pub const PREFIX: &str = "ZOO_OS ";
+const INFO: &str = "ZOO_OS INFO ";
+const INFO_MODE: &str = "ZOO_OS INFO mode=";
 
 #[derive(Clone, Debug)]
 pub enum Matcher {
@@ -42,8 +42,8 @@ impl Expectation {
     /// `tail` exactly, in order.
     pub fn new(version: &str, kernel_mode: &str, tail: &[&str]) -> Self {
         let mut required = vec![
-            Matcher::Exact(format!("ORIGINS_OS BOOT version={version}")),
-            Matcher::Prefix(format!("ORIGINS_OS INFO mode={kernel_mode} ")),
+            Matcher::Exact(format!("ZOO_OS BOOT version={version}")),
+            Matcher::Prefix(format!("ZOO_OS INFO mode={kernel_mode} ")),
         ];
         required.extend(tail.iter().map(|t| Matcher::Exact(t.to_string())));
         Expectation { required }
@@ -62,7 +62,7 @@ pub enum Verdict {
 
 /// Evaluates complete lines only (a partially written last line is ignored).
 ///
-/// Every line containing `ORIGINS_OS ` is a marker, except `INFO` lines that
+/// Every line containing `ZOO_OS ` is a marker, except `INFO` lines that
 /// do not carry `mode=`. Each marker must match the next required one; any
 /// other marker (e.g. PANIC in normal mode, READY in panic mode, or anything
 /// after the final marker) fails immediately.
@@ -107,17 +107,17 @@ mod tests {
     // M1-shaped expectations keep these tests short; M2 cases only add
     // lines to the tail, which `new` handles the same way.
     fn normal(v: &str) -> Expectation {
-        Expectation::new(v, "normal", &["ORIGINS_OS READY"])
+        Expectation::new(v, "normal", &["ZOO_OS READY"])
     }
 
     fn panic(v: &str) -> Expectation {
-        Expectation::new(v, "panic-test", &["ORIGINS_OS PANIC intentional-test"])
+        Expectation::new(v, "panic-test", &["ZOO_OS PANIC intentional-test"])
     }
-    const NORMAL_OK: &str = "BdsDxe: loading\r\nORIGINS_OS BOOT version=0.1.0\r\n\
-        ORIGINS_OS INFO mode=normal memory_regions=9 usable_bytes=1\r\nORIGINS_OS READY\r\n";
-    const PANIC_OK: &str = "ORIGINS_OS BOOT version=0.1.0\r\n\
-        ORIGINS_OS INFO mode=panic-test memory_regions=9 usable_bytes=1\r\n\
-        ORIGINS_OS PANIC intentional-test\r\nORIGINS_OS INFO panic_location=kernel/src/main.rs:40\r\n";
+    const NORMAL_OK: &str = "BdsDxe: loading\r\nZOO_OS BOOT version=0.1.0\r\n\
+        ZOO_OS INFO mode=normal memory_regions=9 usable_bytes=1\r\nZOO_OS READY\r\n";
+    const PANIC_OK: &str = "ZOO_OS BOOT version=0.1.0\r\n\
+        ZOO_OS INFO mode=panic-test memory_regions=9 usable_bytes=1\r\n\
+        ZOO_OS PANIC intentional-test\r\nZOO_OS INFO panic_location=kernel/src/main.rs:40\r\n";
 
     #[test]
     fn normal_passes() {
@@ -131,10 +131,10 @@ mod tests {
 
     #[test]
     fn missing_ready_is_pending() {
-        let log = "ORIGINS_OS BOOT version=0.1.0\nORIGINS_OS INFO mode=normal x=1\n";
+        let log = "ZOO_OS BOOT version=0.1.0\nZOO_OS INFO mode=normal x=1\n";
         assert_eq!(
             evaluate(&normal(V), log),
-            Verdict::Pending("ORIGINS_OS READY".into())
+            Verdict::Pending("ZOO_OS READY".into())
         );
     }
 
@@ -145,8 +145,7 @@ mod tests {
 
     #[test]
     fn partial_last_line_is_not_counted() {
-        let log =
-            "ORIGINS_OS BOOT version=0.1.0\nORIGINS_OS INFO mode=normal x=1\nORIGINS_OS READY";
+        let log = "ZOO_OS BOOT version=0.1.0\nZOO_OS INFO mode=normal x=1\nZOO_OS READY";
         assert!(matches!(evaluate(&normal(V), log), Verdict::Pending(_)));
     }
 
@@ -160,8 +159,8 @@ mod tests {
 
     #[test]
     fn panic_in_normal_mode_fails() {
-        let log = "ORIGINS_OS BOOT version=0.1.0\nORIGINS_OS INFO mode=normal x=1\n\
-            ORIGINS_OS PANIC something\n";
+        let log = "ZOO_OS BOOT version=0.1.0\nZOO_OS INFO mode=normal x=1\n\
+            ZOO_OS PANIC something\n";
         assert!(matches!(evaluate(&normal(V), log), Verdict::Unexpected(_)));
     }
 
@@ -183,34 +182,34 @@ mod tests {
 
     #[test]
     fn ready_after_panic_fails() {
-        let log = format!("{PANIC_OK}ORIGINS_OS READY\n");
+        let log = format!("{PANIC_OK}ZOO_OS READY\n");
         assert!(matches!(evaluate(&panic(V), &log), Verdict::Unexpected(_)));
     }
 
     #[test]
     fn out_of_order_fails() {
-        let log = "ORIGINS_OS READY\nORIGINS_OS BOOT version=0.1.0\n";
+        let log = "ZOO_OS READY\nZOO_OS BOOT version=0.1.0\n";
         assert!(matches!(evaluate(&normal(V), log), Verdict::Unexpected(_)));
     }
 
     #[test]
     fn wrong_version_fails() {
-        let log = "ORIGINS_OS BOOT version=9.9.9\n";
+        let log = "ZOO_OS BOOT version=9.9.9\n";
         assert!(matches!(evaluate(&normal(V), log), Verdict::Unexpected(_)));
     }
 
     #[test]
     fn duplicate_ready_fails() {
-        let log = format!("{NORMAL_OK}ORIGINS_OS READY\n");
+        let log = format!("{NORMAL_OK}ZOO_OS READY\n");
         assert!(matches!(evaluate(&normal(V), &log), Verdict::Unexpected(_)));
     }
 
     #[test]
     fn marker_after_escape_sequence_is_found() {
-        let log = "\x1b[2J\x1b[01;01HORIGINS_OS BOOT version=0.1.0\r\n";
+        let log = "\x1b[2J\x1b[01;01HZOO_OS BOOT version=0.1.0\r\n";
         assert_eq!(
             evaluate(&normal(V), log),
-            Verdict::Pending("ORIGINS_OS INFO mode=normal …".into())
+            Verdict::Pending("ZOO_OS INFO mode=normal …".into())
         );
     }
 
@@ -219,21 +218,19 @@ mod tests {
         let exp = Expectation::new(
             V,
             "fault-heap-guard",
-            &[
-                "ORIGINS_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000",
-            ],
+            &["ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000"],
         );
-        let head = "ORIGINS_OS BOOT version=0.1.0
-ORIGINS_OS INFO mode=fault-heap-guard x=1
+        let head = "ZOO_OS BOOT version=0.1.0
+ZOO_OS INFO mode=fault-heap-guard x=1
 ";
         let good = format!(
-            "{head}ORIGINS_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000
-             ORIGINS_OS INFO exception rip=0x1 rsp=0x2 error=0x0
+            "{head}ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000
+             ZOO_OS INFO exception rip=0x1 rsp=0x2 error=0x0
 "
         );
         assert_eq!(evaluate(&exp, &good), Verdict::Pass);
         let wrong_addr = format!(
-            "{head}ORIGINS_OS EXCEPTION page-fault access=read cause=not-present addr=0x0000000000000000
+            "{head}ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0x0000000000000000
 "
         );
         assert!(matches!(
@@ -244,14 +241,10 @@ ORIGINS_OS INFO mode=fault-heap-guard x=1
 
     #[test]
     fn self_test_failure_panic_is_rejected() {
-        let exp = Expectation::new(
-            V,
-            "normal",
-            &["ORIGINS_OS TEST heap ok", "ORIGINS_OS READY"],
-        );
-        let log = "ORIGINS_OS BOOT version=0.1.0
-ORIGINS_OS INFO mode=normal x=1
-            ORIGINS_OS PANIC self-test heap: Vec sum 1 wrong
+        let exp = Expectation::new(V, "normal", &["ZOO_OS TEST heap ok", "ZOO_OS READY"]);
+        let log = "ZOO_OS BOOT version=0.1.0
+ZOO_OS INFO mode=normal x=1
+            ZOO_OS PANIC self-test heap: Vec sum 1 wrong
 ";
         assert!(matches!(evaluate(&exp, log), Verdict::Unexpected(_)));
     }

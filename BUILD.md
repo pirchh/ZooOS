@@ -52,11 +52,11 @@ Missing prerequisites produce an actionable error and nonzero exit code.
 Normal guest markers, emitted by kernel code after kernel entry (the version
 is the workspace crate version: 0.1.0 at M1, 0.2.0 since M2):
 
-    ORIGINS_OS BOOT version=0.2.0
-    ORIGINS_OS READY
+    ZOO_OS BOOT version=0.2.0
+    ZOO_OS READY
 
 Since the interim console (0.3.0), normal boots also print
-`ORIGINS_OS SHELL ready` after READY and then wait for keyboard input; the
+`ZOO_OS SHELL ready` after READY and then wait for keyboard input; the
 `keyboard` and `scroll` verify cases type into the guest through QMP and
 check screenshots. `cargo xtask run` opens a QEMU window for the keyboard.
 
@@ -67,7 +67,7 @@ verifier must reject. The full list is in docs/m2-design.md §9.
 
 A separately built deliberate-panic mode must emit the startup marker and then:
 
-    ORIGINS_OS PANIC intentional-test
+    ZOO_OS PANIC intentional-test
 
 Normal mode must not emit PANIC. Panic mode must not emit READY after the panic.
 Both guests halt after their expected state. The verifier observes output,

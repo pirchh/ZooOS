@@ -1,6 +1,6 @@
 # Start here
 
-This is the implementation handoff for the OriginsOS project (placeholder name). It is not
+This is the implementation handoff for the ZooOS project (formerly the placeholder OriginsOS). It is not
 Stonepyre. Copy this entire folder into its own new project/repository before
 implementation. Do not point the coding agent at only the architecture document.
 
@@ -21,8 +21,11 @@ Quick start (after installing the prerequisites in tools/firmware/README.md):
     cargo xtask verify
     cargo xtask run
 
-OriginsOS is the current placeholder. Earlier alternatives were not checked
-for naming conflicts. Use origins-os in technical identifiers for now.
+Naming: the project was renamed from the placeholder OriginsOS to ZooOS on
+2026-10-30. Technical identifiers use zoo-os. The runtime/service supervisor
+planned for M3 will be called Zookeeper, and services animal-named handlers.
+A web, GitHub and crates.io check found no OS or product called ZooOS; no
+legal trademark search has been done. See DECISIONS.md.
 
 Files:
 - ARCHITECTURE.md: system diagrams and product direction.

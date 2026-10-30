@@ -1,5 +1,5 @@
 //! Boot-time self-tests (docs/m2-design.md §9). Each prints
-//! `ORIGINS_OS TEST <name> ok` or panics with `self-test <name>: <reason>`.
+//! `ZOO_OS TEST <name> ok` or panics with `self-test <name>: <reason>`.
 
 use crate::interrupts;
 use crate::kprintln;
@@ -28,7 +28,7 @@ pub fn breakpoint() {
         "handler ran {} times, expected 1",
         after - before
     );
-    kprintln!("ORIGINS_OS TEST breakpoint ok");
+    kprintln!("ZOO_OS TEST breakpoint ok");
 }
 
 const FRAME_TEST_COUNT: usize = 64;
@@ -122,11 +122,11 @@ pub fn frames(mem: &mut Memory) {
         "free count not restored"
     );
     kprintln!(
-        "ORIGINS_OS INFO frames total={} free={}",
+        "ZOO_OS INFO frames total={} free={}",
         mem.frames.total(),
         mem.frames.available()
     );
-    kprintln!("ORIGINS_OS TEST frames ok");
+    kprintln!("ZOO_OS TEST frames ok");
 }
 
 fn pattern(frame: usize, word: usize) -> u64 {
@@ -204,7 +204,7 @@ pub fn paging(mem: &mut Memory) {
         mem.is_mapped(mem.stack_bottom),
         "kernel stack bottom not mapped"
     );
-    kprintln!("ORIGINS_OS TEST paging ok");
+    kprintln!("ZOO_OS TEST paging ok");
 }
 
 pub fn heap() {
@@ -261,12 +261,12 @@ pub fn heap() {
         "heap usage {after} after frees, expected {base}"
     );
     kprintln!(
-        "ORIGINS_OS INFO heap size={} churned_bytes={} used={}",
+        "ZOO_OS INFO heap size={} churned_bytes={} used={}",
         memory::HEAP_SIZE,
         total,
         after
     );
-    kprintln!("ORIGINS_OS TEST heap ok");
+    kprintln!("ZOO_OS TEST heap ok");
 }
 
 /// Upper bound on spin iterations while waiting for timer ticks, so a
@@ -289,10 +289,10 @@ pub fn timer() {
         "only {got} ticks after {spins} spins (wanted {TIMER_TICKS_WANTED})"
     );
     kprintln!(
-        "ORIGINS_OS INFO timer hz={} ticks={} spins={}",
+        "ZOO_OS INFO timer hz={} ticks={} spins={}",
         interrupts::TIMER_HZ,
         got,
         spins
     );
-    kprintln!("ORIGINS_OS TEST timer ok");
+    kprintln!("ZOO_OS TEST timer ok");
 }

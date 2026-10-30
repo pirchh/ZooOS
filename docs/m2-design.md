@@ -134,13 +134,13 @@ an early exit (a failure).
 
 Fatal exceptions print one marker line, then `INFO` details:
 
-    ORIGINS_OS EXCEPTION page-fault access=<read|write|execute> cause=<not-present|protection> addr=0x<16 hex digits>
-    ORIGINS_OS EXCEPTION double-fault stack-guard-hit        (CR2 in the stack guard page)
-    ORIGINS_OS EXCEPTION double-fault cr2=0x<16 hex digits>  (otherwise)
-    ORIGINS_OS EXCEPTION <name>                              (other exceptions)
-    ORIGINS_OS INFO exception rip=0x… error=0x… …
+    ZOO_OS EXCEPTION page-fault access=<read|write|execute> cause=<not-present|protection> addr=0x<16 hex digits>
+    ZOO_OS EXCEPTION double-fault stack-guard-hit        (CR2 in the stack guard page)
+    ZOO_OS EXCEPTION double-fault cr2=0x<16 hex digits>  (otherwise)
+    ZOO_OS EXCEPTION <name>                              (other exceptions)
+    ZOO_OS INFO exception rip=0x… error=0x… …
 
-Self-tests print `ORIGINS_OS TEST <name> ok` on success. On failure they
+Self-tests print `ZOO_OS TEST <name> ok` on success. On failure they
 panic with `self-test <name>: <reason>`, which the verifier rejects.
 
 ## 9. Build modes and verification cases

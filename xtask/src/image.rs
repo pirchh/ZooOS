@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
-const KERNEL_PACKAGE: &str = "origins-os-kernel";
+const KERNEL_PACKAGE: &str = "zoo-os-kernel";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -111,7 +111,7 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
     let out_dir = root.join("build").join(mode.name());
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
-    let img = out_dir.join(format!("origins-os-{}-uefi.img", mode.name()));
+    let img = out_dir.join(format!("zoo-os-{}-uefi.img", mode.name()));
     bootloader::UefiBoot::new(&elf)
         .create_disk_image(&img)
         .map_err(|e| format!("failed to create UEFI disk image {}: {e:#}", img.display()))?;

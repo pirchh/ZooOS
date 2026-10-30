@@ -4,8 +4,8 @@ Read README.md and AGENTS.md, then ARCHITECTURE.md, DECISIONS.md, BUILD.md,
 MILESTONES.md and COMPATIBILITY.md in this repository.
 
 Let's get after it: implement milestones M0 and M1 for this independent Rust-first
-OS. The placeholder project name is OriginsOS; it is not Stonepyre. Use origins-os as the
-temporary identifier. Work autonomously through routine implementation choices
+OS. (Historical kickoff prompt. The project has since been renamed from the
+placeholder OriginsOS to ZooOS; it is not Stonepyre. Use zoo-os as the identifier.) Work autonomously through routine implementation choices
 within those milestones and record decisions as you go.
 
 Use an established UEFI bootloader, an x86-64 freestanding Rust kernel, and QEMU.

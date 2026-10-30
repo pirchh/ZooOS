@@ -8,13 +8,13 @@ use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, PS2Keyboard, ScancodeSet1};
 use x86_64::instructions::interrupts as cpu_interrupts;
 
-const PROMPT: &str = "origins> ";
+const PROMPT: &str = "zoo> ";
 const MAX_LINE: usize = 120;
 
 pub fn run(mut mem: Memory) -> ! {
     let drained = interrupts::enable_keyboard();
-    serial_println!("ORIGINS_OS INFO keyboard irq=1 drained={}", drained);
-    kprintln!("ORIGINS_OS SHELL ready");
+    serial_println!("ZOO_OS INFO keyboard irq=1 drained={}", drained);
+    kprintln!("ZOO_OS SHELL ready");
     kprintln!("Type 'help' for commands.");
     kprint!("{}", PROMPT);
 
@@ -31,7 +31,7 @@ pub fn run(mut mem: Memory) -> ! {
         match c {
             '\n' => {
                 kprint!("\n");
-                serial_println!("ORIGINS_OS SHELL line={}", line);
+                serial_println!("ZOO_OS SHELL line={}", line);
                 execute(line.trim(), &mut mem);
                 line.clear();
                 kprint!("{}", PROMPT);

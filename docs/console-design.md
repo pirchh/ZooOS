@@ -59,14 +59,14 @@ screen shows is also sent to COM1, so the automated verifier keeps working.
 
 ## 3. Debug shell (in-kernel)
 
-- Starts after `READY`: prints `ORIGINS_OS SHELL ready`, then the prompt
-  `origins> `.
+- Starts after `READY`: prints `ZOO_OS SHELL ready`, then the prompt
+  `zoo> `.
 - Loop: with interrupts disabled, check the queue; if empty, `sti; hlt`
   atomically (so a key arriving between the check and the halt still wakes
   it). Otherwise decode and handle the key.
 - Line editing: printable characters are appended and echoed; Backspace
   deletes one character; Enter submits. The line is at most 120 characters.
-- On Enter the kernel prints `ORIGINS_OS SHELL line=<text>` to serial only
+- On Enter the kernel prints `ZOO_OS SHELL line=<text>` to serial only
   (the screen shows the typed line already), then runs the command.
 - Commands:
 
@@ -86,26 +86,26 @@ screen shows is also sent to COM1, so the automated verifier keeps working.
 
 ## 4. Markers and verification
 
-Normal boots now end with `ORIGINS_OS READY` followed by
-`ORIGINS_OS SHELL ready`. A new verifier case drives the real guest:
+Normal boots now end with `ZOO_OS READY` followed by
+`ZOO_OS SHELL ready`. A new verifier case drives the real guest:
 
 1. Start QEMU with a QMP control socket on `127.0.0.1` (free port chosen at
    run time) in addition to the existing serial log.
 2. After `SHELL ready`, send keystrokes with QMP `send-key`. They go through
    the emulated PS/2 keyboard, IRQ1, the queue, the decoder and the shell:
    `e c h x Backspace o Space h i Enter`, then `m e m Enter`.
-3. Expect `ORIGINS_OS SHELL line=echo hi` (proves Backspace works) and
-   `ORIGINS_OS SHELL line=mem` on serial.
+3. Expect `ZOO_OS SHELL line=echo hi` (proves Backspace works) and
+   `ZOO_OS SHELL line=mem` on serial.
 4. Take a QMP `screendump` (PPM, plus a PNG copy for people) and check it:
-   - row 0 matches `ORIGINS_OS BOOT version=<version>` pixel for pixel,
+   - row 0 matches `ZOO_OS BOOT version=<version>` pixel for pixel,
      re-rendered on the host with the same font and layout;
-   - some row matches `origins> echo hi` pixel for pixel;
-   - a deliberately wrong string (`ORIGINS_OS BOOT version=9.9.9`) does
+   - some row matches `zoo> echo hi` pixel for pixel;
+   - a deliberately wrong string (`ZOO_OS BOOT version=9.9.9`) does
      **not** match row 0, proving the comparison can fail.
 
 Added during implementation: a `scroll` case types `help` four times and
 `echo end`, which overflows the 43-row screen, then checks that the last
-three rows are exactly `origins> echo end`, `end` and the prompt, and that
+three rows are exactly `zoo> echo end`, `end` and the prompt, and that
 the BOOT line has scrolled off row 0.
 
 Fault and panic kernels draw their reports on screen as well; their

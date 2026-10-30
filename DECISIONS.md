@@ -52,9 +52,9 @@ Evidence for each item is in docs/verification.md.
 - Normal and panic kernels are built with separate Cargo target directories
   (`target/kernel-normal`, `target/kernel-panic`) and image directories, and
   the panic kernel is selected by the `panic-test` Cargo feature. The kernel
-  also prints `ORIGINS_OS INFO mode=…`, which the verifier checks, so a
+  also prints `ZOO_OS INFO mode=…`, which the verifier checks, so a
   mixed-up image fails.
-- The kernel prints an extra `ORIGINS_OS INFO` line with memory-map data from
+- The kernel prints an extra `ZOO_OS INFO` line with memory-map data from
   BootInfo. This is not part of the BUILD.md marker contract; it is evidence
   that kernel code ran with real boot data.
 - Verifier: QEMU writes COM1 to a per-case file (`-chardev file`) and the
@@ -121,7 +121,24 @@ or a user-space shell.
   comparison can fail.
 - `cargo xtask run` now opens a QEMU window (keyboard input goes there);
   `verify` stays headless.
-- Version 0.3.0. Normal boots add `ORIGINS_OS SHELL ready` after `READY`.
+- Version 0.3.0. Normal boots add `ZOO_OS SHELL ready` after `READY`.
+
+## Rename to ZooOS (2026-10-30)
+
+- Project name ZooOS, identifier `zoo-os` (crates `zoo-os-kernel`, images
+  `zoo-os-<mode>-uefi.img`), serial markers `ZOO_OS …`, shell prompt `zoo> `.
+  Replaces the placeholder OriginsOS everywhere except past verification
+  results, which are kept as recorded, and the local checkout folder name.
+- Component naming theme: the M3 runtime/service supervisor will be
+  **Zookeeper**; services and workers are animal-named handlers
+  (`LionHandler`, `ZebraHandler`, …). Names are given only to components that
+  exist; none exist yet.
+- Name check (web, GitHub, crates.io): no OS or product called ZooOS;
+  `zooos` and `zoo-os` free on crates.io. Apache ZooKeeper (a distributed
+  coordination service) shares the runtime's name; accepted by the user,
+  since searches target "ZooOS" and Zookeeper is an internal component.
+  No legal trademark search has been done.
+- Version 0.4.0, because the serial marker contract changed.
 
 ## M0 must resolve and record
 

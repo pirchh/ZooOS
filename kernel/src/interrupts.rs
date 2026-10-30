@@ -165,14 +165,14 @@ extern "x86-interrupt" fn spurious_slave(_frame: InterruptStackFrame) {
 // ---- fatal --------------------------------------------------------------
 
 fn fatal(name: &str, frame: &InterruptStackFrame, error: Option<u64>) -> ! {
-    kprintln!("ORIGINS_OS EXCEPTION {}", name);
+    kprintln!("ZOO_OS EXCEPTION {}", name);
     details(frame, error);
     cpu::halt_forever()
 }
 
 fn details(frame: &InterruptStackFrame, error: Option<u64>) {
     kprintln!(
-        "ORIGINS_OS INFO exception rip={:#018x} rsp={:#018x} error={:#x}",
+        "ZOO_OS INFO exception rip={:#018x} rsp={:#018x} error={:#x}",
         frame.instruction_pointer.as_u64(),
         frame.stack_pointer.as_u64(),
         error.unwrap_or(0)
@@ -226,7 +226,7 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
         "not-present"
     };
     kprintln!(
-        "ORIGINS_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
+        "ZOO_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
         access,
         cause,
         addr
@@ -242,12 +242,12 @@ extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, error: u64) -
     let cr2 = Cr2::read_raw();
     let bottom = STACK_BOTTOM.load(Ordering::Relaxed);
     if bottom != 0 && (bottom - 4096..bottom).contains(&cr2) {
-        kprintln!("ORIGINS_OS EXCEPTION double-fault stack-guard-hit");
+        kprintln!("ZOO_OS EXCEPTION double-fault stack-guard-hit");
     } else {
-        kprintln!("ORIGINS_OS EXCEPTION double-fault cr2={:#018x}", cr2);
+        kprintln!("ZOO_OS EXCEPTION double-fault cr2={:#018x}", cr2);
     }
     kprintln!(
-        "ORIGINS_OS INFO double_fault cr2={:#018x} stack_bottom={:#018x}",
+        "ZOO_OS INFO double_fault cr2={:#018x} stack_bottom={:#018x}",
         cr2,
         bottom
     );
