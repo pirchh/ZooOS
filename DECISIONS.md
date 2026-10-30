@@ -136,6 +136,23 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX layer step 1: threads (2026-10-30)
+
+Design: docs/posix1-design.md. First step of the owner-chosen strategy A
+(docs/feasibility/wine-hosting.md).
+
+- Processes and threads are split: a `Proc` holds the address space,
+  handles and memory cursors; each thread is a scheduler `Task`.
+- Calls 27–31 (`thread_create`, `thread_exit`, `futex_wait`, `futex_wake`,
+  `set_fs_base`), error 18 `TIMEDOUT`. ABI version 5. Version 0.10.0.
+- Any thread's `exit`, crash or kill ends the whole process; the last
+  `thread_exit` ends it too.
+- Futex waits may return spuriously (the kernel's general wake-ups restart
+  blocked calls); callers re-check. `futex_wake` also counts waiters that a
+  general wake-up already made runnable.
+- Kernel stack slots 16 → 32.
+- Threads come before a libc: they need no host tools, and Wine needs them.
+
 ## Resolved in M5c-2 (2026-10-30)
 
 Design: docs/m5c2-design.md.
