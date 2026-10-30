@@ -55,6 +55,11 @@ is the workspace crate version: 0.1.0 at M1, 0.2.0 since M2):
     ORIGINS_OS BOOT version=0.2.0
     ORIGINS_OS READY
 
+Since the interim console (0.3.0), normal boots also print
+`ORIGINS_OS SHELL ready` after READY and then wait for keyboard input; the
+`keyboard` and `scroll` verify cases type into the guest through QMP and
+check screenshots. `cargo xtask run` opens a QEMU window for the keyboard.
+
 Since M2 the kernel also prints `INFO mode=…` after BOOT and five
 `TEST <name> ok` lines before READY (or before the panic). M2 adds fault-test
 builds that end in one `EXCEPTION …` line, and a triple-fault build that the

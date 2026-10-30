@@ -5,6 +5,7 @@ use crate::config::Tools;
 use crate::image::Mode;
 use crate::markers::{self, Expectation, Verdict};
 use crate::process::{ChildGuard, Shutdown};
+use crate::qmp::{self, Qmp};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,12 +25,19 @@ fn opt_path(p: &Path) -> Result<String, String> {
 
 /// The machine definition shared by `run` and `verify` (see DECISIONS.md).
 /// Software emulation (TCG) only, so no host hypervisor is required.
-fn machine_args(tools: &Tools, image: &Path, vars: &Path) -> Result<Vec<OsString>, String> {
+/// `headless` hides the display window; the emulated screen still exists
+/// (verify takes screenshots of it).
+fn machine_args(
+    tools: &Tools,
+    image: &Path,
+    vars: &Path,
+    headless: bool,
+) -> Result<Vec<OsString>, String> {
     let code = tools
         .ovmf_code
         .as_deref()
         .expect("resolved by resolve_for_qemu");
-    let args = [
+    let mut args = vec![
         "-machine".to_string(),
         "q35".into(),
         "-accel".into(),
@@ -51,12 +59,13 @@ fn machine_args(tools: &Tools, image: &Path, vars: &Path) -> Result<Vec<OsString
         format!("format=raw,media=disk,file={}", opt_path(image)?),
         "-nic".into(),
         "none".into(),
-        "-display".into(),
-        "none".into(),
         "-monitor".into(),
         "none".into(),
         "-no-reboot".into(),
     ];
+    if headless {
+        args.extend(["-display".into(), "none".into()]);
+    }
     Ok(args.into_iter().map(OsString::from).collect())
 }
 
@@ -101,13 +110,14 @@ pub fn run_interactive(
 ) -> Result<ExitCode, String> {
     let qemu = tools.qemu.as_deref().expect("resolved by resolve_for_qemu");
     let (dir, vars) = prepare_run_dir(root, &format!("run-{}", mode.name()), tools)?;
-    let mut args = machine_args(tools, image, &vars)?;
+    let mut args = machine_args(tools, image, &vars, false)?;
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);
     println!(
-        "[run] booting {} image; guest COM1 follows. Press Ctrl+C to stop QEMU.",
+        "[run] booting {} image in a QEMU window; type there. Guest COM1 follows here.",
         mode.name()
     );
+    println!("[run] Close the window or press Ctrl+C here to stop QEMU.");
     let child = Command::new(qemu)
         .args(&args)
         .spawn()
@@ -142,6 +152,9 @@ pub enum Outcome {
     Timeout(String),
     /// QEMU exited by itself (crash, triple fault with -no-reboot, bad args).
     EarlyExit(String),
+    /// The harness itself failed (QMP connection, screenshot), so the guest
+    /// was not properly tested. Never counts as a pass.
+    HarnessError(String),
 }
 
 impl Outcome {
@@ -151,13 +164,17 @@ impl Outcome {
             Outcome::UnexpectedMarker(_) => "unexpected-marker",
             Outcome::Timeout(_) => "timeout",
             Outcome::EarlyExit(_) => "early-exit",
+            Outcome::HarnessError(_) => "harness-error",
         }
     }
 
     pub fn detail(&self) -> &str {
         match self {
             Outcome::Pass => "all markers observed in order",
-            Outcome::UnexpectedMarker(s) | Outcome::Timeout(s) | Outcome::EarlyExit(s) => s,
+            Outcome::UnexpectedMarker(s)
+            | Outcome::Timeout(s)
+            | Outcome::EarlyExit(s)
+            | Outcome::HarnessError(s) => s,
         }
     }
 }
@@ -168,11 +185,33 @@ pub struct CaseRun {
     pub log: PathBuf,
     /// How QEMU was stopped; a halted guest is expected to be `Killed`.
     pub shutdown: String,
+    /// PPM screenshot taken after the markers passed, if requested.
+    pub screenshot: Option<PathBuf>,
+}
+
+/// Keyboard input to type through QMP once `trigger` appears on serial, and
+/// whether to take a screenshot after all markers have been seen.
+pub struct Interaction {
+    pub trigger: String,
+    /// QEMU qcodes, pressed and released one at a time.
+    pub keys: Vec<&'static str>,
+    pub screenshot: bool,
+}
+
+const KEY_GAP: Duration = Duration::from_millis(40);
+const QMP_CONNECT_BOUND: Duration = Duration::from_secs(10);
+
+/// Time limits for one case.
+pub struct Limits {
+    /// Deadline for all markers to appear.
+    pub timeout: Duration,
+    /// How long to keep watching after the last marker for trailing ones.
+    pub settle: Duration,
 }
 
 /// Boots `image` headlessly with COM1 written by QEMU itself to a log file,
-/// and evaluates that log until pass, failure, early exit or `timeout`.
-/// After a pass, keeps watching for `settle` to catch trailing markers
+/// and evaluates that log until pass, failure, early exit or the timeout.
+/// After a pass, keeps watching for the settle time to catch trailing markers
 /// (e.g. READY after PANIC). QEMU is always terminated and reaped.
 pub fn run_case(
     root: &Path,
@@ -180,13 +219,14 @@ pub fn run_case(
     case: &str,
     image: &Path,
     exp: &Expectation,
-    timeout: Duration,
-    settle: Duration,
+    limits: Limits,
+    interaction: Option<&Interaction>,
 ) -> Result<CaseRun, String> {
+    let Limits { timeout, settle } = limits;
     let qemu = tools.qemu.as_deref().expect("resolved by resolve_for_qemu");
     let (dir, vars) = prepare_run_dir(root, case, tools)?;
     let log = dir.join("serial.log");
-    let mut args = machine_args(tools, image, &vars)?;
+    let mut args = machine_args(tools, image, &vars, true)?;
     args.extend(
         [
             "-chardev".to_string(),
@@ -196,6 +236,15 @@ pub fn run_case(
         ]
         .map(OsString::from),
     );
+    let qmp_port = match interaction {
+        Some(_) => {
+            let port = qmp::free_port()?;
+            args.push("-qmp".into());
+            args.push(format!("tcp:127.0.0.1:{port},server=on,wait=off").into());
+            Some(port)
+        }
+        None => None,
+    };
     write_cmdline(&dir, qemu, &args);
     let open = |name: &str| {
         fs::File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
@@ -210,11 +259,39 @@ pub fn run_case(
     let mut guard = ChildGuard::new(child, "QEMU");
 
     let start = Instant::now();
+    let mut qmp_conn: Option<Qmp> = None;
+    if let Some(port) = qmp_port {
+        match Qmp::connect(port, QMP_CONNECT_BOUND) {
+            Ok(q) => qmp_conn = Some(q),
+            Err(e) => {
+                guard.shutdown(KILL_BOUND)?;
+                return Ok(CaseRun {
+                    outcome: Outcome::HarnessError(e),
+                    elapsed: start.elapsed(),
+                    log,
+                    shutdown: "terminated by harness".into(),
+                    screenshot: None,
+                });
+            }
+        }
+    }
+    let mut typed = false;
     let mut passed_at: Option<Instant> = None;
     let outcome = loop {
         let text = fs::read(&log)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
+        if let (Some(inter), Some(q), false) = (interaction, qmp_conn.as_mut(), typed) {
+            // Only complete lines count, as for markers.
+            let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+            if complete.lines().any(|l| l.trim_end() == inter.trigger) {
+                typed = true;
+                if let Err(e) = type_keys(q, &inter.keys) {
+                    break Outcome::HarnessError(e);
+                }
+                continue;
+            }
+        }
         let verdict = markers::evaluate(exp, &text);
         match verdict {
             Verdict::Unexpected(why) => break Outcome::UnexpectedMarker(why),
@@ -251,6 +328,28 @@ pub fn run_case(
         std::thread::sleep(POLL);
     };
     let elapsed = start.elapsed();
+    let mut outcome = outcome;
+    let mut screenshot = None;
+    if let (Some(inter), Some(q), Outcome::Pass) = (interaction, qmp_conn.as_mut(), &outcome)
+        && inter.screenshot
+    {
+        let ppm = dir.join("screen.ppm");
+        match q.screendump(&ppm, "ppm") {
+            Ok(()) if ppm.is_file() => {
+                // A PNG copy for people to look at; not used for checks.
+                if let Err(e) = q.screendump(&dir.join("screen.png"), "png") {
+                    eprintln!("[verify] note: PNG screenshot failed: {e}");
+                }
+                screenshot = Some(ppm);
+            }
+            Ok(()) => {
+                outcome =
+                    Outcome::HarnessError("screendump reported success but wrote no file".into())
+            }
+            Err(e) => outcome = Outcome::HarnessError(e),
+        }
+    }
+    drop(qmp_conn);
     let shutdown = match guard.shutdown(KILL_BOUND)? {
         Shutdown::Killed => "terminated by harness".to_string(),
         Shutdown::Exited(s) => format!("exited on its own ({s})"),
@@ -261,5 +360,14 @@ pub fn run_case(
         elapsed,
         log,
         shutdown,
+        screenshot,
     })
+}
+
+fn type_keys(q: &mut Qmp, keys: &[&str]) -> Result<(), String> {
+    for k in keys {
+        q.send_key(k)?;
+        std::thread::sleep(KEY_GAP);
+    }
+    Ok(())
 }

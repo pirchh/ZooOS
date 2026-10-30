@@ -36,6 +36,13 @@ Specify memory ownership, page mappings, allocator, interrupts, timer and except
 handling before implementing them. Acceptance includes allocation/free correctness,
 protection faults, guard behavior and diagnostic handling without silent reboot.
 
+## Interim — screen, keyboard and debug shell (pulled forward from M4)
+
+Status: implemented and verified 2026-10-30 at the user's request, before
+M3 (docs/console-design.md). A kernel-mode framebuffer text console, PS/2
+keyboard and built-in diagnostic commands. It does not replace M4's
+desktop, input routing or windowing.
+
 ## M3 — isolated native programs and services
 
 Specify handles, syscall ABI, IPC, process lifecycle and executable loader.

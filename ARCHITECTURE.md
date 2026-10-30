@@ -4,7 +4,9 @@ Status: proposed architecture. Project name: OriginsOS (placeholder). This is a 
 from Stonepyre. Implemented so far (M1, M2): in the kernel diagram, "UEFI firmware
 and existing bootloader", "Kernel initialization", and the single-CPU parts of
 "Physical and virtual memory" and "Interrupts, exceptions, timers, CPU setup"
-(see docs/m2-design.md). Every other component is proposed.
+(see docs/m2-design.md), plus an interim kernel-mode text console with
+keyboard input (docs/console-design.md), which is a diagnostic tool, not the
+desktop. Every other component is proposed.
 Updated: 2026-10-30
 
 ## Product direction

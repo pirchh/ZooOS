@@ -2,9 +2,9 @@
 //! `ORIGINS_OS TEST <name> ok` or panics with `self-test <name>: <reason>`.
 
 use crate::interrupts;
+use crate::kprintln;
 use crate::memory::frames::{FRAME_SIZE, FrameError, LOW_MEMORY_LIMIT};
 use crate::memory::{self, Memory, heap};
-use crate::serial_println;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use x86_64::PhysAddr;
@@ -28,7 +28,7 @@ pub fn breakpoint() {
         "handler ran {} times, expected 1",
         after - before
     );
-    serial_println!("ORIGINS_OS TEST breakpoint ok");
+    kprintln!("ORIGINS_OS TEST breakpoint ok");
 }
 
 const FRAME_TEST_COUNT: usize = 64;
@@ -121,12 +121,12 @@ pub fn frames(mem: &mut Memory) {
         mem.frames.available() == start_free,
         "free count not restored"
     );
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO frames total={} free={}",
         mem.frames.total(),
         mem.frames.available()
     );
-    serial_println!("ORIGINS_OS TEST frames ok");
+    kprintln!("ORIGINS_OS TEST frames ok");
 }
 
 fn pattern(frame: usize, word: usize) -> u64 {
@@ -204,7 +204,7 @@ pub fn paging(mem: &mut Memory) {
         mem.is_mapped(mem.stack_bottom),
         "kernel stack bottom not mapped"
     );
-    serial_println!("ORIGINS_OS TEST paging ok");
+    kprintln!("ORIGINS_OS TEST paging ok");
 }
 
 pub fn heap() {
@@ -260,13 +260,13 @@ pub fn heap() {
         after == base,
         "heap usage {after} after frees, expected {base}"
     );
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO heap size={} churned_bytes={} used={}",
         memory::HEAP_SIZE,
         total,
         after
     );
-    serial_println!("ORIGINS_OS TEST heap ok");
+    kprintln!("ORIGINS_OS TEST heap ok");
 }
 
 /// Upper bound on spin iterations while waiting for timer ticks, so a
@@ -288,11 +288,11 @@ pub fn timer() {
         got >= TIMER_TICKS_WANTED,
         "only {got} ticks after {spins} spins (wanted {TIMER_TICKS_WANTED})"
     );
-    serial_println!(
+    kprintln!(
         "ORIGINS_OS INFO timer hz={} ticks={} spins={}",
         interrupts::TIMER_HZ,
         got,
         spins
     );
-    serial_println!("ORIGINS_OS TEST timer ok");
+    kprintln!("ORIGINS_OS TEST timer ok");
 }

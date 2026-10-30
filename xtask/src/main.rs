@@ -6,6 +6,8 @@ mod image;
 mod markers;
 mod process;
 mod qemu;
+mod qmp;
+mod screen;
 mod verify;
 
 use std::path::PathBuf;
