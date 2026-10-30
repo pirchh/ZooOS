@@ -56,6 +56,9 @@ Begin an initial filesystem and supervisor with explicit failure behavior.
 
 ## M4 — native graphical desktop
 
+Status: implemented and verified 2026-10-30 (docs/m4-design.md,
+docs/verification.md). Keyboard-only; mouse and window management deferred.
+
 Framebuffer first; input, focus, windows and a small native UI. Acceptance:
 keyboard navigation, basic file browsing, stable redraw and crash recovery.
 A static screenshot is not an interactive desktop acceptance test.

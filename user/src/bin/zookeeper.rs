@@ -13,7 +13,55 @@ zoo_rt::entry!(main);
 /// Monkey runs once, then is restarted at most this many times.
 const MONKEY_RESTARTS: u32 = 1;
 
-fn main(_start_handle: u64) -> u8 {
+/// PeacockHandler may be restarted this many times in one session.
+const DESKTOP_RESTARTS: u32 = 3;
+
+fn main(start_handle: u64) -> u8 {
+    // Started with a control channel: its first message says what to do.
+    if start_handle != zoo_rt::NO_HANDLE {
+        let mut mode = [0u8; 32];
+        return match recv(start_handle, &mut mode) {
+            Ok(n) if &mode[..n] == b"session" => session(),
+            _ => 30,
+        };
+    }
+    startup_checks()
+}
+
+/// Desktop session (docs/m4-design.md §3): run the window server, restart it
+/// if it ends abnormally, finish when it exits cleanly.
+fn session() -> u8 {
+    let _ = log("Zookeeper: starting the desktop session");
+    let mut restarts = 0;
+    loop {
+        let Ok(peacock) = spawn("peacock-handler", None) else {
+            return 2;
+        };
+        let outcome = wait(peacock);
+        let _ = close(peacock);
+        if outcome == Ok(0) {
+            let _ = log("Zookeeper: desktop session ended");
+            return 0;
+        }
+        if restarts == DESKTOP_RESTARTS {
+            zoo_rt::log!(
+                "Zookeeper: PeacockHandler ended ({:?}); restart limit reached",
+                outcome
+            );
+            return 1;
+        }
+        restarts += 1;
+        zoo_rt::log!(
+            "Zookeeper: PeacockHandler ended ({:?}); restarting ({} of {})",
+            outcome,
+            restarts,
+            DESKTOP_RESTARTS
+        );
+    }
+}
+
+/// The M3 start-up plan (docs/m3-design.md §9).
+fn startup_checks() -> u8 {
     let abi = zoo_rt::abi_version();
     zoo_rt::log!("Zookeeper starting (kernel ABI {})", abi);
     if abi != zoo_abi::ABI_VERSION {

@@ -9,11 +9,14 @@ pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
 const KERNEL_PACKAGE: &str = "zoo-os-kernel";
 const USER_PACKAGE: &str = "zoo-user";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 4] = [
+pub const USER_PROGRAMS: [&str; 7] = [
     "zookeeper",
     "lion-handler",
     "monkey-handler",
     "hamster-handler",
+    "peacock-handler",
+    "owl-handler",
+    "chimp-handler",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

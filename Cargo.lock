@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bootloader",
  "noto-sans-mono-bitmap",
@@ -587,11 +587,11 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zoo-abi"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "zoo-os-kernel"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "bootloader_api",
  "linked_list_allocator",
@@ -605,7 +605,9 @@ dependencies = [
 
 [[package]]
 name = "zoo-user"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
+ "noto-sans-mono-bitmap",
+ "pc-keyboard",
  "zoo-abi",
 ]

@@ -34,6 +34,24 @@ test = false
 bench = false
 
 [[bin]]
+name = "peacock-handler"
+path = "src/bin/peacock-handler.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "owl-handler"
+path = "src/bin/owl-handler.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "chimp-handler"
+path = "src/bin/chimp-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "monkey-handler"
 path = "src/bin/monkey-handler.rs"
 test = false
@@ -41,3 +59,7 @@ bench = false
 
 [dependencies]
 zoo-abi = { path = "../abi" }
+# Same font as the kernel console (and the verifier's screenshot checks).
+noto-sans-mono-bitmap = { version = "=0.3.2", default-features = false, features = ["regular", "size_16", "unicode-basic-latin", "unicode-specials"] }
+# Scancode decoding in the window server, as in the kernel shell.
+pc-keyboard = "=0.9.0"

@@ -123,6 +123,34 @@ or a user-space shell.
   `verify` stays headless.
 - Version 0.3.0. Normal boots add `ZOO_OS SHELL ready` after `READY`.
 
+## Resolved in M4 (2026-10-30)
+
+Design: docs/m4-design.md. Evidence: docs/verification.md.
+
+- The desktop is user space: PeacockHandler (window server) owns the
+  framebuffer and keyboard through two new system calls; applications are
+  separate processes talking a small text protocol over channels.
+- ABI version 2: calls 11–16 (`ticks`, `sleep`, `try_recv`,
+  `display_acquire`, `input_read`, `fs_stat`), errors 13 `BUSY` and 14
+  `AGAIN`. Existing numbers unchanged.
+- One display owner at a time; the framebuffer is mapped at
+  `0x0000_4000_0000_0000` in the owner and unmapped (never freed) when it
+  ends. While owned, the kernel console stops drawing and the shell leaves
+  the keyboard alone.
+- The window server polls input and app channels and sleeps one tick when
+  idle, rather than a multi-object wait (deferred).
+- Back-buffered drawing (whole frames copied to the framebuffer); text is
+  blended with an exact integer formula the verifier reproduces.
+- Supervision in two layers: the window server restarts crashed apps (3
+  times each); Zookeeper restarts a crashed window server (3 times per
+  session). Escape ends the session; F12 is a documented test key that makes
+  the window server fault.
+- The shell command `desktop` starts the session through a kernel-owned
+  control channel; boot still runs the M3 scenario and ends in the shell.
+- Verifier: multi-step QMP interactions, several screenshots per case,
+  unordered marker groups for concurrent events.
+- Version 0.6.0.
+
 ## Resolved in M3 (2026-10-30)
 
 Design: docs/m3-design.md. Evidence: docs/verification.md.

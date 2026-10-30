@@ -63,6 +63,10 @@ Since the interim console (0.3.0), normal boots also print
 `keyboard` and `scroll` verify cases type into the guest through QMP and
 check screenshots. `cargo xtask run` opens a QEMU window for the keyboard.
 
+Since M4 (0.6.0) a `desktop` verify case types `desktop` into the shell and
+drives the window server through QMP (several screenshots, unordered marker
+groups for concurrent process events); see docs/m4-design.md §8.
+
 Since M3 (0.5.0), normal boots run the Zookeeper scenario between the
 self-tests and READY and print `ZOO_OS PROC …` markers for every process
 start, exit, crash and kill (docs/m3-design.md §9).

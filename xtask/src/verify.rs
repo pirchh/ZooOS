@@ -2,13 +2,16 @@
 
 use crate::config::Tools;
 use crate::image::{self, Mode};
-use crate::markers::{Expectation, Matcher};
-use crate::qemu::{self, Interaction, Outcome};
+use crate::markers::Expectation;
+use crate::qemu::{self, Action, Interaction, Outcome};
 use crate::screen;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
+
+/// Wait this long for quiet serial output before a screenshot.
+const QUIET: Duration = Duration::from_millis(1200);
 
 /// Must equal the kernel crate version, which the kernel prints at boot.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,8 +35,8 @@ struct Case {
     purpose: &'static str,
     /// Keys to type and whether to take a screenshot (keyboard cases).
     interaction: Option<Interaction>,
-    /// Check applied to the screenshot; failing it fails the case.
-    screen_check: Option<ScreenCheck>,
+    /// Checks applied to named screenshots; any failure fails the case.
+    screen_checks: Vec<(&'static str, ScreenCheck)>,
 }
 
 const SELF_TESTS: [&str; 6] = [
@@ -87,9 +90,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     scroll_tail.extend(["ZOO_OS SHELL line=help"; 4]);
     scroll_tail.push("ZOO_OS SHELL line=echo end");
     let mut never = normal.clone();
-    never
-        .required
-        .push(Matcher::Exact("ZOO_OS NEVER-EMITTED".into()));
+    never.then(&["ZOO_OS NEVER-EMITTED"]);
+    let desktop = desktop_expectation(&normal_tail);
 
     let cases = [
         Case {
@@ -100,7 +102,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "self-tests, the Zookeeper process scenario, READY; no PANIC or EXCEPTION",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "panic",
@@ -110,7 +112,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "self-tests, then PANIC with interrupts on; no READY",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "fault-write-protect",
@@ -125,7 +127,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "write to a read-only page is reported as a protection fault",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "fault-heap-guard",
@@ -140,7 +142,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "read of the heap guard page is reported as not-present",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "fault-stack-overflow",
@@ -153,7 +155,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "stack overflow hits the guard page and is reported via the IST stack",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "keyboard",
@@ -163,27 +165,31 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "keys typed via QMP reach the shell (with Backspace); screen shows the text",
             interaction: Some(Interaction {
-                trigger: "ZOO_OS SHELL ready".into(),
-                // "echx", Backspace, "o hi", Enter, then "mem", Enter.
-                keys: vec![
-                    "e",
-                    "c",
-                    "h",
-                    "x",
-                    "backspace",
-                    "o",
-                    "spc",
-                    "h",
-                    "i",
-                    "ret",
-                    "m",
-                    "e",
-                    "m",
-                    "ret",
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    // "echx", Backspace, "o hi", Enter, then "mem", Enter.
+                    Action::Keys(vec![
+                        "e",
+                        "c",
+                        "h",
+                        "x",
+                        "backspace",
+                        "o",
+                        "spc",
+                        "h",
+                        "i",
+                        "ret",
+                        "m",
+                        "e",
+                        "m",
+                        "ret",
+                    ]),
+                    Action::WaitFor("ZOO_OS SHELL line=mem".into()),
+                    Action::Settle(QUIET),
+                    Action::Screenshot("screen"),
                 ],
-                screenshot: true,
             }),
-            screen_check: Some(check_echo),
+            screen_checks: vec![("screen", check_echo)],
         },
         Case {
             name: "scroll",
@@ -193,11 +199,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "four `help` outputs overflow the screen; the console scrolls correctly",
             interaction: Some(Interaction {
-                trigger: "ZOO_OS SHELL ready".into(),
-                keys: scroll_keys(),
-                screenshot: true,
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(scroll_keys()),
+                    Action::WaitFor("ZOO_OS SHELL line=echo end".into()),
+                    Action::Settle(QUIET),
+                    Action::Screenshot("screen"),
+                ],
             }),
-            screen_check: Some(check_scrolled),
+            screen_checks: vec![("screen", check_scrolled)],
+        },
+        Case {
+            name: "desktop",
+            mode: Mode::Normal,
+            expectation: desktop,
+            // Boot, five interaction phases, two restarts: allow longer.
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "desktop: keyboard navigation, file browsing, app and window-server crash recovery, clean exit",
+            interaction: Some(desktop_steps()),
+            screen_checks: vec![
+                ("1-desktop", check_desktop_started),
+                ("2-details", check_file_details),
+                ("3-app-restart", check_app_restart),
+                ("4-server-restart", check_server_restart),
+                ("5-console", check_console_back),
+            ],
         },
         Case {
             name: "negative-wrong-marker",
@@ -207,7 +234,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "unexpected-marker",
             purpose: "verifier must reject the panic image under normal expectations",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "negative-timeout",
@@ -217,7 +244,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "timeout",
             purpose: "verifier must reject a marker that never appears, by timeout",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
         Case {
             name: "negative-triple-fault",
@@ -227,7 +254,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "early-exit",
             purpose: "verifier must reject a guest that triple-faults (reset with -no-reboot)",
             interaction: None,
-            screen_check: None,
+            screen_checks: vec![],
         },
     ];
 
@@ -257,17 +284,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         )?;
         let mut kind = r.outcome.kind().to_string();
         let mut detail = r.outcome.detail().to_string();
-        if let (Some(ppm), Some(check)) = (&r.screenshot, c.screen_check) {
-            match screen::read_ppm(ppm).and_then(|img| check(&img)) {
-                Ok(summary) => detail = format!("{detail}; screen: {summary}"),
-                Err(why) => {
-                    kind = "screen-mismatch".into();
-                    detail = format!("screen: {why} ({})", ppm.display());
+        if kind == "pass" {
+            for (name, check) in &c.screen_checks {
+                let Some((_, ppm)) = r.screenshots.iter().find(|(n, _)| n == name) else {
+                    kind = "harness-error".into();
+                    detail = format!("screenshot `{name}` was not taken");
+                    break;
+                };
+                match screen::read_ppm(ppm).and_then(|img| check(&img)) {
+                    Ok(summary) => detail = format!("{detail}\n      screen {name}: {summary}"),
+                    Err(why) => {
+                        kind = "screen-mismatch".into();
+                        detail = format!("screen {name}: {why} ({})", ppm.display());
+                        break;
+                    }
                 }
             }
-        } else if c.interaction.as_ref().is_some_and(|i| i.screenshot) && kind == "pass" {
-            kind = "harness-error".into();
-            detail = "no screenshot was taken".into();
         }
         let ok = kind == c.want;
         all_ok &= ok;
@@ -378,5 +410,187 @@ fn check_scrolled(img: &screen::Image) -> Result<String, String> {
     Ok(format!(
         "{rows} rows; rows {}-{last} = `zoo> echo end`, `end`, prompt; BOOT scrolled off",
         last - 2
+    ))
+}
+
+// ---- M4 desktop case (docs/m4-design.md §8) ---------------------------
+
+const DESKTOP_BG: u32 = 0x1E3A4C;
+const BAR: u32 = 0xE8E8E8;
+const BAR_TEXT: u32 = 0x202020;
+const TITLE_FOCUSED: u32 = 0x3D7EBF;
+const TITLE_FOCUSED_TEXT: u32 = 0xFFFFFF;
+const CONTENT: u32 = 0xFFFFFF;
+const CONTENT_TEXT: u32 = 0x202020;
+const SELECTED: u32 = 0xCFE3F7;
+const PAGE_FAULT_KERNEL_READ: &str =
+    "fault=page-fault access=read cause=protection addr=0xffffc00000001000";
+
+fn desktop_expectation(normal_tail: &[&str]) -> Expectation {
+    let mut e = expect(Mode::Normal, normal_tail);
+    // 1. Start the session.
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=6 name=zookeeper",
+        "ZOO_OS PROC start pid=7 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=7 name=peacock-handler",
+        "ZOO_OS PROC start pid=8 name=owl-handler",
+        "ZOO_OS PROC start pid=9 name=chimp-handler",
+    ]);
+    // 3. ChimpHandler crashes; the window server restarts it.
+    let chimp_crash =
+        format!("ZOO_OS PROC crash pid=9 name=chimp-handler {PAGE_FAULT_KERNEL_READ}");
+    e.then(&[&chimp_crash, "ZOO_OS PROC start pid=10 name=chimp-handler"]);
+    // 4. The window server crashes; its apps end while Zookeeper restarts it.
+    let server_crash =
+        format!("ZOO_OS PROC crash pid=7 name=peacock-handler {PAGE_FAULT_KERNEL_READ}");
+    e.then(&[&server_crash, "ZOO_OS DISPLAY released pid=7"]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=8 name=owl-handler code=0",
+        "ZOO_OS PROC exit pid=10 name=chimp-handler code=0",
+        "ZOO_OS PROC start pid=11 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=11 name=peacock-handler",
+        "ZOO_OS PROC start pid=12 name=owl-handler",
+        "ZOO_OS PROC start pid=13 name=chimp-handler",
+    ]);
+    // 5. Escape ends the session cleanly; the kernel shell is back.
+    e.then(&[
+        "ZOO_OS PROC exit pid=11 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=11",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=12 name=owl-handler code=0",
+        "ZOO_OS PROC exit pid=13 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=6 name=zookeeper code=0",
+    ]);
+    e.then(&["ZOO_OS SHELL line=echo back"]);
+    e.clone()
+}
+
+fn desktop_steps() -> Interaction {
+    Interaction {
+        steps: vec![
+            Action::WaitFor("ZOO_OS SHELL ready".into()),
+            Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
+            Action::WaitFor("ZOO_OS PROC start pid=9 name=chimp-handler".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("1-desktop"),
+            // Files: down twice, open the details view.
+            Action::Keys(vec!["down", "down", "ret"]),
+            Action::Settle(QUIET),
+            Action::Screenshot("2-details"),
+            // Focus Chimp and make it crash.
+            Action::Keys(vec!["tab", "ret"]),
+            Action::WaitFor("ZOO_OS PROC start pid=10 name=chimp-handler".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("3-app-restart"),
+            // Test key: crash the window server itself.
+            Action::Keys(vec!["f12"]),
+            Action::WaitFor("ZOO_OS PROC start pid=13 name=chimp-handler".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("4-server-restart"),
+            // Leave the desktop and use the kernel shell again.
+            Action::Keys(vec!["esc"]),
+            Action::WaitFor("ZOO_OS DISPLAY released pid=11".into()),
+            Action::Settle(QUIET),
+            Action::Keys(vec!["e", "c", "h", "o", "spc", "b", "a", "c", "k", "ret"]),
+            Action::WaitFor("ZOO_OS SHELL line=echo back".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("5-console"),
+        ],
+    }
+}
+
+/// Finds `text` in colours `fg` on `bg`, or explains what is missing.
+fn need(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(usize, usize), String> {
+    screen::find_text(img, text, fg, bg).ok_or_else(|| format!("`{text}` not on screen"))
+}
+
+/// Asserts `text` is absent, so a check cannot pass by matching anything.
+fn absent(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(), String> {
+    match screen::find_text(img, text, fg, bg) {
+        Some(at) => Err(format!(
+            "wrong text `{text}` matched at {at:?}; the check is not discriminating"
+        )),
+        None => Ok(()),
+    }
+}
+
+fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
+    let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
+    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    need(img, "ChimpHandler is a crash test.", CONTENT_TEXT, CONTENT)?;
+    absent(img, "bin/zookeeperx", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Files", BAR_TEXT, DESKTOP_BG)?;
+    Ok(format!(
+        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, selected `bin/zookeeper` at {first:?}, Chimp window shown; wrong text rejected"
+    ))
+}
+
+fn check_file_details(img: &screen::Image) -> Result<String, String> {
+    let name = need(img, "Name: bin/monkey-handler", CONTENT_TEXT, CONTENT)?;
+    let size = need(img, "Size: ", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Name: bin/zookeeper", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "details of the 3rd file: `Name: bin/monkey-handler` at {name:?}, `Size:` at {size:?}; wrong file rejected"
+    ))
+}
+
+fn check_app_restart(img: &screen::Image) -> Result<String, String> {
+    let status = need(
+        img,
+        "ChimpHandler crashed; restarted (1 of 3)",
+        BAR_TEXT,
+        BAR,
+    )?;
+    let title = need(img, "Chimp", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    need(img, "ChimpHandler is a crash test.", CONTENT_TEXT, CONTENT)?;
+    // Files kept its state through Chimp's crash.
+    need(img, "Name: bin/monkey-handler", CONTENT_TEXT, CONTENT)?;
+    absent(
+        img,
+        "ChimpHandler crashed; restarted (2 of 3)",
+        BAR_TEXT,
+        BAR,
+    )?;
+    Ok(format!(
+        "status `ChimpHandler crashed; restarted (1 of 3)` at {status:?}, focused `Chimp` at {title:?}, Files details unchanged"
+    ))
+}
+
+fn check_server_restart(img: &screen::Image) -> Result<String, String> {
+    let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
+    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    need(img, "Tab: next window", BAR_TEXT, BAR)?;
+    // A fresh window server: the old crash notice is gone.
+    absent(
+        img,
+        "ChimpHandler crashed; restarted (1 of 3)",
+        BAR_TEXT,
+        BAR,
+    )?;
+    Ok(format!(
+        "fresh desktop after the window-server crash: `ZooOS` at {menu:?}, `Files` focused at {title:?}, list reset at {first:?}"
+    ))
+}
+
+fn check_console_back(img: &screen::Image) -> Result<String, String> {
+    let ended = screen::find_row(img, "Desktop session ended.")
+        .ok_or("no row shows `Desktop session ended.`")?;
+    let row = screen::find_row(img, "zoo> echo back").ok_or("no row shows `zoo> echo back`")?;
+    if !screen::row_matches(img, "back", row + 1) {
+        return Err(format!("row {} does not show `back`", row + 1));
+    }
+    if screen::find_row(img, "zoo> echo bock").is_some() {
+        return Err("a wrong string matched; the check is not discriminating".into());
+    }
+    if screen::find_text(img, "ZooOS", BAR_TEXT, BAR).is_some() {
+        return Err("the desktop menu bar is still on screen".into());
+    }
+    Ok(format!(
+        "kernel console back: `Desktop session ended.` row {ended}, `zoo> echo back` row {row}, `back` row {}; no desktop left",
+        row + 1
     ))
 }

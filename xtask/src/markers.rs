@@ -34,7 +34,31 @@ impl fmt::Display for Matcher {
 #[derive(Clone, Debug)]
 pub struct Expectation {
     /// Markers that must appear, in this order, with no other marker between.
-    pub required: Vec<Matcher>,
+    pub required: Vec<Step>,
+}
+
+/// One position in the expected sequence.
+#[derive(Clone, Debug)]
+pub enum Step {
+    One(Matcher),
+    /// All of these, each exactly once, in any order (events from separate
+    /// processes that may interleave), before the next step.
+    AnyOrder(Vec<Matcher>),
+}
+
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::One(m) => write!(f, "{m}"),
+            Step::AnyOrder(ms) => {
+                write!(f, "any order of [")?;
+                for (i, m) in ms.iter().enumerate() {
+                    write!(f, "{}`{m}`", if i == 0 { "" } else { ", " })?;
+                }
+                write!(f, "]")
+            }
+        }
+    }
 }
 
 impl Expectation {
@@ -42,11 +66,35 @@ impl Expectation {
     /// `tail` exactly, in order.
     pub fn new(version: &str, kernel_mode: &str, tail: &[&str]) -> Self {
         let mut required = vec![
-            Matcher::Exact(format!("ZOO_OS BOOT version={version}")),
-            Matcher::Prefix(format!("ZOO_OS INFO mode={kernel_mode} ")),
+            Step::One(Matcher::Exact(format!("ZOO_OS BOOT version={version}"))),
+            Step::One(Matcher::Prefix(format!("ZOO_OS INFO mode={kernel_mode} "))),
         ];
-        required.extend(tail.iter().map(|t| Matcher::Exact(t.to_string())));
+        required.extend(
+            tail.iter()
+                .map(|t| Step::One(Matcher::Exact(t.to_string()))),
+        );
         Expectation { required }
+    }
+
+    /// Appends exact markers that must follow in order.
+    pub fn then(&mut self, lines: &[&str]) -> &mut Self {
+        self.required.extend(
+            lines
+                .iter()
+                .map(|t| Step::One(Matcher::Exact(t.to_string()))),
+        );
+        self
+    }
+
+    /// Appends exact markers that must all follow, in any order.
+    pub fn then_any_order(&mut self, lines: &[&str]) -> &mut Self {
+        self.required.push(Step::AnyOrder(
+            lines
+                .iter()
+                .map(|t| Matcher::Exact(t.to_string()))
+                .collect(),
+        ));
+        self
     }
 }
 
@@ -72,6 +120,8 @@ pub fn evaluate(exp: &Expectation, log: &str) -> Verdict {
         None => "",
     };
     let mut next = 0;
+    // Members of the current `AnyOrder` step already matched.
+    let mut used: Vec<bool> = Vec::new();
     for raw in complete.lines() {
         // Firmware may leave escape sequences on the same line before kernel
         // output, so look for the marker anywhere in the line.
@@ -83,8 +133,24 @@ pub fn evaluate(exp: &Expectation, log: &str) -> Verdict {
             continue;
         }
         match exp.required.get(next) {
-            Some(m) if m.matches(marker) => next += 1,
-            Some(m) => return Verdict::Unexpected(format!("got `{marker}` while expecting `{m}`")),
+            Some(Step::One(m)) if m.matches(marker) => next += 1,
+            Some(Step::AnyOrder(ms)) => {
+                if used.len() != ms.len() {
+                    used = vec![false; ms.len()];
+                }
+                let Some(j) = (0..ms.len()).find(|&j| !used[j] && ms[j].matches(marker)) else {
+                    return Verdict::Unexpected(format!(
+                        "got `{marker}` while expecting {}",
+                        exp.required[next]
+                    ));
+                };
+                used[j] = true;
+                if used.iter().all(|&u| u) {
+                    used.clear();
+                    next += 1;
+                }
+            }
+            Some(s) => return Verdict::Unexpected(format!("got `{marker}` while expecting `{s}`")),
             None => {
                 return Verdict::Unexpected(format!(
                     "got `{marker}` after the final expected marker"
@@ -94,7 +160,7 @@ pub fn evaluate(exp: &Expectation, log: &str) -> Verdict {
     }
     match exp.required.get(next) {
         None => Verdict::Pass,
-        Some(m) => Verdict::Pending(m.to_string()),
+        Some(s) => Verdict::Pending(s.to_string()),
     }
 }
 
@@ -237,6 +303,32 @@ ZOO_OS INFO mode=fault-heap-guard x=1
             evaluate(&exp, &wrong_addr),
             Verdict::Unexpected(_)
         ));
+    }
+
+    #[test]
+    fn any_order_group_accepts_permutations_only() {
+        let mut exp = Expectation::new(V, "normal", &["ZOO_OS A"]);
+        exp.then_any_order(&["ZOO_OS X", "ZOO_OS Y"])
+            .then(&["ZOO_OS Z"]);
+        let head = "ZOO_OS BOOT version=0.1.0\nZOO_OS INFO mode=normal x=1\nZOO_OS A\n";
+        for order in ["ZOO_OS X\nZOO_OS Y\n", "ZOO_OS Y\nZOO_OS X\n"] {
+            let log = format!("{head}{order}ZOO_OS Z\n");
+            assert_eq!(evaluate(&exp, &log), Verdict::Pass, "{order}");
+        }
+        // Z before the group is complete, a duplicate, or a stranger: rejected.
+        for bad in [
+            "ZOO_OS X\nZOO_OS Z\n",
+            "ZOO_OS X\nZOO_OS X\n",
+            "ZOO_OS X\nZOO_OS W\n",
+        ] {
+            let log = format!("{head}{bad}");
+            assert!(
+                matches!(evaluate(&exp, &log), Verdict::Unexpected(_)),
+                "{bad}"
+            );
+        }
+        let partial = format!("{head}ZOO_OS Y\n");
+        assert!(matches!(evaluate(&exp, &partial), Verdict::Pending(_)));
     }
 
     #[test]

@@ -23,7 +23,13 @@ pub fn run() -> ! {
     let mut decoder = PS2Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore);
     let mut line = String::new();
     loop {
-        let byte = next_byte();
+        let Some(byte) = next_byte() else {
+            // A desktop session gave the screen back.
+            line.clear();
+            kprintln!("Desktop session ended.");
+            kprint!("{}", PROMPT);
+            continue;
+        };
         let Ok(Some(event)) = decoder.add_byte(byte) else {
             continue;
         };
@@ -53,20 +59,54 @@ pub fn run() -> ! {
     }
 }
 
-/// Waits for the next keyboard byte, sleeping between interrupts.
-fn next_byte() -> u8 {
+/// Waits for the next keyboard byte, sleeping between interrupts. Returns
+/// `None` when a desktop session has just released the display. While a
+/// process owns the display, the keyboard belongs to it and is left alone.
+fn next_byte() -> Option<u8> {
+    let mut was_owned = false;
     loop {
         // Check with interrupts off, then `sti; hlt` as one step: a key that
         // arrives after the check still wakes the CPU.
         cpu_interrupts::disable();
-        if let Some(b) = keyboard::pop() {
+        let owned = process::display_owned();
+        if was_owned && !owned {
             cpu_interrupts::enable();
-            return b;
+            // The window server let go of the screen. If its session is
+            // restarting it, it will take the screen back; otherwise wait
+            // (bounded) for the session to finish, so its last output comes
+            // before our prompt rather than after it.
+            if wait_for_session_to_settle() {
+                continue;
+            }
+            return None;
+        }
+        was_owned = owned;
+        if !owned && let Some(b) = keyboard::pop() {
+            cpu_interrupts::enable();
+            return Some(b);
         }
         // Idle point: user processes may run while the shell waits.
         process::idle_hlt();
         cpu_interrupts::enable();
     }
+}
+
+/// After the display is released: true if a process took it back (keep
+/// waiting as before), false once the desktop session has ended or 5 s pass.
+fn wait_for_session_to_settle() -> bool {
+    let limit = interrupts::ticks() + 5 * u64::from(interrupts::TIMER_HZ);
+    while interrupts::ticks() < limit {
+        if process::display_owned() {
+            return true;
+        }
+        if !process::session_running() {
+            return false;
+        }
+        cpu_interrupts::disable();
+        process::idle_hlt();
+        cpu_interrupts::enable();
+    }
+    false
 }
 
 fn execute(line: &str) {
@@ -82,6 +122,7 @@ fn execute(line: &str) {
             kprintln!("ps              list processes");
             kprintln!("ls              list the initial filesystem");
             kprintln!("run <program>   start a program from /bin");
+            kprintln!("desktop         start the desktop (Esc in it returns here)");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");
@@ -112,6 +153,10 @@ fn execute(line: &str) {
         "run" => match process::spawn_from_kernel(rest.trim()) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
+        },
+        "desktop" => match process::start_session() {
+            Ok(pid) => kprintln!("starting the desktop (zookeeper pid {})", pid),
+            Err(e) => kprintln!("desktop: {}", e.name()),
         },
         "clear" => {
             console::with(|c| c.clear());
