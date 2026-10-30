@@ -15,6 +15,7 @@ pub use zoo_abi::{
 pub mod app;
 mod heap;
 pub mod thread;
+pub mod vm;
 
 /// A handle value as returned by the kernel.
 pub type Handle = u64;

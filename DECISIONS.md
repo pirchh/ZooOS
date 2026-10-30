@@ -136,6 +136,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX layer step 2: address space (2026-10-30)
+
+Design: docs/posix2-design.md.
+
+- Windows-shaped calls (reserve, commit, protect, decommit, release, query)
+  rather than `mmap` first: they map one-to-one onto what Wine needs, and
+  `mmap` can be layered on them later.
+- A fixed window `[0x4000_0000, 0x1000_0000_0000)`; 64 KiB-aligned
+  kernel-chosen reservations; ≤ 256 reservations and ≤ 1 GiB committed per
+  process, checked before allocating.
+- Page state is kept only in the page tables (the kernel heap is too small
+  for per-page records); a subtree-skipping walker makes large ranges cheap.
+- Guard (no-access) pages wait for exception delivery (step 3).
+- Calls 32–37, ABI version 6. Version 0.11.0.
+
 ## POSIX layer step 1: threads (2026-10-30)
 
 Design: docs/posix1-design.md. First step of the owner-chosen strategy A

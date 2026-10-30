@@ -58,6 +58,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "mole-handler"
+path = "src/bin/mole-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "ant-handler"
 path = "src/bin/ant-handler.rs"
 test = false

@@ -35,8 +35,9 @@ use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, Error, FORMAT_BGR, FORMAT_RGB,
     FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT, KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME,
-    MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, dir_rights,
-    elf, sys,
+    MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE,
+    VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED,
+    VM_START, VmInfo, dir_rights, elf, prot, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -132,6 +133,11 @@ struct Proc {
     members: usize,
     /// Set once the process has ended (exit, crash or kill).
     ended: bool,
+    /// Address-space reservations (start, len), sorted by start
+    /// (docs/posix2-design.md).
+    vmas: Vec<(u64, u64)>,
+    /// Pages committed through `vm_commit`.
+    committed: u64,
 }
 
 /// One thread. Each user thread belongs to a `Proc`; the kernel task does not.
@@ -201,6 +207,8 @@ impl Proc {
             live: 1,
             members: 1,
             ended: false,
+            vmas: Vec::new(),
+            committed: 0,
         }
     }
 
@@ -1203,6 +1211,12 @@ impl Scheduler {
                 }
                 Outcome::Ret(woken as i64)
             }
+            sys::VM_RESERVE
+            | sys::VM_COMMIT
+            | sys::VM_PROTECT
+            | sys::VM_DECOMMIT
+            | sys::VM_RELEASE
+            | sys::VM_QUERY => self.vm_call(i, number, a1, a2, a3, p4, mem),
             sys::FS_ROOT => {
                 let t = self.proc(i);
                 if !t.root_ok {
@@ -1294,6 +1308,209 @@ impl Scheduler {
                 None => err(Error::BadHandle),
             },
             _ => err(Error::NoSys),
+        }
+    }
+
+    /// System calls 32-37: reserve, commit, protect, decommit, release and
+    /// query address ranges in the `vm` window (docs/posix2-design.md).
+    #[allow(clippy::too_many_arguments)]
+    fn vm_call(
+        &mut self,
+        i: usize,
+        number: u64,
+        a1: u64,
+        a2: u64,
+        a3: u64,
+        p4: PhysFrame,
+        mem: &mut Memory,
+    ) -> Outcome {
+        const PAGE: u64 = 4096;
+        let in_window = |a: u64, len: u64| {
+            a >= VM_START && len > 0 && a.checked_add(len).is_some_and(|e| e <= VM_END)
+        };
+        // The reservation containing [a, a+len), if any.
+        let find = |vmas: &[(u64, u64)], a: u64, len: u64| {
+            vmas.iter().position(|&(s, l)| a >= s && a + len <= s + l)
+        };
+        let access = |prot: u64| -> Option<(bool, bool)> {
+            if prot & !(prot::READ | prot::WRITE | prot::EXEC) != 0 || prot & prot::READ == 0 {
+                return None;
+            }
+            Some((prot & prot::WRITE != 0, prot & prot::EXEC != 0))
+        };
+        match number {
+            sys::VM_RESERVE => {
+                // a1 = address (0: kernel chooses), a2 = length.
+                if !a1.is_multiple_of(PAGE) || !a2.is_multiple_of(PAGE) || a2 == 0 {
+                    return err(Error::Inval);
+                }
+                let p = self.proc(i);
+                if p.vmas.len() >= VM_MAX_RESERVATIONS {
+                    return err(Error::NoMem);
+                }
+                let base = if a1 == 0 {
+                    // First fit, granule-aligned, between existing ones.
+                    let mut cand = VM_START;
+                    for &(s, l) in &p.vmas {
+                        if cand + a2 <= s {
+                            break;
+                        }
+                        cand = (s + l).div_ceil(VM_GRANULE) * VM_GRANULE;
+                    }
+                    if !in_window(cand, a2) {
+                        return err(Error::NoMem);
+                    }
+                    cand
+                } else {
+                    if !in_window(a1, a2) {
+                        return err(Error::Inval);
+                    }
+                    if p.vmas.iter().any(|&(s, l)| a1 < s + l && s < a1 + a2) {
+                        return err(Error::Exists);
+                    }
+                    a1
+                };
+                let at = p.vmas.partition_point(|&(s, _)| s < base);
+                p.vmas.insert(at, (base, a2));
+                Outcome::Ret(base as i64)
+            }
+            sys::VM_COMMIT | sys::VM_PROTECT => {
+                // a1 = address, a2 = length, a3 = protection.
+                if !a1.is_multiple_of(PAGE) || !a2.is_multiple_of(PAGE) || !in_window(a1, a2) {
+                    return err(Error::Inval);
+                }
+                let Some((w, x)) = access(a3) else {
+                    return err(Error::Inval);
+                };
+                if find(&self.proc(i).vmas, a1, a2).is_none() {
+                    return err(Error::NotFound);
+                }
+                let end = a1 + a2;
+                let pages = a2 / PAGE;
+                let mut mapped = 0u64;
+                let mut va = a1;
+                while let Some(m) = mem.next_mapped(p4, va, end) {
+                    mapped += 1;
+                    va = m + PAGE;
+                }
+                if number == sys::VM_PROTECT {
+                    if mapped != pages {
+                        return err(Error::NotFound); // some page is not committed
+                    }
+                } else {
+                    let new = pages - mapped;
+                    let p = self.proc(i);
+                    if (p.committed + new) * PAGE > VM_COMMIT_LIMIT
+                        || (mem.frames.available() as u64) < new + new / 256 + 64
+                    {
+                        return err(Error::NoMem);
+                    }
+                }
+                let mut va = a1;
+                while va < end {
+                    let r = if mem.user_translate(p4, va).is_some() {
+                        mem.protect_user_page(p4, va, w, x)
+                    } else {
+                        let r = mem.map_user_page(p4, va, w, x).map(|_| ());
+                        if r.is_ok() {
+                            self.proc(i).committed += 1;
+                        }
+                        r
+                    };
+                    if r.is_err() {
+                        return err(Error::NoMem);
+                    }
+                    va += PAGE;
+                }
+                Outcome::Ret(0)
+            }
+            sys::VM_DECOMMIT | sys::VM_RELEASE => {
+                let (start, end, remove) = if number == sys::VM_RELEASE {
+                    // a1 = the reservation's base.
+                    match self.proc(i).vmas.iter().position(|&(s, _)| s == a1) {
+                        Some(k) => {
+                            let (s, l) = self.proc(i).vmas[k];
+                            (s, s + l, Some(k))
+                        }
+                        None => return err(Error::NotFound),
+                    }
+                } else {
+                    if !a1.is_multiple_of(PAGE) || !a2.is_multiple_of(PAGE) || !in_window(a1, a2) {
+                        return err(Error::Inval);
+                    }
+                    if find(&self.proc(i).vmas, a1, a2).is_none() {
+                        return err(Error::NotFound);
+                    }
+                    (a1, a1 + a2, None)
+                };
+                let mut va = start;
+                while let Some(m) = mem.next_mapped(p4, va, end) {
+                    mem.unmap_user_free(p4, m, 1);
+                    self.proc(i).committed -= 1;
+                    va = m + PAGE;
+                }
+                if let Some(k) = remove {
+                    self.proc(i).vmas.remove(k);
+                }
+                Outcome::Ret(0)
+            }
+            _ => {
+                // VM_QUERY: a1 = address, a2 = out pointer.
+                let size = core::mem::size_of::<VmInfo>() as u64;
+                if !mem.user_range_ok(p4, a2, size, true) {
+                    return err(Error::Fault);
+                }
+                let a = a1 & !(PAGE - 1);
+                if !in_window(a, PAGE) {
+                    return err(Error::Inval);
+                }
+                let vmas = &self.proc(i).vmas;
+                let info = match vmas.iter().find(|&&(s, l)| a >= s && a < s + l) {
+                    None => {
+                        let next = vmas
+                            .iter()
+                            .map(|&(s, _)| s)
+                            .find(|&s| s > a)
+                            .unwrap_or(VM_END);
+                        VmInfo {
+                            base: a,
+                            len: next - a,
+                            state: VM_FREE,
+                            ..VmInfo::default()
+                        }
+                    }
+                    Some(&(s, l)) => {
+                        let end = s + l;
+                        let (state, prot, run_end) = match mem.user_page_access(p4, a) {
+                            None => {
+                                let next = mem.next_mapped(p4, a, end).unwrap_or(end);
+                                (VM_RESERVED, 0, next)
+                            }
+                            Some(acc) => {
+                                let mut e = a + PAGE;
+                                while e < end && mem.user_page_access(p4, e) == Some(acc) {
+                                    e += PAGE;
+                                }
+                                let prot = prot::READ
+                                    | if acc.0 { prot::WRITE } else { 0 }
+                                    | if acc.1 { prot::EXEC } else { 0 };
+                                (VM_COMMITTED, prot, e)
+                            }
+                        };
+                        VmInfo {
+                            base: a,
+                            len: run_end - a,
+                            state,
+                            prot,
+                            reservation: s,
+                            reservation_len: l,
+                        }
+                    }
+                };
+                // SAFETY: checked writable user range of the struct's size.
+                unsafe { (a2 as *mut VmInfo).write_unaligned(info) };
+                Outcome::Ret(0)
+            }
         }
     }
 

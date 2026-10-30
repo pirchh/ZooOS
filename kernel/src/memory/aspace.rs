@@ -192,6 +192,86 @@ impl Memory {
         }
     }
 
+    /// The first mapped user page in `[from, end)` of `p4`, skipping
+    /// unused page-table subtrees (docs/posix2-design.md §3).
+    pub fn next_mapped(&self, p4: PhysFrame, from: u64, end: u64) -> Option<u64> {
+        const L1: u64 = 4096;
+        const L2: u64 = L1 * 512;
+        const L3: u64 = L2 * 512;
+        const L4: u64 = L3 * 512;
+        let end = end.min(USER_END);
+        let mut va = from & !(L1 - 1);
+        // SAFETY: `p4` is a live process table; the tables are only read.
+        unsafe {
+            let t4 = self.table(p4);
+            while va < end {
+                let e4 = &t4[((va / L4) % 512) as usize];
+                let Ok(f3) = e4.frame() else {
+                    va = (va / L4 + 1) * L4;
+                    continue;
+                };
+                let e3 = &self.table(f3)[((va / L3) % 512) as usize];
+                let Ok(f2) = e3.frame() else {
+                    va = (va / L3 + 1) * L3;
+                    continue;
+                };
+                let e2 = &self.table(f2)[((va / L2) % 512) as usize];
+                let Ok(f1) = e2.frame() else {
+                    va = (va / L2 + 1) * L2;
+                    continue;
+                };
+                let e1 = &self.table(f1)[((va / L1) % 512) as usize];
+                if e1.flags().contains(PageTableFlags::PRESENT) {
+                    return Some(va);
+                }
+                va += L1;
+            }
+        }
+        None
+    }
+
+    /// (writable, executable) of the mapped user page at `va`, if any.
+    pub fn user_page_access(&self, p4: PhysFrame, va: u64) -> Option<(bool, bool)> {
+        // SAFETY: `p4` is a live process table; the mapper is only read.
+        let space = unsafe { self.space(p4) };
+        match space.translate(VirtAddr::new(va)) {
+            TranslateResult::Mapped { flags, .. } => Some((
+                flags.contains(PageTableFlags::WRITABLE),
+                !flags.contains(PageTableFlags::NO_EXECUTE),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Changes the access of the mapped user page at `va`, flushing it from
+    /// this CPU's TLB (the space may be the active one).
+    pub fn protect_user_page(
+        &mut self,
+        p4: PhysFrame,
+        va: u64,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), SpaceError> {
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        if writable {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if !executable {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va));
+        // SAFETY: `p4` is a live process table; only the leaf's flags change
+        // and the frame stays the same.
+        let r = unsafe { self.space(p4).update_flags(page, flags) };
+        match r {
+            Ok(flush) => {
+                flush.flush();
+                Ok(())
+            }
+            Err(_) => Err(SpaceError::AlreadyMapped),
+        }
+    }
+
     /// True if `p4`'s kernel half is identical to the kernel's table.
     pub fn shares_kernel_half(&self, p4: PhysFrame) -> bool {
         // SAFETY: `p4` is a live process table; both tables are only read.
