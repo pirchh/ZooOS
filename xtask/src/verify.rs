@@ -305,6 +305,45 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "assistant",
+            mode: Mode::Normal,
+            custom_image: None,
+            expectation: assistant_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "Assistant window: typed commands through OtterHandler, plan + confirm before create, undo, escape refused, model absent reported",
+            interaction: Some(assistant_steps()),
+            screen_checks: vec![
+                ("1-plan", check_assistant_plan),
+                ("2-transcript", check_assistant_transcript),
+            ],
+        },
+        Case {
+            name: "assistant-model",
+            mode: Mode::Normal,
+            custom_image: model_image.clone(),
+            expectation: assistant_model_expectation(&normal, false),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "the model works on a request while the desktop stays usable; Backspace cancels it",
+            interaction: Some(assistant_model_steps()),
+            screen_checks: vec![
+                ("1-busy", check_busy_desktop),
+                ("2-cancelled", check_cancelled),
+            ],
+        },
+        Case {
+            name: "assistant-live",
+            mode: Mode::Normal,
+            custom_image: model_image.clone(),
+            expectation: assistant_model_expectation(&normal, true),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "requests in words: the model picks the tool, the broker runs it (needs --accel; too slow under TCG)",
+            interaction: Some(assistant_live_steps()),
+            screen_checks: vec![("1-live", check_live)],
+        },
+        Case {
             name: "inference",
             mode: Mode::Normal,
             custom_image: model_image.clone(),
@@ -378,9 +417,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if s.only.as_ref().is_some_and(|o| o != c.name) {
             continue;
         }
-        if c.name == "inference" && c.custom_image.is_none() {
+        let model_case = matches!(c.name, "inference" | "assistant-model" | "assistant-live");
+        if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
+        if c.name == "assistant-live" && qemu::accel() == "tcg" {
+            let line = format!(
+                "SKIP  {:<22} not run: needs a hardware accelerator (--accel whpx or kvm)\n",
                 c.name
             );
             print!("{line}");
@@ -555,7 +604,7 @@ const PAGE_FAULT_KERNEL_READ: &str =
 
 fn desktop_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
-    // 1. Start the session.
+    // 1. Start the session: the window server and its three applications.
     e.then(&[
         "ZOO_OS SHELL line=desktop",
         "ZOO_OS PROC start pid=9 name=zookeeper",
@@ -563,35 +612,294 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=10 name=peacock-handler",
         "ZOO_OS PROC start pid=11 name=owl-handler",
         "ZOO_OS PROC start pid=12 name=chimp-handler",
+        "ZOO_OS PROC start pid=13 name=parrot-handler",
     ]);
     // 3. ChimpHandler crashes; the window server restarts it.
     let chimp_crash =
         format!("ZOO_OS PROC crash pid=12 name=chimp-handler {PAGE_FAULT_KERNEL_READ}");
-    e.then(&[&chimp_crash, "ZOO_OS PROC start pid=13 name=chimp-handler"]);
+    e.then(&[&chimp_crash, "ZOO_OS PROC start pid=14 name=chimp-handler"]);
     // 4. The window server crashes; its apps end while Zookeeper restarts it.
     let server_crash =
         format!("ZOO_OS PROC crash pid=10 name=peacock-handler {PAGE_FAULT_KERNEL_READ}");
     e.then(&[&server_crash, "ZOO_OS DISPLAY released pid=10"]);
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=11 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=13 name=chimp-handler code=0",
-        "ZOO_OS PROC start pid=14 name=peacock-handler",
-        "ZOO_OS DISPLAY acquired pid=14 name=peacock-handler",
-        "ZOO_OS PROC start pid=15 name=owl-handler",
-        "ZOO_OS PROC start pid=16 name=chimp-handler",
+        "ZOO_OS PROC exit pid=14 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=13 name=parrot-handler code=0",
+        "ZOO_OS PROC start pid=15 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=15 name=peacock-handler",
+        "ZOO_OS PROC start pid=16 name=owl-handler",
+        "ZOO_OS PROC start pid=17 name=chimp-handler",
+        "ZOO_OS PROC start pid=18 name=parrot-handler",
     ]);
     // 5. Escape ends the session cleanly; the kernel shell is back.
     e.then(&[
-        "ZOO_OS PROC exit pid=14 name=peacock-handler code=0",
-        "ZOO_OS DISPLAY released pid=14",
+        "ZOO_OS PROC exit pid=15 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=15",
     ]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=15 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=16 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=16 name=owl-handler code=0",
+        "ZOO_OS PROC exit pid=17 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=18 name=parrot-handler code=0",
         "ZOO_OS PROC exit pid=9 name=zookeeper code=0",
     ]);
     e.then(&["ZOO_OS SHELL line=echo back"]);
     e.clone()
+}
+
+/// The desktop with the Assistant used through typed commands; the normal
+/// image has no model, so a request in words reaches ElephantHandler, which
+/// reports that (docs/m5c2-design.md §5).
+fn assistant_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=9 name=zookeeper",
+        "ZOO_OS PROC start pid=10 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=10 name=peacock-handler",
+        "ZOO_OS PROC start pid=11 name=owl-handler",
+        "ZOO_OS PROC start pid=12 name=chimp-handler",
+        "ZOO_OS PROC start pid=13 name=parrot-handler",
+        // Started on first use: the broker by the first command, the model
+        // service by the first request in words.
+        "ZOO_OS PROC start pid=14 name=otter-handler",
+        "ZOO_OS PROC start pid=15 name=elephant-handler",
+        "ZOO_OS PROC exit pid=10 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=10",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=11 name=owl-handler code=0",
+        "ZOO_OS PROC exit pid=12 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=13 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=14 name=otter-handler code=0",
+        "ZOO_OS PROC exit pid=15 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=9 name=zookeeper code=0",
+    ]);
+    e.clone()
+}
+
+fn assistant_steps() -> Interaction {
+    let mut steps = vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("desktop")),
+        Action::WaitFor("ZOO_OS PROC start pid=13 name=parrot-handler".into()),
+        Action::Settle(QUIET),
+        // Files -> Chimp -> Assistant.
+        Action::Keys(vec!["tab", "tab"]),
+        Action::Settle(QUIET),
+    ];
+    for line in ["search pancake", "create Projects/2026"] {
+        steps.push(Action::Keys(typed(line)));
+        steps.push(Action::Settle(QUIET));
+    }
+    steps.push(Action::Screenshot("1-plan"));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::Settle(QUIET));
+    for line in [
+        "undo",
+        "inspect Projects",
+        "list ../bin",
+        "find my pancake recipe",
+    ] {
+        steps.push(Action::Keys(typed(line)));
+        steps.push(Action::Settle(QUIET));
+    }
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC start pid=15 name=elephant-handler".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("2-transcript"));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=10".into()));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn check_assistant_plan(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    need(img, "You: search pancake", CONTENT_TEXT, CONTENT)?;
+    // Two leading spaces: the broker's reply, not the Files window's
+    // `home/user/Documents/...` entry.
+    let found = need(
+        img,
+        "  Documents/recipes/pancakes.txt",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    need(img, "  would create Projects", CONTENT_TEXT, CONTENT)?;
+    need(img, "  would create Projects/2026", CONTENT_TEXT, CONTENT)?;
+    let ask = need(
+        img,
+        "Press y to create, n to leave it.",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    // Nothing is created before the confirmation.
+    absent(img, "  created Projects", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "`Assistant` focused at {title:?}; search result at {found:?}; plan shown and confirmation asked at {ask:?}; nothing created yet"
+    ))
+}
+
+fn check_assistant_transcript(img: &screen::Image) -> Result<String, String> {
+    let created = need(img, "  created Projects/2026", CONTENT_TEXT, CONTENT)?;
+    need(img, "  removed Projects/2026", CONTENT_TEXT, CONTENT)?;
+    let removed = need(img, "  removed Projects", CONTENT_TEXT, CONTENT)?;
+    need(img, "Error: not found", CONTENT_TEXT, CONTENT)?;
+    let escape = need(img, "Error: path escapes home", CONTENT_TEXT, CONTENT)?;
+    let model = need(
+        img,
+        "The model is not installed; type a command instead.",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    absent(img, "  created Projects/2027", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "created at {created:?}, undone at {removed:?}, then not found; escape refused at {escape:?}; missing model reported at {model:?}; wrong text rejected"
+    ))
+}
+
+/// Desktop start, the model service (pid 14) and, for the live case, the
+/// broker (pid 15); then a clean exit.
+fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=9 name=zookeeper",
+        "ZOO_OS PROC start pid=10 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=10 name=peacock-handler",
+        "ZOO_OS PROC start pid=11 name=owl-handler",
+        "ZOO_OS PROC start pid=12 name=chimp-handler",
+        "ZOO_OS PROC start pid=13 name=parrot-handler",
+        "ZOO_OS PROC start pid=14 name=elephant-handler",
+    ]);
+    if live {
+        e.then(&["ZOO_OS PROC start pid=15 name=otter-handler"]);
+    }
+    e.then(&[
+        "ZOO_OS PROC exit pid=10 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=10",
+    ]);
+    let mut exits = vec![
+        "ZOO_OS PROC exit pid=11 name=owl-handler code=0",
+        "ZOO_OS PROC exit pid=12 name=chimp-handler code=0",
+        "ZOO_OS PROC exit pid=13 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=14 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=9 name=zookeeper code=0",
+    ];
+    if live {
+        exits.push("ZOO_OS PROC exit pid=15 name=otter-handler code=0");
+    }
+    e.then_any_order(&exits);
+    e.clone()
+}
+
+fn open_assistant() -> Vec<Action> {
+    vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("desktop")),
+        Action::WaitFor("ZOO_OS PROC start pid=13 name=parrot-handler".into()),
+        Action::Settle(QUIET),
+        Action::Keys(vec!["tab", "tab"]),
+        Action::Settle(QUIET),
+    ]
+}
+
+fn leave_desktop(steps: &mut Vec<Action>) {
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=10".into()));
+    steps.push(Action::Settle(QUIET));
+}
+
+fn assistant_model_steps() -> Interaction {
+    let mut steps = open_assistant();
+    steps.extend([
+        Action::Keys(typed("find my pancake recipe")),
+        Action::WaitFor(
+            "[14:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
+        ),
+        Action::Settle(QUIET),
+        // While the model computes: move to Files and down two entries.
+        Action::Keys(vec!["tab", "down", "down"]),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-busy"),
+        // Back to the Assistant (Files -> Chimp -> Assistant) and cancel.
+        Action::Keys(vec!["tab", "tab", "backspace"]),
+        Action::WaitFor("[14:elephant-handler] ElephantHandler: request cancelled".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-cancelled"),
+    ]);
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+fn assistant_live_steps() -> Interaction {
+    let mut steps = open_assistant();
+    steps.extend([
+        Action::Keys(typed("Find my pancake recipe")),
+        Action::WaitFor(
+            "[14:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+        ),
+        Action::Settle(QUIET),
+        Action::Keys(typed("Make a folder called Projects/2026")),
+        Action::WaitFor(
+            "[14:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
+        ),
+        Action::Settle(QUIET),
+        Action::Keys(vec!["y"]),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-live"),
+    ]);
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+/// ParrotHandler's idle status line.
+const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo.";
+
+fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let sel = need(img, "bin/monkey-handler", CONTENT_TEXT, SELECTED)?;
+    absent(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    let busy = need(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "while the model works (status `Thinking:` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
+    ))
+}
+
+fn check_cancelled(img: &screen::Image) -> Result<String, String> {
+    let done = need(img, "Cancelled.", CONTENT_TEXT, CONTENT)?;
+    let hint = need(img, HINT_TEXT, CONTENT_TEXT, CONTENT)?;
+    absent(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "`Cancelled.` at {done:?}, ready again at {hint:?}, no longer thinking"
+    ))
+}
+
+fn check_live(img: &screen::Image) -> Result<String, String> {
+    let s = need(
+        img,
+        "Assistant: search pancake recipe",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    need(
+        img,
+        "  Documents/recipes/pancakes.txt",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    let c = need(
+        img,
+        "Assistant: create Projects/2026",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    let made = need(img, "  created Projects/2026", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Assistant: list", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "model chose `search pancake recipe` at {s:?} (result shown) and `create Projects/2026` at {c:?}, created after `y` at {made:?}"
+    ))
 }
 
 fn desktop_steps() -> Interaction {
@@ -599,7 +907,7 @@ fn desktop_steps() -> Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
             Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=12 name=chimp-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=13 name=parrot-handler".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-desktop"),
             // Files: down twice, open the details view.
@@ -608,17 +916,17 @@ fn desktop_steps() -> Interaction {
             Action::Screenshot("2-details"),
             // Focus Chimp and make it crash.
             Action::Keys(vec!["tab", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=13 name=chimp-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=14 name=chimp-handler".into()),
             Action::Settle(QUIET),
             Action::Screenshot("3-app-restart"),
             // Test key: crash the window server itself.
             Action::Keys(vec!["f12"]),
-            Action::WaitFor("ZOO_OS PROC start pid=16 name=chimp-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=18 name=parrot-handler".into()),
             Action::Settle(QUIET),
             Action::Screenshot("4-server-restart"),
             // Leave the desktop and use the kernel shell again.
             Action::Keys(vec!["esc"]),
-            Action::WaitFor("ZOO_OS DISPLAY released pid=14".into()),
+            Action::WaitFor("ZOO_OS DISPLAY released pid=15".into()),
             Action::Settle(QUIET),
             Action::Keys(vec!["e", "c", "h", "o", "spc", "b", "a", "c", "k", "ret"]),
             Action::WaitFor("ZOO_OS SHELL line=echo back".into()),
@@ -721,6 +1029,32 @@ fn check_console_back(img: &screen::Image) -> Result<String, String> {
         row + 1
     ))
 }
+
+/// Key presses that type `text` (letters, digits, space, `-`, `/`, `.`),
+/// then Return.
+fn typed(text: &str) -> Vec<&'static str> {
+    const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    text.chars()
+        .map(|c| match c {
+            'a'..='z' => KEYS[(c as u8 - b'a') as usize],
+            'A'..='Z' => SHIFT_KEYS[(c as u8 - b'A') as usize],
+            '0'..='9' => DIGITS[(c as u8 - b'0') as usize],
+            ' ' => "spc",
+            '-' => "minus",
+            '/' => "slash",
+            '.' => "dot",
+            other => panic!("typed: no key for {other:?}"),
+        })
+        .chain(["ret"])
+        .collect()
+}
+
+const SHIFT_KEYS: [&str; 26] = [
+    "shift+a", "shift+b", "shift+c", "shift+d", "shift+e", "shift+f", "shift+g", "shift+h",
+    "shift+i", "shift+j", "shift+k", "shift+l", "shift+m", "shift+n", "shift+o", "shift+p",
+    "shift+q", "shift+r", "shift+s", "shift+t", "shift+u", "shift+v", "shift+w", "shift+x",
+    "shift+y", "shift+z",
+];
 
 /// QEMU key names for `a`..`z`.
 const KEYS: [&str; 26] = [

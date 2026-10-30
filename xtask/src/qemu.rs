@@ -23,7 +23,7 @@ pub fn set_accel(name: &str) {
     let _ = ACCEL.set(name.to_string());
 }
 
-fn accel() -> String {
+pub fn accel() -> String {
     ACCEL.get().cloned().unwrap_or_else(|| "tcg".into())
 }
 

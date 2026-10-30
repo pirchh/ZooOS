@@ -31,6 +31,7 @@ commands:
                             run the model on the host (tools/models/), print
                             prompt/output token ids, top logits and timing
   infer-check [--tokens N]  compare the engine with the NumPy reference
+  assist-check [--prompt S]  guided tool choice on fixed requests (host)
                             (tools/reference/) on several prompts
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
          [--accel tcg|whpx|kvm] [--skip-model] [--case NAME]
@@ -143,6 +144,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             image::build_model_image(&root, &tools, &data, infer::GUEST_PROMPT, &r.output_ids)?;
             println!("expected output ids: {}", infer::ids(&r.output_ids));
             Ok(ExitCode::SUCCESS)
+        }
+        "assist-check" => {
+            let ok = infer::assist_check(&root, opts.prompt.as_deref())?;
+            println!("assist-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         "infer-check" => {
             let ok = infer::check(&root, opts.tokens.unwrap_or(24))?;

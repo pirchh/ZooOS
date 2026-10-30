@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod assist;
 pub mod chat;
 pub mod gguf;
 pub mod model;

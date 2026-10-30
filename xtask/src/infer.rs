@@ -205,3 +205,87 @@ pub fn check(root: &Path, max_new: usize) -> Result<bool, String> {
     }
     Ok(all_ok)
 }
+
+/// Requests for `assist-check` with the tool and argument the assistant
+/// must choose (docs/m5c2-design.md §5).
+/// Several arguments are accepted where they mean the same to the broker.
+pub const ASSIST_CASES: [(&str, &str, &[&str]); 8] = [
+    (
+        "Find my pancake recipe",
+        "search",
+        &["pancake", "pancake recipe"],
+    ),
+    ("Search for files that mention flour", "search", &["flour"]),
+    ("What is in my Documents folder?", "list", &["Documents"]),
+    ("Show me what's inside Music", "list", &["Music"]),
+    (
+        "How big is Documents/notes.txt?",
+        "inspect",
+        &["Documents/notes.txt"],
+    ),
+    (
+        "Make a folder called Projects/2026",
+        "create",
+        &["Projects/2026"],
+    ),
+    (
+        "Create a new folder named Invoices",
+        "create",
+        &["Invoices"],
+    ),
+    (
+        "Please create the folder Photos/Holidays",
+        "create",
+        &["Photos/Holidays"],
+    ),
+];
+
+/// Runs the guided tool choice on `ASSIST_CASES` with the host engine.
+pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
+    use zoo_infer::assist::Assistant;
+    let data = load_model(root)?;
+    let g = Gguf::parse(&data).map_err(|e| format!("GGUF: {e:?}"))?;
+    let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e:?}"))?;
+    let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
+    let t0 = Instant::now();
+    let mut a = Assistant::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
+    println!(
+        "system prompt: {} tokens in {:.1}s",
+        a.prefix_tokens(),
+        t0.elapsed().as_secs_f64()
+    );
+    if let Some(req) = extra {
+        let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
+        println!(
+            "{req:?} -> {} {:?} (margin {:.2})",
+            c.tool.word(),
+            c.arg,
+            c.margin
+        );
+        return Ok(true);
+    }
+    let mut ok = true;
+    for (req, tool, arg) in ASSIST_CASES {
+        let t = Instant::now();
+        let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
+        let good = c.tool.word() == tool && arg.contains(&c.arg.as_str());
+        ok &= good;
+        println!(
+            "{} {:<45} -> {} {:?} (margin {:.2}, {} + {} tokens, {:.1}s){}",
+            if good { "OK  " } else { "FAIL" },
+            format!("{req:?}"),
+            c.tool.word(),
+            c.arg,
+            c.margin,
+            c.request_tokens,
+            c.arg_tokens,
+            t.elapsed().as_secs_f64(),
+            if good {
+                String::new()
+            } else {
+                format!("; expected {tool} {arg:?}")
+            }
+        );
+    }
+    Ok(ok)
+}

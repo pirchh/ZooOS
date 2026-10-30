@@ -136,6 +136,31 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Resolved in M5c-2 (2026-10-30)
+
+Design: docs/m5c2-design.md.
+
+- Guided decoding instead of free-form tool calls: the model picks one of
+  four tool words by next-token score and writes the argument with tokens
+  restricted to path characters. A 55-token system prompt is computed once
+  per model service and reused by rewinding the cache. Chosen because a
+  conventional tool prompt (≈ 300 tokens) is minutes per answer even with
+  WHPX and close to an hour under TCG.
+- Typed commands bypass the model; `create` always shows the broker's plan
+  and waits for `y`.
+- New programs: ParrotHandler (the Assistant window); ElephantHandler gains a
+  service mode. The model service never holds a directory handle.
+- The window server now runs three windows: Files on the left, Chimp and the
+  Assistant stacked on the right (existing screen checks keep their
+  positions). The session Zookeeper passes a home handle down; `fs_root`
+  is closed right after narrowing.
+- Verify gained `assistant` (TCG, no model), `assistant-model` (TCG, model
+  image: responsiveness and cancellation) and `assistant-live` (model
+  choices end to end, only with `--accel`, otherwise `SKIP`). The model's
+  choices are also checked on the host by `cargo xtask assist-check`.
+- OtterHandler's `search` matches all query words against path or contents.
+- Version 0.9.0. ABI unchanged (version 4).
+
 ## Resolved in M5c-1 (2026-10-30)
 
 Design: docs/m5c1-design.md.
