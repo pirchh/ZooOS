@@ -19,6 +19,7 @@ Status: initial implementation defaults, with feasibility checks noted below.
 - Panic: abort semantics; report via serial, then halt. No unwinding or reboot.
 - M1 memory ownership: consume the bootloader's documented BootInfo interface.
   Preserve bootloader mappings; no custom allocator or new page-table manager yet.
+  (Superseded in M2; see "Resolved in M2".)
 - Interrupts: keep disabled until deliberately implemented in M2. A halted M1
   guest is expected and must be terminated by the bounded host test harness.
 - Host tooling: a small Cargo xtask program exposes build/run/verify commands.
@@ -63,6 +64,39 @@ Evidence for each item is in docs/verification.md.
   (must be rejected by timeout, default 5 s).
 - xtask parses its own arguments and uses only `bootloader` and `sha2` (for
   firmware checksums in doctor), to keep the dependency set small.
+
+## Resolved in M2 (2026-10-30)
+
+Full design: docs/m2-design.md. Evidence: docs/verification.md.
+
+- Address-space ownership: the bootloader is configured with
+  `dynamic_range_end = 0x0000_7FFF_FFFF_F000`, so all of its mappings stay in
+  the lower half. Level-4 entries 256–511 belong to the kernel; the kernel
+  checks they are empty at boot and panics otherwise.
+- Kernel virtual layout: heap at `0xFFFF_C000_0000_1000` (1 MiB, fixed size)
+  with unmapped guard pages on both sides; scratch test pages at
+  `0xFFFF_C000_4000_0000`. These are internal kernel addresses, not an ABI.
+- Physical memory: a bitmap frame allocator owns `Usable` frames at or above
+  1 MiB. `Bootloader` and firmware regions are preserved, not reclaimed.
+  Double frees and foreign frames are rejected with errors.
+- Single owner, no globals: one `Memory` value holds the page mapper and frame
+  allocator and is passed by `&mut`. Handlers never touch it.
+- Heap: `linked_list_allocator` as the global allocator. This lifts M1's
+  "no allocator" rule for the kernel, as M2 requires.
+- Interrupt handlers use the unstable `abi_x86_interrupt` feature (via
+  `x86_64`), so the kernel now depends on nightly itself, not only the
+  bootloader build. Chosen over hand-written assembly entry stubs to keep
+  assembly minimal. The kernel has no inline assembly of its own.
+- Timer: legacy 8259 PIC + PIT at ~100 Hz. Local APIC/IOAPIC deferred.
+- Double faults run on a dedicated 20 KiB IST stack so stack overflows are
+  reported, not turned into a triple fault.
+- Test modes: one Cargo feature per mode, mutually exclusive via
+  `compile_error!`; one target dir and image per mode. The panic test now
+  panics after all self-tests, with interrupts enabled.
+- Crate version bumped to 0.2.0, so the BOOT marker reads `version=0.2.0`.
+- Pins (exact): x86_64 0.15.5 (latest stable; 0.16 is a release candidate),
+  pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3 (0.10.0 was
+  yanked).
 
 ## M0 must resolve and record
 

@@ -1,0 +1,233 @@
+//! Interrupt descriptor table, exception handlers, 8259 PIC and PIT timer.
+//!
+//! Handlers must not allocate or take locks that non-interrupt code may hold
+//! with interrupts enabled. The only lock taken here (PICS) is held by other
+//! code only while interrupts are disabled.
+
+use crate::cpu;
+use crate::gdt;
+use crate::serial_println;
+use core::sync::atomic::{AtomicU64, Ordering};
+use pic8259::ChainedPics;
+use spin::{LazyLock, Mutex};
+use x86_64::instructions::port::Port;
+use x86_64::registers::control::Cr2;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+
+pub const PIC_1_OFFSET: u8 = 32;
+pub const PIC_2_OFFSET: u8 = 40;
+const TIMER_VECTOR: u8 = PIC_1_OFFSET; // IRQ0
+const SPURIOUS_MASTER_VECTOR: u8 = PIC_1_OFFSET + 7; // IRQ7
+const SPURIOUS_SLAVE_VECTOR: u8 = PIC_2_OFFSET + 7; // IRQ15
+
+/// PIT input clock (Hz) and the divisor giving ~100 Hz.
+const PIT_HZ: u32 = 1_193_182;
+pub const TIMER_HZ: u32 = 100;
+const PIT_DIVISOR: u16 = ((PIT_HZ + TIMER_HZ / 2) / TIMER_HZ) as u16; // 11932
+
+// SAFETY: the offsets 32..48 do not overlap CPU exception vectors (0..32),
+// which is the requirement of `ChainedPics::new`.
+static PICS: Mutex<ChainedPics> =
+    Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+
+static TICKS: AtomicU64 = AtomicU64::new(0);
+static BREAKPOINTS: AtomicU64 = AtomicU64::new(0);
+/// Lowest mapped address of the kernel stack; the page below it is the guard.
+static STACK_BOTTOM: AtomicU64 = AtomicU64::new(0);
+
+static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
+    let mut idt = InterruptDescriptorTable::new();
+    idt.breakpoint.set_handler_fn(breakpoint);
+    idt.divide_error.set_handler_fn(divide_error);
+    idt.invalid_opcode.set_handler_fn(invalid_opcode);
+    idt.segment_not_present.set_handler_fn(segment_not_present);
+    idt.stack_segment_fault.set_handler_fn(stack_segment_fault);
+    idt.general_protection_fault
+        .set_handler_fn(general_protection);
+    idt.page_fault.set_handler_fn(page_fault);
+    idt.alignment_check.set_handler_fn(alignment_check);
+    idt.machine_check.set_handler_fn(machine_check);
+    idt.simd_floating_point.set_handler_fn(simd_floating_point);
+    // SAFETY: the IST index refers to the double-fault stack installed in the
+    // TSS by `gdt::init`, which is not used by any other vector.
+    unsafe {
+        idt.double_fault
+            .set_handler_fn(double_fault)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+    }
+    idt[TIMER_VECTOR].set_handler_fn(timer);
+    idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
+    idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
+    idt
+});
+
+/// Loads the IDT. Requires `gdt::init` first (the double-fault IST).
+pub fn init_idt(kernel_stack_bottom: u64) {
+    STACK_BOTTOM.store(kernel_stack_bottom, Ordering::Relaxed);
+    IDT.load();
+}
+
+/// Remaps and masks the PICs (only IRQ0 open) and starts the PIT at ~100 Hz.
+/// Interrupts must still be disabled; the caller enables them afterwards.
+pub fn init_timer() {
+    let mut pics = PICS.lock();
+    // SAFETY: interrupts are disabled and this is the only PIC user. The
+    // remapped vectors have handlers in the IDT; every other line is masked.
+    unsafe {
+        pics.initialize();
+        pics.write_masks(0b1111_1110, 0b1111_1111);
+    }
+    drop(pics);
+    // SAFETY: ports 0x43/0x40 are the PIT command and channel-0 data ports.
+    // Command 0x34: channel 0, low then high byte, mode 2 (rate generator).
+    unsafe {
+        Port::<u8>::new(0x43).write(0x34);
+        Port::<u8>::new(0x40).write((PIT_DIVISOR & 0xFF) as u8);
+        Port::<u8>::new(0x40).write((PIT_DIVISOR >> 8) as u8);
+    }
+}
+
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
+}
+
+pub fn breakpoints() -> u64 {
+    BREAKPOINTS.load(Ordering::Relaxed)
+}
+
+// ---- recoverable --------------------------------------------------------
+
+extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
+    BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
+}
+
+extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
+    TICKS.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: TIMER_VECTOR is the vector the PIC raised. Main code only
+    // holds PICS with interrupts disabled, so this lock cannot deadlock.
+    unsafe { PICS.lock().notify_end_of_interrupt(TIMER_VECTOR) };
+}
+
+/// Reads a PIC's in-service register (OCW3 0x0B, then read command port).
+fn pic_in_service(command_port: u16) -> u8 {
+    // SAFETY: 0x20/0xA0 are the PIC command ports; OCW3 only selects which
+    // register the next read returns.
+    unsafe {
+        let mut port = Port::<u8>::new(command_port);
+        port.write(0x0B);
+        port.read()
+    }
+}
+
+extern "x86-interrupt" fn spurious_master(_frame: InterruptStackFrame) {
+    // A real IRQ7 would be in service; it is masked, so treat any other case
+    // as spurious, which must not be acknowledged.
+    if pic_in_service(0x20) & 0x80 != 0 {
+        // SAFETY: acknowledging an IRQ that is genuinely in service.
+        unsafe { PICS.lock().notify_end_of_interrupt(SPURIOUS_MASTER_VECTOR) };
+    }
+}
+
+extern "x86-interrupt" fn spurious_slave(_frame: InterruptStackFrame) {
+    if pic_in_service(0xA0) & 0x80 != 0 {
+        // SAFETY: acknowledging an IRQ that is genuinely in service.
+        unsafe { PICS.lock().notify_end_of_interrupt(SPURIOUS_SLAVE_VECTOR) };
+    } else {
+        // Spurious from the slave: the master still saw IRQ2 and needs an EOI.
+        // SAFETY: plain EOI command to the master PIC command port.
+        unsafe { Port::<u8>::new(0x20).write(0x20) };
+    }
+}
+
+// ---- fatal --------------------------------------------------------------
+
+fn fatal(name: &str, frame: &InterruptStackFrame, error: Option<u64>) -> ! {
+    serial_println!("ORIGINS_OS EXCEPTION {}", name);
+    details(frame, error);
+    cpu::halt_forever()
+}
+
+fn details(frame: &InterruptStackFrame, error: Option<u64>) {
+    serial_println!(
+        "ORIGINS_OS INFO exception rip={:#018x} rsp={:#018x} error={:#x}",
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        error.unwrap_or(0)
+    );
+}
+
+extern "x86-interrupt" fn divide_error(frame: InterruptStackFrame) {
+    fatal("divide-error", &frame, None)
+}
+
+extern "x86-interrupt" fn invalid_opcode(frame: InterruptStackFrame) {
+    fatal("invalid-opcode", &frame, None)
+}
+
+extern "x86-interrupt" fn segment_not_present(frame: InterruptStackFrame, error: u64) {
+    fatal("segment-not-present", &frame, Some(error))
+}
+
+extern "x86-interrupt" fn stack_segment_fault(frame: InterruptStackFrame, error: u64) {
+    fatal("stack-segment-fault", &frame, Some(error))
+}
+
+extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, error: u64) {
+    fatal("general-protection", &frame, Some(error))
+}
+
+extern "x86-interrupt" fn alignment_check(frame: InterruptStackFrame, error: u64) {
+    fatal("alignment-check", &frame, Some(error))
+}
+
+extern "x86-interrupt" fn machine_check(frame: InterruptStackFrame) -> ! {
+    fatal("machine-check", &frame, None)
+}
+
+extern "x86-interrupt" fn simd_floating_point(frame: InterruptStackFrame) {
+    fatal("simd-floating-point", &frame, None)
+}
+
+extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
+    let addr = Cr2::read_raw();
+    let access = if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+        "execute"
+    } else if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        "write"
+    } else {
+        "read"
+    };
+    let cause = if code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        "protection"
+    } else {
+        "not-present"
+    };
+    serial_println!(
+        "ORIGINS_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
+        access,
+        cause,
+        addr
+    );
+    details(&frame, Some(code.bits()));
+    cpu::halt_forever()
+}
+
+extern "x86-interrupt" fn double_fault(frame: InterruptStackFrame, error: u64) -> ! {
+    // A kernel stack overflow faults on the guard page; pushing the page-fault
+    // frame onto the same stack faults again, giving this double fault. CR2
+    // then still holds an address in the guard page.
+    let cr2 = Cr2::read_raw();
+    let bottom = STACK_BOTTOM.load(Ordering::Relaxed);
+    if bottom != 0 && (bottom - 4096..bottom).contains(&cr2) {
+        serial_println!("ORIGINS_OS EXCEPTION double-fault stack-guard-hit");
+    } else {
+        serial_println!("ORIGINS_OS EXCEPTION double-fault cr2={:#018x}", cr2);
+    }
+    serial_println!(
+        "ORIGINS_OS INFO double_fault cr2={:#018x} stack_bottom={:#018x}",
+        cr2,
+        bottom
+    );
+    details(&frame, Some(error));
+    cpu::halt_forever()
+}

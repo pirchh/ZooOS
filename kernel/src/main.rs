@@ -1,33 +1,99 @@
-//! OriginsOS M1 kernel: boots via the bootloader crate's UEFI loader, reports
-//! startup markers on COM1, and halts. No allocator, interrupts, or scheduler.
+//! OriginsOS kernel (M2): boots via the bootloader crate's UEFI loader, sets up
+//! its own GDT/IDT, memory ownership, heap and timer, runs self-tests, and
+//! reports on COM1. See docs/m2-design.md.
 
 #![no_std]
 #![no_main]
+// `extern "x86-interrupt"` handlers; avoids hand-written assembly stubs.
+#![feature(abi_x86_interrupt)]
+// Fault-test kernels stop before the timer and idle loop, so those are unused.
+#![cfg_attr(
+    any(
+        feature = "fault-write-protect",
+        feature = "fault-heap-guard",
+        feature = "fault-stack-overflow",
+        feature = "triple-fault"
+    ),
+    allow(dead_code)
+)]
+
+extern crate alloc;
 
 mod cpu;
+mod faults;
+mod gdt;
+mod interrupts;
+mod memory;
+mod selftest;
 mod serial;
 
+use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::MemoryRegionKind;
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(not(feature = "panic-test"))]
-const MODE: &str = "normal";
-#[cfg(feature = "panic-test")]
-const MODE: &str = "panic-test";
+#[cfg(any(
+    all(
+        feature = "panic-test",
+        any(
+            feature = "fault-write-protect",
+            feature = "fault-heap-guard",
+            feature = "fault-stack-overflow",
+            feature = "triple-fault"
+        )
+    ),
+    all(
+        feature = "fault-write-protect",
+        any(
+            feature = "fault-heap-guard",
+            feature = "fault-stack-overflow",
+            feature = "triple-fault"
+        )
+    ),
+    all(
+        feature = "fault-heap-guard",
+        any(feature = "fault-stack-overflow", feature = "triple-fault")
+    ),
+    all(feature = "fault-stack-overflow", feature = "triple-fault"),
+))]
+compile_error!("at most one test-mode feature may be enabled");
 
-entry_point!(kernel_main);
+const MODE: &str = if cfg!(feature = "panic-test") {
+    "panic-test"
+} else if cfg!(feature = "fault-write-protect") {
+    "fault-write-protect"
+} else if cfg!(feature = "fault-heap-guard") {
+    "fault-heap-guard"
+} else if cfg!(feature = "fault-stack-overflow") {
+    "fault-stack-overflow"
+} else if cfg!(feature = "triple-fault") {
+    "triple-fault"
+} else {
+    "normal"
+};
+
+/// Boot contract with the bootloader (design §1–3).
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    // Map all physical memory so the kernel can reach page tables and frames.
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    // Keep the bootloader's dynamic mappings in the lower half; the upper
+    // half (level-4 entries 256..512) belongs to the kernel.
+    config.mappings.dynamic_range_end = Some(0x0000_7FFF_FFFF_F000);
+    config.kernel_stack_size = 128 * 1024;
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 /// Called by the bootloader after UEFI boot services have been exited, with
-/// the kernel mapped and a stack set up. Never returns.
+/// interrupts disabled, the kernel mapped and a stack set up. Never returns.
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     serial_println!("ORIGINS_OS BOOT version={}", VERSION);
 
-    // Derived from data the bootloader handed to this kernel at runtime, so
-    // it is evidence that guest kernel code ran, not a fixed string.
     let (regions, usable_bytes) = usable_memory(boot_info);
     serial_println!(
         "ORIGINS_OS INFO mode={} memory_regions={} usable_bytes={}",
@@ -36,14 +102,60 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         usable_bytes
     );
 
-    #[cfg(feature = "panic-test")]
-    panic!("intentional-test");
+    gdt::init();
+    interrupts::init_idt(boot_info.kernel_stack_bottom);
+    let mem = memory::init(boot_info);
+    serial_println!(
+        "ORIGINS_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
+        mem.phys_offset,
+        mem.stack_bottom,
+        mem.stack_len,
+        memory::HEAP_START,
+        memory::HEAP_SIZE
+    );
+    run(mem)
+}
 
-    #[cfg(not(feature = "panic-test"))]
-    {
-        serial_println!("ORIGINS_OS READY");
-        cpu::halt_forever()
+#[cfg(feature = "fault-write-protect")]
+fn run(mut mem: memory::Memory) -> ! {
+    faults::write_protect(&mut mem)
+}
+
+#[cfg(feature = "fault-heap-guard")]
+fn run(_mem: memory::Memory) -> ! {
+    faults::heap_guard()
+}
+
+#[cfg(feature = "fault-stack-overflow")]
+fn run(_mem: memory::Memory) -> ! {
+    faults::stack_overflow()
+}
+
+#[cfg(feature = "triple-fault")]
+fn run(_mem: memory::Memory) -> ! {
+    faults::triple_fault()
+}
+
+/// Normal and panic-test modes: self-tests, then READY (or the panic).
+#[cfg(not(any(
+    feature = "fault-write-protect",
+    feature = "fault-heap-guard",
+    feature = "fault-stack-overflow",
+    feature = "triple-fault"
+)))]
+fn run(mut mem: memory::Memory) -> ! {
+    selftest::breakpoint();
+    selftest::frames(&mut mem);
+    selftest::paging(&mut mem);
+    selftest::heap();
+    interrupts::init_timer();
+    selftest::timer();
+
+    if cfg!(feature = "panic-test") {
+        panic!("intentional-test");
     }
+    serial_println!("ORIGINS_OS READY");
+    cpu::idle_forever()
 }
 
 /// Returns (total region count, sum of usable region sizes in bytes).
@@ -57,10 +169,11 @@ fn usable_memory(boot_info: &BootInfo) -> (usize, u64) {
     (regions.len(), usable)
 }
 
-/// Abort-style panic handler: report on serial, then halt. No unwinding and
-/// no reboot (QEMU is run with -no-reboot, and the host harness stops it).
+/// Abort-style panic handler: stop interrupts, report on serial, halt. No
+/// unwinding and no reboot.
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    x86_64::instructions::interrupts::disable();
     serial_println!("ORIGINS_OS PANIC {}", info.message());
     if let Some(loc) = info.location() {
         serial_println!(

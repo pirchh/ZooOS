@@ -35,8 +35,8 @@ builds do not accidentally inherit the kernel target or linker flags.
 Run from the repository root after documented prerequisites are installed:
 
     cargo xtask doctor
-    cargo xtask build
-    cargo xtask run
+    cargo xtask build [--mode M]
+    cargo xtask run [--mode M]
     cargo xtask verify
 
 An alias in .cargo/config.toml should make cargo xtask invoke the host utility.
@@ -49,10 +49,16 @@ Missing prerequisites produce an actionable error and nonzero exit code.
 
 ## Guest and harness contract
 
-Normal guest markers, emitted by kernel code after kernel entry:
+Normal guest markers, emitted by kernel code after kernel entry (the version
+is the workspace crate version: 0.1.0 at M1, 0.2.0 since M2):
 
-    ORIGINS_OS BOOT version=0.1.0
+    ORIGINS_OS BOOT version=0.2.0
     ORIGINS_OS READY
+
+Since M2 the kernel also prints `INFO mode=…` after BOOT and five
+`TEST <name> ok` lines before READY (or before the panic). M2 adds fault-test
+builds that end in one `EXCEPTION …` line, and a triple-fault build that the
+verifier must reject. The full list is in docs/m2-design.md §9.
 
 A separately built deliberate-panic mode must emit the startup marker and then:
 

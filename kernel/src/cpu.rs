@@ -1,46 +1,23 @@
-//! Minimal processor operations. All inline assembly in the kernel lives here.
+//! Processor idle and halt helpers. The kernel has no inline assembly of its
+//! own; these wrap instructions provided by the `x86_64` crate.
 
-use core::arch::asm;
+use x86_64::instructions::{hlt, interrupts};
 
-/// Writes one byte to an x86 I/O port.
-///
-/// # Safety
-/// The caller must ensure `port` is a device register for which writing
-/// `value` has no effect on memory safety (e.g. a UART data/control register
-/// owned by the caller). Port I/O is only permitted at CPL 0, which holds for
-/// this kernel.
-pub unsafe fn outb(port: u16, value: u8) {
-    // SAFETY: forwarded from the caller's contract. The instruction touches no
-    // Rust-visible memory and does not use the stack.
-    unsafe {
-        asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags));
-    }
-}
-
-/// Reads one byte from an x86 I/O port.
-///
-/// # Safety
-/// Same as [`outb`]: `port` must be a register whose read side effects are
-/// acceptable to the caller (reading a 16550 status register has none).
-pub unsafe fn inb(port: u16) -> u8 {
-    let value: u8;
-    // SAFETY: forwarded from the caller's contract; no memory or stack access.
-    unsafe {
-        asm!("in al, dx", out("al") value, in("dx") port, options(nomem, nostack, preserves_flags));
-    }
-    value
-}
-
-/// Disables interrupts and halts the CPU permanently.
-///
-/// Interrupts are never enabled in M1, so `hlt` should not return; the loop
-/// covers NMIs and spurious wakeups.
+/// Disables interrupts and halts permanently. Used by the panic handler and
+/// fatal exception handlers, so nothing runs after a fatal report.
 pub fn halt_forever() -> ! {
+    interrupts::disable();
     loop {
-        // SAFETY: `cli` and `hlt` only change interrupt state and pause the
-        // CPU; they access no memory. The kernel is at CPL 0.
-        unsafe {
-            asm!("cli", "hlt", options(nomem, nostack));
-        }
+        // With interrupts off only an NMI can wake the CPU; halt again.
+        hlt();
+    }
+}
+
+/// Idles with interrupts enabled, so the timer keeps running.
+pub fn idle_forever() -> ! {
+    loop {
+        // `sti; hlt` as one pair, so an interrupt cannot slip in between and
+        // leave the CPU halted until the next one.
+        interrupts::enable_and_hlt();
     }
 }
