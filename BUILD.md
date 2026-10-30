@@ -23,6 +23,9 @@ builds do not accidentally inherit the kernel target or linker flags.
 ## Required repository layout
 
 - kernel/: freestanding Rust kernel and panic handler.
+- abi/: shared system call ABI and ELF/initrd parsers (no dependencies).
+- user/: user runtime and programs, built with `-C relocation-model=static`
+  and packed by `cargo xtask build` into `build/initrd.tar` (the ramdisk).
 - xtask/: host build, image, run and verification utility.
 - .cargo/: aliases and target-specific configuration.
 - tools/firmware/README.md: firmware setup and provenance.
@@ -59,6 +62,10 @@ Since the interim console (0.3.0), normal boots also print
 `ZOO_OS SHELL ready` after READY and then wait for keyboard input; the
 `keyboard` and `scroll` verify cases type into the guest through QMP and
 check screenshots. `cargo xtask run` opens a QEMU window for the keyboard.
+
+Since M3 (0.5.0), normal boots run the Zookeeper scenario between the
+self-tests and READY and print `ZOO_OS PROC …` markers for every process
+start, exit, crash and kill (docs/m3-design.md §9).
 
 Since M2 the kernel also prints `INFO mode=…` after BOOT and five
 `TEST <name> ok` lines before READY (or before the panic). M2 adds fault-test

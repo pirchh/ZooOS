@@ -1,0 +1,11 @@
+[package]
+name = "zoo-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Shared, dependency-free definitions and parsers used by the kernel, user
+# programs and xtask (docs/m3-design.md §4, §7, §8). Pure code, so it is
+# unit-tested on the host.
+[dependencies]

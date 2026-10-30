@@ -6,7 +6,11 @@ and existing bootloader", "Kernel initialization", and the single-CPU parts of
 "Physical and virtual memory" and "Interrupts, exceptions, timers, CPU setup"
 (see docs/m2-design.md), plus an interim kernel-mode text console with
 keyboard input (docs/console-design.md), which is a diagnostic tool, not the
-desktop. Every other component is proposed.
+desktop. M3 adds the first parts of "Process loader and address spaces",
+"Thread scheduler" (single-threaded processes), "First user process and
+service supervisor" (Zookeeper), "Versioned syscalls and IPC", "Validated
+handles" and a read-only initial filesystem (docs/m3-design.md). Every other
+component is proposed.
 Updated: 2026-10-30
 
 ## Product direction

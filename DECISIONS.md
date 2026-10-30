@@ -123,6 +123,36 @@ or a user-space shell.
   `verify` stays headless.
 - Version 0.3.0. Normal boots add `ZOO_OS SHELL ready` after `READY`.
 
+## Resolved in M3 (2026-10-30)
+
+Design: docs/m3-design.md. Evidence: docs/verification.md.
+
+- Address space split three ways: user (level-4 entries 0–255, per
+  process), bootloader mappings (256–383, via `dynamic_range_start/end`),
+  kernel-owned (384–511). Replaces M2's "bootloader in the lower half".
+- System calls via `int 0x80` (ABI version 1, numbers 0–10, negative errors
+  1–12). `syscall`/`sysret` deferred.
+- One assembly entry path (`kernel/src/trap.rs`, naked functions) for the
+  timer, system calls and user-reachable faults; a context switch is
+  returning another task's saved frame.
+- Preemptive round-robin at 100 Hz. The kernel task is preempted only at its
+  idle point; blocked system calls are re-run when the task is next
+  scheduled after any wake-up.
+- `Memory` moves to a global used only with interrupts disabled (replaces
+  M2's single owner passed by `&mut`).
+- Handles: 16 slots per process, values carry a generation so stale handles
+  are rejected. Channels: bidirectional, 8 × 256-byte messages per direction,
+  non-blocking send.
+- Programs: static ELF at `0x200000` (`-C relocation-model=static`), loaded
+  from a ustar initrd passed as the bootloader ramdisk; parsers in the new
+  dependency-free `zoo-abi` crate, unit-tested on the host.
+- Zookeeper (supervisor) runs a fixed start-up plan and exits; restart
+  policy is one restart. LionHandler, MonkeyHandler and HamsterHandler are
+  the first handlers. A long-lived Zookeeper is deferred.
+- User log text is prefixed `[pid:name]` and sanitised (`ZOO_OS` →
+  `ZOO-OS`) so user programs cannot forge verifier markers.
+- Version 0.5.0.
+
 ## Rename to ZooOS (2026-10-30)
 
 - Project name ZooOS, identifier `zoo-os` (crates `zoo-os-kernel`, images

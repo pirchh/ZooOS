@@ -44,6 +44,11 @@ frames, NUMA, huge pages, per-CPU state.
 
 ## 3. Virtual address layout
 
+*Changed in M3:* the bootloader's mappings moved from the lower half to
+level-4 entries 256–383, the lower half is now per-process user space, and
+the kernel-owned range is entries 384–511. See docs/m3-design.md §1. The
+heap and scratch addresses below are unchanged.
+
 Upper half (kernel-owned), all 4 KiB pages:
 
 | Range | Use | Flags |

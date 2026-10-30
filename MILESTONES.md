@@ -45,6 +45,10 @@ desktop, input routing or windowing.
 
 ## M3 — isolated native programs and services
 
+Status: implemented and verified 2026-10-30 (docs/m3-design.md,
+docs/verification.md). Zookeeper is the supervisor; the filesystem is a
+read-only initrd so far.
+
 Specify handles, syscall ABI, IPC, process lifecycle and executable loader.
 Acceptance: two isolated processes communicate; invalid handles and malformed
 requests fail safely; a crashing process does not terminate unrelated processes.

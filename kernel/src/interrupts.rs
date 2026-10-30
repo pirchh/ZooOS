@@ -1,16 +1,21 @@
 //! Interrupt descriptor table, exception handlers, 8259 PIC and PIT timer.
 //!
-//! Handlers must not allocate or take locks that non-interrupt code may hold
-//! with interrupts enabled. The only lock taken here (PICS) is held by other
-//! code only while interrupts are disabled.
+//! The timer, system calls and the faults user code can raise go through the
+//! assembly path in `trap.rs` (they may switch tasks). The rest keep
+//! `x86-interrupt` handlers. Handlers must not allocate or take locks that
+//! non-interrupt code may hold with interrupts enabled. The only lock taken
+//! here (PICS) is held by other code only while interrupts are disabled.
 
 use crate::cpu;
 use crate::gdt;
 use crate::keyboard;
 use crate::kprintln;
+use crate::trap::{self, TrapFrame};
 use core::sync::atomic::{AtomicU64, Ordering};
 use pic8259::ChainedPics;
 use spin::{LazyLock, Mutex};
+use x86_64::PrivilegeLevel;
+use x86_64::VirtAddr;
 use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
@@ -40,13 +45,7 @@ static STACK_BOTTOM: AtomicU64 = AtomicU64::new(0);
 static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.breakpoint.set_handler_fn(breakpoint);
-    idt.divide_error.set_handler_fn(divide_error);
-    idt.invalid_opcode.set_handler_fn(invalid_opcode);
     idt.segment_not_present.set_handler_fn(segment_not_present);
-    idt.stack_segment_fault.set_handler_fn(stack_segment_fault);
-    idt.general_protection_fault
-        .set_handler_fn(general_protection);
-    idt.page_fault.set_handler_fn(page_fault);
     idt.alignment_check.set_handler_fn(alignment_check);
     idt.machine_check.set_handler_fn(machine_check);
     idt.simd_floating_point.set_handler_fn(simd_floating_point);
@@ -57,7 +56,25 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
             .set_handler_fn(double_fault)
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
     }
-    idt[TIMER_VECTOR].set_handler_fn(timer);
+    let addr = |f: unsafe extern "C" fn()| VirtAddr::new(f as usize as u64);
+    // SAFETY: each address is a `trap.rs` stub, which builds a `TrapFrame`
+    // matching what the CPU pushes for that vector (dummy error code where
+    // the CPU pushes none) and never returns except through `iretq`.
+    unsafe {
+        idt.divide_error.set_handler_addr(addr(trap::stub_divide));
+        idt.invalid_opcode
+            .set_handler_addr(addr(trap::stub_invalid_opcode));
+        idt.stack_segment_fault
+            .set_handler_addr(addr(trap::stub_stack_segment));
+        idt.general_protection_fault
+            .set_handler_addr(addr(trap::stub_general_protection));
+        idt.page_fault.set_handler_addr(addr(trap::stub_page_fault));
+        idt[TIMER_VECTOR].set_handler_addr(addr(trap::stub_timer));
+        // The only gate user code may invoke directly.
+        idt[trap::VEC_SYSCALL as u8]
+            .set_handler_addr(addr(trap::stub_syscall))
+            .set_privilege_level(PrivilegeLevel::Ring3);
+    }
     idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_irq);
     idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
     idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
@@ -117,7 +134,8 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
     BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
 }
 
-extern "x86-interrupt" fn timer(_frame: InterruptStackFrame) {
+/// Counts a tick and acknowledges IRQ0. Called from `trap_dispatch`.
+pub fn on_timer_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     // SAFETY: TIMER_VECTOR is the vector the PIC raised. Main code only
     // holds PICS with interrupts disabled, so this lock cannot deadlock.
@@ -179,24 +197,8 @@ fn details(frame: &InterruptStackFrame, error: Option<u64>) {
     );
 }
 
-extern "x86-interrupt" fn divide_error(frame: InterruptStackFrame) {
-    fatal("divide-error", &frame, None)
-}
-
-extern "x86-interrupt" fn invalid_opcode(frame: InterruptStackFrame) {
-    fatal("invalid-opcode", &frame, None)
-}
-
 extern "x86-interrupt" fn segment_not_present(frame: InterruptStackFrame, error: u64) {
     fatal("segment-not-present", &frame, Some(error))
-}
-
-extern "x86-interrupt" fn stack_segment_fault(frame: InterruptStackFrame, error: u64) {
-    fatal("stack-segment-fault", &frame, Some(error))
-}
-
-extern "x86-interrupt" fn general_protection(frame: InterruptStackFrame, error: u64) {
-    fatal("general-protection", &frame, Some(error))
 }
 
 extern "x86-interrupt" fn alignment_check(frame: InterruptStackFrame, error: u64) {
@@ -211,8 +213,21 @@ extern "x86-interrupt" fn simd_floating_point(frame: InterruptStackFrame) {
     fatal("simd-floating-point", &frame, None)
 }
 
-extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFaultErrorCode) {
-    let addr = Cr2::read_raw();
+/// Short name of a trap vector handled by `trap.rs`, for fault reports.
+pub fn fault_name(vector: u64) -> &'static str {
+    match vector {
+        trap::VEC_DIVIDE => "divide-error",
+        trap::VEC_INVALID_OPCODE => "invalid-opcode",
+        trap::VEC_STACK_SEGMENT => "stack-segment-fault",
+        trap::VEC_GENERAL_PROTECTION => "general-protection",
+        trap::VEC_PAGE_FAULT => "page-fault",
+        _ => "unknown-trap",
+    }
+}
+
+/// `(access, cause)` words for a page-fault error code.
+pub fn page_fault_kind(error: u64) -> (&'static str, &'static str) {
+    let code = PageFaultErrorCode::from_bits_truncate(error);
     let access = if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
         "execute"
     } else if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
@@ -225,13 +240,29 @@ extern "x86-interrupt" fn page_fault(frame: InterruptStackFrame, code: PageFault
     } else {
         "not-present"
     };
+    (access, cause)
+}
+
+/// A fault on the `trap.rs` path while in kernel mode: fatal. Prints the
+/// same markers as the M2 handlers did, then halts.
+pub fn kernel_trap_fault(f: &TrapFrame) -> ! {
+    if f.vector == trap::VEC_PAGE_FAULT {
+        let (access, cause) = page_fault_kind(f.error);
+        kprintln!(
+            "ZOO_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
+            access,
+            cause,
+            Cr2::read_raw()
+        );
+    } else {
+        kprintln!("ZOO_OS EXCEPTION {}", fault_name(f.vector));
+    }
     kprintln!(
-        "ZOO_OS EXCEPTION page-fault access={} cause={} addr={:#018x}",
-        access,
-        cause,
-        addr
+        "ZOO_OS INFO exception rip={:#018x} rsp={:#018x} error={:#x}",
+        f.rip,
+        f.rsp,
+        f.error
     );
-    details(&frame, Some(code.bits()));
     cpu::halt_forever()
 }
 

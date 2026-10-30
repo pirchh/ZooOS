@@ -207,6 +207,84 @@ pub fn paging(mem: &mut Memory) {
     kprintln!("ZOO_OS TEST paging ok");
 }
 
+/// Two fresh address spaces map the same user address to different frames;
+/// each sees only its own data; both share the kernel half; freeing them
+/// returns every frame (docs/m3-design.md §9).
+pub fn address_spaces(mem: &mut Memory) {
+    let before = mem.frames.available();
+    let va = memory::USER_IMAGE_START;
+    let a = mem
+        .new_address_space()
+        .unwrap_or_else(|e| panic!("self-test address-spaces: {e:?}"));
+    let b = mem
+        .new_address_space()
+        .unwrap_or_else(|e| panic!("self-test address-spaces: {e:?}"));
+    let fa = mem
+        .map_user_page(a, va, true, false)
+        .unwrap_or_else(|e| panic!("self-test address-spaces: {e:?}"));
+    let fb = mem
+        .map_user_page(b, va, true, false)
+        .unwrap_or_else(|e| panic!("self-test address-spaces: {e:?}"));
+    check!(
+        "address-spaces",
+        fa != fb,
+        "both spaces got frame {:#x}",
+        fa.start_address()
+    );
+    // SAFETY: both frames were just mapped for this test; written through
+    // the physical-memory window.
+    unsafe {
+        (mem.phys_to_virt(fa.start_address()) as *mut u64).write_volatile(0xAAAA);
+        (mem.phys_to_virt(fb.start_address()) as *mut u64).write_volatile(0xBBBB);
+    }
+    check!(
+        "address-spaces",
+        mem.user_translate(a, va) == Some(fa),
+        "space A lost its page"
+    );
+    check!(
+        "address-spaces",
+        mem.user_translate(b, va) == Some(fb),
+        "space B lost its page"
+    );
+    // SAFETY: reading the same frames back.
+    let (ra, rb) = unsafe {
+        (
+            (mem.phys_to_virt(fa.start_address()) as *const u64).read_volatile(),
+            (mem.phys_to_virt(fb.start_address()) as *const u64).read_volatile(),
+        )
+    };
+    check!(
+        "address-spaces",
+        ra == 0xAAAA && rb == 0xBBBB,
+        "data mixed: {ra:#x} {rb:#x}"
+    );
+    check!(
+        "address-spaces",
+        mem.shares_kernel_half(a) && mem.shares_kernel_half(b),
+        "kernel half differs"
+    );
+    check!(
+        "address-spaces",
+        !mem.user_range_ok(a, memory::HEAP_START, 8, false),
+        "kernel heap looks user-accessible"
+    );
+    check!(
+        "address-spaces",
+        mem.user_range_ok(a, va, 8, true),
+        "user page not accessible"
+    );
+    mem.free_address_space(a);
+    mem.free_address_space(b);
+    check!(
+        "address-spaces",
+        mem.frames.available() == before,
+        "{} frames free after freeing, expected {before}",
+        mem.frames.available()
+    );
+    kprintln!("ZOO_OS TEST address-spaces ok");
+}
+
 pub fn heap() {
     let base = heap::used();
     {

@@ -25,12 +25,15 @@ mod console;
 mod cpu;
 mod faults;
 mod gdt;
+mod initrd;
 mod interrupts;
 mod keyboard;
 mod memory;
+mod process;
 mod selftest;
 mod serial;
 mod shell;
+mod trap;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::MemoryRegionKind;
@@ -84,9 +87,11 @@ pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     // Map all physical memory so the kernel can reach page tables and frames.
     config.mappings.physical_memory = Some(Mapping::Dynamic);
-    // Keep the bootloader's dynamic mappings in the lower half; the upper
-    // half (level-4 entries 256..512) belongs to the kernel.
-    config.mappings.dynamic_range_end = Some(0x0000_7FFF_FFFF_F000);
+    // Three-way split (docs/m3-design.md §1): the lower half (level-4
+    // entries 0..256) is for user processes, the bootloader's dynamic
+    // mappings go in entries 256..384, and 384..512 belong to the kernel.
+    config.mappings.dynamic_range_start = Some(0xFFFF_8000_0000_0000);
+    config.mappings.dynamic_range_end = Some(0xFFFF_BFFF_FFFF_F000);
     config.kernel_stack_size = 128 * 1024;
     config
 };
@@ -131,6 +136,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         memory::HEAP_START,
         memory::HEAP_SIZE
     );
+    match initrd::init(boot_info) {
+        Ok((files, bytes)) => kprintln!("ZOO_OS INFO initrd files={} bytes={}", files, bytes),
+        Err(why) => kprintln!("ZOO_OS INFO initrd unavailable: {}", why),
+    }
     run(mem)
 }
 
@@ -165,6 +174,7 @@ fn run(mut mem: memory::Memory) -> ! {
     selftest::breakpoint();
     selftest::frames(&mut mem);
     selftest::paging(&mut mem);
+    selftest::address_spaces(&mut mem);
     selftest::heap();
     interrupts::init_timer();
     selftest::timer();
@@ -172,8 +182,50 @@ fn run(mut mem: memory::Memory) -> ! {
     if cfg!(feature = "panic-test") {
         panic!("intentional-test");
     }
+    memory::install(mem);
+    process::init();
+    run_boot_processes();
     kprintln!("ZOO_OS READY");
-    shell::run(mem)
+    shell::run()
+}
+
+/// Starts Zookeeper and waits (bounded) until every process has exited and
+/// been reaped, then checks no physical memory leaked (docs/m3-design.md §9).
+#[cfg(not(any(
+    feature = "fault-write-protect",
+    feature = "fault-heap-guard",
+    feature = "fault-stack-overflow",
+    feature = "triple-fault"
+)))]
+fn run_boot_processes() {
+    // Map and free one kernel stack first, so the page tables for the
+    // kernel-stack region exist before the baseline is taken.
+    memory::with(|m| {
+        m.map_kernel_stack(0)
+            .unwrap_or_else(|e| panic!("kernel stack warm-up: {e:?}"));
+        m.free_kernel_stack(0);
+    });
+    let baseline = memory::with(|m| m.frames.available());
+    if let Err(e) = process::spawn_from_kernel("zookeeper") {
+        panic!("cannot start zookeeper: {}", e.name());
+    }
+    let limit = 30 * u64::from(interrupts::TIMER_HZ);
+    let start = interrupts::ticks();
+    while process::user_tasks() > 0 {
+        if interrupts::ticks() - start > limit {
+            kprintln!("ZOO_OS PROC boot-timeout");
+            return;
+        }
+        x86_64::instructions::interrupts::disable();
+        process::idle_hlt();
+        x86_64::instructions::interrupts::enable();
+    }
+    let after = memory::with(|m| m.frames.available());
+    if after != baseline {
+        panic!("self-test process-cleanup: {after} frames free, expected {baseline}");
+    }
+    kprintln!("ZOO_OS INFO processes done frames_free={}", after);
+    kprintln!("ZOO_OS TEST process-cleanup ok");
 }
 
 /// Returns (total region count, sum of usable region sizes in bytes).

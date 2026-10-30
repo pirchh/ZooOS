@@ -1,18 +1,39 @@
-//! Memory ownership, page mapping and the kernel heap (docs/m2-design.md).
+//! Memory ownership, page mapping and the kernel heap (docs/m2-design.md,
+//! layout updated by docs/m3-design.md §1).
 
+pub mod aspace;
 pub mod frames;
 pub mod heap;
 
 use bootloader_api::BootInfo;
 use frames::BitmapFrameAllocator;
+use spin::Mutex;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{
     Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB, Translate,
 };
 use x86_64::{PhysAddr, VirtAddr};
 
-/// First level-4 index of the kernel-owned upper half.
-pub const KERNEL_HALF_FIRST_P4: usize = 256;
+/// First level-4 index of the upper half (bootloader mappings start here).
+pub const UPPER_HALF_FIRST_P4: usize = 256;
+/// First level-4 index owned by the kernel itself (heap, kernel stacks).
+pub const KERNEL_OWNED_FIRST_P4: usize = 384;
+
+/// User address-space layout (docs/m3-design.md §1).
+pub const USER_IMAGE_START: u64 = 0x20_0000;
+pub const USER_IMAGE_END: u64 = 0x4000_0000;
+pub const USER_STACK_TOP: u64 = 0x7FFF_FFF1_0000;
+pub const USER_STACK_SIZE: u64 = 64 * 1024;
+/// End of the user half (exclusive).
+pub const USER_END: u64 = 0x0000_8000_0000_0000;
+
+/// Per-process kernel stacks: slot `i` occupies
+/// `[KSTACK_REGION + i*KSTACK_SLOT, +KSTACK_SLOT)`; its first page is an
+/// unmapped guard and the stack is the next `KSTACK_SIZE` bytes.
+pub const KSTACK_REGION: u64 = 0xFFFF_C000_8000_0000;
+pub const KSTACK_SLOT: u64 = 64 * 1024;
+pub const KSTACK_SIZE: u64 = 16 * 1024;
+pub const KSTACK_SLOTS: usize = 16;
 
 /// Kernel virtual layout (design §3). The first page is the heap's lower
 /// guard; the page after the heap is its upper guard. Neither is mapped.
@@ -33,6 +54,29 @@ pub struct Memory {
     pub phys_offset: u64,
     pub stack_bottom: u64,
     pub stack_len: u64,
+    /// The kernel's own level-4 table (task 0's address space).
+    pub kernel_p4: PhysFrame,
+}
+
+/// After boot-time self-tests, `Memory` moves here so system calls and the
+/// scheduler can use it (docs/m3-design.md; revises the M2 "owned by
+/// kernel_main" rule). It is only ever locked with interrupts disabled, so a
+/// trap can never find it held.
+static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
+
+pub fn install(mem: Memory) {
+    x86_64::instructions::interrupts::without_interrupts(|| *MEMORY.lock() = Some(mem));
+}
+
+/// Runs `f` with the global `Memory`, interrupts disabled. Panics with a
+/// clear message on re-entrant use, instead of deadlocking.
+pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut guard = MEMORY
+            .try_lock()
+            .expect("memory lock already held (re-entrant use)");
+        f(guard.as_mut().expect("memory not installed yet"))
+    })
 }
 
 impl Memory {
@@ -89,8 +133,14 @@ pub fn init(boot_info: &BootInfo) -> Memory {
     // created to it, and it lives as long as the kernel ('static).
     let l4: &'static mut PageTable = unsafe { &mut *l4_ptr };
 
-    if let Some(i) = (KERNEL_HALF_FIRST_P4..512).find(|&i| !l4[i].is_unused()) {
-        panic!("level-4 entry {i} in the kernel-owned half is already in use");
+    if let Some(i) = (KERNEL_OWNED_FIRST_P4..512).find(|&i| !l4[i].is_unused()) {
+        panic!("level-4 entry {i} in the kernel-owned range is already in use");
+    }
+    // Shared into every process: none of it may be user-accessible.
+    if let Some(i) = (UPPER_HALF_FIRST_P4..KERNEL_OWNED_FIRST_P4)
+        .find(|&i| l4[i].flags().contains(PageTableFlags::USER_ACCESSIBLE))
+    {
+        panic!("bootloader level-4 entry {i} is user-accessible");
     }
 
     // SAFETY: as above, all physical memory is mapped at `phys_offset` and
@@ -107,6 +157,7 @@ pub fn init(boot_info: &BootInfo) -> Memory {
         phys_offset,
         stack_bottom: boot_info.kernel_stack_bottom,
         stack_len: boot_info.kernel_stack_len,
+        kernel_p4: l4_frame,
     };
 
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
