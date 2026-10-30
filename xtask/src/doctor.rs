@@ -26,7 +26,7 @@ impl Report {
 
 pub fn run(root: &Path) -> ExitCode {
     let mut r = Report { failures: 0 };
-    println!("OriginsOS doctor (workspace: {})", root.display());
+    println!("ZooOS doctor (workspace: {})", root.display());
 
     check_toolchain(root, &mut r);
 

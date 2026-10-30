@@ -146,24 +146,24 @@ mod tests {
     #[test]
     fn rendered_text_matches_and_wrong_text_does_not() {
         let mut img = Image::blank(640, 120);
-        img.draw_text("ORIGINS_OS BOOT version=0.3.0", 0);
-        img.draw_text("origins> echo hi", 3);
-        assert!(row_matches(&img, "ORIGINS_OS BOOT version=0.3.0", 0));
-        assert!(!row_matches(&img, "ORIGINS_OS BOOT version=9.9.9", 0));
-        assert_eq!(find_row(&img, "origins> echo hi"), Some(3));
-        assert_eq!(find_row(&img, "origins> echo ho"), None);
+        img.draw_text("ZOO_OS BOOT version=0.3.0", 0);
+        img.draw_text("zoo> echo hi", 3);
+        assert!(row_matches(&img, "ZOO_OS BOOT version=0.3.0", 0));
+        assert!(!row_matches(&img, "ZOO_OS BOOT version=9.9.9", 0));
+        assert_eq!(find_row(&img, "zoo> echo hi"), Some(3));
+        assert_eq!(find_row(&img, "zoo> echo ho"), None);
     }
 
     #[test]
     fn blank_screen_matches_nothing_visible() {
         let img = Image::blank(640, 120);
-        assert!(!row_matches(&img, "ORIGINS_OS", 0));
+        assert!(!row_matches(&img, "ZOO_OS", 0));
         assert_eq!(lit_pixels(&img), 0);
     }
 
     #[test]
     fn ppm_round_trip() {
-        let dir = std::env::temp_dir().join(format!("origins-os-ppm-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("zoo-os-ppm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("t.ppm");
         let mut bytes = b"P6\n# comment\n2 1\n255\n".to_vec();

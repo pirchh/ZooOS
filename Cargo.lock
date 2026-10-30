@@ -300,19 +300,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "origins-os-kernel"
-version = "0.3.0"
-dependencies = [
- "bootloader_api",
- "linked_list_allocator",
- "noto-sans-mono-bitmap",
- "pc-keyboard",
- "pic8259",
- "spin",
- "x86_64",
-]
-
-[[package]]
 name = "pc-keyboard"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -584,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bootloader",
  "noto-sans-mono-bitmap",
@@ -596,3 +583,16 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zoo-os-kernel"
+version = "0.4.0"
+dependencies = [
+ "bootloader_api",
+ "linked_list_allocator",
+ "noto-sans-mono-bitmap",
+ "pc-keyboard",
+ "pic8259",
+ "spin",
+ "x86_64",
+]

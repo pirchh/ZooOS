@@ -1,6 +1,6 @@
-# OriginsOS — architecture blueprint
+# ZooOS — architecture blueprint
 
-Status: proposed architecture. Project name: OriginsOS (placeholder). This is a separate project
+Status: proposed architecture. Project name: ZooOS (formerly the placeholder OriginsOS). This is a separate project
 from Stonepyre. Implemented so far (M1, M2): in the kernel diagram, "UEFI firmware
 and existing bootloader", "Kernel initialization", and the single-CPU parts of
 "Physical and virtual memory" and "Interrupts, exceptions, timers, CPU setup"
@@ -297,7 +297,7 @@ not final physical-machine performance. Set numeric budgets after baselines.
 
 ## Open decisions
 
-Final project name (currently OriginsOS); target hardware; Opera versus Opera GX; WoW edition; kernel layout;
+Trademark check for the ZooOS name; target hardware; Opera versus Opera GX; WoW edition; kernel layout;
 filesystem; driver model; Windows compatibility reuse; graphics API; native UI
 toolkit; model/runtime and speech stack; measurable performance budgets.
 

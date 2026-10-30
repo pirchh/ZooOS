@@ -1,4 +1,4 @@
-//! OriginsOS kernel: boots via the bootloader crate's UEFI loader, sets up
+//! ZooOS kernel: boots via the bootloader crate's UEFI loader, sets up
 //! its own GDT/IDT, memory ownership, heap and timer (M2), runs self-tests,
 //! then starts a debug shell on the screen and keyboard (interim console).
 //! Output goes to COM1 and the framebuffer. See docs/m2-design.md and
@@ -99,22 +99,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     serial::init();
     // Before the first line, so BOOT is on the first screen row.
     let screen = console::init(boot_info.framebuffer.take());
-    kprintln!("ORIGINS_OS BOOT version={}", VERSION);
+    kprintln!("ZOO_OS BOOT version={}", VERSION);
     match screen {
         Ok(fb) => kprintln!(
-            "ORIGINS_OS INFO console {}x{} format={:?} cols={} rows={}",
+            "ZOO_OS INFO console {}x{} format={:?} cols={} rows={}",
             fb.width,
             fb.height,
             fb.pixel_format,
             console::size().map_or(0, |s| s.0),
             console::size().map_or(0, |s| s.1)
         ),
-        Err(why) => kprintln!("ORIGINS_OS INFO console disabled: {}", why),
+        Err(why) => kprintln!("ZOO_OS INFO console disabled: {}", why),
     }
 
     let (regions, usable_bytes) = usable_memory(boot_info);
     kprintln!(
-        "ORIGINS_OS INFO mode={} memory_regions={} usable_bytes={}",
+        "ZOO_OS INFO mode={} memory_regions={} usable_bytes={}",
         MODE,
         regions,
         usable_bytes
@@ -124,7 +124,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     interrupts::init_idt(boot_info.kernel_stack_bottom);
     let mem = memory::init(boot_info);
     kprintln!(
-        "ORIGINS_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
+        "ZOO_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
         mem.phys_offset,
         mem.stack_bottom,
         mem.stack_len,
@@ -172,7 +172,7 @@ fn run(mut mem: memory::Memory) -> ! {
     if cfg!(feature = "panic-test") {
         panic!("intentional-test");
     }
-    kprintln!("ORIGINS_OS READY");
+    kprintln!("ZOO_OS READY");
     shell::run(mem)
 }
 
@@ -192,13 +192,9 @@ fn usable_memory(boot_info: &BootInfo) -> (usize, u64) {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     x86_64::instructions::interrupts::disable();
-    kprintln!("ORIGINS_OS PANIC {}", info.message());
+    kprintln!("ZOO_OS PANIC {}", info.message());
     if let Some(loc) = info.location() {
-        kprintln!(
-            "ORIGINS_OS INFO panic_location={}:{}",
-            loc.file(),
-            loc.line()
-        );
+        kprintln!("ZOO_OS INFO panic_location={}:{}", loc.file(), loc.line());
     }
     cpu::halt_forever()
 }

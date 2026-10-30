@@ -1,6 +1,6 @@
 # Firmware and emulator setup
 
-OriginsOS boots under QEMU with OVMF (the EDK II UEFI firmware for virtual
+ZooOS boots under QEMU with OVMF (the EDK II UEFI firmware for virtual
 machines). Firmware is never stored in Git (`*.fd` files here are ignored).
 
 ## Tested setup (Windows 11 host, 2026-10-30)

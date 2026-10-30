@@ -1,4 +1,4 @@
-//! Host build utility for OriginsOS. Run via `cargo xtask <command>`.
+//! Host build utility for ZooOS. Run via `cargo xtask <command>`.
 
 mod config;
 mod doctor;

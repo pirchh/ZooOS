@@ -1,6 +1,7 @@
 # Agent instructions — independent OS
 
-This is the OriginsOS project (placeholder name). Use OriginsOS as the placeholder name and origins-os for technical identifiers.
+This is the ZooOS project (renamed from the placeholder OriginsOS on 2026-10-30). Use ZooOS as the name and zoo-os for technical identifiers.
+Components follow a zoo theme: the main runtime/service supervisor is Zookeeper and individual services or workers are animal-named handlers (e.g. LionHandler). Use these names only for components that actually exist.
 Read all handoff documents before editing. User instructions take precedence.
 
 ## Authorized scope

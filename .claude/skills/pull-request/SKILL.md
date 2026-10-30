@@ -1,9 +1,9 @@
 ---
 name: pull-request
-description: Open an OriginsOS pull request. Use whenever you are about to run `gh pr create`, or when the user asks to open, raise, or push up a PR.
+description: Open a ZooOS pull request. Use whenever you are about to run `gh pr create`, or when the user asks to open, raise, or push up a PR.
 ---
 
-# Writing an OriginsOS pull request
+# Writing a ZooOS pull request
 
 Adapted from the Stonepyre `pull-request` skill. The PR body is the most-read
 part of this repo's history. Commit messages get skimmed; the PR is what
@@ -60,7 +60,7 @@ Use `##` sections. Pick the ones that fit; don't stamp all of them onto every PR
 - **`## Follow-ups`**: only if there are real ones.
 - **`## Time spent`**: **every PR has one**, as its last section. One short
   paragraph whose first duration is the active time, then how it was measured.
-  OriginsOS has no ledger tool yet, so measure from Git and say so, e.g.
+  ZooOS has no ledger tool yet, so measure from Git and say so, e.g.
 
   > About 45 min of active work, measured from `git log`: from the previous
   > commit on `main` (13:49) to the last commit on `m2` (14:34).

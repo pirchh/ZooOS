@@ -1,9 +1,14 @@
 # Verification record
 
 Status: M0, M1, M2 and the interim console verified on the host below on
-2026-10-30. Logs and screenshots are generated under `build/` (ignored by
-Git); rerun the commands to reproduce them. The console section is the
-current state (version 0.3.0); the M2 and M1 sections record earlier results.
+2026-10-30, then re-verified after the rename to ZooOS (version 0.4.0). Logs
+and screenshots are generated under `build/` (ignored by Git); rerun the
+commands to reproduce them. The 0.4.0 section is the current state.
+
+**The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
+output exactly as it was then**, so they show `ORIGINS_OS` markers,
+`origins-os` image names and the `origins>` prompt. Paths containing
+`\OriginsOS\` refer to the local checkout folder, which kept its name.
 
 ## Host and versions
 
@@ -17,20 +22,57 @@ current state (version 0.3.0); the M2 and M1 sections record earlier results.
 | Crates (kernel) | bootloader_api 0.11.17, x86_64 0.15.5, pic8259 0.11.0, linked_list_allocator 0.10.6, spin 0.12.3, noto-sans-mono-bitmap 0.3.2, pc-keyboard 0.9.0 (full set in `Cargo.lock`) |
 | Crates (host, since console) | noto-sans-mono-bitmap 0.3.2 (re-renders text to check screenshots) |
 | QEMU | 11.1.0, firmware as recorded in `tools/firmware/README.md` |
-| Kernel ELF | M1: 11,504 bytes. M2: normal 60,512 bytes, fault modes 40–46 KB (release) |
+| Kernel ELF | M1: 11,504 bytes. M2: normal 60,512 bytes, fault modes 40–46 KB (release); crate `zoo-os-kernel` since 0.4.0 |
 
 ## Exact QEMU invocation (verify cases)
 
     "C:\Program Files\qemu\qemu-system-x86_64.exe" -machine q35 -accel tcg -cpu qemu64 -smp 1 -m 512M
       -drive if=pflash,format=raw,unit=0,readonly=on,file=<OVMF_CODE>
       -drive if=pflash,format=raw,unit=1,file=build\runs\<case>\OVMF_VARS.fd
-      -drive format=raw,media=disk,file=build\<mode>\origins-os-<mode>-uefi.img
+      -drive format=raw,media=disk,file=build\<mode>\zoo-os-<mode>-uefi.img
       -nic none -display none -monitor none -no-reboot
       -chardev file,id=com1,path=build\runs\<case>\serial.log -serial chardev:com1
 
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Rename results (version 0.4.0)
+
+The rename changed names only: crates (`zoo-os-kernel`), images
+(`zoo-os-<mode>-uefi.img`), serial markers (`ZOO_OS …`), the shell prompt
+(`zoo> `) and docs. No kernel logic changed.
+
+Clean copy of the tracked files at `…\OriginsOS\build\clean checkout, spaces\`,
+empty `target/` and `build/`:
+
+    cargo xtask doctor     -> "ZooOS doctor", ready, exit 0
+    cargo xtask verify     -> exit 0 (52 s including builds)
+
+| Case | Expected | Got | Time |
+| --- | --- | --- | --- |
+| normal | pass | pass | 3.1 s |
+| panic | pass | pass | 3.0 s |
+| fault-write-protect | pass | pass | 2.9 s |
+| fault-heap-guard | pass | pass | 2.9 s |
+| fault-stack-overflow | pass | pass | 2.9 s |
+| keyboard | pass | pass | 3.5 s |
+| scroll | pass | pass | 4.2 s |
+| negative-wrong-marker | unexpected-marker | unexpected-marker | 1.8 s |
+| negative-timeout | timeout | timeout | 5.0 s |
+| negative-triple-fault | early-exit | early-exit | 1.9 s |
+
+Afterwards: tracked files unchanged, firmware templates matched their
+recorded hashes, no QEMU running. A run in the main checkout gave the same
+outcomes, with these screen checks:
+
+    keyboard: 1280x800, 19241 lit pixels; row 0 = BOOT line, row 15 = `zoo> echo hi`,
+              row 16 = `hi`; wrong version rejected
+    scroll:   43 rows; rows 40-42 = `zoo> echo end`, `end`, prompt; BOOT scrolled off
+
+Kernel output in the keyboard case begins `ZOO_OS BOOT version=0.4.0`.
+`cargo test -p xtask --locked`: 19 passed. `cargo clippy`: 0 warnings for
+the kernel in all six modes and for xtask. `cargo fmt --all --check`: clean.
 
 ## Interim console results (version 0.3.0)
 
@@ -191,7 +233,7 @@ What these show:
 
 - COM1 output is written to `serial.log` by QEMU itself, so only guest output
   can satisfy it. The harness polls that file every 50 ms.
-- Every line containing `ORIGINS_OS ` is a marker (except `INFO` lines without
+- Every line containing `ZOO_OS ` is a marker (except `INFO` lines without
   `mode=`). Markers must match the expected sequence exactly and in order; any
   other marker fails immediately. Every case starts with
   `BOOT version=<crate version>` and `INFO mode=<mode> …`. M2 tails:

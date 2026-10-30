@@ -37,11 +37,11 @@ struct Case {
 }
 
 const SELF_TESTS: [&str; 5] = [
-    "ORIGINS_OS TEST breakpoint ok",
-    "ORIGINS_OS TEST frames ok",
-    "ORIGINS_OS TEST paging ok",
-    "ORIGINS_OS TEST heap ok",
-    "ORIGINS_OS TEST timer ok",
+    "ZOO_OS TEST breakpoint ok",
+    "ZOO_OS TEST frames ok",
+    "ZOO_OS TEST paging ok",
+    "ZOO_OS TEST heap ok",
+    "ZOO_OS TEST timer ok",
 ];
 
 fn with_tests(last: &str) -> Vec<&str> {
@@ -60,18 +60,18 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         images.push((mode, image::build(root, tools, mode)?));
     }
 
-    let mut normal_tail = with_tests("ORIGINS_OS READY");
-    normal_tail.push("ORIGINS_OS SHELL ready");
+    let mut normal_tail = with_tests("ZOO_OS READY");
+    normal_tail.push("ZOO_OS SHELL ready");
     let normal = expect(Mode::Normal, &normal_tail);
     let mut keyboard_tail = normal_tail.clone();
-    keyboard_tail.extend(["ORIGINS_OS SHELL line=echo hi", "ORIGINS_OS SHELL line=mem"]);
+    keyboard_tail.extend(["ZOO_OS SHELL line=echo hi", "ZOO_OS SHELL line=mem"]);
     let mut scroll_tail = normal_tail.clone();
-    scroll_tail.extend(["ORIGINS_OS SHELL line=help"; 4]);
-    scroll_tail.push("ORIGINS_OS SHELL line=echo end");
+    scroll_tail.extend(["ZOO_OS SHELL line=help"; 4]);
+    scroll_tail.push("ZOO_OS SHELL line=echo end");
     let mut never = normal.clone();
     never
         .required
-        .push(Matcher::Exact("ORIGINS_OS NEVER-EMITTED".into()));
+        .push(Matcher::Exact("ZOO_OS NEVER-EMITTED".into()));
 
     let cases = [
         Case {
@@ -87,10 +87,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "panic",
             mode: Mode::Panic,
-            expectation: expect(
-                Mode::Panic,
-                &with_tests("ORIGINS_OS PANIC intentional-test"),
-            ),
+            expectation: expect(Mode::Panic, &with_tests("ZOO_OS PANIC intentional-test")),
             timeout: s.timeout,
             want: "pass",
             purpose: "self-tests, then PANIC with interrupts on; no READY",
@@ -103,7 +100,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: expect(
                 Mode::FaultWriteProtect,
                 &[
-                    "ORIGINS_OS EXCEPTION page-fault access=write cause=protection addr=0xffffc00040000000",
+                    "ZOO_OS EXCEPTION page-fault access=write cause=protection addr=0xffffc00040000000",
                 ],
             ),
             timeout: s.timeout,
@@ -118,7 +115,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: expect(
                 Mode::FaultHeapGuard,
                 &[
-                    "ORIGINS_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000",
+                    "ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000",
                 ],
             ),
             timeout: s.timeout,
@@ -132,7 +129,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::FaultStackOverflow,
             expectation: expect(
                 Mode::FaultStackOverflow,
-                &["ORIGINS_OS EXCEPTION double-fault stack-guard-hit"],
+                &["ZOO_OS EXCEPTION double-fault stack-guard-hit"],
             ),
             timeout: s.timeout,
             want: "pass",
@@ -148,7 +145,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "keys typed via QMP reach the shell (with Backspace); screen shows the text",
             interaction: Some(Interaction {
-                trigger: "ORIGINS_OS SHELL ready".into(),
+                trigger: "ZOO_OS SHELL ready".into(),
                 // "echx", Backspace, "o hi", Enter, then "mem", Enter.
                 keys: vec![
                     "e",
@@ -178,7 +175,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "four `help` outputs overflow the screen; the console scrolls correctly",
             interaction: Some(Interaction {
-                trigger: "ORIGINS_OS SHELL ready".into(),
+                trigger: "ZOO_OS SHELL ready".into(),
                 keys: scroll_keys(),
                 screenshot: true,
             }),
@@ -207,7 +204,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "negative-triple-fault",
             mode: Mode::TripleFault,
-            expectation: expect(Mode::TripleFault, &["ORIGINS_OS READY"]),
+            expectation: expect(Mode::TripleFault, &["ZOO_OS READY"]),
             timeout: s.timeout,
             want: "early-exit",
             purpose: "verifier must reject a guest that triple-faults (reset with -no-reboot)",
@@ -308,15 +305,15 @@ fn scroll_keys() -> Vec<&'static str> {
 /// Checks the keyboard case's screenshot against text re-rendered with the
 /// kernel's font and layout (docs/console-design.md §4).
 fn check_boot_and_echo(img: &screen::Image) -> Result<String, String> {
-    let boot = format!("ORIGINS_OS BOOT version={VERSION}");
+    let boot = format!("ZOO_OS BOOT version={VERSION}");
     if !screen::row_matches(img, &boot, 0) {
         return Err(format!("row 0 does not show `{boot}`"));
     }
     // The same comparison must reject a wrong string, or it proves nothing.
-    if screen::row_matches(img, "ORIGINS_OS BOOT version=9.9.9", 0) {
+    if screen::row_matches(img, "ZOO_OS BOOT version=9.9.9", 0) {
         return Err("row 0 also matches a wrong version; the check is not discriminating".into());
     }
-    let row = screen::find_row(img, "origins> echo hi").ok_or("no row shows `origins> echo hi`")?;
+    let row = screen::find_row(img, "zoo> echo hi").ok_or("no row shows `zoo> echo hi`")?;
     if !screen::row_matches(img, "hi", row + 1) {
         return Err(format!(
             "row {} below the command does not show `hi`",
@@ -324,7 +321,7 @@ fn check_boot_and_echo(img: &screen::Image) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "{}x{}, {} lit pixels; row 0 = BOOT line, row {row} = `origins> echo hi`, row {} = `hi`; wrong version rejected",
+        "{}x{}, {} lit pixels; row 0 = BOOT line, row {row} = `zoo> echo hi`, row {} = `hi`; wrong version rejected",
         img.width,
         img.height,
         screen::lit_pixels(img),
@@ -339,21 +336,21 @@ fn check_scrolled(img: &screen::Image) -> Result<String, String> {
     let rows = screen::rows(img);
     let last = rows.checked_sub(1).ok_or("screen has no text rows")?;
     let want = [
-        (last.saturating_sub(2), "origins> echo end"),
+        (last.saturating_sub(2), "zoo> echo end"),
         (last.saturating_sub(1), "end"),
-        (last, "origins> "),
+        (last, "zoo> "),
     ];
     for (row, text) in want {
         if !screen::row_matches(img, text, row) {
             return Err(format!("row {row} does not show `{text}`"));
         }
     }
-    let boot = format!("ORIGINS_OS BOOT version={VERSION}");
+    let boot = format!("ZOO_OS BOOT version={VERSION}");
     if screen::row_matches(img, &boot, 0) {
         return Err("BOOT line is still on row 0; the screen did not scroll".into());
     }
     Ok(format!(
-        "{rows} rows; rows {}-{last} = `origins> echo end`, `end`, prompt; BOOT scrolled off",
+        "{rows} rows; rows {}-{last} = `zoo> echo end`, `end`, prompt; BOOT scrolled off",
         last - 2
     ))
 }

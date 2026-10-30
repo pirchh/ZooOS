@@ -1,12 +1,12 @@
 [package]
-name = "origins-os-kernel"
+name = "zoo-os-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "origins-os-kernel"
+name = "zoo-os-kernel"
 test = false
 bench = false
 

@@ -1,4 +1,4 @@
-# Pinned toolchain for OriginsOS (see DECISIONS.md, "Toolchain").
+# Pinned toolchain for ZooOS (see DECISIONS.md, "Toolchain").
 # A dated nightly is required because bootloader 0.11.17 builds its UEFI stage
 # with `-Zbuild-std=core`. The kernel itself uses no unstable features.
 [toolchain]
