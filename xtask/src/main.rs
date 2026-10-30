@@ -18,13 +18,15 @@ usage: cargo xtask <command> [options]
 commands:
   doctor                    check prerequisites (installs nothing)
   build [--mode M]          build kernel(s) and UEFI disk image(s)
-                            M = normal | panic | all (default: all)
-  run [--panic] [--timeout-secs N]
-                            build, then boot in QEMU with COM1 on this terminal
+                            M = all (default) | normal | panic | fault-write-protect
+                                | fault-heap-guard | fault-stack-overflow | triple-fault
+  run [--mode M | --panic] [--timeout-secs N]
+                            build one mode (default normal), then boot it in QEMU
+                            with COM1 on this terminal
                             (Ctrl+C stops QEMU; no timeout unless given)
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
-                            build both images, then run the normal, panic and
-                            negative cases headlessly (defaults: 30, 5, 1000)
+                            build every mode, then run all positive and negative
+                            cases headlessly (defaults: 30, 5, 1000)
 
 configuration (environment):
   QEMU_X86_64               path to qemu-system-x86_64
@@ -64,10 +66,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         "run" => {
-            let mode = if opts.panic {
-                image::Mode::Panic
-            } else {
-                image::Mode::Normal
+            let mode = match (opts.panic, opts.modes()?.as_slice()) {
+                (true, _) if opts.mode.is_some() => {
+                    return Err("use either --panic or --mode, not both".into());
+                }
+                (true, _) => image::Mode::Panic,
+                (false, _) if opts.mode.is_none() => image::Mode::Normal,
+                (false, [one]) => *one,
+                _ => return Err("run takes exactly one mode, not `all`".into()),
             };
             let tools = config::Tools::resolve_for_qemu()?;
             let img = image::build(&root, &tools, mode)?;
@@ -146,12 +152,11 @@ impl Options {
 
     fn modes(&self) -> Result<Vec<image::Mode>, String> {
         match self.mode.as_deref() {
-            None | Some("all") => Ok(vec![image::Mode::Normal, image::Mode::Panic]),
-            Some("normal") => Ok(vec![image::Mode::Normal]),
-            Some("panic") => Ok(vec![image::Mode::Panic]),
-            Some(m) => Err(format!(
-                "invalid --mode `{m}` (expected normal, panic or all)"
-            )),
+            None | Some("all") => Ok(image::Mode::ALL.to_vec()),
+            Some(m) => image::Mode::parse(m).map(|m| vec![m]).ok_or_else(|| {
+                let names: Vec<&str> = image::Mode::ALL.iter().map(|m| m.name()).collect();
+                format!("invalid --mode `{m}` (expected all, {})", names.join(", "))
+            }),
         }
     }
 }

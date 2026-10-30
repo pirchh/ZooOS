@@ -11,14 +11,50 @@ const KERNEL_PACKAGE: &str = "origins-os-kernel";
 pub enum Mode {
     Normal,
     Panic,
+    FaultWriteProtect,
+    FaultHeapGuard,
+    FaultStackOverflow,
+    TripleFault,
 }
 
 impl Mode {
+    pub const ALL: [Mode; 6] = [
+        Mode::Normal,
+        Mode::Panic,
+        Mode::FaultWriteProtect,
+        Mode::FaultHeapGuard,
+        Mode::FaultStackOverflow,
+        Mode::TripleFault,
+    ];
+
+    /// Name used on the command line and for build/output directories.
     pub fn name(self) -> &'static str {
         match self {
             Mode::Normal => "normal",
             Mode::Panic => "panic",
+            Mode::FaultWriteProtect => "fault-write-protect",
+            Mode::FaultHeapGuard => "fault-heap-guard",
+            Mode::FaultStackOverflow => "fault-stack-overflow",
+            Mode::TripleFault => "triple-fault",
         }
+    }
+
+    /// Kernel Cargo feature selecting this mode (None for the normal kernel).
+    fn feature(self) -> Option<&'static str> {
+        match self {
+            Mode::Normal => None,
+            Mode::Panic => Some("panic-test"),
+            other => Some(other.name()),
+        }
+    }
+
+    /// What the kernel prints in its `INFO mode=` line.
+    pub fn kernel_mode(self) -> &'static str {
+        self.feature().unwrap_or("normal")
+    }
+
+    pub fn parse(s: &str) -> Option<Mode> {
+        Mode::ALL.into_iter().find(|m| m.name() == s)
     }
 }
 
@@ -39,8 +75,8 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
         ])
         .arg("--target-dir")
         .arg(&target_dir);
-    if mode == Mode::Panic {
-        cmd.args(["--features", "panic-test"]);
+    if let Some(feature) = mode.feature() {
+        cmd.args(["--features", feature]);
     }
     // Host-side flags must not leak into the kernel build.
     for var in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"] {

@@ -6,6 +6,8 @@ or application compatibility guarantees are implied.
 
 ## M0 — reproducible development foundation
 
+Status: implemented and verified 2026-10-30.
+
 Deliver a Cargo workspace, verified compiler/dependency pins, documented QEMU and
 OVMF prerequisites, firmware configuration, ignore rules and doctor command.
 Acceptance: doctor correctly distinguishes ready and missing-prerequisite states;
@@ -13,6 +15,8 @@ record tested host versions. No global installs or host configuration changes
 without required permission. If prerequisites are blocked, report partial status.
 
 ## M1 — actual boot and diagnostics
+
+Status: implemented and verified 2026-10-30.
 
 Deliver a UEFI-bootable freestanding Rust kernel, serial output, panic handler,
 and build/run/verify commands specified in BUILD.md.
@@ -24,6 +28,9 @@ Exclude graphics, allocator, scheduler, filesystem, Windows apps, AI and phone.
 Stop and report after this milestone.
 
 ## M2 — kernel foundations
+
+Status: implemented and verified 2026-10-30 (docs/m2-design.md,
+docs/verification.md).
 
 Specify memory ownership, page mappings, allocator, interrupts, timer and exception
 handling before implementing them. Acceptance includes allocation/free correctness,

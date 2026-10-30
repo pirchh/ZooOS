@@ -1,9 +1,10 @@
 # OriginsOS — architecture blueprint
 
 Status: proposed architecture. Project name: OriginsOS (placeholder). This is a separate project
-from Stonepyre. Implemented so far (M1): only the first step of the kernel
-diagram, "UEFI firmware and existing bootloader" handing off to a minimal
-kernel that reports on serial and halts. Every other component is proposed.
+from Stonepyre. Implemented so far (M1, M2): in the kernel diagram, "UEFI firmware
+and existing bootloader", "Kernel initialization", and the single-CPU parts of
+"Physical and virtual memory" and "Interrupts, exceptions, timers, CPU setup"
+(see docs/m2-design.md). Every other component is proposed.
 Updated: 2026-10-30
 
 ## Product direction

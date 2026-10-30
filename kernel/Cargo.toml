@@ -10,9 +10,18 @@ name = "origins-os-kernel"
 test = false
 bench = false
 
+# Test modes. Each builds a separate kernel image; at most one may be enabled
+# (enforced in main.rs). No feature = the normal kernel.
 [features]
-# Builds the deliberate-panic test kernel. Never enabled for the normal image.
 panic-test = []
+fault-write-protect = []
+fault-heap-guard = []
+fault-stack-overflow = []
+triple-fault = []
 
 [dependencies]
 bootloader_api = "=0.11.17"
+x86_64 = { version = "=0.15.5", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+pic8259 = "=0.11.0"
+linked_list_allocator = { version = "=0.10.6", default-features = false, features = ["use_spin"] }
+spin = { version = "=0.12.3", default-features = false, features = ["lazylock", "mutex", "spin_mutex"] }
