@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L4 section
-(version 0.43.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L5 section
+(version 0.44.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,44 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 5 results: processes and pipes (version 0.44.0)
+
+Design: docs/linux5-design.md. New case `linux-guillemot`:
+`guillemot-test` (static musl C) forks, waits, pipes, `dup2`s,
+`execvp`s, `posix_spawn`s, kills and times. The case requires all of its
+120 children's process lines in order, with their exit codes and signals.
+
+**Measured** (`--skip-model --accel whpx --case linux-guillemot`, three
+runs, averages per child): fork + exit + wait 12476 / 9452 / 9430
+kcycles; with 4 MiB touched 9199 / 9438 / 9710; `posix_spawn` + wait
+8746 / 8637 / 8201.
+
+**Where that time goes** (temporary probes, removed):
+- `fork()` alone took 7242 kcycles, `waitpid` 2461, and a plain system
+  call 0.
+- One kernel `ZOO_OS PROC` line took 2168–4315 kcycles (polled serial plus
+  console scroll).
+- Without the child's home-folder session: 10189 / 10552 (no change).
+
+Making kernel output cheap is F2.
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 44 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+39.1 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| The child does not get 0 from `fork` | `FAIL`: `exit pid=27 … code=11` while expecting `code=7` |
+| Closing a pipe's write end is not counted | `FAIL` (timeout): no `start pid=30` within 120 s |
+| `SIGPIPE` ignored by default | `FAIL`: `exit pid=34 … code=0` while expecting `signal=13`; program exit 71 |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: 23 passed. Not run: real
+hardware.
 
 ## Linux step 4 results: writable files in the home folder (version 0.43.0)
 
