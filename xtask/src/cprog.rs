@@ -24,6 +24,11 @@ pub const LINUX_PROGRAMS: [&str; 7] = [
     "ermine-test",
 ];
 
+/// Linux programs without a C library, linked at a fixed address the way
+/// Wine's preloader is (name, image base), packed as `linux/<name>`
+/// (docs/linux9-design.md).
+pub const LINUX_FREESTANDING: [(&str, &str); 1] = [("redpoll-test", "0x7d7d00000000")];
+
 /// Shared libraries (`c/linux/<name>.c`), packed as `lib/<name>.so`, and
 /// dynamically linked programs (output name, source, libraries), packed as
 /// `linux/<name>` (docs/linux8-design.md). Both need musl's loader.
@@ -36,6 +41,10 @@ pub const LINUX_DYNAMIC: [(&str, &str, &[&str]); 2] = [
 /// Where user programs must lie (the kernel's load window).
 const IMAGE_START: u64 = 0x20_0000;
 const IMAGE_END: u64 = 0x4000_0000;
+/// Where Linux programs may lie: 64 KiB up to the 8 MiB stack below
+/// 0x7fff_fff1_0000 (docs/linux9-design.md).
+const LINUX_IMAGE_START: u64 = 0x1_0000;
+const LINUX_IMAGE_END: u64 = 0x7FFF_FFF1_0000 - 8 * 1024 * 1024;
 
 /// The `zig` executable, if the toolchain was downloaded.
 pub fn zig(root: &Path) -> Option<PathBuf> {
@@ -229,7 +238,40 @@ pub fn build(root: &Path, zig: &Path) -> Result<Vec<(String, Vec<u8>)>, String> 
         }
         let data =
             std::fs::read(&out).map_err(|e| format!("cannot read {}: {e}", out.display()))?;
-        zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END)
+        zoo_abi::elf::parse(&data, LINUX_IMAGE_START, LINUX_IMAGE_END)
+            .map_err(|e| format!("linux/{name}: the kernel would reject this ELF: {e:?}"))?;
+        built.push((format!("linux/{name}"), data));
+    }
+    for (name, base) in LINUX_FREESTANDING {
+        let out = out_dir.join(format!("linux-{name}"));
+        let mut cmd = Command::new(zig);
+        cmd.current_dir(root)
+            .args(["cc", "-target", "x86_64-linux-musl", "-O2", "-std=c11"])
+            .args(["-Wall", "-Wextra", "-Werror", "-nostdlib", "-ffreestanding"])
+            // Full 64-bit addresses: the image lies far above 4 GiB.
+            .args([
+                "-fno-stack-protector",
+                "-mcmodel=large",
+                "-fno-pie",
+                "-no-pie",
+            ])
+            .args(["-static", "-s"])
+            .arg(format!("-Wl,--image-base={base}"))
+            .arg("-o")
+            .arg(&out)
+            .arg(c.join("linux").join(format!("{name}.c")));
+        println!("[build] Linux program {name} (zig {ZIG_VERSION}, freestanding at {base})");
+        let output =
+            crate::process::output_bounded(cmd, std::time::Duration::from_secs(300), "zig cc")?;
+        if !output.status.success() {
+            return Err(format!(
+                "zig cc failed for linux/{name}:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let data =
+            std::fs::read(&out).map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+        zoo_abi::elf::parse(&data, LINUX_IMAGE_START, LINUX_IMAGE_END)
             .map_err(|e| format!("linux/{name}: the kernel would reject this ELF: {e:?}"))?;
         built.push((format!("linux/{name}"), data));
     }
@@ -291,7 +333,7 @@ pub fn build(root: &Path, zig: &Path) -> Result<Vec<(String, Vec<u8>)>, String> 
                 run(cmd, &format!("linux/{name}"))?;
                 let data = std::fs::read(&out)
                     .map_err(|e| format!("cannot read {}: {e}", out.display()))?;
-                zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END).map_err(|e| {
+                zoo_abi::elf::parse(&data, LINUX_IMAGE_START, LINUX_IMAGE_END).map_err(|e| {
                     format!("linux/{name}: the kernel would reject this ELF: {e:?}")
                 })?;
                 built.push((format!("linux/{name}"), data));

@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 9: the address-space layout Wine needs (2026-10-31)
+
+Design: docs/linux9-design.md.
+
+- Each process has its own reservation window. Linux programs get the
+  whole lower half (64 KiB to the stack), kernel-chosen mappings from
+  0x7f0000000000 up, and 4096 reservations; ZooOS programs keep theirs.
+- Program and loader images are reservations; the stack is an 8 MiB
+  reservation committed as used.
+- munmap and MAP_FIXED carve exactly their range out of whatever is there,
+  as on Linux.
+- Wine is to be built from source (owner's choice) in a WSL Alpine
+  environment the owner enabled; Wine 11.0 and Alpine 3.24.3 downloads are
+  verified (tools/wine/README.md, tools/alpine/README.md). Version 0.49.0.
+
 ## Linux step 8: dynamically linked programs (2026-10-31)
 
 Design and measurements: docs/linux8-design.md.

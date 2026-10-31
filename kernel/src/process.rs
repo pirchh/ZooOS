@@ -182,6 +182,14 @@ struct Proc {
     /// Address-space reservations (start, len), sorted by start
     /// (docs/posix2-design.md).
     vmas: Vec<(u64, u64)>,
+    /// The window reservations may use, where the kernel starts looking
+    /// for room, and how many there may be: the `vm` window for ZooOS
+    /// programs; for Linux programs the whole lower half
+    /// (docs/linux9-design.md).
+    vm_lo: u64,
+    vm_hi: u64,
+    vm_first: u64,
+    vm_max: usize,
     /// Linux programs: the `brk` area (base, current break), and open
     /// files (descriptor 3 is index 0): initrd data and read position
     /// (docs/linux2-design.md).
@@ -329,6 +337,10 @@ impl Proc {
             members: 1,
             ended: false,
             vmas: Vec::new(),
+            vm_lo: VM_START,
+            vm_hi: VM_END,
+            vm_first: VM_START,
+            vm_max: VM_MAX_RESERVATIONS,
             linux_brk: None,
             linux_files: Vec::new(),
             linux_cwd: String::new(),
@@ -868,6 +880,11 @@ impl Scheduler {
             None => NO_HANDLE,
         });
         if linux {
+            let mut images = alloc::vec![&image];
+            if let Some((_, loader)) = &interp {
+                images.push(loader);
+            }
+            linux_layout(&mut proc, &images);
             proc.linux = true;
             proc.linux_files = alloc::vec![
                 Some(LinuxFile::Console { input: true }),
@@ -1579,6 +1596,52 @@ impl Scheduler {
         mem.user_range_ok(p4, addr, len, write)
     }
 
+    /// Makes `[start, start + len)` of task `i`'s process free, as Linux's
+    /// `munmap` does: pages there are unmapped and freed, reservations are
+    /// cut around the range (split if need be), lazy ranges dropped
+    /// (docs/linux9-design.md).
+    fn linux_carve(&mut self, i: usize, mem: &mut Memory, start: u64, len: u64) {
+        let Some(p4) = self.task(i).p4 else {
+            return;
+        };
+        let end = start.saturating_add(len);
+        let mut va = start;
+        while let Some(m) = mem.next_mapped(p4, va, end) {
+            mem.unmap_user_free(p4, m, 1);
+            let p = self.proc(i);
+            p.committed = p.committed.saturating_sub(1);
+            va = m + 4096;
+        }
+        let p = self.proc(i);
+        lazy_cut(&mut p.linux_lazy, start, len);
+        let mut out = Vec::with_capacity(p.vmas.len() + 1);
+        for &(s, l) in &p.vmas {
+            let e = s + l;
+            if e <= start || s >= end {
+                out.push((s, l));
+                continue;
+            }
+            if s < start {
+                out.push((s, start - s));
+            }
+            if e > end {
+                out.push((end, e - end));
+            }
+        }
+        p.vmas = out;
+    }
+
+    /// Adds the reservation `[start, start + len)` (which must be free).
+    fn linux_reserve_at(&mut self, i: usize, start: u64, len: u64) -> bool {
+        let p = self.proc(i);
+        if p.vmas.len() >= p.vm_max {
+            return false;
+        }
+        let at = p.vmas.partition_point(|&(s, _)| s < start);
+        p.vmas.insert(at, (start, len));
+        true
+    }
+
     /// True if task `i` is a thread of a Linux program.
     fn is_linux(&self, i: usize) -> bool {
         matches!(&self.tasks[i], Some(t)
@@ -2120,6 +2183,10 @@ impl Scheduler {
         child.heap_next = parent.heap_next;
         child.map_next = parent.map_next;
         child.vmas = parent.vmas.clone();
+        child.vm_lo = parent.vm_lo;
+        child.vm_hi = parent.vm_hi;
+        child.vm_first = parent.vm_first;
+        child.vm_max = parent.vm_max;
         child.committed = parent.committed;
         child.linux = true;
         child.linux_brk = parent.linux_brk;
@@ -2238,10 +2305,12 @@ impl Scheduler {
         p.linux_borrowed = false;
         p.name = String::from(name);
         p.cmdline = args.join("\0");
-        p.vmas.clear();
-        p.linux_lazy.clear();
+        let mut images = alloc::vec![&image];
+        if let Some((_, loader)) = &interp {
+            images.push(loader);
+        }
+        linux_layout(p, &images);
         p.linux_brk = None;
-        p.committed = 0;
         p.heap_next = HEAP_BASE;
         p.map_next = MAP_BASE;
         p.exc_handler = 0;
@@ -2669,21 +2738,17 @@ impl Scheduler {
                     let Some(end) = addr.checked_add(len) else {
                         return fail(ENOMEM);
                     };
-                    let vmas = &self.proc(i).vmas;
-                    let inside = vmas.iter().any(|&(s, l)| addr >= s && end <= s + l);
-                    let overlaps = vmas.iter().any(|&(s, l)| addr < s + l && s < end);
+                    let p = self.proc(i);
+                    if addr < p.vm_lo || end > p.vm_hi {
+                        return fail(ENOMEM);
+                    }
+                    let overlaps = p.vmas.iter().any(|&(s, l)| addr < s + l && s < end);
                     if overlaps && flags & MAP_FIXED_NOREPLACE != 0 {
                         return fail(EEXIST);
                     }
-                    if inside {
-                        let _ = self.vm_call(i, sys::VM_DECOMMIT, addr, len, 0, p4, mem);
-                        lazy_cut(&mut self.proc(i).linux_lazy, addr, len);
-                    } else if overlaps
-                        || !matches!(
-                            self.vm_call(i, sys::VM_RESERVE, addr, len, 0, p4, mem),
-                            Outcome::Ret(b) if b as u64 == addr
-                        )
-                    {
+                    // Whatever was there goes, as on Linux.
+                    self.linux_carve(i, mem, addr, len);
+                    if !self.linux_reserve_at(i, addr, len) {
                         return fail(ENOMEM);
                     }
                     addr
@@ -2705,7 +2770,7 @@ impl Scheduler {
                         for k in 0..len / 4096 {
                             let va = base + k * 4096;
                             let Ok(frame) = mem.map_user_page(p4, va, w, x) else {
-                                let _ = self.vm_call(i, sys::VM_DECOMMIT, base, len, 0, p4, mem);
+                                self.linux_carve(i, mem, base, len);
                                 return fail(ENOMEM);
                             };
                             self.proc(i).committed += 1;
@@ -2747,20 +2812,13 @@ impl Scheduler {
                 }
                 Outcome::Ret(n as i64)
             }
-            // munmap(addr, len): a whole area is released, part of one is
-            // decommitted; nothing mapped there is not an error.
+            // munmap(addr, len): the range becomes free, cutting whatever
+            // mappings it covers; nothing mapped there is not an error.
             11 => {
-                if a1 % 4096 != 0 || a2 == 0 {
+                if !a1.is_multiple_of(4096) || a2 == 0 || a1.checked_add(a2).is_none() {
                     return fail(EINVAL);
                 }
-                let len = page_up(a2);
-                lazy_cut(&mut self.proc(i).linux_lazy, a1, len);
-                let whole = self.proc(i).vmas.iter().any(|&(s, l)| s == a1 && l == len);
-                if whole {
-                    let _ = self.vm_call(i, sys::VM_RELEASE, a1, 0, 0, p4, mem);
-                } else {
-                    let _ = self.vm_call(i, sys::VM_DECOMMIT, a1, len, 0, p4, mem);
-                }
+                self.linux_carve(i, mem, a1, page_up(a2));
                 Outcome::Ret(0)
             }
             // mprotect(addr, len, prot): committed pages change now; inside a
@@ -2776,11 +2834,16 @@ impl Scheduler {
                 let Some(end) = a1.checked_add(len) else {
                     return fail(ENOMEM);
                 };
-                let reserved = self
-                    .proc(i)
-                    .vmas
-                    .iter()
-                    .any(|&(s, l)| a1 >= s && end <= s + l);
+                // Covered by reservations, possibly several adjacent ones.
+                let reserved = {
+                    let mut at = a1;
+                    for &(s, l) in &self.proc(i).vmas {
+                        if s <= at && at < s + l {
+                            at = s + l;
+                        }
+                    }
+                    at >= end
+                };
                 if reserved {
                     let lazy = &mut self.proc(i).linux_lazy;
                     lazy_cut(lazy, a1, len);
@@ -5858,9 +5921,12 @@ impl Scheduler {
         mem: &mut Memory,
     ) -> Outcome {
         const PAGE: u64 = 4096;
-        let in_window = |a: u64, len: u64| {
-            a >= VM_START && len > 0 && a.checked_add(len).is_some_and(|e| e <= VM_END)
+        let (lo, hi, first, max) = {
+            let p = self.proc(i);
+            (p.vm_lo, p.vm_hi, p.vm_first, p.vm_max)
         };
+        let in_window =
+            |a: u64, len: u64| a >= lo && len > 0 && a.checked_add(len).is_some_and(|e| e <= hi);
         // The reservation containing [a, a+len), if any.
         let find = |vmas: &[(u64, u64)], a: u64, len: u64| {
             vmas.iter().position(|&(s, l)| a >= s && a + len <= s + l)
@@ -5878,22 +5944,29 @@ impl Scheduler {
                     return err(Error::Inval);
                 }
                 let p = self.proc(i);
-                if p.vmas.len() >= VM_MAX_RESERVATIONS {
+                if p.vmas.len() >= max {
                     return err(Error::NoMem);
                 }
                 let base = if a1 == 0 {
-                    // First fit, granule-aligned, between existing ones.
-                    let mut cand = VM_START;
-                    for &(s, l) in &p.vmas {
-                        if cand + a2 <= s {
-                            break;
+                    // First fit, granule-aligned, between existing ones,
+                    // from `first`, then from the window's start.
+                    let fit = |from: u64| {
+                        let mut cand = from;
+                        for &(s, l) in &p.vmas {
+                            if s + l <= cand {
+                                continue;
+                            }
+                            if cand + a2 <= s {
+                                break;
+                            }
+                            cand = (s + l).div_ceil(VM_GRANULE) * VM_GRANULE;
                         }
-                        cand = (s + l).div_ceil(VM_GRANULE) * VM_GRANULE;
+                        in_window(cand, a2).then_some(cand)
+                    };
+                    match fit(first).or_else(|| fit(lo)) {
+                        Some(c) => c,
+                        None => return err(Error::NoMem),
                     }
-                    if !in_window(cand, a2) {
-                        return err(Error::NoMem);
-                    }
-                    cand
                 } else {
                     if !in_window(a1, a2) {
                         return err(Error::Inval);
@@ -6000,11 +6073,7 @@ impl Scheduler {
                 let vmas = &self.proc(i).vmas;
                 let info = match vmas.iter().find(|&&(s, l)| a >= s && a < s + l) {
                     None => {
-                        let next = vmas
-                            .iter()
-                            .map(|&(s, _)| s)
-                            .find(|&s| s > a)
-                            .unwrap_or(VM_END);
+                        let next = vmas.iter().map(|&(s, _)| s).find(|&s| s > a).unwrap_or(hi);
                         VmInfo {
                             base: a,
                             len: next - a,
@@ -6089,12 +6158,49 @@ fn load_image(
 /// The image of a program: `ET_EXEC`, or for Linux programs also
 /// position-independent (`ET_DYN`), placed at `LINUX_PIE_BASE`.
 fn program_image(file: &[u8], linux: bool) -> Result<elf::Image, elf::ElfError> {
-    match elf::parse(file, USER_IMAGE_START, USER_IMAGE_END) {
-        Err(elf::ElfError::NotExecutable) if linux => {
-            elf::parse_at(file, USER_IMAGE_START, USER_IMAGE_END, Some(LINUX_PIE_BASE))
+    if !linux {
+        return elf::parse(file, USER_IMAGE_START, USER_IMAGE_END);
+    }
+    match elf::parse(file, LINUX_VM_LO, LINUX_IMAGE_END) {
+        Err(elf::ElfError::NotExecutable) => {
+            elf::parse_at(file, LINUX_VM_LO, LINUX_IMAGE_END, Some(LINUX_PIE_BASE))
         }
         other => other,
     }
+}
+
+/// The Linux address-space layout (docs/linux9-design.md): reservations
+/// may use the whole lower half from 64 KiB to the stack; the program and
+/// its loader are reservations (so `MAP_FIXED` and `munmap` work on them as
+/// on any mapping); the stack is an 8 MiB reservation whose top 64 KiB is
+/// committed at start and the rest when first touched; the kernel places
+/// other mappings from `LINUX_MMAP_BASE` up, leaving low addresses free.
+fn linux_layout(p: &mut Proc, images: &[&elf::Image]) {
+    p.vm_lo = LINUX_VM_LO;
+    p.vm_hi = USER_STACK_TOP;
+    p.vm_first = LINUX_MMAP_BASE;
+    p.vm_max = LINUX_VM_MAX;
+    p.vmas.clear();
+    p.linux_lazy.clear();
+    let mut pages = 0;
+    for img in images {
+        let ranges: Vec<(u64, u64)> = img.loadable().map(|s| s.page_range()).collect();
+        let start = ranges.iter().map(|r| r.0).min().unwrap_or(0);
+        let end = ranges.iter().map(|r| r.1).max().unwrap_or(0);
+        if end > start {
+            p.vmas.push((start, end - start));
+        }
+        pages += ranges.iter().map(|r| (r.1 - r.0) / 4096).sum::<u64>();
+    }
+    let stack_lo = USER_STACK_TOP - LINUX_STACK_SIZE;
+    p.vmas.push((stack_lo, LINUX_STACK_SIZE));
+    p.linux_lazy.push((
+        stack_lo,
+        LINUX_STACK_SIZE - USER_STACK_SIZE,
+        zoo_abi::prot::READ | zoo_abi::prot::WRITE,
+    ));
+    p.vmas.sort_unstable();
+    p.committed = pages + USER_STACK_SIZE / 4096;
 }
 
 /// The dynamic loader a Linux program names in `PT_INTERP`, from the
@@ -6109,13 +6215,8 @@ fn linux_interp(
     let raw = &file[off as usize..(off + len - 1) as usize];
     let path = core::str::from_utf8(raw).map_err(|_| ENOENT)?;
     let data = initrd::find(&linux_resolve("", path)).ok_or(ENOENT)?;
-    let loader = elf::parse_at(
-        data,
-        USER_IMAGE_START,
-        USER_IMAGE_END,
-        Some(LINUX_INTERP_BASE),
-    )
-    .map_err(|_| ELIBBAD)?;
+    let loader = elf::parse_at(data, LINUX_VM_LO, LINUX_IMAGE_END, Some(LINUX_INTERP_BASE))
+        .map_err(|_| ELIBBAD)?;
     if loader.interp.is_some() {
         return Err(ELIBBAD);
     }
@@ -6389,10 +6490,18 @@ const LINUX_ARGS_MAX: usize = 64;
 const LINUX_ARG_MAX: usize = 1024;
 /// Entries in the auxiliary vector `linux_stack` writes (with AT_NULL).
 const LINUX_AUX_COUNT: usize = 8;
-/// Where position-independent Linux programs and the dynamic loader go, in
-/// the program window (docs/linux8-design.md).
-const LINUX_PIE_BASE: u64 = 0x0100_0000;
-const LINUX_INTERP_BASE: u64 = 0x3000_0000;
+/// The Linux layout (docs/linux9-design.md): the lowest usable address, an
+/// 8 MiB stack below `USER_STACK_TOP`, where programs may lie, where
+/// position-independent programs, the dynamic loader and kernel-placed
+/// mappings go (as on Linux, high, leaving the low 2 GiB free for Wine),
+/// and how many reservations a process may have.
+const LINUX_VM_LO: u64 = 0x1_0000;
+const LINUX_STACK_SIZE: u64 = 8 * 1024 * 1024;
+const LINUX_IMAGE_END: u64 = USER_STACK_TOP - LINUX_STACK_SIZE;
+const LINUX_PIE_BASE: u64 = 0x5555_5555_0000;
+const LINUX_INTERP_BASE: u64 = 0x7ff0_0000_0000;
+const LINUX_MMAP_BASE: u64 = 0x7f00_0000_0000;
+const LINUX_VM_MAX: usize = 4096;
 
 fn page_up(a: u64) -> u64 {
     a.div_ceil(4096) * 4096
