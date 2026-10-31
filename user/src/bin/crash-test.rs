@@ -1,4 +1,4 @@
-//! ChimpHandler: a crash-test window (docs/m4-design.md §6). Enter makes it
+//! Crash Test: a crash-test window (docs/m4-design.md §6). Enter makes it
 //! read kernel memory, which must end only this process; the window server
 //! then restarts it.
 
@@ -16,9 +16,9 @@ const KERNEL_ADDR: u64 = 0xFFFF_C000_0000_1000;
 fn main(channel: u64) -> u8 {
     let win = Window::new(channel);
     let shown = (|| {
-        win.title("Chimp")?;
+        win.title("Crash Test")?;
         win.lines(3)?;
-        win.line(0, "ChimpHandler is a crash test.")?;
+        win.line(0, "This window is a crash test.")?;
         win.line(1, "Press Enter to make it read kernel memory.")?;
         win.line(2, "The window server will restart it.")?;
         win.select(None)?;
@@ -35,11 +35,11 @@ fn main(channel: u64) -> u8 {
             Err(_) => return 4,
         };
         if Key::parse(&buf[..n]) == Some(Key::Enter) {
-            let _ = log("ChimpHandler: reading kernel memory as asked");
+            let _ = log("Crash Test: reading kernel memory as asked");
             // SAFETY: deliberately invalid; the page is kernel-only, so this
             // must fault and end this process alone.
             let v = unsafe { core::ptr::read_volatile(KERNEL_ADDR as *const u64) };
-            zoo_rt::log!("ChimpHandler: read returned {:#x}!", v);
+            zoo_rt::log!("Crash Test: read returned {:#x}!", v);
             return 30;
         }
     }

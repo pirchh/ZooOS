@@ -1,4 +1,4 @@
-//! ParrotHandler: the Assistant window (docs/m5c2-design.md). The user types
+//! Assistant: the Assistant window (docs/m5c2-design.md). The user types
 //! either a command (`search …`, `list …`, `inspect …`, `create …`, `undo`),
 //! which goes straight to the file broker, or a request in words, which
 //! ElephantHandler (the model service) turns into one command first.
@@ -7,7 +7,7 @@
 //! anything changes. Backspace on an empty line cancels a running request.
 //!
 //! Handles: the window channel (first) and a home directory handle (second),
-//! which is moved into OtterHandler when it is started; Parrot itself never
+//! which is moved into OtterHandler when it is started; the Assistant itself never
 //! uses it. Both helpers start on first use.
 
 #![no_std]
@@ -40,7 +40,7 @@ enum Mode {
     Confirm(String),
 }
 
-struct Parrot {
+struct App {
     win: Window,
     status: String,
     input: String,
@@ -53,7 +53,7 @@ struct Parrot {
 }
 
 fn main(chan: u64, home: u64) -> u8 {
-    let mut p = Parrot {
+    let mut p = App {
         win: Window::new(chan),
         status: String::from(HINT),
         input: String::new(),
@@ -108,7 +108,7 @@ fn main(chan: u64, home: u64) -> u8 {
     }
 }
 
-impl Parrot {
+impl App {
     fn say(&mut self, text: &str) {
         if self.lines.len() == TRANSCRIPT {
             self.lines.pop_front();
@@ -137,7 +137,7 @@ impl Parrot {
             (Mode::Thinking, Key::Back) => {
                 if let Some(e) = self.elephant {
                     let _ = send(e, b"cancel");
-                    zoo_rt::log!("ParrotHandler: cancel sent at tick {}", zoo_rt::ticks());
+                    zoo_rt::log!("Assistant: cancel sent at tick {}", zoo_rt::ticks());
                 }
                 self.status = String::from("Cancelling...");
             }

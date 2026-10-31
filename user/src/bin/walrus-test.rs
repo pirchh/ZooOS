@@ -1,4 +1,4 @@
-//! MoleHandler: the address-space test (docs/posix2-design.md §5). Started
+//! WalrusTest: the address-space test (docs/posix2-design.md §5). Started
 //! without a handle it runs the checks and exits 0 only if all pass (the
 //! exit code names the first failure). Started with a channel, it performs
 //! one forbidden access named by the first message, which must crash it.
@@ -22,11 +22,11 @@ fn main(start: u64) -> u8 {
     }
     match checks() {
         Ok(()) => {
-            let _ = zoo_rt::log("MoleHandler: all address-space checks passed");
+            let _ = zoo_rt::log("WalrusTest: all address-space checks passed");
             0
         }
         Err((code, what)) => {
-            zoo_rt::log!("MoleHandler: check {} failed: {}", code, what);
+            zoo_rt::log!("WalrusTest: check {} failed: {}", code, what);
             code
         }
     }
@@ -210,20 +210,20 @@ fn checks() -> Result<(), (u8, &'static str)> {
         "use-released",
     ] {
         let (mine, theirs) = channel_create().map_err(|_| (19, "channel"))?;
-        let child = spawn("mole-handler", Some(theirs)).map_err(|_| (19, "spawn"))?;
+        let child = spawn("walrus-test", Some(theirs)).map_err(|_| (19, "spawn"))?;
         send(mine, mode.as_bytes()).map_err(|_| (19, "send"))?;
         let outcome = wait(child);
         let _ = close(child);
         let _ = close(mine);
         if outcome != Err(Error::Crashed) {
             zoo_rt::log!(
-                "MoleHandler: `{}` ended with {:?}, expected a crash",
+                "WalrusTest: `{}` ended with {:?}, expected a crash",
                 mode,
                 outcome
             );
             return Err((19, "forbidden access did not crash"));
         }
-        zoo_rt::log!("MoleHandler: `{}` crashed as required", mode);
+        zoo_rt::log!("WalrusTest: `{}` crashed as required", mode);
     }
     Ok(())
 }

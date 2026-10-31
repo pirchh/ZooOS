@@ -54,7 +54,7 @@ delivering to another thread, and suspending other threads.
 
 ## 4. Verification
 
-GeckoHandler, run by Zookeeper at boot (`normal` case):
+WolverineTest, run by Zookeeper at boot (`normal` case):
 
 1. `exception_return` outside a handler is refused.
 2. Demand commit: 16 first touches each fault once and are resumed after

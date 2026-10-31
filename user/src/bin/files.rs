@@ -1,4 +1,4 @@
-//! OwlHandler: the Files application (docs/m4-design.md §6). Lists the
+//! Files: the Files application (docs/m4-design.md §6). Lists the
 //! initial filesystem; Enter shows a file's details, Backspace goes back.
 
 #![no_std]

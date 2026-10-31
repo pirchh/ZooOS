@@ -22,7 +22,7 @@ shell `desktop` ──▶ kernel spawns Zookeeper (session mode, control channel
                  PeacockHandler  (window server: owns display + keyboard)
                    │ channel           │ channel
                    ▼                   ▼
-             OwlHandler (Files)   ChimpHandler (crash-test app)
+             Files (Files)   Crash Test (crash-test app)
 ```
 
 All three are user processes. The kernel only hands the framebuffer and
@@ -116,11 +116,11 @@ application exits 0.
 
 ## 6. Applications
 
-- **OwlHandler (Files):** lists the initial filesystem with `fs_stat`.
+- **Files (Files):** lists the initial filesystem with `fs_stat`.
   `Up`/`Down` move the selection; `Enter` opens a details view (name, size,
   entry number); `Backspace` goes back.
-- **ChimpHandler (crash test):** a window that says to press Enter; `Enter`
-  makes it read kernel memory, which must kill only ChimpHandler.
+- **Crash Test (crash test):** a window that says to press Enter; `Enter`
+  makes it read kernel memory, which must kill only Crash Test.
 
 ## 7. Drawing and colours
 
@@ -143,13 +143,13 @@ A new `desktop` case drives the real guest through QMP, with several
 screenshots and the kernel markers between them:
 
 1. Type `desktop` + Enter in the shell. Markers: Zookeeper (session),
-   PeacockHandler start, `DISPLAY acquired`, OwlHandler and ChimpHandler
+   PeacockHandler start, `DISPLAY acquired`, Files and Crash Test
    start. Screenshot: menu bar `ZooOS`, focused title `Files`, a
    `bin/zookeeper` line.
 2. `Down`, `Down`, `Enter`. Screenshot: Files shows the details view
    (`Size:` line).
-3. `Tab`, `Enter`. Markers: ChimpHandler crash and its restart. Screenshot:
-   status line `ChimpHandler crashed; restarted (1 of 3)`.
+3. `Tab`, `Enter`. Markers: Crash Test crash and its restart. Screenshot:
+   status line `Crash Test crashed; restarted (1 of 3)`.
 4. `F12`. Markers: PeacockHandler crash, `DISPLAY released`, then (in any
    order) the old apps' exits and the new PeacockHandler, `DISPLAY
    acquired` and new apps. Screenshot: the desktop is back (`ZooOS`, `Files`).

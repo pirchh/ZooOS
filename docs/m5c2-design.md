@@ -28,13 +28,13 @@ prompt (a system prompt describing tools as JSON, ≈ 300 tokens) would take
 
 | Process | Role | Holds |
 | --- | --- | --- |
-| ParrotHandler (new) | The "Assistant" window: input line, status line, transcript, confirmations | window channel; a home handle that it moves into OtterHandler unused |
+| Assistant (new) | The "Assistant" window: input line, status line, transcript, confirmations | window channel; a home handle that it moves into OtterHandler unused |
 | ElephantHandler (service mode) | Maps the model; answers `choose <request>` with a tool and argument; sends progress; obeys `cancel` | one channel — **no directory handle** |
 | OtterHandler | Runs the tools on home (M5c-1) | the home directory handle |
 | PeacockHandler | Window server; gives each Assistant start a fresh copy of its home handle | home handle |
 | Zookeeper (session) | Takes `fs_root`, narrows it to `home/user`, closes the root, passes a copy to each window-server start | home handle |
 
-ParrotHandler starts OtterHandler and ElephantHandler on first use (so
+Assistant starts OtterHandler and ElephantHandler on first use (so
 process ids at desktop start do not change with them). The model process
 can never reach files.
 
@@ -50,7 +50,7 @@ can never reach files.
 3. **Typed commands** (`search …`, `list …`, `inspect …`, `create …`,
    `undo`) skip the model and go straight to the broker; requests in other
    words go to the model.
-4. **`create` always asks:** ParrotHandler first shows OtterHandler's `plan`
+4. **`create` always asks:** Assistant first shows OtterHandler's `plan`
    and runs `create` only after `y`. `undo` is available as a command.
 5. OtterHandler's `search` matches when every word of the query appears in
    an entry's path or (for files) its contents, so a model answer like

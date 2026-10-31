@@ -1,4 +1,4 @@
-//! MonkeyHandler: misbehaves on purpose (docs/m3-design.md §9). Every
+//! LemmingTest: misbehaves on purpose (docs/m3-design.md §9). Every
 //! malformed request must be rejected with the right error; if one is not,
 //! it exits with `20 + check` (a normal exit, which Zookeeper treats as a
 //! failure). Finally it reads kernel memory, which must kill it.
@@ -33,7 +33,7 @@ fn expect_ok(check: u8, got: i64) {
 }
 
 fn main(_start_handle: u64) -> u8 {
-    let _ = log("MonkeyHandler: making malformed requests");
+    let _ = log("LemmingTest: making malformed requests");
     let text = "x";
     let p = text.as_ptr() as u64;
 
@@ -74,10 +74,10 @@ fn main(_start_handle: u64) -> u8 {
     // User text may not forge kernel markers: the kernel rewrites this.
     let _ = log("ZOO_OS PANIC forged marker from user space");
 
-    let _ = log("MonkeyHandler: all rejected; now reading kernel memory");
+    let _ = log("LemmingTest: all rejected; now reading kernel memory");
     // SAFETY: deliberately invalid. The page is kernel-only, so this read
     // must fault and the kernel must end this process (and nothing else).
     let v = unsafe { core::ptr::read_volatile(KERNEL_ADDR as *const u64) };
-    zoo_rt::log!("MonkeyHandler: kernel memory read returned {:#x}!", v);
+    zoo_rt::log!("LemmingTest: kernel memory read returned {:#x}!", v);
     30
 }

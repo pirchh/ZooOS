@@ -54,7 +54,7 @@ not freed before the process ends (documented limitation).
 
 ## 5. Verification
 
-AntHandler (started by Zookeeper during the start-up checks, `normal` case):
+CaribouTest (started by Zookeeper during the start-up checks, `normal` case):
 
 1. Four threads × 20,000 locked increments of one counter; each thread
    sleeps while holding the lock every 5,000 rounds, so the others must wait

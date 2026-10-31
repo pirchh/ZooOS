@@ -207,7 +207,7 @@ pub fn fs_find(name: &str) -> Option<u64> {
 /// The floating-point workload used to check that x87/SSE state is kept
 /// per process (docs/m5a-design.md §5). Deterministic: the same `param`
 /// always gives the same bits. Keeps every 1024th partial sum in `trace`.
-pub fn beaver_series(param: f64, n: u64, trace: &mut alloc::vec::Vec<f64>) -> f64 {
+pub fn narwhal_series(param: f64, n: u64, trace: &mut alloc::vec::Vec<f64>) -> f64 {
     let mut acc = 0.0f64;
     let mut x = 1.0f64;
     for i in 0..n {

@@ -1,7 +1,7 @@
 # Agent instructions — independent OS
 
 This is the ZooOS project (renamed from the placeholder OriginsOS on 2026-10-30). Use ZooOS as the name and zoo-os for technical identifiers.
-Components follow a zoo theme: the main runtime/service supervisor is Zookeeper and individual services or workers are animal-named handlers (e.g. LionHandler). Use these names only for components that actually exist.
+Components follow a zoo theme: the main runtime/service supervisor is Zookeeper and individual services or workers are animal-named handlers (e.g. BelugaTest). Use these names only for components that actually exist.
 Read all handoff documents before editing. User instructions take precedence.
 
 ## Authorized scope
@@ -14,6 +14,14 @@ Reuse an established bootloader rather than write one.
 Work only in this project's directory. Treat any parent sources/ directory as
 read-only. Do not alter the Stonepyre project, unrelated files, host boot settings,
 physical disks, or firmware. Never test by installing on the user's real machine.
+
+**Owner rule, absolute (2026-10-30):** never boot, install or test ZooOS on the
+development machine (the Windows PC this repository lives on), whether from
+its disks or from USB, and never overwrite, repartition, change boot settings
+or otherwise modify its Windows installation or disks. On this machine only
+QEMU is allowed. Real-hardware tests run only on the owner's other machines,
+booted from a USB stick; any image written to USB must target a device the
+owner explicitly names, never an internal disk.
 Do not install global dependencies or change host configuration without the
 permissions required by the environment. Repository-local dependencies and
 reversible project work are within scope.

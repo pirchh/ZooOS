@@ -1,4 +1,4 @@
-//! GeckoHandler: the exception-delivery test (docs/posix3-design.md §5).
+//! WolverineTest: the exception-delivery test (docs/posix3-design.md §5).
 //! Started without a handle it runs the checks and exits 0 only if all
 //! pass. Started with a channel, it runs one failure mode named by the
 //! first message, whose outcome the parent checks.
@@ -80,11 +80,11 @@ fn main(start: u64) -> u8 {
     }
     match checks() {
         Ok(()) => {
-            let _ = zoo_rt::log("GeckoHandler: all exception checks passed");
+            let _ = zoo_rt::log("WolverineTest: all exception checks passed");
             0
         }
         Err((code, what)) => {
-            zoo_rt::log!("GeckoHandler: check {} failed: {}", code, what);
+            zoo_rt::log!("WolverineTest: check {} failed: {}", code, what);
             code
         }
     }
@@ -219,21 +219,21 @@ fn checks() -> Result<(), (u8, &'static str)> {
         ("bad-rip", Ok(103)),
     ] {
         let (mine, theirs) = channel_create().map_err(|_| (24, "channel"))?;
-        let child = spawn("gecko-handler", Some(theirs)).map_err(|_| (24, "spawn"))?;
+        let child = spawn("wolverine-test", Some(theirs)).map_err(|_| (24, "spawn"))?;
         send(mine, mode.as_bytes()).map_err(|_| (24, "send"))?;
         let got = wait(child);
         let _ = close(child);
         let _ = close(mine);
         if got != want {
             zoo_rt::log!(
-                "GeckoHandler: `{}` ended with {:?}, expected {:?}",
+                "WolverineTest: `{}` ended with {:?}, expected {:?}",
                 mode,
                 got,
                 want
             );
             return Err((24, "failure mode"));
         }
-        zoo_rt::log!("GeckoHandler: `{}` ended as required ({:?})", mode, got);
+        zoo_rt::log!("WolverineTest: `{}` ended as required ({:?})", mode, got);
     }
     Ok(())
 }

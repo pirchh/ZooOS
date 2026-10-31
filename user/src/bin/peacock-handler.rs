@@ -1,5 +1,5 @@
 //! PeacockHandler: the window server (docs/m4-design.md §4). Owns the
-//! display and keyboard, runs three applications (Files, Chimp and the
+//! display and keyboard, runs three applications (Files, Crash Test and the
 //! Assistant, docs/m5c2-design.md) over channels, draws a menu bar, the
 //! windows and a status line, routes keys to the focused window, and
 //! restarts applications that crash.
@@ -80,7 +80,7 @@ impl Text {
 }
 
 struct App {
-    /// Shown in the status line, e.g. "ChimpHandler".
+    /// Shown in the status line, e.g. "Crash Test".
     label: &'static str,
     program: &'static str,
     /// Gets a copy of the home directory handle as its second handle.
@@ -288,7 +288,7 @@ impl Desktop {
             16 * CHAR_W,
         );
 
-        // Files on the left; Chimp and the Assistant stacked on the right.
+        // Files on the left; Crash Test and the Assistant stacked on the right.
         let win_w = (w - 3 * MARGIN) / 2;
         let top_y = BAR_H + MARGIN;
         let full_h = h - top_y - BAR_H - MARGIN;
@@ -423,9 +423,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             back: &mut back[..w * h],
         },
         apps: [
-            App::new("OwlHandler", "owl-handler", false),
-            App::new("ChimpHandler", "chimp-handler", false),
-            App::new("ParrotHandler", "parrot-handler", true),
+            App::new("Files", "files", false),
+            App::new("Crash Test", "crash-test", false),
+            App::new("Assistant", "assistant", true),
         ],
         home,
         focus: 0,

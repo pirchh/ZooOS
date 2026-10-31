@@ -1,4 +1,4 @@
-//! LionHandler: answers each message on its start-up channel with
+//! BelugaTest: answers each message on its start-up channel with
 //! `pong: <message>`; exits 0 on `stop`, 2 if the peer goes away.
 
 #![no_std]
@@ -9,12 +9,12 @@ use zoo_rt::{Error, log, recv, send};
 zoo_rt::entry!(main);
 
 fn main(channel: u64) -> u8 {
-    let _ = log("LionHandler ready");
+    let _ = log("BelugaTest ready");
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         match recv(channel, &mut buf) {
             Ok(n) if &buf[..n] == b"stop" => {
-                let _ = log("LionHandler stopping");
+                let _ = log("BelugaTest stopping");
                 return 0;
             }
             Ok(n) => {

@@ -54,7 +54,7 @@ with the address space when the process ends.
 
 ## 5. Verification
 
-MoleHandler, run by Zookeeper at boot (`normal` case), checks: first
+WalrusTest, run by Zookeeper at boot (`normal` case), checks: first
 reservation at the window start; fixed placement; overlap, out-of-window
 and unaligned requests refused; a 4 TiB reserve and release; commit and a
 memory round trip; query results for committed and reserved runs; errors

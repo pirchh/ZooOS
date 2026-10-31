@@ -59,68 +59,68 @@ const SELF_TESTS: [&str; 6] = [
 /// the kernel, and Zookeeper's sequential plan fixes their order.
 const BOOT_PROCESSES: [&str; 8] = [
     "ZOO_OS PROC start pid=1 name=zookeeper",
-    "ZOO_OS PROC start pid=2 name=lion-handler",
-    "ZOO_OS PROC start pid=3 name=monkey-handler",
-    "ZOO_OS PROC crash pid=3 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000",
-    "ZOO_OS PROC start pid=4 name=monkey-handler",
-    "ZOO_OS PROC crash pid=4 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000",
-    "ZOO_OS PROC start pid=5 name=hamster-handler",
-    "ZOO_OS PROC killed pid=5 name=hamster-handler by=1",
+    "ZOO_OS PROC start pid=2 name=beluga-test",
+    "ZOO_OS PROC start pid=3 name=lemming-test",
+    "ZOO_OS PROC crash pid=3 name=lemming-test fault=page-fault access=read cause=protection addr=0xffffc00000001000",
+    "ZOO_OS PROC start pid=4 name=lemming-test",
+    "ZOO_OS PROC crash pid=4 name=lemming-test fault=page-fault access=read cause=protection addr=0xffffc00000001000",
+    "ZOO_OS PROC start pid=5 name=muskox-test",
+    "ZOO_OS PROC killed pid=5 name=muskox-test by=1",
 ];
 
 /// M5a: two BeaverHandlers start in order and finish concurrently.
 const BEAVERS_START: [&str; 2] = [
-    "ZOO_OS PROC start pid=6 name=beaver-handler",
-    "ZOO_OS PROC start pid=7 name=beaver-handler",
+    "ZOO_OS PROC start pid=6 name=narwhal-test",
+    "ZOO_OS PROC start pid=7 name=narwhal-test",
 ];
 const BEAVERS_EXIT: [&str; 2] = [
-    "ZOO_OS PROC exit pid=6 name=beaver-handler code=0",
-    "ZOO_OS PROC exit pid=7 name=beaver-handler code=0",
+    "ZOO_OS PROC exit pid=6 name=narwhal-test code=0",
+    "ZOO_OS PROC exit pid=7 name=narwhal-test code=0",
 ];
-/// POSIX step 4: SquirrelHandler's writable-file checks.
+/// POSIX step 4: ArcticFoxTest's writable-file checks.
 const SQUIRREL: [&str; 2] = [
-    "ZOO_OS PROC start pid=8 name=squirrel-handler",
-    "ZOO_OS PROC exit pid=8 name=squirrel-handler code=0",
+    "ZOO_OS PROC start pid=8 name=arcticfox-test",
+    "ZOO_OS PROC exit pid=8 name=arcticfox-test code=0",
 ];
 /// M5c-1: OtterHandler (the action broker) answers Zookeeper's script.
 const OTTER: [&str; 2] = [
     "ZOO_OS PROC start pid=9 name=otter-handler",
     "ZOO_OS PROC exit pid=9 name=otter-handler code=0",
 ];
-/// POSIX step 1: AntHandler's thread test.
+/// POSIX step 1: CaribouTest's thread test.
 const ANT: [&str; 2] = [
-    "ZOO_OS PROC start pid=10 name=ant-handler",
-    "ZOO_OS PROC exit pid=10 name=ant-handler code=0",
+    "ZOO_OS PROC start pid=10 name=caribou-test",
+    "ZOO_OS PROC exit pid=10 name=caribou-test code=0",
 ];
-/// POSIX step 2: MoleHandler's address-space checks; four children must
+/// POSIX step 2: WalrusTest's address-space checks; four children must
 /// crash with exactly these faults.
 const MOLE: [&str; 10] = [
-    "ZOO_OS PROC start pid=11 name=mole-handler",
-    "ZOO_OS PROC start pid=12 name=mole-handler",
-    "ZOO_OS PROC crash pid=12 name=mole-handler fault=page-fault access=read cause=not-present addr=0x0000000040000000",
-    "ZOO_OS PROC start pid=13 name=mole-handler",
-    "ZOO_OS PROC crash pid=13 name=mole-handler fault=page-fault access=write cause=protection addr=0x0000000040000000",
-    "ZOO_OS PROC start pid=14 name=mole-handler",
-    "ZOO_OS PROC crash pid=14 name=mole-handler fault=page-fault access=execute cause=protection addr=0x0000000040000000",
-    "ZOO_OS PROC start pid=15 name=mole-handler",
-    "ZOO_OS PROC crash pid=15 name=mole-handler fault=page-fault access=write cause=not-present addr=0x0000000040000000",
-    "ZOO_OS PROC exit pid=11 name=mole-handler code=0",
+    "ZOO_OS PROC start pid=11 name=walrus-test",
+    "ZOO_OS PROC start pid=12 name=walrus-test",
+    "ZOO_OS PROC crash pid=12 name=walrus-test fault=page-fault access=read cause=not-present addr=0x0000000040000000",
+    "ZOO_OS PROC start pid=13 name=walrus-test",
+    "ZOO_OS PROC crash pid=13 name=walrus-test fault=page-fault access=write cause=protection addr=0x0000000040000000",
+    "ZOO_OS PROC start pid=14 name=walrus-test",
+    "ZOO_OS PROC crash pid=14 name=walrus-test fault=page-fault access=execute cause=protection addr=0x0000000040000000",
+    "ZOO_OS PROC start pid=15 name=walrus-test",
+    "ZOO_OS PROC crash pid=15 name=walrus-test fault=page-fault access=write cause=not-present addr=0x0000000040000000",
+    "ZOO_OS PROC exit pid=11 name=walrus-test code=0",
 ];
-/// POSIX step 3: GeckoHandler's exception checks; its children must end
+/// POSIX step 3: WolverineTest's exception checks; its children must end
 /// exactly like this (unhandled fault, fault inside the handler, refused
 /// return context).
 const GECKO: [&str; 8] = [
-    "ZOO_OS PROC start pid=16 name=gecko-handler",
-    "ZOO_OS PROC start pid=17 name=gecko-handler",
-    "ZOO_OS PROC crash pid=17 name=gecko-handler fault=page-fault access=write cause=not-present addr=0x0000000000000010",
-    "ZOO_OS PROC start pid=18 name=gecko-handler",
-    "ZOO_OS PROC crash pid=18 name=gecko-handler fault=page-fault access=read cause=not-present addr=0x0000000000000020",
-    "ZOO_OS PROC start pid=19 name=gecko-handler",
-    "ZOO_OS PROC exit pid=19 name=gecko-handler code=103",
-    "ZOO_OS PROC exit pid=16 name=gecko-handler code=0",
+    "ZOO_OS PROC start pid=16 name=wolverine-test",
+    "ZOO_OS PROC start pid=17 name=wolverine-test",
+    "ZOO_OS PROC crash pid=17 name=wolverine-test fault=page-fault access=write cause=not-present addr=0x0000000000000010",
+    "ZOO_OS PROC start pid=18 name=wolverine-test",
+    "ZOO_OS PROC crash pid=18 name=wolverine-test fault=page-fault access=read cause=not-present addr=0x0000000000000020",
+    "ZOO_OS PROC start pid=19 name=wolverine-test",
+    "ZOO_OS PROC exit pid=19 name=wolverine-test code=103",
+    "ZOO_OS PROC exit pid=16 name=wolverine-test code=0",
 ];
 const BOOT_PROCESSES_END: [&str; 5] = [
-    "ZOO_OS PROC exit pid=2 name=lion-handler code=0",
+    "ZOO_OS PROC exit pid=2 name=beluga-test code=0",
     "ZOO_OS PROC exit pid=1 name=zookeeper code=0",
     "ZOO_OS TEST process-cleanup ok",
     "ZOO_OS READY",
@@ -366,9 +366,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run capybara-handler",
-                    "ZOO_OS PROC start pid=20 name=capybara-handler",
-                    "ZOO_OS PROC exit pid=20 name=capybara-handler code=0",
+                    "ZOO_OS SHELL line=run puffin-test",
+                    "ZOO_OS PROC start pid=20 name=puffin-test",
+                    "ZOO_OS PROC exit pid=20 name=puffin-test code=0",
                 ]);
                 e
             },
@@ -378,8 +378,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run capybara-handler")),
-                    Action::WaitFor("ZOO_OS PROC exit pid=20 name=capybara-handler code=0".into()),
+                    Action::Keys(typed("run puffin-test")),
+                    Action::WaitFor("ZOO_OS PROC exit pid=20 name=puffin-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -686,27 +686,30 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC start pid=20 name=zookeeper",
         "ZOO_OS PROC start pid=21 name=peacock-handler",
         "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=owl-handler",
-        "ZOO_OS PROC start pid=23 name=chimp-handler",
-        "ZOO_OS PROC start pid=24 name=parrot-handler",
+        "ZOO_OS PROC start pid=22 name=files",
+        "ZOO_OS PROC start pid=23 name=crash-test",
+        "ZOO_OS PROC start pid=24 name=assistant",
     ]);
-    // 3. ChimpHandler crashes; the window server restarts it.
-    let chimp_crash =
-        format!("ZOO_OS PROC crash pid=23 name=chimp-handler {PAGE_FAULT_KERNEL_READ}");
-    e.then(&[&chimp_crash, "ZOO_OS PROC start pid=25 name=chimp-handler"]);
+    // 3. Crash Test crashes; the window server restarts it.
+    let crash_test_crash =
+        format!("ZOO_OS PROC crash pid=23 name=crash-test {PAGE_FAULT_KERNEL_READ}");
+    e.then(&[
+        &crash_test_crash,
+        "ZOO_OS PROC start pid=25 name=crash-test",
+    ]);
     // 4. The window server crashes; its apps end while Zookeeper restarts it.
     let server_crash =
         format!("ZOO_OS PROC crash pid=21 name=peacock-handler {PAGE_FAULT_KERNEL_READ}");
     e.then(&[&server_crash, "ZOO_OS DISPLAY released pid=21"]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=22 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=25 name=chimp-handler code=0",
-        "ZOO_OS PROC exit pid=24 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=22 name=files code=0",
+        "ZOO_OS PROC exit pid=25 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=24 name=assistant code=0",
         "ZOO_OS PROC start pid=26 name=peacock-handler",
         "ZOO_OS DISPLAY acquired pid=26 name=peacock-handler",
-        "ZOO_OS PROC start pid=27 name=owl-handler",
-        "ZOO_OS PROC start pid=28 name=chimp-handler",
-        "ZOO_OS PROC start pid=29 name=parrot-handler",
+        "ZOO_OS PROC start pid=27 name=files",
+        "ZOO_OS PROC start pid=28 name=crash-test",
+        "ZOO_OS PROC start pid=29 name=assistant",
     ]);
     // 5. Escape ends the session cleanly; the kernel shell is back.
     e.then(&[
@@ -714,9 +717,9 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY released pid=26",
     ]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=27 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=28 name=chimp-handler code=0",
-        "ZOO_OS PROC exit pid=29 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=27 name=files code=0",
+        "ZOO_OS PROC exit pid=28 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=29 name=assistant code=0",
         "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
     ]);
     e.then(&["ZOO_OS SHELL line=echo back"]);
@@ -733,9 +736,9 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC start pid=20 name=zookeeper",
         "ZOO_OS PROC start pid=21 name=peacock-handler",
         "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=owl-handler",
-        "ZOO_OS PROC start pid=23 name=chimp-handler",
-        "ZOO_OS PROC start pid=24 name=parrot-handler",
+        "ZOO_OS PROC start pid=22 name=files",
+        "ZOO_OS PROC start pid=23 name=crash-test",
+        "ZOO_OS PROC start pid=24 name=assistant",
         // Started on first use: the broker by the first command, the model
         // service by the first request in words.
         "ZOO_OS PROC start pid=25 name=otter-handler",
@@ -744,9 +747,9 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY released pid=21",
     ]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=22 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=23 name=chimp-handler code=0",
-        "ZOO_OS PROC exit pid=24 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=22 name=files code=0",
+        "ZOO_OS PROC exit pid=23 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=24 name=assistant code=0",
         "ZOO_OS PROC exit pid=25 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=26 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
@@ -758,9 +761,9 @@ fn assistant_steps() -> Interaction {
     let mut steps = vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=24 name=parrot-handler".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
         Action::Settle(QUIET),
-        // Files -> Chimp -> Assistant.
+        // Files -> Crash Test -> Assistant.
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
     ];
@@ -844,9 +847,9 @@ fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation 
         "ZOO_OS PROC start pid=20 name=zookeeper",
         "ZOO_OS PROC start pid=21 name=peacock-handler",
         "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=owl-handler",
-        "ZOO_OS PROC start pid=23 name=chimp-handler",
-        "ZOO_OS PROC start pid=24 name=parrot-handler",
+        "ZOO_OS PROC start pid=22 name=files",
+        "ZOO_OS PROC start pid=23 name=crash-test",
+        "ZOO_OS PROC start pid=24 name=assistant",
         "ZOO_OS PROC start pid=25 name=elephant-handler",
     ]);
     if live {
@@ -857,9 +860,9 @@ fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation 
         "ZOO_OS DISPLAY released pid=21",
     ]);
     let mut exits = vec![
-        "ZOO_OS PROC exit pid=22 name=owl-handler code=0",
-        "ZOO_OS PROC exit pid=23 name=chimp-handler code=0",
-        "ZOO_OS PROC exit pid=24 name=parrot-handler code=0",
+        "ZOO_OS PROC exit pid=22 name=files code=0",
+        "ZOO_OS PROC exit pid=23 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=24 name=assistant code=0",
         "ZOO_OS PROC exit pid=25 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
     ];
@@ -874,7 +877,7 @@ fn open_assistant() -> Vec<Action> {
     vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=24 name=parrot-handler".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
         Action::Settle(QUIET),
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
@@ -899,7 +902,7 @@ fn assistant_model_steps() -> Interaction {
         Action::Keys(vec!["tab", "down", "down"]),
         Action::Settle(QUIET),
         Action::Screenshot("1-busy"),
-        // Back to the Assistant (Files -> Chimp -> Assistant) and cancel.
+        // Back to the Assistant (Files -> Crash Test -> Assistant) and cancel.
         Action::Keys(vec!["tab", "tab", "backspace"]),
         Action::WaitFor("[25:elephant-handler] ElephantHandler: request cancelled".into()),
         Action::Settle(QUIET),
@@ -930,12 +933,12 @@ fn assistant_live_steps() -> Interaction {
     Interaction { steps }
 }
 
-/// ParrotHandler's idle status line.
+/// Assistant's idle status line.
 const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo.";
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let sel = need(img, "bin/monkey-handler", CONTENT_TEXT, SELECTED)?;
+    let sel = need(img, "bin/lemming-test", CONTENT_TEXT, SELECTED)?;
     absent(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
     let busy = need(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
     Ok(format!(
@@ -983,21 +986,21 @@ fn desktop_steps() -> Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
             Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=24 name=parrot-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-desktop"),
             // Files: down twice, open the details view.
             Action::Keys(vec!["down", "down", "ret"]),
             Action::Settle(QUIET),
             Action::Screenshot("2-details"),
-            // Focus Chimp and make it crash.
+            // Focus Crash Test and make it crash.
             Action::Keys(vec!["tab", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=25 name=chimp-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=25 name=crash-test".into()),
             Action::Settle(QUIET),
             Action::Screenshot("3-app-restart"),
             // Test key: crash the window server itself.
             Action::Keys(vec!["f12"]),
-            Action::WaitFor("ZOO_OS PROC start pid=29 name=parrot-handler".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=29 name=assistant".into()),
             Action::Settle(QUIET),
             Action::Screenshot("4-server-restart"),
             // Leave the desktop and use the kernel shell again.
@@ -1031,42 +1034,32 @@ fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
     let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
     let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
     let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
-    need(img, "ChimpHandler is a crash test.", CONTENT_TEXT, CONTENT)?;
+    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
     absent(img, "bin/zookeeperx", CONTENT_TEXT, SELECTED)?;
     absent(img, "Files", BAR_TEXT, DESKTOP_BG)?;
     Ok(format!(
-        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, selected `bin/zookeeper` at {first:?}, Chimp window shown; wrong text rejected"
+        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, selected `bin/zookeeper` at {first:?}, Crash Test window shown; wrong text rejected"
     ))
 }
 
 fn check_file_details(img: &screen::Image) -> Result<String, String> {
-    let name = need(img, "Name: bin/monkey-handler", CONTENT_TEXT, CONTENT)?;
+    let name = need(img, "Name: bin/lemming-test", CONTENT_TEXT, CONTENT)?;
     let size = need(img, "Size: ", CONTENT_TEXT, CONTENT)?;
     absent(img, "Name: bin/zookeeper", CONTENT_TEXT, CONTENT)?;
     Ok(format!(
-        "details of the 3rd file: `Name: bin/monkey-handler` at {name:?}, `Size:` at {size:?}; wrong file rejected"
+        "details of the 3rd file: `Name: bin/lemming-test` at {name:?}, `Size:` at {size:?}; wrong file rejected"
     ))
 }
 
 fn check_app_restart(img: &screen::Image) -> Result<String, String> {
-    let status = need(
-        img,
-        "ChimpHandler crashed; restarted (1 of 3)",
-        BAR_TEXT,
-        BAR,
-    )?;
-    let title = need(img, "Chimp", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    need(img, "ChimpHandler is a crash test.", CONTENT_TEXT, CONTENT)?;
-    // Files kept its state through Chimp's crash.
-    need(img, "Name: bin/monkey-handler", CONTENT_TEXT, CONTENT)?;
-    absent(
-        img,
-        "ChimpHandler crashed; restarted (2 of 3)",
-        BAR_TEXT,
-        BAR,
-    )?;
+    let status = need(img, "Crash Test crashed; restarted (1 of 3)", BAR_TEXT, BAR)?;
+    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
+    // Files kept its state through Crash Test's crash.
+    need(img, "Name: bin/lemming-test", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Crash Test crashed; restarted (2 of 3)", BAR_TEXT, BAR)?;
     Ok(format!(
-        "status `ChimpHandler crashed; restarted (1 of 3)` at {status:?}, focused `Chimp` at {title:?}, Files details unchanged"
+        "status `Crash Test crashed; restarted (1 of 3)` at {status:?}, focused `Crash Test` at {title:?}, Files details unchanged"
     ))
 }
 
@@ -1076,12 +1069,7 @@ fn check_server_restart(img: &screen::Image) -> Result<String, String> {
     let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
     need(img, "Tab: next window", BAR_TEXT, BAR)?;
     // A fresh window server: the old crash notice is gone.
-    absent(
-        img,
-        "ChimpHandler crashed; restarted (1 of 3)",
-        BAR_TEXT,
-        BAR,
-    )?;
+    absent(img, "Crash Test crashed; restarted (1 of 3)", BAR_TEXT, BAR)?;
     Ok(format!(
         "fresh desktop after the window-server crash: `ZooOS` at {menu:?}, `Files` focused at {title:?}, list reset at {first:?}"
     ))

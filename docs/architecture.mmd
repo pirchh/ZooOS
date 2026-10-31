@@ -1,0 +1,64 @@
+flowchart TB
+    subgraph HOST["Host machine (Windows): build and test only"]
+        XT["xtask<br/>build · run · verify · infer-check · assist-check"]
+        QEMU["QEMU 11.1 + OVMF firmware<br/>the virtual PC (TCG, or WHPX for speed)"]
+        ZIG["Zig 0.16 toolchain<br/>compiles C programs"]
+        MODEL[("Qwen2.5-0.5B model file<br/>428 MB, checksum-pinned")]
+        XT --> QEMU
+        XT --> ZIG
+        XT --> MODEL
+    end
+
+    subgraph BOOT["Boot"]
+        BL["bootloader 0.11 (UEFI)<br/>loads kernel + initrd"]
+        INITRD[("initrd<br/>programs in /bin + sample home files<br/>(+ model in the model image)")]
+    end
+
+    subgraph KERNEL["ZooOS kernel (Rust, no_std)"]
+        MEM["Memory<br/>frames, page tables, heap, guard pages"]
+        SCHED["Scheduler<br/>processes + threads, preemptive, futexes"]
+        SYSC["System calls (ABI v8)<br/>channels, spawn, vm memory,<br/>exceptions, files, display, input"]
+        FS["In-memory filesystem<br/>/bin read-only, /home/user writable,<br/>directory capabilities"]
+        DRV["Drivers<br/>framebuffer console, keyboard, serial, timer"]
+        SHELL["Kernel shell (zoo&gt;)<br/>help, ls, ps, run, desktop"]
+    end
+
+    subgraph BOOTCHECKS["Arctic boot tests (run every boot)"]
+        ZK1["Zookeeper<br/>supervisor: starts, restarts and checks services"]
+        BELUGA["BelugaTest: message ping-pong"]
+        LEMMING["LemmingTest: crashes on purpose (restart policy)"]
+        MUSKOX["MuskoxTest: never yields (preemption)"]
+        NARWHAL["NarwhalTest x2: floating point per process"]
+        ARCTICFOX["ArcticFoxTest: writable files"]
+        CARIBOU["CaribouTest: threads, locks, thread-local data"]
+        WALRUS["WalrusTest: reserve/commit/protect memory"]
+        WOLVERINE["WolverineTest: catches and recovers from its own faults"]
+        ZK1 --> BELUGA & LEMMING & MUSKOX & NARWHAL & ARCTICFOX & CARIBOU & WALRUS & WOLVERINE
+    end
+
+    subgraph DESKTOP["Desktop session (shell: desktop)"]
+        ZK2["Zookeeper (session mode)<br/>hands out the home-folder handle,<br/>restarts the window server"]
+        PEACOCK["PeacockHandler<br/>window server: owns screen + keyboard"]
+        FILES["Files (app)<br/>file browser"]
+        CRASH["Crash Test (app)<br/>crashes on purpose to show recovery"]
+        ASSIST["Assistant (app)<br/>input, plan + confirm, cancel"]
+        ELEPHCARIBOU["ElephantHandler<br/>model service: Qwen2.5 via zoo-infer,<br/>picks a command; no file access"]
+        OTTER["OtterHandler<br/>file broker: search, list, inspect,<br/>plan, create, undo"]
+        ZK2 --> PEACOCK
+        PEACOCK --> FILES & CRASH & ASSIST
+        ASSIST -- "request in words" --> ELEPHANT
+        ELEPHANT -- "chosen command" --> ASSIST
+        ASSIST -- "command" --> OTTER
+        OTTER -- "home folder only" --> FS
+    end
+
+    PUFFIN["PuffinTest<br/>first C program (shell: run puffin-test)"]
+
+    QEMU --> BL --> KERNEL
+    INITRD --> FS
+    SHELL --> ZK1
+    SHELL --> ZK2
+    SHELL --> PUFFIN
+    BOOTCHECKS -. "system calls" .-> SYSC
+    DESKTOP -. "system calls" .-> SYSC
+    PUFFIN -. "system calls" .-> SYSC

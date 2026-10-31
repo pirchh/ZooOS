@@ -62,8 +62,8 @@ inference benchmarks, but is never required.
 
 ## 5. Verification
 
-ABI version 3. A new program, **BeaverHandler**, is added to Zookeeper's
-start-up plan (after HamsterHandler):
+ABI version 3. A new program, **NarwhalTest**, is added to Zookeeper's
+start-up plan (after MuskoxTest):
 
 - Zookeeper computes two floating-point reference values itself (a long
   `sqrt`/multiply series with two different parameters), then starts two
@@ -74,7 +74,7 @@ start-up plan (after HamsterHandler):
   **If FPU state leaked between processes, the results would differ.**
 - Zookeeper also maps `bin/zookeeper` with `fs_map` and checks the ELF magic
   and that the length matches `fs_stat`.
-- New kernel markers: two `PROC start … beaver-handler` and their two exits
+- New kernel markers: two `PROC start … narwhal-test` and their two exits
   (unordered: they run concurrently). The leak check at the end covers the
   heap pages and mappings.
 - **Negative control:** with `fxsave`/`fxrstor` disabled, the float check

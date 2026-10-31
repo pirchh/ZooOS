@@ -46,7 +46,7 @@ Everything under `/bin` is read-only for every handle (`RIGHTS`).
 
 ## 4. Verification
 
-SquirrelHandler, started by Zookeeper with copies of its home and root
+ArcticFoxTest, started by Zookeeper with copies of its home and root
 handles during the M5c-1 directory checks (`normal` case), checks:
 
 - create, duplicate refused, write and read back;

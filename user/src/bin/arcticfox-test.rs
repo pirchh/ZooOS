@@ -1,4 +1,4 @@
-//! SquirrelHandler: the writable-file test (docs/posix4-design.md §4).
+//! ArcticFoxTest: the writable-file test (docs/posix4-design.md §4).
 //! Started by Zookeeper with a home directory handle (all rights); exits 0
 //! only if every check passes (the exit code names the first failure) and
 //! leaves home exactly as it found it.
@@ -20,11 +20,11 @@ zoo_rt::entry2!(main);
 fn main(home: u64, root: u64) -> u8 {
     match checks(home, root) {
         Ok(()) => {
-            let _ = zoo_rt::log("SquirrelHandler: all file checks passed");
+            let _ = zoo_rt::log("ArcticFoxTest: all file checks passed");
             0
         }
         Err((code, what)) => {
-            zoo_rt::log!("SquirrelHandler: check {} failed: {}", code, what);
+            zoo_rt::log!("ArcticFoxTest: check {} failed: {}", code, what);
             code
         }
     }
@@ -127,7 +127,7 @@ fn checks(home: u64, root: u64) -> Result<(), (u8, &'static str)> {
     // 5. A seeded file is copied on first write; restoring it leaves it as
     //    it was (other start-up checks and the desktop read it later).
     let original = read_all(home, "Documents/notes.txt").ok_or((44, "read seeded"))?;
-    let extra = b"Remember: the squirrel was here.\n";
+    let extra = b"Remember: the arctic fox was here.\n";
     let at = original.len() as u64;
     check(
         file_write(home, "Documents/notes.txt", at, extra) == Ok(extra.len()),

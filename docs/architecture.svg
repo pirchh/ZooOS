@@ -1,0 +1,195 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1060" viewBox="0 0 1400 1060" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5560"/>
+    </marker>
+    <style>
+      .title { font-size: 26px; font-weight: 700; fill: #1d2731; }
+      .sub { font-size: 14px; fill: #5a6570; }
+      .group { font-size: 15px; font-weight: 700; fill: #33404c; }
+      .name { font-size: 14px; font-weight: 700; fill: #1d2731; }
+      .desc { font-size: 12px; fill: #3a4550; }
+      .edge { stroke: #4a5560; stroke-width: 1.6; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #8a95a0; stroke-width: 1.4; fill: none; stroke-dasharray: 6 5; marker-end: url(#arrow); }
+      .lbl { font-size: 11px; fill: #4a5560; font-style: italic; }
+    </style>
+  </defs>
+  <rect width="1400" height="1060" fill="#ffffff"/>
+
+  <text x="30" y="44" class="title">ZooOS architecture</text>
+  <text x="30" y="68" class="sub">Version 0.14.0 · names as of the services/apps/tests rename</text>
+
+  <!-- Legend -->
+  <g transform="translate(760,30)">
+    <rect x="0" y="0" width="16" height="16" rx="3" fill="#e9defc" stroke="#7c5cc4"/><text x="22" y="13" class="desc">Supervisor</text>
+    <rect x="110" y="0" width="16" height="16" rx="3" fill="#ffe9d1" stroke="#d9822b"/><text x="132" y="13" class="desc">Service (…Handler)</text>
+    <rect x="270" y="0" width="16" height="16" rx="3" fill="#dcecff" stroke="#3d7ebf"/><text x="292" y="13" class="desc">App</text>
+    <rect x="340" y="0" width="16" height="16" rx="3" fill="#dff5f7" stroke="#2b9aa6"/><text x="362" y="13" class="desc">Arctic boot test</text>
+    <rect x="480" y="0" width="16" height="16" rx="3" fill="#e8ecef" stroke="#6b7884"/><text x="502" y="13" class="desc">Kernel / boot</text>
+    <rect x="590" y="0" width="16" height="16" rx="3" fill="#f6f6f2" stroke="#a5a58f"/><text x="612" y="13" class="desc">Host</text>
+  </g>
+
+  <!-- HOST -->
+  <rect x="20" y="90" width="1360" height="110" rx="10" fill="#fbfbf8" stroke="#a5a58f"/>
+  <text x="34" y="112" class="group">Host machine (Windows): build and test only</text>
+  <g>
+    <rect x="40" y="124" width="300" height="62" rx="8" fill="#f6f6f2" stroke="#a5a58f"/>
+    <text x="54" y="148" class="name">xtask</text>
+    <text x="54" y="170" class="desc">build · run · verify · infer-check · assist-check</text>
+    <rect x="370" y="124" width="300" height="62" rx="8" fill="#f6f6f2" stroke="#a5a58f"/>
+    <text x="384" y="148" class="name">QEMU 11.1 + OVMF</text>
+    <text x="384" y="170" class="desc">the virtual PC (TCG, or WHPX for speed)</text>
+    <rect x="700" y="124" width="300" height="62" rx="8" fill="#f6f6f2" stroke="#a5a58f"/>
+    <text x="714" y="148" class="name">Zig 0.16 toolchain</text>
+    <text x="714" y="170" class="desc">compiles C programs (clang 21, lld)</text>
+    <rect x="1030" y="124" width="330" height="62" rx="8" fill="#f6f6f2" stroke="#a5a58f"/>
+    <text x="1044" y="148" class="name">Qwen2.5-0.5B model file</text>
+    <text x="1044" y="170" class="desc">428 MB, checksum-pinned, only in the model image</text>
+  </g>
+
+  <!-- BOOT -->
+  <rect x="20" y="220" width="1360" height="86" rx="10" fill="#f4f6f8" stroke="#6b7884"/>
+  <text x="34" y="242" class="group">Boot</text>
+  <rect x="40" y="252" width="420" height="44" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+  <text x="54" y="279" class="name">bootloader 0.11 (UEFI)</text>
+  <text x="240" y="279" class="desc">loads the kernel and the initrd</text>
+  <rect x="490" y="252" width="870" height="44" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+  <text x="504" y="279" class="name">initrd</text>
+  <text x="560" y="279" class="desc">programs in /bin · sample files for /home/user · (+ the model in the model image)</text>
+  <path d="M420 186 L420 250" class="edge"/>
+  <text x="428" y="226" class="lbl">boots</text>
+
+  <!-- KERNEL -->
+  <rect x="20" y="326" width="1360" height="128" rx="10" fill="#f4f6f8" stroke="#6b7884"/>
+  <text x="34" y="348" class="group">ZooOS kernel (Rust, no_std)</text>
+  <g>
+    <rect x="40" y="360" width="210" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="52" y="384" class="name">Memory</text>
+    <text x="52" y="404" class="desc">frames, page tables,</text>
+    <text x="52" y="420" class="desc">kernel heap, guard pages</text>
+    <rect x="265" y="360" width="210" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="277" y="384" class="name">Scheduler</text>
+    <text x="277" y="404" class="desc">processes + threads,</text>
+    <text x="277" y="420" class="desc">preemptive, futexes</text>
+    <rect x="490" y="360" width="250" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="502" y="384" class="name">System calls (ABI v8)</text>
+    <text x="502" y="404" class="desc">channels, spawn, vm memory,</text>
+    <text x="502" y="420" class="desc">exceptions, files, display, input</text>
+    <rect x="755" y="360" width="225" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="767" y="384" class="name">Filesystem (in memory)</text>
+    <text x="767" y="404" class="desc">/bin read-only, /home/user</text>
+    <text x="767" y="420" class="desc">writable, folder permissions</text>
+    <rect x="995" y="360" width="175" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="1007" y="384" class="name">Drivers</text>
+    <text x="1007" y="404" class="desc">screen, keyboard,</text>
+    <text x="1007" y="420" class="desc">serial, timer</text>
+    <rect x="1185" y="360" width="175" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
+    <text x="1197" y="384" class="name">Kernel shell (zoo&gt;)</text>
+    <text x="1197" y="404" class="desc">help, ls, ps,</text>
+    <text x="1197" y="420" class="desc">run, desktop</text>
+  </g>
+  <path d="M250 296 L250 358" class="edge"/>
+
+  <!-- ARCTIC BOOT TESTS -->
+  <rect x="20" y="480" width="430" height="560" rx="10" fill="#f3fbfc" stroke="#2b9aa6"/>
+  <text x="34" y="502" class="group">Arctic boot tests (run on every boot)</text>
+  <rect x="40" y="514" width="390" height="56" rx="8" fill="#e9defc" stroke="#7c5cc4"/>
+  <text x="54" y="538" class="name">Zookeeper</text>
+  <text x="54" y="557" class="desc">supervisor: starts the tests, checks every result</text>
+  <g>
+    <rect x="40" y="590" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="615" class="name">beluga-test</text><text x="168" y="615" class="desc">messages between programs</text>
+    <rect x="40" y="638" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="663" class="name">lemming-test</text><text x="168" y="663" class="desc">crashes on purpose (restart policy)</text>
+    <rect x="40" y="686" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="711" class="name">muskox-test</text><text x="168" y="711" class="desc">never yields (preemption)</text>
+    <rect x="40" y="734" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="759" class="name">narwhal-test ×2</text><text x="168" y="759" class="desc">floating point kept per process</text>
+    <rect x="40" y="782" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="807" class="name">arcticfox-test</text><text x="168" y="807" class="desc">writable files</text>
+    <rect x="40" y="830" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="855" class="name">caribou-test</text><text x="168" y="855" class="desc">threads, locks, thread-local data</text>
+    <rect x="40" y="878" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="903" class="name">walrus-test</text><text x="168" y="903" class="desc">reserve / commit / protect memory</text>
+    <rect x="40" y="926" width="390" height="40" rx="7" fill="#dff5f7" stroke="#2b9aa6"/>
+    <text x="52" y="951" class="name">wolverine-test</text><text x="168" y="951" class="desc">catches and recovers from its own faults</text>
+    <text x="40" y="992" class="desc">Each test checks one subsystem; Zookeeper exits 0</text>
+    <text x="40" y="1008" class="desc">only if all pass, then the kernel checks for leaks.</text>
+  </g>
+  <path d="M235 570 L235 588" class="edge"/>
+
+  <!-- DESKTOP SESSION -->
+  <rect x="470" y="480" width="700" height="560" rx="10" fill="#fbfaff" stroke="#7c5cc4"/>
+  <text x="484" y="502" class="group">Desktop session (shell: desktop)</text>
+  <rect x="640" y="514" width="360" height="56" rx="8" fill="#e9defc" stroke="#7c5cc4"/>
+  <text x="654" y="538" class="name">Zookeeper (session mode)</text>
+  <text x="654" y="557" class="desc">hands out the home-folder permission, restarts the window server</text>
+  <rect x="640" y="600" width="360" height="56" rx="8" fill="#ffe9d1" stroke="#d9822b"/>
+  <text x="654" y="624" class="name">PeacockHandler</text>
+  <text x="654" y="643" class="desc">window server: owns screen + keyboard, restarts apps</text>
+  <path d="M820 570 L820 598" class="edge"/>
+
+  <rect x="490" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>
+  <text x="504" y="725" class="name">Files</text>
+  <text x="504" y="745" class="desc">file browser</text>
+  <rect x="720" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>
+  <text x="734" y="725" class="name">Crash Test</text>
+  <text x="734" y="745" class="desc">crashes on purpose to</text>
+  <text x="734" y="759" class="desc">show recovery</text>
+  <rect x="950" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>
+  <text x="964" y="725" class="name">Assistant</text>
+  <text x="964" y="745" class="desc">input, plan + confirm,</text>
+  <text x="964" y="759" class="desc">cancel</text>
+  <path d="M700 656 L590 698" class="edge"/>
+  <path d="M820 656 L820 698" class="edge"/>
+  <path d="M940 656 L1050 698" class="edge"/>
+
+  <rect x="720" y="840" width="230" height="84" rx="8" fill="#ffe9d1" stroke="#d9822b"/>
+  <text x="734" y="864" class="name">ElephantHandler</text>
+  <text x="734" y="884" class="desc">model service: Qwen2.5 via zoo-infer,</text>
+  <text x="734" y="900" class="desc">turns words into one command,</text>
+  <text x="734" y="916" class="desc">no file access</text>
+  <rect x="960" y="840" width="200" height="84" rx="8" fill="#ffe9d1" stroke="#d9822b"/>
+  <text x="974" y="864" class="name">OtterHandler</text>
+  <text x="974" y="884" class="desc">file broker: search, list,</text>
+  <text x="974" y="900" class="desc">inspect, plan, create, undo</text>
+  <text x="974" y="916" class="desc">home folder only</text>
+  <path d="M990 766 L880 838" class="edge"/>
+  <text x="860" y="800" class="lbl">request in words</text>
+  <path d="M1060 766 L1060 838" class="edge"/>
+  <text x="1068" y="806" class="lbl">command</text>
+  <path d="M1060 924 C1060 990 900 1000 870 1000 L870 1000" class="dash"/>
+  <text x="490" y="990" class="desc">OtterHandler reaches the filesystem only through the</text>
+  <text x="490" y="1006" class="desc">home-folder permission it was given; the model never touches files.</text>
+
+  <!-- C PROGRAM -->
+  <rect x="1190" y="480" width="190" height="150" rx="10" fill="#f3fbfc" stroke="#2b9aa6"/>
+  <text x="1204" y="502" class="group">C programs</text>
+  <rect x="1205" y="516" width="160" height="96" rx="8" fill="#dff5f7" stroke="#2b9aa6"/>
+  <text x="1217" y="540" class="name">puffin-test</text>
+  <text x="1217" y="560" class="desc">first C program</text>
+  <text x="1217" y="576" class="desc">(zig cc, no libc yet)</text>
+  <text x="1217" y="596" class="desc">shell: run puffin-test</text>
+
+  <!-- shell launches -->
+  <path d="M1272 440 L1272 514" class="edge"/>
+  <path d="M1220 440 C1220 470 1000 470 960 512" class="edge"/>
+  <text x="1040" y="468" class="lbl">desktop</text>
+  <path d="M1200 440 C1150 466 500 455 300 512" class="edge"/>
+  <text x="600" y="464" class="lbl">at boot</text>
+
+  <!-- Future -->
+  <rect x="1190" y="650" width="190" height="390" rx="10" fill="#ffffff" stroke="#c4cad0" stroke-dasharray="6 5"/>
+  <text x="1204" y="672" class="group">Next (planned)</text>
+  <text x="1204" y="698" class="desc">• Zookeeper supervision:</text>
+  <text x="1214" y="714" class="desc">services register and</text>
+  <text x="1214" y="730" class="desc">report health</text>
+  <text x="1204" y="756" class="desc">• Logging service</text>
+  <text x="1204" y="782" class="desc">• Filesystem moved out of</text>
+  <text x="1214" y="798" class="desc">the kernel into a service</text>
+  <text x="1204" y="824" class="desc">• Disk driver: files that</text>
+  <text x="1214" y="840" class="desc">survive a reboot</text>
+  <text x="1204" y="866" class="desc">• libc for C programs</text>
+  <text x="1204" y="892" class="desc">• Later: network, GPU</text>
+  <text x="1214" y="908" class="desc">drivers, Wine for .exe</text>
+</svg>
