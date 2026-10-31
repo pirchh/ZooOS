@@ -171,7 +171,7 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
         let data =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let entry = format!("bin/{name}");
-        let header = zoo_abi::tar::header(&entry, data.len())
+        let header = zoo_abi::tar::header(entry, data.len())
             .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
         archive.extend_from_slice(&header);
         archive.extend_from_slice(&data);
@@ -191,7 +191,7 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
         }
     };
     for (entry, data) in &c_programs {
-        let header = zoo_abi::tar::header(&entry, data.len())
+        let header = zoo_abi::tar::header(entry, data.len())
             .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
         archive.extend_from_slice(&header);
         archive.extend_from_slice(data);

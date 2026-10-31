@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 1: static musl programs run (2026-10-31)
+
+Design: docs/linux1-design.md.
+
+- The `syscall` instruction is the Linux entry (native programs keep
+  `int 0x80`); its frame joins the existing trap path. Programs packed
+  under `linux/` start with the System V stack. Nine Linux calls are
+  implemented; others return `ENOSYS` and are logged once. The ZooOS ABI
+  version is unchanged (16). Version 0.39.0.
+
 ## Owner decision: C library through Linux system calls (2026-10-31)
 
 Of the routes in docs/feasibility/libc-route.md the owner chose route 3:

@@ -1,6 +1,7 @@
 # Linux step 1 (L1): a static musl program runs unmodified
 
-Status: proposal (2026-10-31), not implemented. First step of the owner's
+Status: implemented 2026-10-31 (version 0.39.0); §5 records the
+implementation. First step of the owner's
 chosen route (docs/feasibility/libc-route.md, route 3): ZooOS accepts
 Linux x86-64 system calls, so programs built for Linux with musl run as
 they are.
@@ -54,3 +55,23 @@ wrong in the start-up stack (the printed line differs).
 Files, `mmap`/`brk` (memory allocation), signals, threads (`clone`),
 time calls, an environment, dynamic linking. Each comes as a later step
 when a real program needs it.
+
+## 5. As implemented
+
+- `kernel/src/trap.rs`: `init_syscall` (MSRs) and `syscall_entry`; the
+  kernel stack copy is kept by `gdt::set_kernel_stack`. Dispatch tag
+  `VEC_LINUX`, handled by `process::on_linux_syscall`.
+- `kernel/src/process.rs`: `spawn_as(…, linux)` loads from `linux/` and
+  writes the start-up stack (`linux_stack`); `linux_syscall` implements
+  the table in §2. A `writev` is logged as one write (musl sends a line's
+  text and its newline as two pieces; the first version logged an empty
+  extra line). Writes are limited to 64 KiB.
+- `xtask`: `LINUX_PROGRAMS` built with `zig cc -target x86_64-linux-musl
+  -static -fno-pie -no-pie -s` and checked by the kernel's ELF rules;
+  packed as `linux/<name>`. The program is loaded at 16 MiB, inside the
+  user image window.
+- The program used no call outside §2's table (no `unsupported syscall`
+  line).
+- Negative controls: `writev` returning `ENOSYS` → nothing printed, `FAIL
+  linux-hello`; argc written one too high → musl printed `argc=3 …
+  argv[2]=(null)`, `FAIL linux-hello`.

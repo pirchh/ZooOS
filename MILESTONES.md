@@ -103,7 +103,8 @@ and verification:
 | 5b-1 | Process arguments and wall-clock/monotonic time (docs/posix5b1-design.md) | done 2026-10-31 |
 | 5b-2 | File descriptors: now part of the Linux personality (route 3) | superseded |
 | 5b-3 | C library: route 3 chosen (Linux system calls; docs/feasibility/libc-route.md) | in progress |
-| L1 | Linux system calls, step 1: a static musl "hello" runs unmodified (docs/linux1-design.md) | in progress |
+| L1 | Linux system calls, step 1: a static musl "hello" runs unmodified (docs/linux1-design.md) | done 2026-10-31 |
+| L2 | Memory (`brk`, `mmap`), files and time for real programs | proposed |
 
 ## Services (owner direction 2026-10-30)
 
