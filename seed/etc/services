@@ -1,0 +1,4 @@
+# Services Zookeeper starts and supervises (docs/s1-design.md).
+# name max_restarts
+beaver-handler 3
+seal-test 3

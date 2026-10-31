@@ -294,6 +294,9 @@ struct Scheduler {
     /// The kernel's end of the current desktop session's control channel,
     /// with that session's Zookeeper pid.
     control: Option<(u64, HandleEntry)>,
+    /// The kernel's end of the resident supervisor's control channel, with
+    /// its pid (docs/s1-design.md).
+    supervisor: Option<(u64, HandleEntry)>,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -336,6 +339,7 @@ pub fn init() {
             kstack_used: [false; KSTACK_SLOTS],
             display_owner: None,
             control: None,
+            supervisor: None,
         });
     });
 }
@@ -389,6 +393,95 @@ pub fn session_running() -> bool {
     })
 }
 
+/// A channel between the kernel (side 0) and a new Zookeeper (side 1) whose
+/// first message is `mode`.
+fn control_channel(mode: &[u8]) -> (HandleEntry, HandleEntry) {
+    let chan = Arc::new(Mutex::new(Channel {
+        queues: [VecDeque::new(), VecDeque::new()],
+        open: [true, true],
+    }));
+    // Side 1 is Zookeeper's: its receive queue holds the mode.
+    chan.lock().queues[1].push_back(mode.to_vec());
+    let rights = RIGHT_SEND | RIGHT_RECV;
+    let kernel_end = HandleEntry {
+        object: Object::Endpoint {
+            chan: chan.clone(),
+            side: 0,
+        },
+        rights,
+    };
+    let zookeeper_end = HandleEntry {
+        object: Object::Endpoint { chan, side: 1 },
+        rights,
+    };
+    (kernel_end, zookeeper_end)
+}
+
+/// Starts the resident supervisor: Zookeeper in supervise mode
+/// (docs/s1-design.md). Returns its pid.
+pub fn start_supervisor() -> Result<u64, Error> {
+    with_sched(|s, m| {
+        if s.supervisor.is_some() {
+            return Err(Error::Busy);
+        }
+        let (kernel_end, zookeeper_end) = control_channel(b"supervise");
+        let (_, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
+        s.supervisor = Some((pid, kernel_end));
+        Ok(pid)
+    })
+}
+
+/// Sends `msg` to the supervisor. `PEERCLOSED` once it has ended, `FULL`
+/// when its queue is full.
+pub fn supervisor_send(msg: &[u8]) -> Result<(), Error> {
+    with_sched(|s, _| {
+        let Some((
+            _,
+            HandleEntry {
+                object: Object::Endpoint { chan, .. },
+                ..
+            },
+        )) = &s.supervisor
+        else {
+            return Err(Error::NotFound);
+        };
+        let r = {
+            let mut c = chan.lock();
+            if !c.open[1] {
+                Err(Error::PeerClosed)
+            } else if c.queues[1].len() >= CHANNEL_DEPTH {
+                Err(Error::Full)
+            } else {
+                c.queues[1].push_back(msg.to_vec());
+                Ok(())
+            }
+        };
+        s.wake_all();
+        r
+    })
+}
+
+/// The next message from the supervisor, if one is waiting.
+pub fn supervisor_try_recv() -> Option<Vec<u8>> {
+    with_sched(|s, _| {
+        let Some((
+            _,
+            HandleEntry {
+                object: Object::Endpoint { chan, .. },
+                ..
+            },
+        )) = &s.supervisor
+        else {
+            return None;
+        };
+        let m = chan.lock().queues[0].pop_front();
+        if m.is_some() {
+            s.wake_all();
+        }
+        m
+    })
+}
+
 /// Starts a desktop session: Zookeeper in session mode, with a control
 /// channel whose first message is `session` (docs/m4-design.md §2).
 pub fn start_session() -> Result<u64, Error> {
@@ -401,24 +494,7 @@ pub fn start_session() -> Result<u64, Error> {
         {
             return Err(Error::Busy);
         }
-        let chan = Arc::new(Mutex::new(Channel {
-            queues: [VecDeque::new(), VecDeque::new()],
-            open: [true, true],
-        }));
-        // Side 1 is Zookeeper's: its receive queue holds the mode.
-        chan.lock().queues[1].push_back(b"session".to_vec());
-        let rights = RIGHT_SEND | RIGHT_RECV;
-        let kernel_end = HandleEntry {
-            object: Object::Endpoint {
-                chan: chan.clone(),
-                side: 0,
-            },
-            rights,
-        };
-        let zookeeper_end = HandleEntry {
-            object: Object::Endpoint { chan, side: 1 },
-            rights,
-        };
+        let (kernel_end, zookeeper_end) = control_channel(b"session");
         let (i, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
         s.proc(i).root_ok = true;
         if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
@@ -1234,6 +1310,19 @@ impl Scheduler {
             | sys::VM_DECOMMIT
             | sys::VM_RELEASE
             | sys::VM_QUERY => self.vm_call(i, number, a1, a2, a3, p4, mem),
+            sys::PROCESS_ID => {
+                if a1 == NO_HANDLE {
+                    return Outcome::Ret(self.task(i).pid as i64);
+                }
+                match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Process { pid },
+                        ..
+                    }) => Outcome::Ret(*pid as i64),
+                    Some(_) => err(Error::Inval),
+                    None => err(Error::BadHandle),
+                }
+            }
             sys::SET_EXCEPTION_HANDLER => {
                 if a1 >= USER_HALF_END {
                     return err(Error::Inval);

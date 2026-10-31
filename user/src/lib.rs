@@ -329,6 +329,11 @@ pub fn spawn_with(name: &str, give: [Option<Handle>; 2]) -> Result<Handle, Error
     ))
 }
 
+/// Pid of the process behind handle `h`, or the caller's own for `NO_HANDLE`.
+pub fn process_id(h: Handle) -> Result<u64, Error> {
+    result(syscall(sys::PROCESS_ID, h, 0, 0))
+}
+
 pub fn close(h: Handle) -> Result<(), Error> {
     result(syscall(sys::CLOSE, h, 0, 0)).map(|_| ())
 }

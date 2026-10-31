@@ -109,6 +109,30 @@ fn wait_for_session_to_settle() -> bool {
     false
 }
 
+/// Sends `req` to the resident supervisor and prints its reply lines until
+/// `end` (bounded: 3 s).
+fn supervisor_request(req: &str) {
+    // Drop anything left over from an earlier request that timed out.
+    while process::supervisor_try_recv().is_some() {}
+    if let Err(e) = process::supervisor_send(req.as_bytes()) {
+        kprintln!("supervisor: {}", e.name());
+        return;
+    }
+    let limit = interrupts::ticks() + 3 * u64::from(interrupts::TIMER_HZ);
+    while interrupts::ticks() < limit {
+        match process::supervisor_try_recv() {
+            Some(m) if m == b"end" => return,
+            Some(m) => kprintln!("{}", core::str::from_utf8(&m).unwrap_or("<not utf-8>")),
+            None => {
+                cpu_interrupts::disable();
+                process::idle_hlt();
+                cpu_interrupts::enable();
+            }
+        }
+    }
+    kprintln!("supervisor did not answer within 3 s");
+}
+
 fn execute(line: &str) {
     let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
     match cmd {
@@ -123,6 +147,9 @@ fn execute(line: &str) {
             kprintln!("ls              list the initial filesystem");
             kprintln!("run <program>   start a program from /bin");
             kprintln!("desktop         start the desktop (Esc in it returns here)");
+            kprintln!("services        system services and their state");
+            kprintln!("logs            recent supervisor events (BeaverHandler)");
+            kprintln!("poke <svc> <x>  send a test request to a service");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");
@@ -158,6 +185,13 @@ fn execute(line: &str) {
             Ok(pid) => kprintln!("starting the desktop (zookeeper pid {})", pid),
             Err(e) => kprintln!("desktop: {}", e.name()),
         },
+        "services" => supervisor_request("status"),
+        "logs" => supervisor_request("logs"),
+        "poke" => {
+            let mut req = String::from("poke ");
+            req.push_str(rest.trim());
+            supervisor_request(&req);
+        }
         "clear" => {
             console::with(|c| c.clear());
         }

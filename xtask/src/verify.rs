@@ -119,10 +119,15 @@ const GECKO: [&str; 8] = [
     "ZOO_OS PROC exit pid=19 name=wolverine-test code=103",
     "ZOO_OS PROC exit pid=16 name=wolverine-test code=0",
 ];
-const BOOT_PROCESSES_END: [&str; 5] = [
+/// The resident supervisor and its services start before READY
+/// (docs/s1-design.md).
+const BOOT_PROCESSES_END: [&str; 8] = [
     "ZOO_OS PROC exit pid=2 name=beluga-test code=0",
     "ZOO_OS PROC exit pid=1 name=zookeeper code=0",
     "ZOO_OS TEST process-cleanup ok",
+    "ZOO_OS PROC start pid=20 name=zookeeper",
+    "ZOO_OS PROC start pid=21 name=beaver-handler",
+    "ZOO_OS PROC start pid=22 name=seal-test",
     "ZOO_OS READY",
     "ZOO_OS SHELL ready",
 ];
@@ -167,8 +172,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mut inference = normal.clone();
     inference.then(&[
         "ZOO_OS SHELL line=run elephant-handler",
-        "ZOO_OS PROC start pid=20 name=elephant-handler",
-        "ZOO_OS PROC exit pid=20 name=elephant-handler code=0",
+        "ZOO_OS PROC start pid=23 name=elephant-handler",
+        "ZOO_OS PROC exit pid=23 name=elephant-handler code=0",
     ]);
     let model_image = match crate::infer::load_model(root) {
         Ok(data) => {
@@ -360,6 +365,17 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "services",
+            mode: Mode::Normal,
+            custom_image: None,
+            expectation: services_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "resident supervisor: services listed, crash and hang detected and restarted, restart limit, logs",
+            interaction: Some(services_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "c-program",
             mode: Mode::Normal,
             custom_image: None,
@@ -367,8 +383,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 let mut e = normal.clone();
                 e.then(&[
                     "ZOO_OS SHELL line=run puffin-test",
-                    "ZOO_OS PROC start pid=20 name=puffin-test",
-                    "ZOO_OS PROC exit pid=20 name=puffin-test code=0",
+                    "ZOO_OS PROC start pid=23 name=puffin-test",
+                    "ZOO_OS PROC exit pid=23 name=puffin-test code=0",
                 ]);
                 e
             },
@@ -379,7 +395,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
                     Action::Keys(typed("run puffin-test")),
-                    Action::WaitFor("ZOO_OS PROC exit pid=20 name=puffin-test code=0".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=23 name=puffin-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -683,44 +699,44 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
     // 1. Start the session: the window server and its three applications.
     e.then(&[
         "ZOO_OS SHELL line=desktop",
-        "ZOO_OS PROC start pid=20 name=zookeeper",
-        "ZOO_OS PROC start pid=21 name=peacock-handler",
-        "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=files",
-        "ZOO_OS PROC start pid=23 name=crash-test",
-        "ZOO_OS PROC start pid=24 name=assistant",
+        "ZOO_OS PROC start pid=23 name=zookeeper",
+        "ZOO_OS PROC start pid=24 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=24 name=peacock-handler",
+        "ZOO_OS PROC start pid=25 name=files",
+        "ZOO_OS PROC start pid=26 name=crash-test",
+        "ZOO_OS PROC start pid=27 name=assistant",
     ]);
     // 3. Crash Test crashes; the window server restarts it.
     let crash_test_crash =
-        format!("ZOO_OS PROC crash pid=23 name=crash-test {PAGE_FAULT_KERNEL_READ}");
+        format!("ZOO_OS PROC crash pid=26 name=crash-test {PAGE_FAULT_KERNEL_READ}");
     e.then(&[
         &crash_test_crash,
-        "ZOO_OS PROC start pid=25 name=crash-test",
+        "ZOO_OS PROC start pid=28 name=crash-test",
     ]);
     // 4. The window server crashes; its apps end while Zookeeper restarts it.
     let server_crash =
-        format!("ZOO_OS PROC crash pid=21 name=peacock-handler {PAGE_FAULT_KERNEL_READ}");
-    e.then(&[&server_crash, "ZOO_OS DISPLAY released pid=21"]);
+        format!("ZOO_OS PROC crash pid=24 name=peacock-handler {PAGE_FAULT_KERNEL_READ}");
+    e.then(&[&server_crash, "ZOO_OS DISPLAY released pid=24"]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=22 name=files code=0",
-        "ZOO_OS PROC exit pid=25 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=24 name=assistant code=0",
-        "ZOO_OS PROC start pid=26 name=peacock-handler",
-        "ZOO_OS DISPLAY acquired pid=26 name=peacock-handler",
-        "ZOO_OS PROC start pid=27 name=files",
-        "ZOO_OS PROC start pid=28 name=crash-test",
-        "ZOO_OS PROC start pid=29 name=assistant",
+        "ZOO_OS PROC exit pid=25 name=files code=0",
+        "ZOO_OS PROC exit pid=28 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=27 name=assistant code=0",
+        "ZOO_OS PROC start pid=29 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=29 name=peacock-handler",
+        "ZOO_OS PROC start pid=30 name=files",
+        "ZOO_OS PROC start pid=31 name=crash-test",
+        "ZOO_OS PROC start pid=32 name=assistant",
     ]);
     // 5. Escape ends the session cleanly; the kernel shell is back.
     e.then(&[
-        "ZOO_OS PROC exit pid=26 name=peacock-handler code=0",
-        "ZOO_OS DISPLAY released pid=26",
+        "ZOO_OS PROC exit pid=29 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=29",
     ]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=27 name=files code=0",
-        "ZOO_OS PROC exit pid=28 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=29 name=assistant code=0",
-        "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
+        "ZOO_OS PROC exit pid=30 name=files code=0",
+        "ZOO_OS PROC exit pid=31 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=32 name=assistant code=0",
+        "ZOO_OS PROC exit pid=23 name=zookeeper code=0",
     ]);
     e.then(&["ZOO_OS SHELL line=echo back"]);
     e.clone()
@@ -733,26 +749,26 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
         "ZOO_OS SHELL line=desktop",
-        "ZOO_OS PROC start pid=20 name=zookeeper",
-        "ZOO_OS PROC start pid=21 name=peacock-handler",
-        "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=files",
-        "ZOO_OS PROC start pid=23 name=crash-test",
-        "ZOO_OS PROC start pid=24 name=assistant",
+        "ZOO_OS PROC start pid=23 name=zookeeper",
+        "ZOO_OS PROC start pid=24 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=24 name=peacock-handler",
+        "ZOO_OS PROC start pid=25 name=files",
+        "ZOO_OS PROC start pid=26 name=crash-test",
+        "ZOO_OS PROC start pid=27 name=assistant",
         // Started on first use: the broker by the first command, the model
         // service by the first request in words.
-        "ZOO_OS PROC start pid=25 name=otter-handler",
-        "ZOO_OS PROC start pid=26 name=elephant-handler",
-        "ZOO_OS PROC exit pid=21 name=peacock-handler code=0",
-        "ZOO_OS DISPLAY released pid=21",
+        "ZOO_OS PROC start pid=28 name=otter-handler",
+        "ZOO_OS PROC start pid=29 name=elephant-handler",
+        "ZOO_OS PROC exit pid=24 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=24",
     ]);
     e.then_any_order(&[
-        "ZOO_OS PROC exit pid=22 name=files code=0",
-        "ZOO_OS PROC exit pid=23 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=24 name=assistant code=0",
-        "ZOO_OS PROC exit pid=25 name=otter-handler code=0",
-        "ZOO_OS PROC exit pid=26 name=elephant-handler code=0",
-        "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
+        "ZOO_OS PROC exit pid=25 name=files code=0",
+        "ZOO_OS PROC exit pid=26 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=27 name=assistant code=0",
+        "ZOO_OS PROC exit pid=28 name=otter-handler code=0",
+        "ZOO_OS PROC exit pid=29 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=23 name=zookeeper code=0",
     ]);
     e.clone()
 }
@@ -761,7 +777,7 @@ fn assistant_steps() -> Interaction {
     let mut steps = vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=27 name=assistant".into()),
         Action::Settle(QUIET),
         // Files -> Crash Test -> Assistant.
         Action::Keys(vec!["tab", "tab"]),
@@ -784,12 +800,12 @@ fn assistant_steps() -> Interaction {
         steps.push(Action::Settle(QUIET));
     }
     steps.push(Action::WaitFor(
-        "ZOO_OS PROC start pid=26 name=elephant-handler".into(),
+        "ZOO_OS PROC start pid=29 name=elephant-handler".into(),
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("2-transcript"));
     steps.push(Action::Keys(vec!["esc"]));
-    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=21".into()));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=24".into()));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
@@ -844,30 +860,30 @@ fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation 
     let mut e = normal.clone();
     e.then(&[
         "ZOO_OS SHELL line=desktop",
-        "ZOO_OS PROC start pid=20 name=zookeeper",
-        "ZOO_OS PROC start pid=21 name=peacock-handler",
-        "ZOO_OS DISPLAY acquired pid=21 name=peacock-handler",
-        "ZOO_OS PROC start pid=22 name=files",
-        "ZOO_OS PROC start pid=23 name=crash-test",
-        "ZOO_OS PROC start pid=24 name=assistant",
-        "ZOO_OS PROC start pid=25 name=elephant-handler",
+        "ZOO_OS PROC start pid=23 name=zookeeper",
+        "ZOO_OS PROC start pid=24 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=24 name=peacock-handler",
+        "ZOO_OS PROC start pid=25 name=files",
+        "ZOO_OS PROC start pid=26 name=crash-test",
+        "ZOO_OS PROC start pid=27 name=assistant",
+        "ZOO_OS PROC start pid=28 name=elephant-handler",
     ]);
     if live {
-        e.then(&["ZOO_OS PROC start pid=26 name=otter-handler"]);
+        e.then(&["ZOO_OS PROC start pid=29 name=otter-handler"]);
     }
     e.then(&[
-        "ZOO_OS PROC exit pid=21 name=peacock-handler code=0",
-        "ZOO_OS DISPLAY released pid=21",
+        "ZOO_OS PROC exit pid=24 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=24",
     ]);
     let mut exits = vec![
-        "ZOO_OS PROC exit pid=22 name=files code=0",
-        "ZOO_OS PROC exit pid=23 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=24 name=assistant code=0",
-        "ZOO_OS PROC exit pid=25 name=elephant-handler code=0",
-        "ZOO_OS PROC exit pid=20 name=zookeeper code=0",
+        "ZOO_OS PROC exit pid=25 name=files code=0",
+        "ZOO_OS PROC exit pid=26 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=27 name=assistant code=0",
+        "ZOO_OS PROC exit pid=28 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=23 name=zookeeper code=0",
     ];
     if live {
-        exits.push("ZOO_OS PROC exit pid=26 name=otter-handler code=0");
+        exits.push("ZOO_OS PROC exit pid=29 name=otter-handler code=0");
     }
     e.then_any_order(&exits);
     e.clone()
@@ -877,7 +893,7 @@ fn open_assistant() -> Vec<Action> {
     vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=27 name=assistant".into()),
         Action::Settle(QUIET),
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
@@ -886,7 +902,7 @@ fn open_assistant() -> Vec<Action> {
 
 fn leave_desktop(steps: &mut Vec<Action>) {
     steps.push(Action::Keys(vec!["esc"]));
-    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=21".into()));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=24".into()));
     steps.push(Action::Settle(QUIET));
 }
 
@@ -895,7 +911,7 @@ fn assistant_model_steps() -> Interaction {
     steps.extend([
         Action::Keys(typed("find my pancake recipe")),
         Action::WaitFor(
-            "[25:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
+            "[28:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
         ),
         Action::Settle(QUIET),
         // While the model computes: move to Files and down two entries.
@@ -904,7 +920,7 @@ fn assistant_model_steps() -> Interaction {
         Action::Screenshot("1-busy"),
         // Back to the Assistant (Files -> Crash Test -> Assistant) and cancel.
         Action::Keys(vec!["tab", "tab", "backspace"]),
-        Action::WaitFor("[25:elephant-handler] ElephantHandler: request cancelled".into()),
+        Action::WaitFor("[28:elephant-handler] ElephantHandler: request cancelled".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-cancelled"),
     ]);
@@ -917,12 +933,12 @@ fn assistant_live_steps() -> Interaction {
     steps.extend([
         Action::Keys(typed("Find my pancake recipe")),
         Action::WaitFor(
-            "[25:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+            "[28:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
         Action::Settle(QUIET),
         Action::Keys(typed("Make a folder called Projects/2026")),
         Action::WaitFor(
-            "[25:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
+            "[28:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
         ),
         Action::Settle(QUIET),
         Action::Keys(vec!["y"]),
@@ -981,12 +997,81 @@ fn check_live(img: &screen::Image) -> Result<String, String> {
     ))
 }
 
+/// docs/s1-design.md §6: seal-test is crashed, hung, and crashed twice
+/// more; the fourth end exceeds its limit of three restarts.
+fn services_expectation(normal: &Expectation) -> Expectation {
+    let crash = |pid: u32| {
+        format!(
+            "ZOO_OS PROC crash pid={pid} name=seal-test fault=page-fault access=read cause=protection addr=0xffffc00000001000"
+        )
+    };
+    let (c22, c24, c25) = (crash(22), crash(24), crash(25));
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=services",
+        "ZOO_OS SHELL line=poke seal-test crash",
+        &c22,
+        "ZOO_OS PROC start pid=23 name=seal-test",
+        "ZOO_OS SHELL line=services",
+        "ZOO_OS SHELL line=poke seal-test hang",
+        "ZOO_OS PROC killed pid=23 name=seal-test by=20",
+        "ZOO_OS PROC start pid=24 name=seal-test",
+        "ZOO_OS SHELL line=services",
+        "ZOO_OS SHELL line=poke seal-test crash",
+        &c24,
+        "ZOO_OS PROC start pid=25 name=seal-test",
+        "ZOO_OS SHELL line=poke seal-test crash",
+        &c25,
+        "ZOO_OS SHELL line=services",
+        "ZOO_OS SHELL line=logs",
+    ]);
+    e.clone()
+}
+
+fn services_steps() -> Interaction {
+    let say = |cmd: &str| Action::Keys(typed(cmd));
+    let wait = |line: &str| Action::WaitFor(line.into());
+    Interaction {
+        steps: vec![
+            wait("ZOO_OS SHELL ready"),
+            say("services"),
+            wait("beaver-handler pid=21 running restarts=0 last=none"),
+            wait("seal-test pid=22 running restarts=0 last=none"),
+            say("poke seal-test crash"),
+            wait("ZOO_OS PROC start pid=23 name=seal-test"),
+            say("services"),
+            wait("seal-test pid=23 running restarts=1 last=crashed"),
+            // A hang is only noticed by the health check (ping every 1 s,
+            // answer within 2 s).
+            say("poke seal-test hang"),
+            wait("ZOO_OS PROC start pid=24 name=seal-test"),
+            say("services"),
+            wait("seal-test pid=24 running restarts=2 last=unresponsive"),
+            say("poke seal-test crash"),
+            wait("ZOO_OS PROC start pid=25 name=seal-test"),
+            say("poke seal-test crash"),
+            wait(&crash_line_25()),
+            Action::Settle(QUIET),
+            say("services"),
+            wait("seal-test pid=25 failed restarts=3 last=crashed"),
+            say("logs"),
+            Action::WaitContains("seal-test unresponsive; restarting (2 of 3)".into()),
+            Action::WaitContains("seal-test crashed; restart limit reached, left stopped".into()),
+            Action::Settle(QUIET),
+        ],
+    }
+}
+
+fn crash_line_25() -> String {
+    "ZOO_OS PROC crash pid=25 name=seal-test fault=page-fault access=read cause=protection addr=0xffffc00000001000".into()
+}
+
 fn desktop_steps() -> Interaction {
     Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
             Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=24 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=27 name=assistant".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-desktop"),
             // Files: down twice, open the details view.
@@ -995,17 +1080,17 @@ fn desktop_steps() -> Interaction {
             Action::Screenshot("2-details"),
             // Focus Crash Test and make it crash.
             Action::Keys(vec!["tab", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=25 name=crash-test".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=28 name=crash-test".into()),
             Action::Settle(QUIET),
             Action::Screenshot("3-app-restart"),
             // Test key: crash the window server itself.
             Action::Keys(vec!["f12"]),
-            Action::WaitFor("ZOO_OS PROC start pid=29 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=32 name=assistant".into()),
             Action::Settle(QUIET),
             Action::Screenshot("4-server-restart"),
             // Leave the desktop and use the kernel shell again.
             Action::Keys(vec!["esc"]),
-            Action::WaitFor("ZOO_OS DISPLAY released pid=26".into()),
+            Action::WaitFor("ZOO_OS DISPLAY released pid=29".into()),
             Action::Settle(QUIET),
             Action::Keys(vec!["e", "c", "h", "o", "spc", "b", "a", "c", "k", "ret"]),
             Action::WaitFor("ZOO_OS SHELL line=echo back".into()),
