@@ -143,6 +143,13 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 8: resize windows (2026-10-31)
+
+Design: docs/d8-design.md.
+
+- Windows resize from their bottom-right corner (minimum 200×120, kept
+  on screen). Version 0.36.0.
+
 ## Hardware step 5: key repeat for USB keyboards (2026-10-31)
 
 Design: docs/h5-design.md.

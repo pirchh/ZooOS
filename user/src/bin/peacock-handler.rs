@@ -76,6 +76,11 @@ const APPS: usize = 4;
 const NOTES: usize = 3;
 /// Where Notes opens: (x, y, w, h).
 const NOTES_RECT: (usize, usize, usize, usize) = (200, 100, 640, 480);
+/// Resizing: the bottom-right corner area that grabs, and the smallest
+/// window.
+const RESIZE_CORNER: usize = 12;
+const MIN_W: usize = 200;
+const MIN_H: usize = 120;
 /// Close button: size, and gap from the title bar's right end.
 const CLOSE_SIZE: usize = 12;
 const CLOSE_GAP: usize = 8;
@@ -391,6 +396,9 @@ struct Desktop {
     held: bool,
     /// Window being dragged, and the grab offset inside it.
     drag: Option<(usize, usize, usize)>,
+    /// Window being resized from its bottom-right corner, and the
+    /// pointer's offset from that corner (docs/d8-design.md).
+    resize: Option<(usize, usize, usize)>,
     /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
     damage: [(usize, usize, usize, usize); MAX_DAMAGE],
     damaged: usize,
@@ -491,6 +499,12 @@ impl Desktop {
             x + w - CLOSE_GAP - CLOSE_SIZE,
             y + (TITLE_H - CLOSE_SIZE) / 2,
         )
+    }
+
+    /// The pointer is in window `i`'s bottom-right resize corner.
+    fn on_resize_corner(&self, i: usize) -> bool {
+        let (x, y, w, h) = self.wins[i];
+        self.px + RESIZE_CORNER >= x + w && self.py + RESIZE_CORNER >= y + h
     }
 
     fn on_close_button(&self, i: usize) -> bool {
@@ -644,11 +658,21 @@ impl Desktop {
                     zoo_rt::log!("PeacockHandler: click focuses {}", self.apps[i].label);
                 }
                 self.set_focus(i);
-                let (wx, wy, _, _) = self.wins[i];
+                let (wx, wy, ww, wh) = self.wins[i];
                 if self.py < wy + TITLE_H {
                     self.drag = Some((i, self.px - wx, self.py - wy));
+                } else if self.on_resize_corner(i) {
+                    self.resize = Some((i, wx + ww - self.px, wy + wh - self.py));
                 }
             }
+        } else if down && let Some((i, ox, oy)) = self.resize {
+            self.damage_window(i);
+            let (x, y, _, _) = self.wins[i];
+            // At least MIN_W x MIN_H, and inside the screen.
+            let nw = (self.px + ox).saturating_sub(x).clamp(MIN_W, w - 1 - x);
+            let nh = (self.py + oy).saturating_sub(y).clamp(MIN_H, h - BAR_H - y);
+            self.wins[i] = (x, y, nw, nh);
+            self.damage_window(i);
         } else if down {
             if let Some((i, ox, oy)) = self.drag {
                 self.damage_window(i);
@@ -662,6 +686,14 @@ impl Desktop {
                 self.wins[i] = (x, y, ww, wh);
                 self.damage_window(i);
             }
+        } else if let Some((i, _, _)) = self.resize.take() {
+            let (_, _, nw, nh) = self.wins[i];
+            zoo_rt::log!(
+                "PeacockHandler: resized {} to {}x{}",
+                self.apps[i].label,
+                nw,
+                nh
+            );
         } else if let Some((i, _, _)) = self.drag.take() {
             let (x, y, _, _) = self.wins[i];
             zoo_rt::log!(
@@ -980,6 +1012,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         py: h / 2,
         held: false,
         drag: None,
+        resize: None,
         damage: [(0, 0, 0, 0); MAX_DAMAGE],
         damaged: 0,
         full: true,

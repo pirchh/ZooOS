@@ -790,6 +790,39 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         notes_case(notes.clone(), "notes-1", s.timeout * 2),
         notes_case(notes, "notes-2", s.timeout * 2),
         Case {
+            name: "resize",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "resize a window by dragging its bottom-right corner",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        // Crash Test is (652, 48) 604x340: grab its corner
+                        // area at (1250, 382) and drag by (-200, -100).
+                        Action::Mouse(610, -18),
+                        Action::Button(true),
+                        Action::Mouse(-200, -100),
+                        Action::Button(false),
+                        Action::WaitContains(
+                            "PeacockHandler: resized Crash Test to 404x240".into(),
+                        ),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-resized"),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-resized", check_resized)],
+        },
+        Case {
             name: "dock",
             mode: Mode::Normal,
             custom_image: None,
@@ -2154,6 +2187,33 @@ fn check_notes(img: &screen::Image) -> Result<String, String> {
     }
     Ok(format!(
         "`Notes` focused {title:?}, `(saved)` {head:?}; original text {old:?}, then `Hello from Notes` {typed:?} and `second line` {second:?}"
+    ))
+}
+
+// ---- D8 resize case (docs/d8-design.md) -----------------------------------
+
+const CLOSE_RED: [u8; 3] = [0xE0, 0x44, 0x3E];
+
+fn check_resized(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
+    // The close button follows the right edge: now at x 1036-1047.
+    if img.pixel(1042, 60) != Some(CLOSE_RED) {
+        return Err(format!(
+            "no close button at (1042, 60): {:?}",
+            img.pixel(1042, 60)
+        ));
+    }
+    if img.pixel(1242, 60) == Some(CLOSE_RED) {
+        return Err("the close button is still at the old edge (1242, 60)".into());
+    }
+    // Below the new bottom edge (y 288) is the desktop again.
+    let below = img.pixel(900, 300);
+    if below != Some([0x1E, 0x3A, 0x4C]) {
+        return Err(format!("below the resized window at (900, 300): {below:?}"));
+    }
+    Ok(format!(
+        "`Crash Test` focused at {title:?}, now 404x240: close button at the new edge, desktop below it"
     ))
 }
 
