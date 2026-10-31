@@ -240,15 +240,18 @@ fn execute(line: &str) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
         },
-        "linux" => match process::spawn_linux_from_kernel(
-            &rest
+        "linux" => {
+            // Linux programs get the home folder, like the desktop.
+            ask_for_home();
+            let argv = rest
                 .split_whitespace()
                 .collect::<alloc::vec::Vec<_>>()
-                .join("\0"),
-        ) {
-            Ok(pid) => kprintln!("started pid {}", pid),
-            Err(e) => kprintln!("linux {}: {}", rest.trim(), e.name()),
-        },
+                .join("\0");
+            match process::spawn_linux_from_kernel(&argv) {
+                Ok(pid) => kprintln!("started pid {}", pid),
+                Err(e) => kprintln!("linux {}: {}", rest.trim(), e.name()),
+            }
+        }
         "desktop" => {
             TASKS_BEFORE_SESSION
                 .store(process::user_tasks(), core::sync::atomic::Ordering::Relaxed);

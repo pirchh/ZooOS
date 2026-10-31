@@ -150,6 +150,19 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 4: writable files in the home folder (2026-10-31)
+
+Design and measurements: docs/linux4-design.md.
+
+- Linux programs started from the shell get the home folder; paths under
+  `/home/user` go to BadgerHandler, the rest stays the read-only initrd.
+- The kernel acts as BadgerHandler's client inside a system call by
+  sending one request, blocking, and re-running the call on the reply,
+  which replays earlier replies of the same call (the existing
+  block-and-re-run mechanism; nothing else waits).
+- Each such program gets a kernel-owned 64 KiB shared buffer (F1): 1 MiB
+  reads take 0.7–0.9 Mcycles instead of 45–57. Version 0.43.0.
+
 ## Fast files step 1: shared-memory bulk transfers (2026-10-31)
 
 Design and measurements: docs/f1-design.md. Owner direction: speed first;
