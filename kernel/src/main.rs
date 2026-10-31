@@ -210,7 +210,9 @@ fn run_boot_processes() {
             .unwrap_or_else(|e| panic!("kernel stack warm-up: {e:?}"));
         m.free_kernel_stack(0);
     });
-    let baseline = memory::with(|m| m.frames.available());
+    // Pages holding file contents outlive processes; count them as free.
+    let free = || memory::with(|m| m.frames.available()) + fs::file_pages();
+    let baseline = free();
     if let Err(e) = process::spawn_from_kernel("zookeeper") {
         panic!("cannot start zookeeper: {}", e.name());
     }
@@ -225,11 +227,23 @@ fn run_boot_processes() {
         process::idle_hlt();
         x86_64::instructions::interrupts::enable();
     }
-    let after = memory::with(|m| m.frames.available());
+    let after = free();
+    let held =
+        x86_64::instructions::interrupts::without_interrupts(|| fs::with(|f| f.held_pages()));
+    if held != fs::file_pages() {
+        panic!(
+            "self-test process-cleanup: files hold {held} pages but {} are counted",
+            fs::file_pages()
+        );
+    }
     if after != baseline {
         panic!("self-test process-cleanup: {after} frames free, expected {baseline}");
     }
-    kprintln!("ZOO_OS INFO processes done frames_free={}", after);
+    kprintln!(
+        "ZOO_OS INFO processes done frames_free={} file_pages={}",
+        after,
+        held
+    );
     kprintln!("ZOO_OS TEST process-cleanup ok");
 }
 

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX step 3
-section (version 0.12.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The POSIX step 4
+section (version 0.13.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,48 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 4 results: writable files (version 0.13.0)
+
+Design: docs/posix4-design.md. Calls 41–45 and the WRITE right (ABI
+version 8), page-backed file contents, and the test program
+SquirrelHandler, which Zookeeper runs during the directory checks (pid 8;
+every later process id moved up by one).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 534 s,
+`ZOO_OS BOOT version=0.13.0`; every case as expected (normal 5.0 s,
+desktop 13.9 s, assistant 23.0 s, assistant-model 27.4 s, inference
+398.4 s; `assistant-live` `SKIP`). Then `--accel whpx --case
+assistant-live`: pass in 59.6 s.
+
+From the normal case's serial log:
+
+    ZOO_OS PROC start pid=8 name=squirrel-handler
+    [8:squirrel-handler] SquirrelHandler: all file checks passed
+    ZOO_OS PROC exit pid=8 name=squirrel-handler code=0
+    ...
+    ZOO_OS INFO processes done frames_free=520916 file_pages=1
+    ZOO_OS TEST process-cleanup ok
+
+`file_pages=1` is `Documents/notes.txt`, page-backed after SquirrelHandler
+wrote to it and restored its contents; the OtterHandler and Assistant
+searches that rely on its text still pass.
+
+**A gap found and closed:** counting file pages as free in the leak check
+would have hidden a file-removal leak. The check now also audits that the
+file-page counter equals the pages files hold.
+
+**Negative controls** (normal case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| `file_remove` does not free the file's pages | `FAIL normal`: `PANIC self-test process-cleanup: files hold 1 pages but 27 are counted` |
+| Shrinking does not zero the rest of the last page | `FAIL normal`: `squirrel-handler code=43`, `check 43 failed: regrown tail is zero` |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings (one method renamed for a naming lint). `cargo
+test -p zoo-infer -p zoo-abi -p xtask --locked`: all passed. Not run: a
+clean-copy verify.
 
 ## POSIX step 3 results: exceptions (version 0.12.0)
 

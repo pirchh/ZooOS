@@ -281,6 +281,42 @@ pub fn dir_remove(dir: Handle, path: &str) -> Result<(), Error> {
     dir_call(sys::DIR_REMOVE, dir, path, 0, &mut []).map(|_| ())
 }
 
+fn path_call(number: u64, dir: Handle, path: &str, arg: u64, buf: &[u8]) -> Result<u64, Error> {
+    let args = FsArgs {
+        path: path.as_ptr() as u64,
+        path_len: path.len() as u64,
+        arg,
+        buf: buf.as_ptr() as u64,
+        buf_len: buf.len() as u64,
+    };
+    result(syscall(number, dir, &args as *const FsArgs as u64, 0))
+}
+
+/// Creates an empty file at `path` (needs CREATE).
+pub fn file_create(dir: Handle, path: &str) -> Result<(), Error> {
+    path_call(sys::FILE_CREATE, dir, path, 0, &[]).map(|_| ())
+}
+
+/// Writes `data` at `offset` of file `path`, growing it (needs WRITE).
+pub fn file_write(dir: Handle, path: &str, offset: u64, data: &[u8]) -> Result<usize, Error> {
+    path_call(sys::FILE_WRITE, dir, path, offset, data).map(|n| n as usize)
+}
+
+/// Sets the length of file `path` (needs WRITE).
+pub fn file_truncate(dir: Handle, path: &str, len: u64) -> Result<(), Error> {
+    path_call(sys::FILE_TRUNCATE, dir, path, len, &[]).map(|_| ())
+}
+
+/// Removes file `path` (needs REMOVE).
+pub fn file_remove(dir: Handle, path: &str) -> Result<(), Error> {
+    path_call(sys::FILE_REMOVE, dir, path, 0, &[]).map(|_| ())
+}
+
+/// Moves `from` to `to`, both under `dir` (needs CREATE and REMOVE).
+pub fn rename(dir: Handle, from: &str, to: &str) -> Result<(), Error> {
+    path_call(sys::RENAME, dir, from, 0, to.as_bytes()).map(|_| ())
+}
+
 /// Starts `name`, moving up to two handles into it (its `main` receives
 /// them). Returns a process handle.
 pub fn spawn_with(name: &str, give: [Option<Handle>; 2]) -> Result<Handle, Error> {
