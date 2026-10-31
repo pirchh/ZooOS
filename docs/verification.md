@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The F2 section
-(version 0.45.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L6 section
+(version 0.46.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,54 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 6 results: signal handlers, threads and lazy memory (version 0.46.0)
+
+Design and details: docs/linux6-design.md. New case `linux-kittiwake`:
+`kittiwake-test` (static musl C) covers:
+- handlers with `siginfo`, blocked/pending signals, `SIGSEGV` with
+  `siglongjmp`, a `SIGILL` handler editing `REG_RIP`, `sigaltstack`;
+- `EINTR` / `SA_RESTART`, `pause`;
+- pthreads with a mutex and a condition variable, a raw `clone` with
+  `PARENT_SETTID` / `CHILD_CLEARTID`;
+- a threaded child killed by `SIGTERM`, `ud2` ending a child with
+  `SIGILL`;
+- 64 MiB of lazy memory written by `read`, `clock_gettime` and `uname`.
+
+**Measured** (`--skip-model --accel whpx --case linux-kittiwake`, three
+runs, averages):
+- `raise` + handler: 1725 / 1949 / 1827 cycles.
+- `pthread_create` + `join`: 20 / 21 / 20 thousand cycles. Before lazy
+  memory: 2570–2767 thousand. A temporary probe found 2,049-page
+  `mprotect` commits (8 MiB thread stacks) costing about 2.3 Mcycles each.
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 45 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+37.2 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored and compared):
+
+| Change | Result |
+| --- | --- |
+| `rt_sigreturn` does not restore the mask | `FAIL`: exit 12 (`FAILED kill`) |
+| `SA_RESTART` ignored | `FAIL`: exit 62 (`FAILED SA_RESTART (errno 4)`) |
+| A thread's exit does not clear its clear-tid word | `FAIL` (timeout): no `start pid=28` within 60 s |
+| No commit-and-retry for lazy memory | `FAIL`: exit 124 (`clock_gettime into an untouched page (errno 14)`) |
+
+Removing only the clear-tid futex wake still passed. The kernel's general
+wake-up on a thread's exit hides it; see the design document.
+
+Two other controls first passed because the test did not reach what they
+broke, so the test was strengthened:
+- The clear-tid wake: musl's `pthread_join` does not rely on it, so the
+  raw `clone` check was added.
+- Commit-and-retry: pipe reads commit by themselves, so the
+  `clock_gettime` and `uname` checks were added.
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: 23 passed. Not run: real
+hardware.
 
 ## Fast step 2 results: kernel output and memory reuse (version 0.45.0)
 
