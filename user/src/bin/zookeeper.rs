@@ -933,13 +933,6 @@ fn supervise(control: Handle) -> u8 {
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let now = zoo_rt::ticks();
-        if !ready_sent && (!wants_root || sup.root.is_some() || now >= ready_by) {
-            if sup.root.is_none() && wants_root {
-                sup.event(format_args!("ready without a filesystem root"));
-            }
-            let _ = send(control, b"ready");
-            ready_sent = true;
-        }
         // Requests from the kernel shell.
         match zoo_rt::try_recv(control, &mut buf) {
             Ok(n) => {
@@ -1032,6 +1025,19 @@ fn supervise(control: Handle) -> u8 {
             }
         }
         let now = zoo_rt::ticks();
+        // Checked after this round's messages (the root may just have
+        // arrived), so `ready` goes out without waiting for a later wake.
+        if !ready_sent {
+            if !wants_root || sup.root.is_some() || now >= ready_by {
+                if sup.root.is_none() && wants_root {
+                    sup.event(format_args!("ready without a filesystem root"));
+                }
+                let _ = send(control, b"ready");
+                ready_sent = true;
+            } else {
+                due = due.min(ready_by);
+            }
+        }
         let _ = zoo_rt::wait_any(&watch, due.saturating_sub(now).max(1));
     }
 }
