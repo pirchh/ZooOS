@@ -647,6 +647,35 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-desktop", check_big_screen)],
         },
         Case {
+            name: "timer-rate",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: false,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run tern-test wait",
+                    "ZOO_OS PROC start pid=26 name=tern-test",
+                    "ZOO_OS PROC exit pid=26 name=tern-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "the tick runs at 100 Hz: 500 ticks of guest sleep take 5 s of host time (within 20%)",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run tern-test wait")),
+                    Action::WaitContains("TernTest: waiting 500 ticks".into()),
+                    Action::WaitGap("TernTest: waited".into(), 4000, 6000),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=tern-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "files-browse",
             mode: Mode::Normal,
             custom_image: None,

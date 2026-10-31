@@ -278,6 +278,10 @@ pub enum Action {
     /// Wait for a line containing this text followed by Unix seconds, and
     /// require them to be within `CLOCK_TOLERANCE` of the host's clock.
     WaitClock(String),
+    /// Wait for a line containing this text, and require it to arrive
+    /// between `min` and `max` milliseconds (host time) after the previous
+    /// waited-for line.
+    WaitGap(String, u64, u64),
 }
 
 /// Steps to perform, in order, while the case runs. All of them must finish
@@ -375,6 +379,8 @@ pub fn run_case(
     let mut last_len = 0usize;
     let mut last_growth = Instant::now();
     let mut step_started = Instant::now();
+    // When the last waited-for line was seen (for `WaitGap`).
+    let mut last_match = Instant::now();
     let mut screenshots = Vec::new();
     let steps: &[Action] = interaction.map_or(&[], |i| &i.steps);
     let mut passed_at: Option<Instant> = None;
@@ -408,6 +414,7 @@ pub fn run_case(
                     match find_line(complete, cursor, line) {
                         Some(end) => {
                             cursor = end;
+                            last_match = Instant::now();
                             true
                         }
                         None => false,
@@ -418,6 +425,26 @@ pub fn run_case(
                     match find_line_containing(complete, cursor, part) {
                         Some(end) => {
                             cursor = end;
+                            last_match = Instant::now();
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                Action::WaitGap(part, min, max) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    match find_line_containing(complete, cursor, part) {
+                        Some(end) => {
+                            cursor = end;
+                            let gap = last_match.elapsed().as_millis() as u64;
+                            last_match = Instant::now();
+                            if gap < *min || gap > *max {
+                                harness_error = Some(format!(
+                                    "`{part}` came {gap} ms after the previous line (expected {min}-{max} ms)"
+                                ));
+                                break;
+                            }
+                            println!("[verify] `{part}` came {gap} ms after the previous line");
                             true
                         }
                         None => false,

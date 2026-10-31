@@ -143,6 +143,16 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 3: the local APIC timer (2026-10-31)
+
+Design: docs/h3-design.md.
+
+- The system tick is the local APIC timer, calibrated against the ACPI PM
+  timer found through the FADT; it uses the PIT's vector, so the trap
+  path is unchanged. Without ACPI, a PM timer or an APIC the PIT stays.
+- Test harness action `WaitGap` checks guest time against host time (500
+  ticks must take 4–6 s). Version 0.33.0.
+
 ## Hardware step 2a: ready for a USB stick (2026-10-31)
 
 Plan and risks: docs/usb-boot.md.

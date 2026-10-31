@@ -42,7 +42,7 @@ a USB stick.
 
 | Risk | Effect | Next step |
 | --- | --- | --- |
-| The timer is the legacy PIT; some recent Intel platforms gate its clock | no ticks: the boot stops at the timer self-test (`TEST timer` fails after a bounded wait) | local APIC timer (calibrated) |
+| ~~The timer is the legacy PIT, which some recent Intel platforms gate~~ | addressed in H3 (docs/h3-design.md): the local APIC timer, calibrated against the ACPI PM timer, is the tick; the PIT is only a fallback | — |
 | No disk driver for real disks (only QEMU's virtio) | files do not persist (`disk none`); Notes saves to memory only | USB mass storage on the stick itself (safer than touching internal disks) |
 | Keyboard/mouse behind a USB hub (common for front ports and some laptops' internal keyboards) | that device is not found | hub support in the xHCI driver |
 | USB 2 port reset and firmware hand-off paths are untested (QEMU skips them) | a device on that port is not enabled (`error=port-…`) | debug with the serial log or the screen |
