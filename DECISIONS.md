@@ -143,6 +143,15 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 7: Files browses the home folder (2026-10-31)
+
+Design: docs/d7-design.md.
+
+- Files shows the person's home folder (from BadgerHandler), not the
+  system's initial filesystem: folders open, text files preview,
+  Backspace goes up. The desktop checks moved to the home listing.
+  Version 0.29.0.
+
 ## Desktop step 6: start in the desktop (2026-10-31)
 
 Design: docs/d6-design.md.

@@ -539,6 +539,39 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "files-browse",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: menu_clock.clone(),
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "Files browses the home folder: open folders, preview a text file, go back up",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        // Documents, then notes.txt.
+                        Action::Keys(vec!["ret"]),
+                        Action::Settle(QUIET),
+                        Action::Keys(vec!["ret"]),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-preview"),
+                        // Back to Home; into Photos; back up.
+                        Action::Keys(vec!["backspace", "backspace"]),
+                        Action::Settle(QUIET),
+                        Action::Keys(vec!["down", "down", "ret"]),
+                        Action::Settle(QUIET),
+                        Action::Keys(vec!["backspace"]),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("2-back"),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-preview", check_preview), ("2-back", check_back_up)],
+        },
+        Case {
             name: "menu-clock",
             mode: Mode::Normal,
             custom_image: None,
@@ -1224,8 +1257,8 @@ const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo."
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let sel = need(img, "bin/lemming-test", CONTENT_TEXT, SELECTED)?;
-    absent(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    let sel = need(img, "Photos/", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Documents/", CONTENT_TEXT, SELECTED)?;
     let busy = need(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
     Ok(format!(
         "while the model works (status `Thinking:` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
@@ -1696,6 +1729,33 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
 
 const MENU_BAR_H: usize = 24;
 
+// ---- D7 Files (docs/d7-design.md §3) -------------------------------------
+
+fn check_preview(img: &screen::Image) -> Result<String, String> {
+    let at = need(img, "Home/Documents/notes.txt", CONTENT_TEXT, CONTENT)?;
+    let first = need(img, "Shopping: flour, eggs, milk.", CONTENT_TEXT, CONTENT)?;
+    need(
+        img,
+        "Call the vet about Zara the zebra.",
+        CONTENT_TEXT,
+        CONTENT,
+    )?;
+    need(img, "Backspace: back to the folder", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Shopping: flour, eggs, milk.?", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "preview of `Home/Documents/notes.txt` at {at:?}: its first line at {first:?}"
+    ))
+}
+
+fn check_back_up(img: &screen::Image) -> Result<String, String> {
+    let sel = need(img, "Photos/", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Documents/", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "back in `Home` from `Photos` with `Photos/` selected at {sel:?}"
+    ))
+}
+
 // ---- D5 menu-bar clock (docs/d5-design.md §2) ---------------------------
 
 /// How the menu bar shows Unix time `secs` (UTC), computed on the host
@@ -2040,21 +2100,22 @@ fn absent(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(), Strin
 fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
     let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
     let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    need(img, "Home", CONTENT_TEXT, CONTENT)?;
+    let first = need(img, "Documents/", CONTENT_TEXT, SELECTED)?;
     need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
-    absent(img, "bin/zookeeperx", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Documentsx/", CONTENT_TEXT, SELECTED)?;
     absent(img, "Files", BAR_TEXT, DESKTOP_BG)?;
     Ok(format!(
-        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, selected `bin/zookeeper` at {first:?}, Crash Test window shown; wrong text rejected"
+        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, home folder with `Documents/` selected at {first:?}, Crash Test window shown; wrong text rejected"
     ))
 }
 
 fn check_file_details(img: &screen::Image) -> Result<String, String> {
-    let name = need(img, "Name: bin/lemming-test", CONTENT_TEXT, CONTENT)?;
-    let size = need(img, "Size: ", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Name: bin/zookeeper", CONTENT_TEXT, CONTENT)?;
+    let name = need(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
+    let size = need(img, "README.txt (34 bytes)", CONTENT_TEXT, SELECTED)?;
+    absent(img, "Home/Music", CONTENT_TEXT, CONTENT)?;
     Ok(format!(
-        "details of the 3rd file: `Name: bin/lemming-test` at {name:?}, `Size:` at {size:?}; wrong file rejected"
+        "3rd entry opened: `Home/Photos` at {name:?}, `README.txt (34 bytes)` selected at {size:?}; wrong folder rejected"
     ))
 }
 
@@ -2063,7 +2124,7 @@ fn check_app_restart(img: &screen::Image) -> Result<String, String> {
     let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
     need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
     // Files kept its state through Crash Test's crash.
-    need(img, "Name: bin/lemming-test", CONTENT_TEXT, CONTENT)?;
+    need(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
     absent(img, "Crash Test crashed; restarted (2 of 3)", BAR_TEXT, BAR)?;
     Ok(format!(
         "status `Crash Test crashed; restarted (1 of 3)` at {status:?}, focused `Crash Test` at {title:?}, Files details unchanged"
@@ -2073,7 +2134,7 @@ fn check_app_restart(img: &screen::Image) -> Result<String, String> {
 fn check_server_restart(img: &screen::Image) -> Result<String, String> {
     let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
     let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let first = need(img, "bin/zookeeper", CONTENT_TEXT, SELECTED)?;
+    let first = need(img, "Documents/", CONTENT_TEXT, SELECTED)?;
     need(img, "Tab: next window", BAR_TEXT, BAR)?;
     // A fresh window server: the old crash notice is gone.
     absent(img, "Crash Test crashed; restarted (1 of 3)", BAR_TEXT, BAR)?;
