@@ -189,6 +189,17 @@ fn startup_checks() -> u8 {
         }
         Err(_) => return 32,
     }
+    // Services step 3: handles passed in messages.
+    match spawn("ptarmigan-test", None).map(|h| (wait(h), h)) {
+        Ok((Ok(0), h)) => {
+            let _ = close(h);
+        }
+        Ok((other, _)) => {
+            zoo_rt::log!("PtarmiganTest did not pass: {:?}", other);
+            return 34;
+        }
+        Err(_) => return 34,
+    }
     if send(mine, b"stop").is_err() {
         return 17;
     }
@@ -651,6 +662,35 @@ impl Supervisor {
         }
     }
 
+    /// `connect <target>` from service `k` (docs/s3-design.md §2): a fresh
+    /// channel, one end to the target (tag 1), one to the requester (tag 2).
+    fn connect(&mut self, k: usize, target: &str) {
+        let requester = self.svcs[k].chan;
+        let Some(t) = self
+            .svcs
+            .iter()
+            .position(|s| s.name == target && s.state == SvcState::Running)
+        else {
+            let _ = send(requester, b"err no such running service");
+            return;
+        };
+        let Ok((for_target, for_requester)) = channel_create() else {
+            let _ = send(requester, b"err out of handles");
+            return;
+        };
+        if zoo_rt::send_handle(self.svcs[t].chan, for_target, 1).is_err() {
+            let _ = close(for_target);
+            let _ = close(for_requester);
+            let _ = send(requester, b"err target did not take the connection");
+            return;
+        }
+        if zoo_rt::send_handle(requester, for_requester, 2).is_err() {
+            let _ = close(for_requester);
+        }
+        let name = self.svcs[k].name.clone();
+        self.event(format_args!("connected {} to {}", name, target));
+    }
+
     fn reply(&self, text: &str) {
         let _ = zoo_rt::app::send_wait(self.control, text.as_bytes());
     }
@@ -684,11 +724,13 @@ impl Supervisor {
                 .iter()
                 .find(|s| s.name == name && s.state == SvcState::Running)
             {
-                Some(s) if name == "seal-test" && matches!(what, "crash" | "hang") => {
+                Some(s) if name == "seal-test" && matches!(what, "crash" | "hang" | "connect") => {
                     let _ = send(s.chan, what.as_bytes());
                     self.reply("sent");
                 }
-                Some(_) => self.reply("only seal-test accepts test requests (crash, hang)"),
+                Some(_) => {
+                    self.reply("only seal-test accepts test requests (crash, hang, connect)")
+                }
                 None => self.reply("no such running service"),
             }
         } else {
@@ -774,6 +816,18 @@ fn supervise(control: Handle) -> u8 {
                     let chan = sup.svcs[k].chan;
                     match zoo_rt::try_recv(chan, &mut buf) {
                         Ok(n) if &buf[..n] == b"pong" => sup.svcs[k].ping_sent = None,
+                        Ok(n) if buf[..n].starts_with(b"connect ") => {
+                            let target = alloc::string::String::from(
+                                core::str::from_utf8(&buf[8..n]).unwrap_or(""),
+                            );
+                            sup.connect(k, &target);
+                        }
+                        // Services send Zookeeper no handles; drop any.
+                        Err(Error::WrongKind) => {
+                            if let Ok((h, _)) = zoo_rt::try_recv_handle(chan) {
+                                let _ = close(h);
+                            }
+                        }
                         Ok(_) | Err(Error::Again) => {}
                         Err(_) => {
                             // Its end of the channel closed: it has ended.

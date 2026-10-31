@@ -22,6 +22,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "ptarmigan-test"
+path = "src/bin/ptarmigan-test.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "seal-test"
 path = "src/bin/seal-test.rs"
 test = false

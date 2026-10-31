@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S2 section
-(version 0.16.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S3 section
+(version 0.17.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,39 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 3 results: handles in messages (version 0.17.0)
+
+Design: docs/s3-design.md. Calls 49 `send_handle` and 50 `recv_handle`,
+error 19 `WRONGKIND` (ABI version 11), Zookeeper's `connect <name>`,
+BeaverHandler serving clients, seal-test's `connect`, and the boot test
+`ptarmigan-test` (pid 20; later process ids moved up by one).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 625 s, every case as
+expected (`assistant-live` `SKIP`; `services` OK in 22.3 s). Then
+`--accel whpx --case assistant-live`: pass in 54.6 s.
+
+    [20:ptarmigan-test] PtarmiganTest: all handle-passing checks passed
+    ...
+    zoo> poke seal-test connect
+    [21:zookeeper] Zookeeper: connected seal-test to beaver-handler
+    [23:seal-test] seal-test: connected to beaver-handler by name; it returned 2 lines
+
+ptarmigan-test checks: a moved handle is gone from the sender and works in
+the receiver with its tag; `WRONGKIND` in both directions with the message
+kept; an end cannot be sent through itself; a channel end queued towards a
+closed end is released (its peer sees `PEERCLOSED`).
+
+**Negative controls** (normal case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| `send_handle` copies instead of moving | `FAIL normal`: `ptarmigan-test code=10`, `moved handle gone from sender` |
+| Queued handles not released when an end closes | `FAIL normal`: `ptarmigan-test code=13`, `queued handle released` |
+
+Other checks: `cargo clippy`: 0 warnings (one collapsed `match` arm in
+seal-test). `cargo test -p zoo-infer -p zoo-abi -p xtask --locked`: all
+passed. Not run: a clean-copy verify.
 
 ## Services step 2 results: log routing (version 0.16.0)
 

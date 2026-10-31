@@ -143,6 +143,20 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 3: handles in messages (2026-10-30)
+
+Design: docs/s3-design.md.
+
+- Channel messages are bytes or one moved handle with a 64-bit tag; the
+  wrong receive call returns `WRONGKIND` and leaves the message queued.
+- Handles still queued towards a closing end are released (the queue is
+  taken out under the lock and released after, so a channel's own end in
+  its queue cannot deadlock). An end cannot be sent through itself.
+- Services find each other by name: `connect <name>` to Zookeeper, which
+  creates a channel and moves one end to each side (tags 1 and 2).
+- Calls 49 `send_handle`, 50 `recv_handle`, error 19 `WRONGKIND`; ABI
+  version 11. Version 0.17.0.
+
 ## Services step 2: log routing (2026-10-30)
 
 Design: docs/s2-design.md.
