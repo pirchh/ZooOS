@@ -42,6 +42,9 @@ pub const HEAP_START: u64 = HEAP_REGION + 0x1000;
 pub const HEAP_SIZE: u64 = 1024 * 1024;
 pub const HEAP_GUARD_LOW: u64 = HEAP_REGION;
 pub const HEAP_GUARD_HIGH: u64 = HEAP_START + HEAP_SIZE;
+/// Device registers (MMIO), mapped uncached by `map_mmio`.
+pub const MMIO_REGION: u64 = 0xFFFF_C000_C000_0000;
+pub const MMIO_SIZE: u64 = 64 * 1024 * 1024;
 /// Scratch page mapped read-only by the write-protection fault test.
 pub const SCRATCH_READ_ONLY: u64 = 0xFFFF_C000_4000_0000;
 /// Scratch page mapped and unmapped by the paging self-test.
@@ -56,6 +59,8 @@ pub struct Memory {
     pub stack_len: u64,
     /// The kernel's own level-4 table (task 0's address space).
     pub kernel_p4: PhysFrame,
+    /// Next free address in `MMIO_REGION` (`map_mmio`).
+    pub mmio_next: u64,
 }
 
 /// After boot-time self-tests, `Memory` moves here so system calls and the
@@ -109,6 +114,40 @@ impl Memory {
         }
     }
 
+    /// Maps `pages` pages of device registers at physical `phys`
+    /// (page-aligned) uncached into the MMIO region; returns the virtual
+    /// address. The frames are device memory, never given to the frame
+    /// allocator.
+    pub fn map_mmio(&mut self, phys: u64, pages: u64) -> Result<u64, &'static str> {
+        if !phys.is_multiple_of(4096) {
+            return Err("unaligned device registers");
+        }
+        if self.mmio_next + pages * 4096 > MMIO_REGION + MMIO_SIZE {
+            return Err("MMIO region full");
+        }
+        let virt = self.mmio_next;
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::NO_CACHE
+            | PageTableFlags::WRITE_THROUGH;
+        for k in 0..pages {
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt + k * 4096));
+            let frame = PhysFrame::containing_address(PhysAddr::new(phys + k * 4096));
+            // SAFETY: `frame` is a device's register page found through
+            // PCI; it is not RAM the allocator hands out, and `page` is a
+            // fresh address in the kernel's MMIO region, used only by the
+            // driver that asked for it.
+            let result = unsafe { self.mapper.map_to(page, frame, flags, &mut self.frames) };
+            match result {
+                Ok(flush) => flush.flush(),
+                Err(_) => return Err("MMIO page-table mapping failed"),
+            }
+        }
+        self.mmio_next += pages * 4096;
+        Ok(virt)
+    }
+
     /// Unmaps the page at `virt` and returns its frame (not freed).
     pub fn unmap(&mut self, virt: u64) -> Result<PhysFrame, &'static str> {
         let page = Page::<Size4KiB>::containing_address(VirtAddr::new(virt));
@@ -158,6 +197,7 @@ pub fn init(boot_info: &BootInfo) -> Memory {
         stack_bottom: boot_info.kernel_stack_bottom,
         stack_len: boot_info.kernel_stack_len,
         kernel_p4: l4_frame,
+        mmio_next: MMIO_REGION,
     };
 
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;

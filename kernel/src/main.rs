@@ -39,6 +39,7 @@ mod serial;
 mod shell;
 mod trap;
 mod virtio_blk;
+mod xhci;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::MemoryRegionKind;
@@ -184,6 +185,10 @@ fn run(mut mem: memory::Memory) -> ! {
     match memory::with(virtio_blk::init) {
         Some(bytes) => kprintln!("ZOO_OS INFO disk virtio-blk bytes={}", bytes),
         None => kprintln!("ZOO_OS INFO disk none"),
+    }
+    // A USB controller, if there is one (docs/h1-design.md).
+    if memory::with(xhci::init).is_none() {
+        kprintln!("ZOO_OS INFO usb none");
     }
     match rtc::init() {
         Some(unix) => kprintln!("ZOO_OS INFO clock unix={}", unix),

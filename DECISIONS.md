@@ -143,6 +143,19 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 1a: USB host controller, enumeration (2026-10-31)
+
+Design: docs/h1-design.md.
+
+- A polled xHCI driver in the kernel finds the controller (bus 0 and
+  buses behind bridges), takes it from the firmware, and enumerates root
+  ports (addresses devices, reads descriptors, logs HID keyboards and
+  mice). Towards real hardware booted from USB; input is H1b.
+- Device registers are mapped uncached in a new kernel MMIO region.
+- Test cases attach USB devices only when asked (`usb` flag), so they do
+  not take input from the PS/2 devices the other cases use.
+  Version 0.30.0.
+
 ## Desktop step 7: Files browses the home folder (2026-10-31)
 
 Design: docs/d7-design.md.

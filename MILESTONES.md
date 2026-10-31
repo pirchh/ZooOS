@@ -130,6 +130,13 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D6 | The everyday (fast-boot) build starts in the desktop (docs/d6-design.md) | done 2026-10-31 |
 | D7 | Files browses the home folder, previews text files (docs/d7-design.md) | done 2026-10-31 |
 
+## Real hardware (USB boot on the owner's other PCs; never the dev PC)
+
+| Step | Content | Status |
+| --- | --- | --- |
+| H1a | USB host controller (xHCI): find, start, enumerate devices (docs/h1-design.md) | done 2026-10-31 |
+| H1b | USB keyboard and mouse input (HID boot protocol) | proposed |
+
 ## Boot speed
 
 | Step | Content | Status |
