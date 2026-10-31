@@ -19,6 +19,14 @@ pub fn run() -> ! {
     kprintln!("ZOO_OS SHELL ready");
     kprintln!("Type 'help' for commands.");
     kprint!("{}", PROMPT);
+    if cfg!(feature = "fast-boot") {
+        // The everyday build starts in the desktop (docs/d6-design.md);
+        // Escape comes back here.
+        kprintln!("desktop");
+        serial_println!("ZOO_OS SHELL autostart desktop");
+        execute("desktop");
+        kprint!("{}", PROMPT);
+    }
 
     let mut decoder = PS2Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore);
     let mut line = String::new();

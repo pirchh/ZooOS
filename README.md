@@ -25,8 +25,9 @@ Quick start (after installing the prerequisites in tools/firmware/README.md):
     cargo xtask run
 
 `run` boots the fast-boot build, which skips the boot-check programs
-(docs/b1-design.md); `cargo xtask run --mode normal` boots with them, as
-`verify` does.
+(docs/b1-design.md) and starts in the desktop (docs/d6-design.md; Escape
+leaves it for the debug shell). `cargo xtask run --mode normal` boots with
+the checks into the shell, as `verify` does.
 
 Naming: the project was renamed from the placeholder OriginsOS to ZooOS on
 2026-10-30. Technical identifiers use zoo-os. The runtime/service supervisor
