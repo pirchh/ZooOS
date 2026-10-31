@@ -16,6 +16,18 @@ test = false
 bench = false
 
 [[bin]]
+name = "beaver-handler"
+path = "src/bin/beaver-handler.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "seal-test"
+path = "src/bin/seal-test.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "zookeeper"
 path = "src/bin/zookeeper.rs"
 test = false

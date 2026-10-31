@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The "Program
-names" section (version 0.14.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S1 section
+(version 0.15.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,51 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 1 results: resident supervisor (version 0.15.0)
+
+Design: docs/s1-design.md. Zookeeper's supervise mode, BeaverHandler (log
+service), seal-test (test service), `etc/services`, shell commands
+`services`/`logs`/`poke`, call 46 `process_id` (ABI version 9), and the
+harness action `WaitContains`. Every boot now starts the resident
+Zookeeper (pid 20), BeaverHandler (21) and seal-test (22) before `READY`;
+later process ids moved up by 3.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 813 s, every case as expected
+(`assistant-live` `SKIP`; new `services` case OK in 17.7 s). Then
+`--accel whpx --case assistant-live`: pass in 63.7 s. The
+`negative-timeout` case now times out while waiting for
+`PROC start pid=17 name=wolverine-test` (boot takes longer than its 5 s
+limit), so it still demonstrates a rejected timeout, just earlier.
+
+From the `services` case (shell output and kernel markers):
+
+    beaver-handler pid=21 running restarts=0 last=none
+    seal-test pid=22 running restarts=0 last=none
+    ZOO_OS PROC crash pid=22 name=seal-test fault=page-fault access=read cause=protection addr=0xffffc00000001000
+    ZOO_OS PROC start pid=23 name=seal-test
+    seal-test pid=23 running restarts=1 last=crashed
+    ZOO_OS PROC killed pid=23 name=seal-test by=20
+    ZOO_OS PROC start pid=24 name=seal-test
+    seal-test pid=24 running restarts=2 last=unresponsive
+    ...
+    seal-test pid=25 failed restarts=3 last=crashed
+    [     7.41] seal-test unresponsive; restarting (2 of 3)
+    [    10.20] seal-test crashed; restart limit reached, left stopped
+
+The hang was poked at about 3.8 s and the kill came at 7.41 s: within one
+ping interval plus the 2 s answer limit.
+
+**Negative controls** (`services` case; each temporary edit reverted):
+
+| Change | Result |
+| --- | --- |
+| Zookeeper never sends health pings | `FAIL services … got=timeout 90.0s`: no `PROC killed pid=23` (the hang is never noticed) |
+| Restart limit off by one | `FAIL services`: `got ZOO_OS PROC start pid=26 name=seal-test while expecting ZOO_OS SHELL line=services` |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed. Not run: a clean-copy verify.
 
 ## Program names (version 0.14.0)
 

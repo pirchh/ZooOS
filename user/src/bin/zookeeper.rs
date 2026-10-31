@@ -2,6 +2,10 @@
 //! fixed start-up plan: start BelugaTest and talk to it, supervise
 //! LemmingTest with a one-restart policy, confirm BelugaTest survived,
 //! then stop everything. Each failed expectation exits with its own code.
+//!
+//! Started by the kernel with a control channel it runs instead as the
+//! desktop session (`session`) or as the resident service supervisor
+//! (`supervise`, docs/s1-design.md).
 
 #![no_std]
 #![no_main]
@@ -24,6 +28,7 @@ fn main(start_handle: u64) -> u8 {
         let mut mode = [0u8; 32];
         return match recv(start_handle, &mut mode) {
             Ok(n) if &mode[..n] == b"session" => session(),
+            Ok(n) if &mode[..n] == b"supervise" => supervise(start_handle),
             _ => 30,
         };
     }
@@ -513,4 +518,285 @@ fn broker_step(chan: Handle, req: &str, want: &[&str]) -> Result<(), u8> {
     }
     zoo_rt::log!("broker `{}` -> {}", req, want[want.len() - 1]);
     Ok(())
+}
+
+// ---- Supervise mode (docs/s1-design.md) ---------------------------------
+
+/// Ticks between health pings, and how long a `pong` may take.
+const PING_EVERY: u64 = 100;
+const PING_TIMEOUT: u64 = 200;
+/// First restart back-off; doubles with each restart.
+const BACKOFF: u64 = 10;
+
+#[derive(PartialEq, Eq)]
+enum SvcState {
+    Running,
+    /// Waiting to restart at this tick.
+    Restarting(u64),
+    Failed,
+}
+
+struct Svc {
+    name: alloc::string::String,
+    max: u32,
+    state: SvcState,
+    chan: Handle,
+    process: Handle,
+    pid: u64,
+    restarts: u32,
+    last: &'static str,
+    /// Tick a ping was sent and not yet answered.
+    ping_sent: Option<u64>,
+}
+
+struct Supervisor {
+    control: Handle,
+    svcs: alloc::vec::Vec<Svc>,
+}
+
+/// Reads `etc/services`: `name max_restarts` per line, `#` comments.
+fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32)> {
+    let mut out = alloc::vec::Vec::new();
+    let Some(data) = zoo_rt::fs_find("etc/services").and_then(|i| zoo_rt::fs_map(i).ok()) else {
+        return out;
+    };
+    let text = core::str::from_utf8(data).unwrap_or("");
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        if let (Some(name), Some(max)) = (parts.next(), parts.next())
+            && let Ok(max) = max.parse()
+        {
+            out.push((alloc::string::String::from(name), max));
+        }
+    }
+    out
+}
+
+impl Supervisor {
+    /// Records a supervision event: serial log and BeaverHandler.
+    fn event(&self, args: core::fmt::Arguments) {
+        let mut l = zoo_rt::Line::new();
+        let _ = core::fmt::Write::write_fmt(&mut l, args);
+        zoo_rt::log!("Zookeeper: {}", l.as_str());
+        if let Some(logger) = self
+            .svcs
+            .iter()
+            .find(|s| s.name == "beaver-handler" && s.state == SvcState::Running)
+        {
+            let mut m = zoo_rt::Line::new();
+            let _ = core::fmt::Write::write_fmt(&mut m, format_args!("log {}", l.as_str()));
+            let _ = send(logger.chan, m.as_str().as_bytes());
+        }
+    }
+
+    fn start(&mut self, k: usize) {
+        let s = &mut self.svcs[k];
+        let started = channel_create().and_then(|(mine, theirs)| {
+            spawn(&s.name, Some(theirs))
+                .map(|p| (mine, p))
+                .inspect_err(|_| {
+                    let _ = close(mine);
+                })
+        });
+        match started {
+            Ok((chan, process)) => {
+                s.chan = chan;
+                s.process = process;
+                s.pid = zoo_rt::process_id(process).unwrap_or(0);
+                s.state = SvcState::Running;
+                s.ping_sent = None;
+                let (name, pid) = (s.name.clone(), s.pid);
+                self.event(format_args!("started {} (pid {})", name, pid));
+            }
+            Err(e) => {
+                s.state = SvcState::Failed;
+                s.last = "start failed";
+                let name = s.name.clone();
+                self.event(format_args!("cannot start {}: {}", name, e.name()));
+            }
+        }
+    }
+
+    /// Service `k` ended (`reason`); restart it later or give up.
+    fn ended(&mut self, k: usize, reason: &'static str, now: u64) {
+        let s = &mut self.svcs[k];
+        let _ = close(s.chan);
+        let _ = close(s.process);
+        s.last = reason;
+        s.ping_sent = None;
+        let name = s.name.clone();
+        if s.restarts < s.max {
+            s.restarts += 1;
+            let wait = BACKOFF << (s.restarts - 1);
+            s.state = SvcState::Restarting(now + wait);
+            let (n, max) = (s.restarts, s.max);
+            self.event(format_args!(
+                "{} {}; restarting ({} of {})",
+                name, reason, n, max
+            ));
+        } else {
+            s.state = SvcState::Failed;
+            self.event(format_args!(
+                "{} {}; restart limit reached, left stopped",
+                name, reason
+            ));
+        }
+    }
+
+    fn reply(&self, text: &str) {
+        let _ = zoo_rt::app::send_wait(self.control, text.as_bytes());
+    }
+
+    /// One request from the kernel shell; every reply ends with `end`.
+    fn control_request(&mut self, req: &str) {
+        if req == "status" {
+            for s in &self.svcs {
+                let state = match s.state {
+                    SvcState::Running => "running",
+                    SvcState::Restarting(_) => "restarting",
+                    SvcState::Failed => "failed",
+                };
+                let mut l = zoo_rt::Line::new();
+                let _ = core::fmt::Write::write_fmt(
+                    &mut l,
+                    format_args!(
+                        "{} pid={} {} restarts={} last={}",
+                        s.name, s.pid, state, s.restarts, s.last
+                    ),
+                );
+                self.reply(l.as_str());
+            }
+        } else if req == "logs" {
+            self.relay_logs();
+        } else if let Some(rest) = req.strip_prefix("poke ") {
+            let (name, what) = rest.split_once(' ').unwrap_or((rest, ""));
+            match self
+                .svcs
+                .iter()
+                .find(|s| s.name == name && s.state == SvcState::Running)
+            {
+                Some(s) if name == "seal-test" && matches!(what, "crash" | "hang") => {
+                    let _ = send(s.chan, what.as_bytes());
+                    self.reply("sent");
+                }
+                Some(_) => self.reply("only seal-test accepts test requests (crash, hang)"),
+                None => self.reply("no such running service"),
+            }
+        } else {
+            self.reply("unknown request");
+        }
+        self.reply("end");
+    }
+
+    /// Asks BeaverHandler for its lines and passes them on (bounded wait).
+    fn relay_logs(&mut self) {
+        let Some(k) = self
+            .svcs
+            .iter()
+            .position(|s| s.name == "beaver-handler" && s.state == SvcState::Running)
+        else {
+            self.reply("beaver-handler is not running");
+            return;
+        };
+        let chan = self.svcs[k].chan;
+        if send(chan, b"dump").is_err() {
+            self.reply("beaver-handler did not take the request");
+            return;
+        }
+        let deadline = zoo_rt::ticks() + 100;
+        let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        while zoo_rt::ticks() < deadline {
+            match zoo_rt::try_recv(chan, &mut buf) {
+                Ok(n) if &buf[..n] == b"end" => return,
+                // A late `pong` from a health ping counts as the answer.
+                Ok(n) if &buf[..n] == b"pong" => self.svcs[k].ping_sent = None,
+                Ok(n) => self.reply(core::str::from_utf8(&buf[..n]).unwrap_or("?")),
+                Err(Error::Again) => zoo_rt::sleep(1),
+                Err(_) => return,
+            }
+        }
+        self.reply("beaver-handler did not finish in time");
+    }
+}
+
+fn supervise(control: Handle) -> u8 {
+    let mut sup = Supervisor {
+        control,
+        svcs: alloc::vec::Vec::new(),
+    };
+    for (name, max) in read_service_list() {
+        sup.svcs.push(Svc {
+            name,
+            max,
+            state: SvcState::Failed,
+            chan: zoo_rt::NO_HANDLE,
+            process: zoo_rt::NO_HANDLE,
+            pid: 0,
+            restarts: 0,
+            last: "none",
+            ping_sent: None,
+        });
+    }
+    for k in 0..sup.svcs.len() {
+        sup.start(k);
+    }
+    let _ = send(control, b"ready");
+    let mut next_ping = zoo_rt::ticks() + PING_EVERY;
+    let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+    loop {
+        let now = zoo_rt::ticks();
+        // Requests from the kernel shell.
+        match zoo_rt::try_recv(control, &mut buf) {
+            Ok(n) => {
+                let req =
+                    alloc::string::String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
+                sup.control_request(&req);
+            }
+            Err(Error::Again) => {}
+            Err(_) => return 0, // kernel side closed: nothing left to do
+        }
+        for k in 0..sup.svcs.len() {
+            match sup.svcs[k].state {
+                SvcState::Restarting(at) if now >= at => sup.start(k),
+                SvcState::Running => {
+                    let chan = sup.svcs[k].chan;
+                    match zoo_rt::try_recv(chan, &mut buf) {
+                        Ok(n) if &buf[..n] == b"pong" => sup.svcs[k].ping_sent = None,
+                        Ok(_) | Err(Error::Again) => {}
+                        Err(_) => {
+                            // Its end of the channel closed: it has ended.
+                            let reason = match wait(sup.svcs[k].process) {
+                                Err(Error::Crashed) => "crashed",
+                                Err(Error::Killed) => "killed",
+                                _ => "exited",
+                            };
+                            sup.ended(k, reason, now);
+                            continue;
+                        }
+                    }
+                    if let Some(sent) = sup.svcs[k].ping_sent
+                        && now - sent > PING_TIMEOUT
+                    {
+                        let _ = kill(sup.svcs[k].process);
+                        let _ = wait(sup.svcs[k].process);
+                        sup.ended(k, "unresponsive", now);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if now >= next_ping {
+            next_ping = now + PING_EVERY;
+            for s in sup.svcs.iter_mut().filter(|s| s.state == SvcState::Running) {
+                if s.ping_sent.is_none() && send(s.chan, b"ping").is_ok() {
+                    s.ping_sent = Some(now);
+                }
+            }
+        }
+        zoo_rt::sleep(2);
+    }
 }

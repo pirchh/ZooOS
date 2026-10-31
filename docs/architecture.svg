@@ -181,10 +181,10 @@
   <!-- Future -->
   <rect x="1190" y="650" width="190" height="390" rx="10" fill="#ffffff" stroke="#c4cad0" stroke-dasharray="6 5"/>
   <text x="1204" y="672" class="group">Next (planned)</text>
-  <text x="1204" y="698" class="desc">• Zookeeper supervision:</text>
-  <text x="1214" y="714" class="desc">services register and</text>
-  <text x="1214" y="730" class="desc">report health</text>
-  <text x="1204" y="756" class="desc">• Logging service</text>
+  <text x="1204" y="698" class="desc">✓ Resident supervisor with</text>
+  <text x="1214" y="714" class="desc">health pings + restarts</text>
+  <text x="1214" y="730" class="desc">(S1: services, logs)</text>
+  <text x="1204" y="756" class="desc">✓ BeaverHandler (logs)</text>
   <text x="1204" y="782" class="desc">• Filesystem moved out of</text>
   <text x="1214" y="798" class="desc">the kernel into a service</text>
   <text x="1204" y="824" class="desc">• Disk driver: files that</text>

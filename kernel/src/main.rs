@@ -190,8 +190,37 @@ fn run(mut mem: memory::Memory) -> ! {
     let (files, nodes) = fs::init();
     kprintln!("ZOO_OS INFO fs seeded files={} nodes={}", files, nodes);
     run_boot_processes();
+    start_supervisor();
     kprintln!("ZOO_OS READY");
     shell::run()
+}
+
+/// Starts the resident supervisor and waits (bounded, 5 s) for its `ready`
+/// message, sent once its services are running (docs/s1-design.md).
+#[cfg(not(any(
+    feature = "fault-write-protect",
+    feature = "fault-heap-guard",
+    feature = "fault-stack-overflow",
+    feature = "triple-fault"
+)))]
+fn start_supervisor() {
+    if let Err(e) = process::start_supervisor() {
+        kprintln!("ZOO_OS INFO supervisor not started: {}", e.name());
+        return;
+    }
+    let limit = interrupts::ticks() + 5 * u64::from(interrupts::TIMER_HZ);
+    while interrupts::ticks() < limit {
+        if let Some(msg) = process::supervisor_try_recv() {
+            if msg == b"ready" {
+                return;
+            }
+            continue;
+        }
+        x86_64::instructions::interrupts::disable();
+        process::idle_hlt();
+        x86_64::instructions::interrupts::enable();
+    }
+    kprintln!("ZOO_OS INFO supervisor did not report ready within 5 s");
 }
 
 /// Starts Zookeeper and waits (bounded) until every process has exited and

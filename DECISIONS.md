@@ -143,6 +143,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 1: resident supervisor (2026-10-30)
+
+Design: docs/s1-design.md.
+
+- After the boot checks and the leak check, the kernel starts a second
+  Zookeeper in supervise mode that stays running; the check run stays
+  separate so the leak check remains exact.
+- Services come from `etc/services` (`seed/etc/services`), are pinged every
+  second (2 s to answer), restarted with back-off `10 × 2^n` ticks up to a
+  per-service limit, then left `failed`.
+- First services: BeaverHandler (logs; beavers handle logs) and seal-test
+  (an Arctic test service that can be crashed or hung on request).
+- Shell commands `services`, `logs`, `poke`; call 46 `process_id`; ABI
+  version 9. Version 0.15.0.
+
 ## Program names (2026-10-30)
 
 Owner decision. `…Handler` is reserved for system services (daemons):

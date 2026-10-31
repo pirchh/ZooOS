@@ -210,6 +210,9 @@ pub enum Action {
     /// Wait until this complete serial line appears after the previous
     /// `WaitFor` match.
     WaitFor(String),
+    /// Like `WaitFor`, but the line only has to contain this text (for
+    /// lines with timestamps).
+    WaitContains(String),
     /// Press and release these QEMU qcodes, one at a time.
     Keys(Vec<&'static str>),
     /// Wait until the serial log has not grown for this long (the guest has
@@ -334,6 +337,16 @@ pub fn run_case(
                         None => false,
                     }
                 }
+                Action::WaitContains(part) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    match find_line_containing(complete, cursor, part) {
+                        Some(end) => {
+                            cursor = end;
+                            true
+                        }
+                        None => false,
+                    }
+                }
                 Action::Keys(keys) => match type_keys(q, keys) {
                     Ok(()) => true,
                     Err(e) => {
@@ -397,6 +410,9 @@ pub fn run_case(
                 Verdict::Pending(n) => format!("`{n}`"),
                 _ => match steps.get(step) {
                     Some(Action::WaitFor(l)) => format!("serial line `{l}` (step {})", step + 1),
+                    Some(Action::WaitContains(l)) => {
+                        format!("a serial line containing `{l}` (step {})", step + 1)
+                    }
                     Some(_) => format!("interaction step {} to finish", step + 1),
                     None => "?".into(),
                 },
@@ -423,6 +439,17 @@ pub fn run_case(
 
 /// Finds a complete line equal to `want` starting at or after byte `from`;
 /// returns the offset just past it.
+fn find_line_containing(text: &str, from: usize, part: &str) -> Option<usize> {
+    let mut pos = from.min(text.len());
+    for line in text[pos..].split_inclusive('\n') {
+        pos += line.len();
+        if line.contains(part) {
+            return Some(pos);
+        }
+    }
+    None
+}
+
 fn find_line(text: &str, from: usize, want: &str) -> Option<usize> {
     let mut pos = from.min(text.len());
     for line in text[pos..].split_inclusive('\n') {

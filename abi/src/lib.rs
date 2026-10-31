@@ -12,8 +12,9 @@ pub mod tar;
 /// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17;
 /// version 5 (POSIX step 1) added calls 27-31 and error 18; version 6
 /// (POSIX step 2) added calls 32-37; version 7 (POSIX step 3) added calls
-/// 38-40; version 8 (POSIX step 4) added calls 41-45 and the WRITE right.
-pub const ABI_VERSION: u64 = 8;
+/// 38-40; version 8 (POSIX step 4) added calls 41-45 and the WRITE right;
+/// version 9 (services step 1) added call 46.
+pub const ABI_VERSION: u64 = 9;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -63,6 +64,8 @@ pub mod sys {
     pub const FILE_TRUNCATE: u64 = 43;
     pub const FILE_REMOVE: u64 = 44;
     pub const RENAME: u64 = 45;
+    /// Pid of a process handle, or of the caller for `NO_HANDLE`.
+    pub const PROCESS_ID: u64 = 46;
 }
 
 /// Error codes; system calls return `-(code as i64)`.

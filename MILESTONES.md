@@ -102,6 +102,18 @@ and verification:
 | 5a | C toolchain (Zig 0.16.0, approved download) and freestanding C programs (docs/posix5-design.md) | done 2026-10-30 |
 | 5b | libc port onto ZooOS calls (needs file descriptors, process arguments, time) | proposed |
 
+## Services (owner direction 2026-10-30)
+
+Re-balance toward system services before further POSIX work: a supervised,
+lean set of daemons, as ARCHITECTURE.md intends.
+
+| Step | Content | Status |
+| --- | --- | --- |
+| S1 | Resident supervisor (Zookeeper): service list, health pings, restart policy; BeaverHandler (logs); shell `services`/`logs` (docs/s1-design.md) | done 2026-10-30 |
+| S2 | Programs' log output routed through BeaverHandler; services find each other by name | proposed |
+| S3 | Filesystem moved out of the kernel into a service | proposed |
+| S4 | Disk driver (virtio) so files survive a reboot | proposed |
+
 ## M6 — Windows application stages
 
 Minimal console, simple GUI, installer/multiprocess program, then selected Opera

@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 15] = [
+pub const USER_PROGRAMS: [&str; 17] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -27,10 +27,14 @@ pub const USER_PROGRAMS: [&str; 15] = [
     "walrus-test",
     "wolverine-test",
     "arcticfox-test",
+    "beaver-handler",
+    "seal-test",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
 const SEED_DIR: &str = "seed/home/user";
+/// System configuration packed as `etc/...` (docs/s1-design.md).
+const ETC_DIR: &str = "seed/etc";
 
 /// Files under `dir`, as paths relative to it with `/` separators, sorted.
 fn seed_files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
@@ -185,12 +189,20 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
             0,
         );
     }
-    let seeds = seed_files(&root.join(SEED_DIR))?;
-    for (rel, path) in &seeds {
+    // Sample home files, then system configuration (`seed/etc` -> `etc/`).
+    let mut seeds: Vec<(String, PathBuf)> = seed_files(&root.join(SEED_DIR))?
+        .into_iter()
+        .map(|(rel, p)| (format!("home/user/{rel}"), p))
+        .collect();
+    seeds.extend(
+        seed_files(&root.join(ETC_DIR))?
+            .into_iter()
+            .map(|(rel, p)| (format!("etc/{rel}"), p)),
+    );
+    for (entry, path) in &seeds {
         let data =
             std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let entry = format!("home/user/{rel}");
-        let header = zoo_abi::tar::header(&entry, data.len())
+        let header = zoo_abi::tar::header(entry, data.len())
             .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
         archive.extend_from_slice(&header);
         archive.extend_from_slice(&data);
