@@ -19,7 +19,7 @@ flowchart TB
         SCHED["Scheduler<br/>processes + threads, preemptive, futexes"]
         SYSC["System calls (ABI v8)<br/>channels, spawn, vm memory,<br/>exceptions, files, display, input"]
         FS["In-memory filesystem<br/>/bin read-only, /home/user writable,<br/>directory capabilities"]
-        DRV["Drivers<br/>framebuffer console, keyboard, serial, timer"]
+        DRV["Drivers<br/>framebuffer console, keyboard, mouse, serial, timer"]
         SHELL["Kernel shell (zoo&gt;)<br/>help, ls, ps, run, desktop"]
     end
 
@@ -38,7 +38,7 @@ flowchart TB
 
     subgraph DESKTOP["Desktop session (shell: desktop)"]
         ZK2["Zookeeper (session mode)<br/>hands out the home-folder handle,<br/>restarts the window server"]
-        PEACOCK["PeacockHandler<br/>window server: owns screen + keyboard"]
+        PEACOCK["PeacockHandler<br/>window server: screen, keyboard, mouse"]
         FILES["Files (app)<br/>file browser"]
         CRASH["Crash Test (app)<br/>crashes on purpose to show recovery"]
         ASSIST["Assistant (app)<br/>input, plan + confirm, cancel"]

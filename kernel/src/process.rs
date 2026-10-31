@@ -17,6 +17,7 @@ use crate::kprintln;
 use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
 };
+use crate::mouse;
 use crate::trap::{self, TrapFrame};
 use crate::virtio_blk;
 use alloc::boxed::Box;
@@ -34,6 +35,7 @@ use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::BLOCK_BYTES;
+use zoo_abi::MouseEvent;
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, EXC_RESUME, EXC_UNHANDLED, Error,
     ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsEntry, HEAP_BASE, HEAP_LIMIT, HandleMsg, MAP_BASE,
@@ -723,6 +725,7 @@ impl Scheduler {
         if self.display_owner == Some(pid) {
             self.display_owner = None;
             DISPLAY_OWNED.store(false, Ordering::Relaxed);
+            mouse::clear();
             console::resume();
             kprintln!("ZOO_OS DISPLAY released pid={}", pid);
         }
@@ -1137,6 +1140,8 @@ impl Scheduler {
                 }
                 self.display_owner = Some(me);
                 DISPLAY_OWNED.store(true, Ordering::Relaxed);
+                // Movement made before this owner arrived is not its own.
+                mouse::clear();
                 console::suspend();
                 let name = self.task(i).name.clone();
                 kprintln!("ZOO_OS DISPLAY acquired pid={} name={}", me, name);
@@ -1517,6 +1522,33 @@ impl Scheduler {
                 }
                 // Woken by any send, close or exit (wake_all) or the timer.
                 Outcome::Block
+            }
+            sys::MOUSE_READ => {
+                // a1 = buffer of `MouseEvent`s, a2 = how many fit.
+                let me = self.task(i).pid;
+                if self.display_owner != Some(me) {
+                    return err(Error::Rights);
+                }
+                let size = core::mem::size_of::<MouseEvent>() as u64;
+                if a2 == 0 || !ok(a1, a2 * size, true) {
+                    return err(Error::Fault);
+                }
+                let mut n = 0u64;
+                while n < a2 {
+                    let Some((dx, dy, buttons)) = mouse::pop() else {
+                        break;
+                    };
+                    let e = MouseEvent {
+                        dx,
+                        dy,
+                        buttons,
+                        _pad: [0; 3],
+                    };
+                    // SAFETY: inside the writable user range checked above.
+                    unsafe { ((a1 + n * size) as *mut MouseEvent).write_unaligned(e) };
+                    n += 1;
+                }
+                Outcome::Ret(n as i64)
             }
             sys::BLOCK_ATTACH => {
                 let p = self.proc(i);

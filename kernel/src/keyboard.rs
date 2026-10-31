@@ -25,7 +25,18 @@ static DROPPED: AtomicU64 = AtomicU64::new(0);
 pub fn on_interrupt() {
     // SAFETY: port 0x60 is the i8042 data port; reading it takes the byte
     // that raised IRQ1, which is exactly what this handler must do.
-    let byte = unsafe { Port::<u8>::new(DATA_PORT).read() };
+    let (status, byte) = unsafe {
+        (
+            Port::<u8>::new(STATUS_PORT).read(),
+            Port::<u8>::new(DATA_PORT).read(),
+        )
+    };
+    // With the mouse enabled both devices share the data port; a mouse byte
+    // can be pending when IRQ1 is serviced (docs/d1-design.md).
+    if status & crate::mouse::STATUS_AUX != 0 {
+        crate::mouse::on_byte(byte);
+        return;
+    }
     RECEIVED.fetch_add(1, Ordering::Relaxed);
     let head = HEAD.load(Ordering::Relaxed);
     let tail = TAIL.load(Ordering::Acquire);

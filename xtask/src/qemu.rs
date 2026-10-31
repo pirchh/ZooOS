@@ -251,6 +251,11 @@ pub enum Action {
     Settle(Duration),
     /// Save `<name>.ppm` (checked by the case) and `<name>.png` (for people).
     Screenshot(&'static str),
+    /// Move the mouse by (dx, dy) screen pixels, in steps of at most
+    /// `MOUSE_STEP` (y grows downwards).
+    Mouse(i32, i32),
+    /// Press (true) or release the left mouse button.
+    Button(bool),
 }
 
 /// Steps to perform, in order, while the case runs. All of them must finish
@@ -260,6 +265,8 @@ pub struct Interaction {
 }
 
 const KEY_GAP: Duration = Duration::from_millis(40);
+/// Largest single mouse movement sent; PS/2 packets carry at most 255.
+const MOUSE_STEP: i32 = 100;
 const QMP_CONNECT_BOUND: Duration = Duration::from_secs(10);
 
 /// Time limits for one case.
@@ -382,6 +389,23 @@ pub fn run_case(
                 }
                 Action::Keys(keys) => match type_keys(q, keys) {
                     Ok(()) => true,
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
+                Action::Mouse(dx, dy) => match move_mouse(q, *dx, *dy) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
+                Action::Button(down) => match q.mouse_button(*down) {
+                    Ok(()) => {
+                        std::thread::sleep(KEY_GAP);
+                        true
+                    }
                     Err(e) => {
                         harness_error = Some(e);
                         break;
@@ -514,6 +538,18 @@ fn screenshot(q: &mut Qmp, dir: &Path, name: &str) -> Result<PathBuf, String> {
         eprintln!("[verify] note: PNG screenshot {name} failed: {e}");
     }
     Ok(ppm)
+}
+
+fn move_mouse(q: &mut Qmp, mut dx: i32, mut dy: i32) -> Result<(), String> {
+    while dx != 0 || dy != 0 {
+        let sx = dx.clamp(-MOUSE_STEP, MOUSE_STEP);
+        let sy = dy.clamp(-MOUSE_STEP, MOUSE_STEP);
+        q.mouse_move(sx, sy)?;
+        dx -= sx;
+        dy -= sy;
+        std::thread::sleep(KEY_GAP);
+    }
+    Ok(())
 }
 
 fn type_keys(q: &mut Qmp, keys: &[&str]) -> Result<(), String> {

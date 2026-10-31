@@ -96,6 +96,22 @@ impl Qmp {
         self.command(&cmd).map(|_| ())
     }
 
+    /// Moves the mouse by (dx, dy) screen pixels (y grows downwards).
+    pub fn mouse_move(&mut self, dx: i32, dy: i32) -> Result<(), String> {
+        let cmd = format!(
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"rel","data":{{"axis":"x","value":{dx}}}}},{{"type":"rel","data":{{"axis":"y","value":{dy}}}}}]}}}}"#
+        );
+        self.command(&cmd).map(|_| ())
+    }
+
+    /// Presses (`down`) or releases the left mouse button.
+    pub fn mouse_button(&mut self, down: bool) -> Result<(), String> {
+        let cmd = format!(
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"btn","data":{{"down":{down},"button":"left"}}}}]}}}}"#
+        );
+        self.command(&cmd).map(|_| ())
+    }
+
     /// Writes the current display to `path` (`ppm` or `png`).
     pub fn screendump(&mut self, path: &Path, format: &str) -> Result<(), String> {
         let p = path

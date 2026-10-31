@@ -116,6 +116,12 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | S4b | Filesystem moved out of the kernel into a service, BadgerHandler (docs/s4-design.md) | done 2026-10-30 |
 | S5 | Disk driver (virtio) and crash-safe A/B snapshots: files survive a reboot (docs/s5-design.md) | done 2026-10-31 |
 
+## Desktop steps (towards the owner's macOS-like goal)
+
+| Step | Content | Status |
+| --- | --- | --- |
+| D1 | PS/2 mouse; pointer; click to focus; drag windows by the title bar (docs/d1-design.md) | done 2026-10-31 |
+
 ## M6 — Windows application stages
 
 Minimal console, simple GUI, installer/multiprocess program, then selected Opera

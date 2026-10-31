@@ -31,6 +31,7 @@ mod interrupts;
 mod keyboard;
 mod klog;
 mod memory;
+mod mouse;
 mod process;
 mod selftest;
 mod serial;
