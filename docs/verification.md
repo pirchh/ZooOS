@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L8 section
-(version 0.48.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L9 section
+(version 0.49.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,50 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 9 results: the address-space layout Wine needs (version 0.49.0)
+
+Design and details: docs/linux9-design.md. New case `linux-redpoll`:
+`redpoll-test` (freestanding, no C library, linked at `0x7d7d00000000`
+like Wine's preloader) checks:
+- kernel-chosen mappings are high;
+- the low 2 GiB can be reserved, and `MAP_FIXED` at `0x400000` works;
+- `MAP_FIXED_NOREPLACE` fails with `EEXIST` over a mapping and over the
+  program itself;
+- `munmap` carves one page that can be mapped again, with the neighbours
+  intact;
+- 4 MiB of live stack frames; `fork` keeps the layout;
+- the reservation is free again after release.
+
+All earlier Linux cases pass unchanged.
+
+The downloads for the coming Wine build are recorded with their checks:
+- Wine 11.0: a good signature from Alexandre Julliard's key, and a
+  SHA-512 equal to Alpine 3.24's recipe (tools/wine/README.md).
+- Alpine 3.24.3 minirootfs: a SHA-256 equal to Alpine's release index,
+  and a good signature from Alpine's release key (tools/alpine/README.md).
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 48 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+35.7 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored and compared):
+
+| Change | Result |
+| --- | --- |
+| Kernel-chosen mappings start low | `FAIL`: exit 10 |
+| `munmap` leaves the reservation in place | `FAIL`: exit 41 |
+| The program is not a reservation | `FAIL`: `PROC crash pid=26 … access=execute cause=protection addr=0x00007d7d0000165d` |
+| The stack is not extended as used | `FAIL`: `PROC crash pid=26 … access=write cause=not-present addr=0x00007fffffeffe80` |
+
+The stack control first passed: the recursion had been turned into a
+loop. The test was fixed so that every frame stays live, and the control
+was run again.
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask -p zoo-abi --locked`: 24 and 10 passed.
+Not run: real hardware.
 
 ## Linux step 8 results: dynamically linked programs (version 0.48.0)
 
