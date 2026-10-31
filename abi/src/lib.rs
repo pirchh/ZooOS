@@ -12,8 +12,8 @@ pub mod tar;
 /// added calls 17-18; version 4 (M5c-1) added calls 19-26 and errors 15-17;
 /// version 5 (POSIX step 1) added calls 27-31 and error 18; version 6
 /// (POSIX step 2) added calls 32-37; version 7 (POSIX step 3) added calls
-/// 38-40.
-pub const ABI_VERSION: u64 = 7;
+/// 38-40; version 8 (POSIX step 4) added calls 41-45 and the WRITE right.
+pub const ABI_VERSION: u64 = 8;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -58,6 +58,11 @@ pub mod sys {
     pub const SET_EXCEPTION_HANDLER: u64 = 38;
     pub const SET_EXCEPTION_STACK: u64 = 39;
     pub const EXCEPTION_RETURN: u64 = 40;
+    pub const FILE_CREATE: u64 = 41;
+    pub const FILE_WRITE: u64 = 42;
+    pub const FILE_TRUNCATE: u64 = 43;
+    pub const FILE_REMOVE: u64 = 44;
+    pub const RENAME: u64 = 45;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -293,20 +298,24 @@ pub mod dir_rights {
     pub const READ: u64 = 1;
     /// Create directories below it.
     pub const CREATE: u64 = 2;
-    /// Remove empty directories below it.
+    /// Remove empty directories and files below it.
     pub const REMOVE: u64 = 4;
-    pub const ALL: u64 = READ | CREATE | REMOVE;
+    /// Write and truncate files below it.
+    pub const WRITE: u64 = 8;
+    pub const ALL: u64 = READ | CREATE | REMOVE | WRITE;
 }
 
 /// Longest path accepted by the directory calls, and longest name.
 pub const MAX_FS_PATH: usize = 256;
 pub const MAX_DIR_NAME: usize = 64;
 
-/// Second argument of calls 20-25 (the first is the directory handle).
-/// `path` is relative to the handle's directory. `arg` is the rights for
-/// `dir_open`, the entry index for `dir_list` and the byte offset for
-/// `file_read`. `buf` receives a `DirEntry` (`dir_list`, `dir_stat`) or
-/// file bytes (`file_read`).
+/// Second argument of calls 20-25 and 41-45 (the first is the directory
+/// handle). `path` is relative to the handle's directory. `arg` is the
+/// rights for `dir_open`, the entry index for `dir_list`, the byte offset
+/// for `file_read`/`file_write` and the new length for `file_truncate`.
+/// `buf` receives a `DirEntry` (`dir_list`, `dir_stat`) or file bytes
+/// (`file_read`), holds the bytes for `file_write`, and the destination
+/// path for `rename`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FsArgs {

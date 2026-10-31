@@ -136,6 +136,20 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX layer step 4: writable files (2026-10-30)
+
+Design: docs/posix4-design.md.
+
+- Path-based file calls through directory handles (create, write, truncate,
+  remove, rename) and a new WRITE right; open-file handles and descriptors
+  come later.
+- File bytes live in whole physical pages (the kernel heap holds only page
+  lists); seeded files are copied on first write. Still not persistent.
+- Limits: 16 MiB per file, 64 MiB of file pages in total.
+- The boot leak check counts file pages as free and audits the counter
+  against the pages files hold (a check that would otherwise hide leaks).
+- Calls 41–45, ABI version 8. Version 0.13.0.
+
 ## POSIX layer step 3: exceptions (2026-10-30)
 
 Design: docs/posix3-design.md.

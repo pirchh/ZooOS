@@ -364,6 +364,23 @@ fn check_directories() -> Result<(), u8> {
     let scratch = dir_open(home, "Scratch", r::READ).map_err(|_| 26)?;
     dir_remove(home, "Scratch").map_err(|_| 26)?;
     expect_err("stale handle", dir_stat(scratch, ""), Error::NotFound, 26)?;
+    // POSIX step 4: writable files (SquirrelHandler gets home and root).
+    let squirrel_home = dir_open(home, "", r::ALL).map_err(|_| 33)?;
+    let squirrel_root = dir_open(root, "", r::ALL).map_err(|_| 33)?;
+    let squirrel = zoo_rt::spawn_with(
+        "squirrel-handler",
+        [Some(squirrel_home), Some(squirrel_root)],
+    )
+    .map_err(|_| 33)?;
+    match wait(squirrel) {
+        Ok(0) => {
+            let _ = close(squirrel);
+        }
+        other => {
+            zoo_rt::log!("SquirrelHandler did not pass: {:?}", other);
+            return Err(33);
+        }
+    }
     for h in [scratch, read_only, root] {
         let _ = close(h);
     }

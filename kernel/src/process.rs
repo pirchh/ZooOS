@@ -1270,7 +1270,12 @@ impl Scheduler {
             | sys::DIR_STAT
             | sys::FILE_READ
             | sys::DIR_CREATE
-            | sys::DIR_REMOVE => self.dir_call(i, number, a1, a2, mem),
+            | sys::DIR_REMOVE
+            | sys::FILE_CREATE
+            | sys::FILE_WRITE
+            | sys::FILE_TRUNCATE
+            | sys::FILE_REMOVE
+            | sys::RENAME => self.dir_call(i, number, a1, a2, mem),
             sys::SPAWN_WITH => {
                 if a2 == 0 || a2 > MAX_PATH as u64 {
                     return err(Error::Inval);
@@ -1723,8 +1728,10 @@ impl Scheduler {
         let path = String::from(path);
         let need = match number {
             sys::DIR_OPEN => 0, // checked below: the new rights must be a subset
-            sys::DIR_CREATE => dir_rights::CREATE,
-            sys::DIR_REMOVE => dir_rights::REMOVE,
+            sys::DIR_CREATE | sys::FILE_CREATE => dir_rights::CREATE,
+            sys::DIR_REMOVE | sys::FILE_REMOVE => dir_rights::REMOVE,
+            sys::FILE_WRITE | sys::FILE_TRUNCATE => dir_rights::WRITE,
+            sys::RENAME => dir_rights::CREATE | dir_rights::REMOVE,
             _ => dir_rights::READ,
         };
         if rights & need != need {
@@ -1793,18 +1800,76 @@ impl Scheduler {
                 if !ok(args.buf, args.buf_len, true) {
                     return err(Error::Fault);
                 }
-                let data = match fs::with(|f| f.resolve(node, &path).and_then(|t| f.data(t))) {
-                    Ok(d) => d,
-                    Err(e) => return err(e),
+                let (buf, len, offset) = (
+                    args.buf as *mut u8,
+                    args.buf_len as usize,
+                    args.arg as usize,
+                );
+                // SAFETY: `buf` is a checked writable user range of `len`
+                // bytes in the active address space.
+                match fs::with(|f| {
+                    let t = f.resolve(node, &path)?;
+                    unsafe { f.read(mem, t, offset, buf, len) }
+                }) {
+                    Ok(n) => Outcome::Ret(n as i64),
+                    Err(e) => err(e),
+                }
+            }
+            sys::FILE_WRITE => {
+                if !ok(args.buf, args.buf_len, false) {
+                    return err(Error::Fault);
+                }
+                let (buf, len, offset) = (
+                    args.buf as *const u8,
+                    args.buf_len as usize,
+                    args.arg as usize,
+                );
+                // SAFETY: `buf` is a checked readable user range of `len`
+                // bytes in the active address space.
+                match fs::with(|f| {
+                    let t = f.resolve(node, &path)?;
+                    unsafe { f.write(mem, t, offset, buf, len) }
+                }) {
+                    Ok(n) => Outcome::Ret(n as i64),
+                    Err(e) => err(e),
+                }
+            }
+            sys::FILE_TRUNCATE => {
+                match fs::with(|f| {
+                    let t = f.resolve(node, &path)?;
+                    f.truncate(mem, t, args.arg as usize)
+                }) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(e) => err(e),
+                }
+            }
+            sys::FILE_CREATE => match fs::with(|f| f.create_file(node, &path)) {
+                Ok(_) => Outcome::Ret(0),
+                Err(e) => err(e),
+            },
+            sys::FILE_REMOVE => match fs::with(|f| f.remove_file(mem, node, &path)) {
+                Ok(()) => Outcome::Ret(0),
+                Err(e) => err(e),
+            },
+            sys::RENAME => {
+                if args.buf_len > MAX_FS_PATH as u64 {
+                    return err(Error::Inval);
+                }
+                if !ok(args.buf, args.buf_len, false) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: checked readable user range; copied before use.
+                let raw = unsafe {
+                    core::slice::from_raw_parts(args.buf as *const u8, args.buf_len as usize)
                 };
-                let start = (args.arg as usize).min(data.len());
-                let n = (data.len() - start).min(args.buf_len as usize);
-                // SAFETY: `n` bytes fit the checked writable user range; the
-                // source is initrd memory that user code cannot reach.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(data[start..].as_ptr(), args.buf as *mut u8, n)
+                let Ok(to) = core::str::from_utf8(raw) else {
+                    return err(Error::Inval);
                 };
-                Outcome::Ret(n as i64)
+                let to = String::from(to);
+                match fs::with(|f| f.rename(node, &path, &to)) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(e) => err(e),
+                }
             }
             sys::DIR_CREATE => match fs::with(|f| f.create_dir(node, &path)) {
                 Ok(_) => Outcome::Ret(0),

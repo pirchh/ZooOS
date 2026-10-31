@@ -58,6 +58,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "squirrel-handler"
+path = "src/bin/squirrel-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "gecko-handler"
 path = "src/bin/gecko-handler.rs"
 test = false
