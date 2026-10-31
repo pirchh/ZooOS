@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D1 section
-(version 0.21.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D2 section
+(version 0.22.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,44 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 2 results: redraw only what changed (version 0.22.0)
+
+Design: docs/d2-design.md (§5 as implemented, with the measurements).
+PeacockHandler damage rectangles, clipped drawing, partial present; test
+keys F9/F10/F11.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 10 min 48 s, every case as
+expected (`assistant-live` `SKIP`). The existing desktop, mouse and
+assistant screen checks pass unchanged. New cases:
+
+| Case | Result |
+| --- | --- |
+| redraw | After a click, a drag of Files to (124, 98), Tab and eight pointer moves, the screen equals a forced full repaint: 993,280 pixels compared (menu bar excluded), 0 differ |
+| frames | Both timing reports logged (cycle counts under TCG are not meaningful) |
+
+Then `--accel whpx --case assistant-live`: pass in 51.0 s.
+
+**Measurement** (`cargo xtask verify --skip-model --accel whpx --case
+frames`, three runs): median pointer-move frame 4,342,631 / 4,039,118 /
+4,176,248 cycles with full repaints (1,024,000 px) versus 31,610 / 31,158 /
+31,718 cycles with partial redraws (408 px). Details and limits:
+docs/d2-design.md §5.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Pointer's old box not damaged | `FAIL redraw`: `405 of 993280 pixels differ from the partial redraws, first at (400, 110)` |
+
+The first version of `redraw` did not catch this control (it passed): the
+focus change after the pointer moves caused a full repaint that cleaned up
+the stale arrows. The case now moves the pointer last; the control was
+rerun and failed as above.
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## Desktop step 1 results: a mouse (version 0.21.0)
 

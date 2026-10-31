@@ -143,6 +143,17 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 2: redraw only what changed (2026-10-31)
+
+Design: docs/d2-design.md.
+
+- PeacockHandler tracks damaged rectangles (up to 8; beyond that, or over
+  half the screen, a full repaint), draws clipped to each and copies only
+  those to the framebuffer.
+- Test keys F9/F10/F11 for measuring and for comparing against a full
+  repaint. Measured under WHPX: a pointer-move frame went from about 4.2
+  million to about 31,500 cycles (docs/d2-design.md §5). Version 0.22.0.
+
 ## Desktop step 1: a mouse (2026-10-31)
 
 Design: docs/d1-design.md.

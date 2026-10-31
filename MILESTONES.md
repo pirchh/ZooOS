@@ -121,6 +121,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | Step | Content | Status |
 | --- | --- | --- |
 | D1 | PS/2 mouse; pointer; click to focus; drag windows by the title bar (docs/d1-design.md) | done 2026-10-31 |
+| D2 | Redraw only what changed; measured frame cost (docs/d2-design.md) | done 2026-10-31 |
 
 ## M6 — Windows application stages
 

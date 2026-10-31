@@ -30,6 +30,13 @@ pub struct Settings {
 /// Inspects a screenshot; `Ok` carries a summary, `Err` why it failed.
 type ScreenCheck = fn(&screen::Image) -> Result<String, String>;
 
+thread_local! {
+    /// The screenshot checked just before the current one in the same case,
+    /// for checks that compare two pictures (`check_full_repaint`).
+    static PREVIOUS: std::cell::RefCell<Option<screen::Image>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Which data disk a case boots with.
 #[derive(Clone, Copy)]
 enum Disk {
@@ -200,6 +207,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     never.then(&["ZOO_OS NEVER-EMITTED"]);
     let desktop = desktop_expectation(&normal);
     let mouse = mouse_expectation(&normal);
+    let redraw = mouse_expectation(&normal);
+    let frames = mouse_expectation(&normal);
     let mut inference = normal.clone();
     inference.then(&[
         "ZOO_OS SHELL line=run elephant-handler",
@@ -404,6 +413,30 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 ("2-click", check_click_focus),
                 ("3-drag", check_drag),
             ],
+        },
+        Case {
+            name: "redraw",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: redraw,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "partial redraws: after pointer moves, a click and a drag, the screen equals a full repaint",
+            interaction: Some(redraw_steps()),
+            screen_checks: vec![("1-partial", check_partial), ("2-full", check_full_repaint)],
+        },
+        Case {
+            name: "frames",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: frames,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "frame cost of pointer movement, full repaints vs partial redraws (numbers meaningful with --accel)",
+            interaction: Some(frames_steps()),
+            screen_checks: vec![],
         },
         Case {
             name: "assistant",
@@ -644,13 +677,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         let mut kind = r.outcome.kind().to_string();
         let mut detail = r.outcome.detail().to_string();
         if kind == "pass" {
+            PREVIOUS.with(|p| p.borrow_mut().take());
             for (name, check) in &c.screen_checks {
                 let Some((_, ppm)) = r.screenshots.iter().find(|(n, _)| n == name) else {
                     kind = "harness-error".into();
                     detail = format!("screenshot `{name}` was not taken");
                     break;
                 };
-                match screen::read_ppm(ppm).and_then(|img| check(&img)) {
+                let checked = screen::read_ppm(ppm).and_then(|img| {
+                    let result = check(&img);
+                    PREVIOUS.with(|p| *p.borrow_mut() = Some(img));
+                    result
+                });
+                match checked {
                     Ok(summary) => detail = format!("{detail}\n      screen {name}: {summary}"),
                     Err(why) => {
                         kind = "screen-mismatch".into();
@@ -779,6 +818,8 @@ const BAR: u32 = 0xE8E8E8;
 const BAR_TEXT: u32 = 0x202020;
 const TITLE_FOCUSED: u32 = 0x3D7EBF;
 const TITLE_FOCUSED_TEXT: u32 = 0xFFFFFF;
+const TITLE_UNFOCUSED: u32 = 0x9AA5AE;
+const TITLE_UNFOCUSED_TEXT: u32 = 0x202020;
 const CONTENT: u32 = 0xFFFFFF;
 const CONTENT_TEXT: u32 = 0x202020;
 const SELECTED: u32 = 0xCFE3F7;
@@ -1392,6 +1433,130 @@ fn mouse_steps() -> Interaction {
         ],
     }
 }
+
+// ---- D2 partial-redraw cases (docs/d2-design.md §3-4) ------------------
+
+fn start_desktop() -> Vec<Action> {
+    vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
+        Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+        Action::Settle(QUIET),
+    ]
+}
+
+fn redraw_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.extend([
+        // From the centre into Crash Test (840, 200) and click: focus
+        // changes.
+        Action::Mouse(200, -200),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
+        // Onto the Files title bar (300, 60) and drag it by (100, 50).
+        Action::Mouse(-540, -140),
+        Action::Button(true),
+        Action::Mouse(100, 50),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: moved Files to (124, 98)".into()),
+        Action::Keys(vec!["tab"]),
+    ]);
+    // Focus changes and drags of large windows become full repaints, so
+    // the pointer wanders last: each old position must be cleaned up by a
+    // partial redraw (over the desktop, the windows and their borders).
+    for _ in 0..8 {
+        steps.push(Action::Mouse(45, 40));
+    }
+    steps.extend([
+        Action::Settle(QUIET),
+        Action::Screenshot("1-partial"),
+        Action::Keys(vec!["f10"]),
+        Action::WaitContains("PeacockHandler: full repaint".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-full"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Pointer moves, each its own frame: 20 to the right, then 20 back.
+fn pointer_sweep(steps: &mut Vec<Action>) {
+    for dx in [12, -12] {
+        for _ in 0..20 {
+            steps.push(Action::Mouse(dx, 0));
+        }
+    }
+}
+
+fn frames_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Clear the start-up frames, then time a sweep with full repaints.
+    steps.push(Action::Keys(vec!["f11", "f9"]));
+    steps.push(Action::WaitContains("full repaint every frame on".into()));
+    steps.push(Action::Keys(vec!["f11"]));
+    pointer_sweep(&mut steps);
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11", "f9"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    steps.push(Action::WaitContains("full repaint every frame off".into()));
+    // The same sweep with partial redraws.
+    steps.push(Action::Keys(vec!["f11"]));
+    pointer_sweep(&mut steps);
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
+    Interaction { steps }
+}
+
+fn check_partial(img: &screen::Image) -> Result<String, String> {
+    // Clicking the Files title focused Files; Tab then moved on to Crash Test.
+    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let files = need(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    if files != (132, 102) {
+        return Err(format!(
+            "`Files` title at {files:?}, expected (132, 102) after the drag"
+        ));
+    }
+    Ok(format!(
+        "`Crash Test` focused at {title:?}; `Files` dragged to {files:?}"
+    ))
+}
+
+/// The forced full repaint must look exactly like the partial redraws
+/// before it. The menu bar is left out: its clock may tick in between.
+fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
+    let previous = PREVIOUS
+        .with(|p| p.borrow_mut().take())
+        .ok_or("no earlier screenshot to compare with")?;
+    if (previous.width, previous.height) != (img.width, img.height) {
+        return Err("the two screenshots differ in size".into());
+    }
+    let mut differ = 0;
+    let mut first = None;
+    for y in MENU_BAR_H..img.height {
+        for x in 0..img.width {
+            if img.pixel(x, y) != previous.pixel(x, y) {
+                differ += 1;
+                first.get_or_insert((x, y));
+            }
+        }
+    }
+    let compared = img.width * (img.height - MENU_BAR_H);
+    match first {
+        None => Ok(format!(
+            "identical to the partial redraws: {compared} pixels compared (menu bar excluded)"
+        )),
+        Some(at) => Err(format!(
+            "{differ} of {compared} pixels differ from the partial redraws, first at {at:?}"
+        )),
+    }
+}
+
+const MENU_BAR_H: usize = 24;
 
 const BLACK: [u8; 3] = [0, 0, 0];
 const WHITE: [u8; 3] = [255, 255, 255];

@@ -3,7 +3,8 @@
 //! Assistant, docs/m5c2-design.md) over channels, draws a menu bar, the
 //! windows and a status line, routes keys to the focused window, and
 //! restarts applications that crash. The mouse (docs/d1-design.md) moves a
-//! pointer; a click focuses a window and a title-bar drag moves it.
+//! pointer; a click focuses a window and a title-bar drag moves it. Only
+//! the parts of the screen that changed are redrawn (docs/d2-design.md).
 //!
 //! Its second start-up handle is the home directory (from Zookeeper); each
 //! start of the Assistant gets a fresh copy, which it passes on to the file
@@ -56,6 +57,14 @@ static mut BACK: [u32; MAX_W * MAX_H] = [0; MAX_W * MAX_H];
 
 /// Times one application may be restarted after crashing.
 const APP_RESTARTS: u32 = 3;
+
+/// Damage rectangles kept per frame before falling back to a full repaint.
+const MAX_DAMAGE: usize = 8;
+/// Pointer arrow size.
+const POINTER_W: usize = 12;
+const POINTER_H: usize = 17;
+/// Frames kept for the timing report (F11).
+const FRAME_SAMPLES: usize = 64;
 
 /// Test-only fault address (docs/m4-design.md §4, the F12 key).
 const KERNEL_ADDR: u64 = 0xFFFF_C000_0000_1000;
@@ -191,14 +200,29 @@ struct Screen {
     fb: *mut u32,
     bgr: bool,
     back: &'static mut [u32],
+    /// Drawing is limited to this rectangle (x0, y0, x1, y1), exclusive.
+    clip: (usize, usize, usize, usize),
 }
 
 impl Screen {
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32) {
-        let x1 = (x + w).min(self.w);
-        let y1 = (y + h).min(self.h);
-        for row in y.min(y1)..y1 {
-            self.back[row * self.w + x.min(x1)..row * self.w + x1].fill(c);
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        let x0 = x.max(cx0);
+        let y0 = y.max(cy0);
+        let x1 = (x + w).min(cx1);
+        let y1 = (y + h).min(cy1);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        for row in y0..y1 {
+            self.back[row * self.w + x0..row * self.w + x1].fill(c);
+        }
+    }
+
+    fn plot(&mut self, x: usize, y: usize, c: u32) {
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        if x >= cx0 && x < cx1 && y >= cy0 && y < cy1 {
+            self.back[y * self.w + x] = c;
         }
     }
 
@@ -211,34 +235,42 @@ impl Screen {
             if cx + CHAR_W > x + max_w || cx + CHAR_W > self.w {
                 break;
             }
+            let (cx0, cy0, cx1, cy1) = self.clip;
+            // Glyphs wholly outside the clip are skipped.
+            if cx + CHAR_W <= cx0 || cx >= cx1 || y + LINE_H <= cy0 || y >= cy1 {
+                cx += CHAR_W;
+                continue;
+            }
             let raster = get_raster(c, WEIGHT, SIZE)
                 .or_else(|| get_raster('?', WEIGHT, SIZE))
                 .expect("'?' is in the font");
             for (dy, row) in raster.raster().iter().enumerate() {
-                let py = y + dy;
-                if py >= self.h {
-                    break;
-                }
                 for (dx, &i) in row.iter().enumerate() {
-                    self.back[py * self.w + cx + dx] = blend(bg, fg, i);
+                    self.plot(cx + dx, y + dy, blend(bg, fg, i));
                 }
             }
             cx += CHAR_W;
         }
     }
 
-    /// Copies the whole back buffer to the framebuffer, so the screen only
-    /// ever shows complete frames.
-    fn present(&mut self) {
-        for y in 0..self.h {
-            let src = &self.back[y * self.w..(y + 1) * self.w];
+    /// Copies rectangle (x0, y0, x1, y1) of the back buffer to the
+    /// framebuffer. Called after every damaged rectangle is drawn, so the
+    /// screen only shows complete frames.
+    fn present(&mut self, (x0, y0, x1, y1): (usize, usize, usize, usize)) {
+        let (x1, y1) = (x1.min(self.w), y1.min(self.h));
+        if x0 >= x1 {
+            return;
+        }
+        for y in y0..y1 {
+            let src = &self.back[y * self.w + x0..y * self.w + x1];
             // SAFETY: the framebuffer is mapped at `fb` for `stride * h`
-            // pixels of 4 bytes (checked at start-up); row `y` is in range.
-            let dst = unsafe { self.fb.add(y * self.stride) };
+            // pixels of 4 bytes (checked at start-up); row `y` is below
+            // `h` and columns x0..x1 are within the row.
+            let dst = unsafe { self.fb.add(y * self.stride + x0) };
             if self.bgr {
                 // 0xRRGGBB in little-endian memory is B, G, R, X: BGR.
                 // SAFETY: as above; source and destination do not overlap.
-                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, self.w) };
+                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
             } else {
                 for (x, &c) in src.iter().enumerate() {
                     let rgb = ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
@@ -248,6 +280,13 @@ impl Screen {
             }
         }
     }
+}
+
+/// The CPU's time-stamp counter.
+fn cycles() -> u64 {
+    // SAFETY: `rdtsc` only reads the counter; user mode may run it (the
+    // kernel does not set CR4.TSD).
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 fn blend(bg: u32, fg: u32, i: u8) -> u32 {
@@ -278,6 +317,15 @@ struct Desktop {
     held: bool,
     /// Window being dragged, and the grab offset inside it.
     drag: Option<(usize, usize, usize)>,
+    /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
+    damage: [(usize, usize, usize, usize); MAX_DAMAGE],
+    damaged: usize,
+    full: bool,
+    /// Test mode (F9): repaint everything every frame, as before D2.
+    always_full: bool,
+    /// Recent frames: (cycles, pixels drawn).
+    frames: [(u64, u64); FRAME_SAMPLES],
+    frame_count: usize,
 }
 
 impl Desktop {
@@ -295,7 +343,51 @@ impl Desktop {
         ]
     }
 
+    /// Marks rectangle (x, y, w, h) for redrawing.
+    fn damage(&mut self, x: usize, y: usize, w: usize, h: usize) {
+        let r = (
+            x.min(self.screen.w),
+            y.min(self.screen.h),
+            (x + w).min(self.screen.w),
+            (y + h).min(self.screen.h),
+        );
+        if r.0 >= r.2 || r.1 >= r.3 || self.full {
+            return;
+        }
+        if self.damaged == MAX_DAMAGE {
+            self.full = true;
+            return;
+        }
+        self.damage[self.damaged] = r;
+        self.damaged += 1;
+    }
+
+    /// A window, with its border.
+    fn damage_window(&mut self, i: usize) {
+        let (x, y, w, h) = self.wins[i];
+        self.damage(x - 1, y - 1, w + 2, h + 2);
+    }
+
+    fn damage_pointer(&mut self) {
+        self.damage(self.px, self.py, POINTER_W, POINTER_H);
+    }
+
+    fn damage_menu_bar(&mut self) {
+        self.damage(0, 0, self.screen.w, BAR_H);
+    }
+
+    fn damage_status(&mut self) {
+        self.damage(0, self.screen.h - BAR_H, self.screen.w, BAR_H);
+    }
+
     fn set_focus(&mut self, i: usize) {
+        if i != self.focus {
+            self.damage_window(self.focus);
+            self.damage_window(i);
+            self.damage_menu_bar();
+        } else if self.order[2] != i {
+            self.damage_window(i);
+        }
         self.focus = i;
         let mut order = [0; 3];
         let mut k = 0;
@@ -318,6 +410,7 @@ impl Desktop {
     /// Applies one mouse event; true if the screen changed.
     fn mouse(&mut self, e: MouseEvent) -> bool {
         let (w, h) = (self.screen.w, self.screen.h);
+        self.damage_pointer();
         // The mouse reports dy positive upwards; screen y grows downwards.
         self.px = (self.px as isize + e.dx as isize).clamp(0, w as isize - 1) as usize;
         self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
@@ -335,6 +428,7 @@ impl Desktop {
             }
         } else if down {
             if let Some((i, ox, oy)) = self.drag {
+                self.damage_window(i);
                 let (_, _, ww, wh) = self.wins[i];
                 // Keep the border on screen and part of the title bar
                 // reachable.
@@ -343,6 +437,7 @@ impl Desktop {
                     .clamp(BAR_H as isize + 1, (h - BAR_H - TITLE_H) as isize)
                     as usize;
                 self.wins[i] = (x, y, ww, wh);
+                self.damage_window(i);
             }
         } else if let Some((i, _, _)) = self.drag.take() {
             let (x, y, _, _) = self.wins[i];
@@ -354,6 +449,7 @@ impl Desktop {
             );
         }
         self.held = down;
+        self.damage_pointer();
         true
     }
 
@@ -361,22 +457,78 @@ impl Desktop {
     fn draw_pointer(&mut self) {
         let (px, py) = (self.px, self.py);
         let s = &mut self.screen;
-        for r in 0..17usize {
+        for r in 0..POINTER_H {
             // Rows 0-11: the head, widening by one pixel a row; rows 12-16:
             // the stem.
             let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
             for c in from..=to {
-                let (x, y) = (px + c, py + r);
-                if x >= s.w || y >= s.h {
-                    continue;
-                }
-                let edge = c == from || c == to || r == 11 || r == 16;
-                s.back[y * s.w + x] = if edge { POINTER_EDGE } else { POINTER };
+                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
+                s.plot(px + c, py + r, if edge { POINTER_EDGE } else { POINTER });
             }
         }
     }
 
+    /// Redraws the damaged areas and shows them; records the frame's cost.
     fn render(&mut self) {
+        if self.always_full {
+            self.full = true;
+        }
+        let (w, h) = (self.screen.w, self.screen.h);
+        let screen = (0, 0, w, h);
+        let mut rects = self.damage;
+        let mut n = self.damaged;
+        // Many or large areas: one full repaint is simpler and no slower.
+        let area: usize = rects[..n].iter().map(|r| (r.2 - r.0) * (r.3 - r.1)).sum();
+        if self.full || area > w * h / 2 {
+            rects[0] = screen;
+            n = 1;
+        }
+        self.full = false;
+        self.damaged = 0;
+        if n == 0 {
+            return;
+        }
+        let start = cycles();
+        for &r in &rects[..n] {
+            self.screen.clip = r;
+            self.draw();
+        }
+        for &r in &rects[..n] {
+            self.screen.present(r);
+        }
+        self.screen.clip = screen;
+        let spent = cycles().wrapping_sub(start);
+        let pixels = rects[..n]
+            .iter()
+            .map(|r| ((r.2 - r.0) * (r.3 - r.1)) as u64)
+            .sum();
+        self.frames[self.frame_count % FRAME_SAMPLES] = (spent, pixels);
+        self.frame_count += 1;
+    }
+
+    /// Logs the median cost of the recent frames (F11), then starts over.
+    fn report_frames(&mut self) {
+        let n = self.frame_count.min(FRAME_SAMPLES);
+        let mut c = [0u64; FRAME_SAMPLES];
+        let mut p = [0u64; FRAME_SAMPLES];
+        for (k, &(cy, px)) in self.frames[..n].iter().enumerate() {
+            c[k] = cy;
+            p[k] = px;
+        }
+        c[..n].sort_unstable();
+        p[..n].sort_unstable();
+        zoo_rt::log!(
+            "PeacockHandler: frames {} mode {} median {} cycles {} px",
+            self.frame_count,
+            if self.always_full { "full" } else { "damage" },
+            if n > 0 { c[n / 2] } else { 0 },
+            if n > 0 { p[n / 2] } else { 0 }
+        );
+        self.frame_count = 0;
+    }
+
+    /// Draws everything, limited to the screen's clip rectangle.
+    fn draw(&mut self) {
         let (w, h) = (self.screen.w, self.screen.h);
         let s = &mut self.screen;
         s.fill(0, 0, w, h, DESKTOP);
@@ -450,7 +602,6 @@ impl Desktop {
             w - 16,
         );
         self.draw_pointer();
-        self.screen.present();
     }
 
     fn send_key(&self, key: Key) {
@@ -465,6 +616,11 @@ impl Desktop {
 
     /// Handles an application whose channel closed: it has ended.
     fn app_ended(&mut self, i: usize) {
+        self.damage_window(i);
+        self.damage_status();
+        if i == self.focus {
+            self.damage_menu_bar();
+        }
         let app = &mut self.apps[i];
         app.running = false;
         let _ = close(app.chan);
@@ -524,6 +680,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             fb: info.base as *mut u32,
             bgr: info.format == FORMAT_BGR,
             back: &mut back[..w * h],
+            clip: (0, 0, w, h),
         },
         apps: [
             App::new("Files", "files", false),
@@ -539,6 +696,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         py: h / 2,
         held: false,
         drag: None,
+        damage: [(0, 0, 0, 0); MAX_DAMAGE],
+        damaged: 0,
+        full: true,
+        always_full: false,
+        frames: [(0, 0); FRAME_SAMPLES],
+        frame_count: 0,
     };
     let _ = write!(
         desk.status,
@@ -573,6 +736,20 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                     let _ = log("PeacockHandler: leaving the desktop");
                     return 0;
                 }
+                // Test keys for frame timing (docs/d2-design.md §3-4).
+                Some(DecodedKey::RawKey(KeyCode::F9)) => {
+                    desk.always_full = !desk.always_full;
+                    zoo_rt::log!(
+                        "PeacockHandler: full repaint every frame {}",
+                        if desk.always_full { "on" } else { "off" }
+                    );
+                }
+                Some(DecodedKey::RawKey(KeyCode::F10)) => {
+                    desk.full = true;
+                    dirty = true;
+                    let _ = log("PeacockHandler: full repaint");
+                }
+                Some(DecodedKey::RawKey(KeyCode::F11)) => desk.report_frames(),
                 Some(DecodedKey::RawKey(KeyCode::F12)) => {
                     let _ = log("PeacockHandler: F12 test key: faulting on purpose");
                     // SAFETY: deliberately invalid (test key, docs/m4-design.md
@@ -604,7 +781,15 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         for i in 0..desk.apps.len() {
             while desk.apps[i].running {
                 match try_recv(desk.apps[i].chan, &mut msg) {
-                    Ok(n) => dirty |= desk.apps[i].apply(&msg[..n]),
+                    Ok(n) => {
+                        if desk.apps[i].apply(&msg[..n]) {
+                            desk.damage_window(i);
+                            if i == desk.focus {
+                                desk.damage_menu_bar();
+                            }
+                            dirty = true;
+                        }
+                    }
                     Err(Error::Again) => break,
                     Err(_) => {
                         desk.app_ended(i);
@@ -618,6 +803,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         let second = zoo_rt::ticks() / 100;
         if second != last_second {
             last_second = second;
+            desk.damage_menu_bar();
             dirty = true;
         }
 
