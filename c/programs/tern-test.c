@@ -14,6 +14,8 @@ static void put_u64(char *out, size_t *at, uint64_t v) {
     while (n) out[(*at)++] = tmp[--n];
 }
 
+static void say(const char *s) { zoo_log(s, __builtin_strlen(s)); }
+
 static void put_str(char *out, size_t *at, const char *s) {
     while (*s) out[(*at)++] = *s++;
 }
@@ -45,6 +47,16 @@ int main(zoo_handle first, zoo_handle second) {
         while (a < cmd + len && *a) line[at++] = *a++;
     }
     zoo_log(line, at);
+
+    /* `tern-test wait`: 500 ticks between two lines, for the harness to
+     * time against the host clock (docs/h3-design.md). */
+    if (argc == 2 && argv[1][0] == 'w' && argv[1][1] == 'a' && argv[1][2] == 'i' &&
+        argv[1][3] == 't' && argv[1] + 4 == cmd + len) {
+        say("TernTest: waiting 500 ticks");
+        zoo_sleep(500);
+        say("TernTest: waited");
+        return 0;
+    }
 
     /* Wall-clock time, in whole seconds since 1970. */
     int64_t now = zoo_clock(ZOO_CLOCK_REALTIME);

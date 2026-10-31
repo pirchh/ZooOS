@@ -21,6 +21,7 @@
 
 extern crate alloc;
 
+mod apic;
 mod console;
 mod cpu;
 mod faults;
@@ -128,6 +129,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     gdt::init();
     fpu::init();
     interrupts::init_idt(boot_info.kernel_stack_bottom);
+    apic::set_rsdp(boot_info.rsdp_addr.into_option().unwrap_or(0));
     let mem = memory::init(boot_info);
     kprintln!(
         "ZOO_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
@@ -177,7 +179,7 @@ fn run(mut mem: memory::Memory) -> ! {
     selftest::paging(&mut mem);
     selftest::address_spaces(&mut mem);
     selftest::heap();
-    interrupts::init_timer();
+    interrupts::init_timer(&mut mem);
     selftest::timer();
 
     if cfg!(feature = "panic-test") {

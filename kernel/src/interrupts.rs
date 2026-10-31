@@ -83,6 +83,7 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     idt[MOUSE_VECTOR].set_handler_fn(mouse_irq);
     idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
     idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
+    idt[crate::apic::SPURIOUS_VECTOR].set_handler_fn(spurious_apic);
     idt
 });
 
@@ -92,17 +93,37 @@ pub fn init_idt(kernel_stack_bottom: u64) {
     IDT.load();
 }
 
-/// Remaps and masks the PICs (only IRQ0 open) and starts the PIT at ~100 Hz.
+/// IRQ0 (the PIT) in the master PIC's mask: masked while the local APIC
+/// timer is the tick source.
+fn irq0_mask() -> u8 {
+    u8::from(crate::apic::active())
+}
+
+/// Remaps the PICs, then starts the tick at 100 Hz: the local APIC timer
+/// when it can be calibrated (docs/h3-design.md), else the PIT on IRQ0.
 /// Interrupts must still be disabled; the caller enables them afterwards.
-pub fn init_timer() {
+pub fn init_timer(mem: &mut crate::memory::Memory) {
     let mut pics = PICS.lock();
     // SAFETY: interrupts are disabled and this is the only PIC user. The
-    // remapped vectors have handlers in the IDT; every other line is masked.
+    // remapped vectors have handlers in the IDT; every line is masked.
     unsafe {
         pics.initialize();
-        pics.write_masks(0b1111_1110, 0b1111_1111);
+        pics.write_masks(0b1111_1111, 0b1111_1111);
     }
     drop(pics);
+    match crate::apic::init(mem, TIMER_VECTOR) {
+        Ok((per_tick, port)) => {
+            kprintln!(
+                "ZOO_OS INFO timer source=lapic per-tick={} pm-timer={:#x}",
+                per_tick,
+                port
+            );
+            return;
+        }
+        Err(why) => kprintln!("ZOO_OS INFO timer source=pit reason={}", why),
+    }
+    // SAFETY: as above; only IRQ0 (the timer) is opened.
+    unsafe { PICS.lock().write_masks(0b1111_1110, 0b1111_1111) };
     // SAFETY: ports 0x43/0x40 are the PIT command and channel-0 data ports.
     // Command 0x34: channel 0, low then high byte, mode 2 (rate generator).
     unsafe {
@@ -120,13 +141,16 @@ pub fn enable_keyboard() -> usize {
         let drained = keyboard::drain_controller();
         let mouse = crate::mouse::init();
         crate::serial_println!("ZOO_OS INFO mouse ps2={}", mouse);
-        // SAFETY: IRQ0 (timer), IRQ1 (keyboard), IRQ2 (the slave PIC) and
-        // IRQ12 (mouse) are opened; every one has a handler in the IDT.
+        // SAFETY: IRQ0 (timer, unless the local APIC drives the tick),
+        // IRQ1 (keyboard), IRQ2 (the slave PIC) and IRQ12 (mouse) are
+        // opened; every one has a handler in the IDT.
         unsafe {
             if mouse {
-                PICS.lock().write_masks(0b1111_1000, 0b1110_1111)
+                PICS.lock()
+                    .write_masks(0b1111_1000 | irq0_mask(), 0b1110_1111)
             } else {
-                PICS.lock().write_masks(0b1111_1100, 0b1111_1111)
+                PICS.lock()
+                    .write_masks(0b1111_1100 | irq0_mask(), 0b1111_1111)
             }
         };
         drained
@@ -151,10 +175,17 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
 pub fn on_timer_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::xhci::poll();
+    if crate::apic::active() {
+        crate::apic::eoi();
+        return;
+    }
     // SAFETY: TIMER_VECTOR is the vector the PIC raised. Main code only
     // holds PICS with interrupts disabled, so this lock cannot deadlock.
     unsafe { PICS.lock().notify_end_of_interrupt(TIMER_VECTOR) };
 }
+
+/// Local APIC spurious interrupt: no EOI is sent for it.
+extern "x86-interrupt" fn spurious_apic(_frame: InterruptStackFrame) {}
 
 extern "x86-interrupt" fn mouse_irq(_frame: InterruptStackFrame) {
     crate::mouse::on_interrupt();
