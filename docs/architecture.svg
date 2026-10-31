@@ -187,8 +187,8 @@
   <text x="1204" y="756" class="desc">✓ BeaverHandler (logs)</text>
   <text x="1204" y="782" class="desc">✓ Filesystem is a service:</text>
   <text x="1214" y="798" class="desc">BadgerHandler (S4b)</text>
-  <text x="1204" y="824" class="desc">• Disk driver: files that</text>
-  <text x="1214" y="840" class="desc">survive a reboot</text>
+  <text x="1204" y="824" class="desc">✓ Disk + snapshots: files</text>
+  <text x="1214" y="840" class="desc">survive a reboot (S5)</text>
   <text x="1204" y="866" class="desc">• libc for C programs</text>
   <text x="1204" y="892" class="desc">• Later: network, GPU</text>
   <text x="1214" y="908" class="desc">drivers, Wine for .exe</text>

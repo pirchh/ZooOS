@@ -134,6 +134,30 @@ impl BitmapFrameAllocator {
         None
     }
 
+    /// `n` physically adjacent free frames (for device queues), first one
+    /// returned. Linear scan; used rarely, at boot.
+    pub fn allocate_contiguous(&mut self, n: usize) -> Option<PhysFrame> {
+        if n == 0 {
+            return None;
+        }
+        let is_free = |s: &Self, f: usize| s.free[f / 64] & (1 << (f % 64)) != 0;
+        let mut start = 0;
+        while start + n <= self.frame_count {
+            match (start..start + n).find(|&f| !is_free(self, f)) {
+                Some(used) => start = used + 1,
+                None => {
+                    for f in start..start + n {
+                        self.free[f / 64] &= !(1 << (f % 64));
+                    }
+                    self.available -= n;
+                    let addr = (start as u64) * FRAME_SIZE;
+                    return Some(PhysFrame::containing_address(PhysAddr::new(addr)));
+                }
+            }
+        }
+        None
+    }
+
     pub fn deallocate(&mut self, frame: PhysFrame) -> Result<(), FrameError> {
         let index = (frame.start_address().as_u64() / FRAME_SIZE) as usize;
         if index >= self.frame_count {

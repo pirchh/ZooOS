@@ -23,7 +23,7 @@ use zoo_abi::{
 use zoo_rt::fsproto::{self, Op};
 use zoo_rt::{Handle, channel_create, close, send, send_handle, try_recv, wait_any};
 
-zoo_rt::entry!(main);
+zoo_rt::entry2!(main);
 
 const MAX_NAME: usize = 64;
 const MAX_DEPTH: usize = 16;
@@ -346,6 +346,12 @@ fn seed() -> Tree {
 struct Badger {
     tree: Tree,
     sessions: Vec<Session>,
+    /// The data disk, when the supervisor gave us one.
+    store: Option<Store>,
+    /// Tick of the first unsaved change, if any.
+    dirty: Option<u64>,
+    /// Test hook: the next save stops before its header (docs/s5-design.md §4).
+    crash_next_save: bool,
 }
 
 impl Badger {
@@ -483,28 +489,94 @@ impl Badger {
                 Err(_) => Err(Error::Inval),
             },
         };
+        let changes = matches!(
+            req.op,
+            Op::CreateDir
+                | Op::CreateFile
+                | Op::RemoveDir
+                | Op::RemoveFile
+                | Op::Write
+                | Op::Truncate
+                | Op::Rename
+        );
+        if changes && result.is_ok() && self.store.is_some() && self.dirty.is_none() {
+            self.dirty = Some(zoo_rt::ticks());
+        }
         fsproto::reply(chan, result, &out).is_ok()
+    }
+
+    /// Writes a snapshot once changes have been quiet for `SAVE_DELAY`.
+    /// Returns false when the test hook stops the process mid-save.
+    fn maybe_save(&mut self) -> bool {
+        let Some(since) = self.dirty else { return true };
+        if zoo_rt::ticks() < since + SAVE_DELAY {
+            return true;
+        }
+        self.dirty = None;
+        let payload = self.tree.serialize_home();
+        let crash = core::mem::take(&mut self.crash_next_save);
+        match self.store.as_mut() {
+            Some(store) => store.save(&payload, crash) || !crash,
+            None => true,
+        }
     }
 }
 
-fn main(control: u64) -> u8 {
+fn main(control: u64, disk: u64) -> u8 {
     let mut b = Badger {
         tree: seed(),
         sessions: Vec::new(),
+        store: None,
+        dirty: None,
+        crash_next_save: false,
     };
+    if disk != zoo_rt::NO_HANDLE {
+        let size = zoo_rt::block_size(disk).unwrap_or(0);
+        let slot_bytes = (size / 2) / BLOCK as u64 * BLOCK as u64;
+        if slot_bytes >= 2 * BLOCK as u64 {
+            let mut store = Store {
+                disk,
+                slot_bytes,
+                current: None,
+            };
+            match store.load() {
+                Some(payload) => {
+                    if !b.tree.restore_home(&payload) {
+                        let _ =
+                            zoo_rt::log("BadgerHandler: snapshot did not parse; using the seed");
+                        b.tree = seed();
+                    }
+                }
+                None => {
+                    let _ = zoo_rt::log(
+                        "BadgerHandler: no valid snapshot; starting from the initrd seed",
+                    );
+                }
+            }
+            b.store = Some(store);
+        }
+    }
     let mut buf = vec![0u8; zoo_abi::MAX_MESSAGE];
     loop {
         // Control channel first, then every folder channel.
         let mut watch = Vec::with_capacity(1 + b.sessions.len());
         watch.push(control);
         watch.extend(b.sessions.iter().map(|s| s.chan));
-        let _ = wait_any(&watch, WAIT_FOREVER);
+        let timeout = match b.dirty {
+            Some(since) => (since + SAVE_DELAY).saturating_sub(zoo_rt::ticks()).max(1),
+            None => WAIT_FOREVER,
+        };
+        let _ = wait_any(&watch, timeout);
+        if !b.maybe_save() {
+            return 41; // test hook: "power lost" mid-save
+        }
         match try_recv(control, &mut buf) {
             Ok(n) if &buf[..n] == b"ping" => {
                 if send(control, b"pong").is_err() {
                     return 0;
                 }
             }
+            Ok(n) if &buf[..n] == b"half-save" => b.crash_next_save = true,
             Ok(n) if &buf[..n] == b"root" => match b.open_session(0, dir_rights::ALL) {
                 Ok(client) => {
                     if send_handle(control, client, fsproto::TAG_ROOT).is_err() {
@@ -537,5 +609,237 @@ fn main(control: u64) -> u8 {
             }
             k += 1;
         }
+    }
+}
+
+// ---- Persistence (docs/s5-design.md) -------------------------------------
+
+const MAGIC: &[u8; 8] = b"ZOOFS001";
+const BLOCK: usize = zoo_abi::BLOCK_BYTES;
+/// Ticks after the last change before a snapshot is written.
+const SAVE_DELAY: u64 = 50;
+
+/// Standard CRC-32 (IEEE, reflected).
+fn crc32(data: &[u8]) -> u32 {
+    let mut c = 0xFFFF_FFFFu32;
+    for &b in data {
+        c ^= u32::from(b);
+        for _ in 0..8 {
+            c = (c >> 1) ^ (0xEDB8_8320 & 0u32.wrapping_sub(c & 1));
+        }
+    }
+    !c
+}
+
+/// Two snapshot slots on the data disk, each half of it: a header block
+/// (magic, generation, payload length, CRC-32) then the payload blocks.
+struct Store {
+    disk: Handle,
+    slot_bytes: u64,
+    /// Slot holding the newest valid snapshot and its generation.
+    current: Option<(u64, u64)>,
+}
+
+impl Store {
+    fn read(&self, block: u64, buf: &mut [u8; BLOCK]) -> bool {
+        zoo_rt::block_read(self.disk, block, buf).is_ok()
+    }
+
+    fn write(&self, block: u64, buf: &[u8; BLOCK]) -> bool {
+        zoo_rt::block_write(self.disk, block, buf).is_ok()
+    }
+
+    /// The newest snapshot whose header and CRC are valid.
+    fn load(&mut self) -> Option<Vec<u8>> {
+        let mut best: Option<(u64, u64, Vec<u8>)> = None;
+        for (name, slot) in [("A", 0u64), ("B", self.slot_bytes)] {
+            let mut h = [0u8; BLOCK];
+            if !self.read(slot / BLOCK as u64, &mut h) {
+                zoo_rt::log!("BadgerHandler: slot {}: read failed", name);
+                continue;
+            }
+            if &h[..8] != MAGIC {
+                zoo_rt::log!("BadgerHandler: slot {}: empty", name);
+                continue;
+            }
+            let generation = u64::from_le_bytes(h[8..16].try_into().unwrap_or_default());
+            let len = u64::from_le_bytes(h[16..24].try_into().unwrap_or_default());
+            let crc = u32::from_le_bytes(h[24..28].try_into().unwrap_or_default());
+            if len > self.slot_bytes - BLOCK as u64 {
+                zoo_rt::log!("BadgerHandler: slot {}: bad length, ignored", name);
+                continue;
+            }
+            let mut payload = vec![0u8; len as usize];
+            let first = slot / BLOCK as u64 + 1;
+            let mut ok = true;
+            for (k, chunk) in payload.chunks_mut(BLOCK).enumerate() {
+                let mut b = [0u8; BLOCK];
+                if !self.read(first + k as u64, &mut b) {
+                    ok = false;
+                    break;
+                }
+                let n = chunk.len();
+                chunk.copy_from_slice(&b[..n]);
+            }
+            if !ok || crc32(&payload) != crc {
+                zoo_rt::log!(
+                    "BadgerHandler: slot {}: generation {} failed its check, ignored",
+                    name,
+                    generation
+                );
+                continue;
+            }
+            if best.as_ref().is_none_or(|(g, _, _)| generation > *g) {
+                best = Some((generation, slot, payload));
+            }
+        }
+        let (generation, slot, payload) = best?;
+        self.current = Some((slot, generation));
+        zoo_rt::log!(
+            "BadgerHandler: loaded generation {} from slot {} ({} bytes)",
+            generation,
+            if slot == 0 { "A" } else { "B" },
+            payload.len()
+        );
+        Some(payload)
+    }
+
+    /// Writes `payload` as the next generation into the other slot: payload
+    /// first, header last. With `crash_before_header` it stops after the
+    /// payload (a test of power loss mid-save) and returns false.
+    fn save(&mut self, payload: &[u8], crash_before_header: bool) -> bool {
+        if payload.len() as u64 > self.slot_bytes - BLOCK as u64 {
+            let _ = zoo_rt::log("BadgerHandler: files too large for the disk slot; not saved");
+            return false;
+        }
+        let (slot, generation) = match self.current {
+            Some((s, g)) => (if s == 0 { self.slot_bytes } else { 0 }, g + 1),
+            None => (0, 1),
+        };
+        let first = slot / BLOCK as u64 + 1;
+        for (k, chunk) in payload.chunks(BLOCK).enumerate() {
+            let mut b = [0u8; BLOCK];
+            b[..chunk.len()].copy_from_slice(chunk);
+            if !self.write(first + k as u64, &b) {
+                let _ = zoo_rt::log("BadgerHandler: disk write failed; not saved");
+                return false;
+            }
+        }
+        if crash_before_header {
+            zoo_rt::log!(
+                "BadgerHandler: test: stopping after the payload of generation {} (simulated power loss)",
+                generation
+            );
+            return false;
+        }
+        let mut h = [0u8; BLOCK];
+        h[..8].copy_from_slice(MAGIC);
+        h[8..16].copy_from_slice(&generation.to_le_bytes());
+        h[16..24].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        h[24..28].copy_from_slice(&crc32(payload).to_le_bytes());
+        if !self.write(slot / BLOCK as u64, &h) {
+            let _ = zoo_rt::log("BadgerHandler: header write failed; not saved");
+            return false;
+        }
+        self.current = Some((slot, generation));
+        zoo_rt::log!(
+            "BadgerHandler: saved generation {} to slot {} ({} bytes)",
+            generation,
+            if slot == 0 { "A" } else { "B" },
+            payload.len()
+        );
+        true
+    }
+}
+
+const REC_DIR: u8 = 1;
+const REC_FILE: u8 = 2;
+
+impl Tree {
+    /// `/home/user` as records: kind, path (u16 length), size (u32), data.
+    fn serialize_home(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if let Ok(user) = self.resolve(0, "home/user") {
+            self.serialize_dir(user, "", &mut out);
+        }
+        out
+    }
+
+    fn serialize_dir(&self, dir: usize, prefix: &str, out: &mut Vec<u8>) {
+        let Some(d) = self.node(dir) else { return };
+        for &c in &d.children {
+            let Some(n) = self.node(c) else { continue };
+            let mut path = String::from(prefix);
+            if !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(&n.name);
+            let data: &[u8] = if n.kind == Kind::File {
+                n.content.bytes()
+            } else {
+                &[]
+            };
+            out.push(if n.kind == Kind::Dir {
+                REC_DIR
+            } else {
+                REC_FILE
+            });
+            out.extend_from_slice(&(path.len() as u16).to_le_bytes());
+            out.extend_from_slice(path.as_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(data);
+            if n.kind == Kind::Dir {
+                self.serialize_dir(c, &path, out);
+            }
+        }
+    }
+
+    /// Replaces `/home/user` with the records in `payload`.
+    fn restore_home(&mut self, payload: &[u8]) -> bool {
+        let Ok(user) = self.resolve(0, "home/user") else {
+            return false;
+        };
+        // Detach the seeded contents (their slots stay unused).
+        if let Some(u) = self.node_mut(user) {
+            u.children.clear();
+        }
+        let mut at = 0;
+        while at < payload.len() {
+            let Some(&kind) = payload.get(at) else {
+                return false;
+            };
+            let Some(plen) = payload.get(at + 1..at + 3) else {
+                return false;
+            };
+            let plen = u16::from_le_bytes([plen[0], plen[1]]) as usize;
+            let Some(path) = payload.get(at + 3..at + 3 + plen) else {
+                return false;
+            };
+            let Ok(path) = core::str::from_utf8(path) else {
+                return false;
+            };
+            let p = at + 3 + plen;
+            let Some(dlen) = payload.get(p..p + 4) else {
+                return false;
+            };
+            let dlen = u32::from_le_bytes([dlen[0], dlen[1], dlen[2], dlen[3]]) as usize;
+            let Some(data) = payload.get(p + 4..p + 4 + dlen) else {
+                return false;
+            };
+            at = p + 4 + dlen;
+            let Ok((parent, name)) = self.new_entry(user, path) else {
+                return false;
+            };
+            let content = Content::Owned(data.to_vec());
+            let k = if kind == REC_DIR {
+                Kind::Dir
+            } else {
+                Kind::File
+            };
+            if self.add(parent, name, k, content).is_err() {
+                return false;
+            }
+        }
+        true
     }
 }

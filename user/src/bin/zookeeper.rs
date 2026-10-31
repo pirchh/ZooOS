@@ -558,7 +558,10 @@ struct Svc {
     name: alloc::string::String,
     max: u32,
     /// Gets the kernel log reader as its second start-up handle.
+    /// Second start-up handle: "logs" (kernel log reader) or "disk" (the
+    /// data disk), from the service list.
     logs: bool,
+    disk: bool,
     state: SvcState,
     chan: Handle,
     process: Handle,
@@ -577,7 +580,7 @@ struct Supervisor {
 }
 
 /// Reads `etc/services`: `name max_restarts [logs]` per line, `#` comments.
-fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32, bool)> {
+fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32, bool, bool)> {
     let mut out = alloc::vec::Vec::new();
     let Some(data) = zoo_rt::fs_find("etc/services").and_then(|i| zoo_rt::fs_map(i).ok()) else {
         return out;
@@ -592,8 +595,9 @@ fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32, bool)> {
         if let (Some(name), Some(max)) = (parts.next(), parts.next())
             && let Ok(max) = max.parse()
         {
-            let logs = parts.next() == Some("logs");
-            out.push((alloc::string::String::from(name), max, logs));
+            let flag = parts.next();
+            let (logs, disk) = (flag == Some("logs"), flag == Some("disk"));
+            out.push((alloc::string::String::from(name), max, logs, disk));
         }
     }
     out
@@ -613,6 +617,8 @@ impl Supervisor {
         // A fresh log reader for each start: handles move into the child.
         let reader = if s.logs {
             zoo_rt::log_attach().ok()
+        } else if s.disk {
+            zoo_rt::block_attach().ok()
         } else {
             None
         };
@@ -709,6 +715,75 @@ impl Supervisor {
         self.event(format_args!("connected {} to {}", name, target));
     }
 
+    /// `file dir|cat|put ...` from the kernel shell: simple access to the
+    /// home folder through BadgerHandler (docs/s5-design.md).
+    fn file_request(&self, req: &str) {
+        use zoo_rt::{
+            dir_list, dir_open, dir_rights, file_create, file_read, file_truncate, file_write,
+        };
+        let Some(home) = self
+            .root
+            .and_then(|r| dir_open(r, "home/user", dir_rights::ALL).ok())
+        else {
+            self.reply("no filesystem service");
+            return;
+        };
+        let (cmd, rest) = req.split_once(' ').unwrap_or((req, ""));
+        match cmd {
+            "dir" => {
+                let path = rest.trim();
+                for i in 0.. {
+                    match dir_list(home, path, i) {
+                        Ok(e) => {
+                            let mut l = zoo_rt::Line::new();
+                            let _ = if e.is_dir() {
+                                core::fmt::Write::write_fmt(&mut l, format_args!("  {}/", e.name()))
+                            } else {
+                                core::fmt::Write::write_fmt(
+                                    &mut l,
+                                    format_args!("  {} ({} bytes)", e.name(), e.size),
+                                )
+                            };
+                            self.reply(l.as_str());
+                        }
+                        Err(Error::NotFound) if i > 0 => break,
+                        Err(e) => {
+                            self.reply(e.name());
+                            break;
+                        }
+                    }
+                }
+            }
+            "cat" => {
+                let mut buf = [0u8; 4096];
+                match file_read(home, rest.trim(), 0, &mut buf) {
+                    Ok(n) => {
+                        let text = core::str::from_utf8(&buf[..n]).unwrap_or("<not text>");
+                        for line in text.lines() {
+                            self.reply(line);
+                        }
+                    }
+                    Err(e) => self.reply(e.name()),
+                }
+            }
+            "put" => {
+                let (path, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                let _ = file_create(home, path);
+                let r = file_truncate(home, path, 0).and_then(|_| {
+                    let mut data = alloc::vec::Vec::from(text.as_bytes());
+                    data.push(b'\n');
+                    file_write(home, path, 0, &data)
+                });
+                match r {
+                    Ok(_) => self.reply("saved"),
+                    Err(e) => self.reply(e.name()),
+                }
+            }
+            _ => self.reply("file: dir [path] | cat <path> | put <path> <text>"),
+        }
+        let _ = close(home);
+    }
+
     fn reply(&self, text: &str) {
         let _ = zoo_rt::app::send_wait(self.control, text.as_bytes());
     }
@@ -745,6 +820,8 @@ impl Supervisor {
                 }
                 None => self.reply("no such running service"),
             }
+        } else if let Some(rest) = req.strip_prefix("file ") {
+            self.file_request(rest);
         } else if req == "home" {
             // A home-folder handle for the next desktop session.
             match self
@@ -768,7 +845,10 @@ impl Supervisor {
                 .iter()
                 .find(|s| s.name == name && s.state == SvcState::Running)
             {
-                Some(s) if name == "seal-test" && matches!(what, "crash" | "hang" | "connect") => {
+                Some(s)
+                    if (name == "seal-test" && matches!(what, "crash" | "hang" | "connect"))
+                        || (name == "badger-handler" && what == "half-save") =>
+                {
                     let _ = send(s.chan, what.as_bytes());
                     self.reply("sent");
                 }
@@ -822,11 +902,12 @@ fn supervise(control: Handle) -> u8 {
         svcs: alloc::vec::Vec::new(),
         root: None,
     };
-    for (name, max, logs) in read_service_list() {
+    for (name, max, logs, disk) in read_service_list() {
         sup.svcs.push(Svc {
             name,
             max,
             logs,
+            disk,
             state: SvcState::Failed,
             chan: zoo_rt::NO_HANDLE,
             process: zoo_rt::NO_HANDLE,

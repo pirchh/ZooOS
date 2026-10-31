@@ -18,7 +18,8 @@ pub mod tar;
 /// error 19; version 12 (services step 4a) added call 51.
 /// Version 13 (services step 4b) removed the in-kernel filesystem: calls
 /// 19-25 and 41-45 now return `NOSYS` (their numbers stay reserved).
-pub const ABI_VERSION: u64 = 13;
+/// Version 14 (services step 5) added calls 52-55.
+pub const ABI_VERSION: u64 = 14;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -80,6 +81,14 @@ pub mod sys {
     pub const RECV_HANDLE: u64 = 50;
     /// Waits until one of several handles is ready, or a timeout.
     pub const WAIT_ANY: u64 = 51;
+    /// A block-device handle (the resident supervisor only).
+    pub const BLOCK_ATTACH: u64 = 52;
+    /// Reads one 4 KiB block.
+    pub const BLOCK_READ: u64 = 53;
+    /// Writes one 4 KiB block.
+    pub const BLOCK_WRITE: u64 = 54;
+    /// Device size in bytes.
+    pub const BLOCK_SIZE: u64 = 55;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -245,6 +254,9 @@ pub struct HandleMsg {
     pub handle: u64,
     pub tag: u64,
 }
+
+/// Bytes per block for `block_read`/`block_write`.
+pub const BLOCK_BYTES: usize = 4096;
 
 /// Most handles one `wait_any` call watches.
 pub const WAIT_ANY_MAX: usize = 64;

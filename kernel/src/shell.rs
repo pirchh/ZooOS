@@ -193,6 +193,9 @@ fn execute(line: &str) {
             kprintln!("logs [text]     recent log lines, optionally only those containing text");
             kprintln!("poke <svc> <x>  send a test request to a service");
             kprintln!("restart <svc>   stop a service; its restart policy starts it again");
+            kprintln!("dir [path]      list a folder in your home folder");
+            kprintln!("cat <path>      show a file from your home folder");
+            kprintln!("put <path> <t>  write text to a file in your home folder");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");
@@ -234,6 +237,13 @@ fn execute(line: &str) {
             }
         }
         "services" => supervisor_request("status"),
+        "dir" | "cat" | "put" => {
+            let mut req = String::from("file ");
+            req.push_str(cmd);
+            req.push(' ');
+            req.push_str(rest.trim());
+            supervisor_request(&req);
+        }
         "restart" => {
             let mut req = String::from("restart ");
             req.push_str(rest.trim());
