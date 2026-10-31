@@ -143,6 +143,13 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 10: a cursor in Notes (2026-10-31)
+
+Design: docs/d10-design.md.
+
+- Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
+  at a cursor. Version 0.38.0.
+
 ## Desktop step 9: double-click to zoom (2026-10-31)
 
 Design: docs/d9-design.md.

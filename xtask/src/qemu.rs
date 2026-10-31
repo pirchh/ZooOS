@@ -302,6 +302,10 @@ pub enum Action {
     /// Wait for a line containing this text followed by Unix seconds, and
     /// require them to be within `CLOCK_TOLERANCE` of the host's clock.
     WaitClock(String),
+    /// Wait until some line anywhere in the log contains this text, without
+    /// moving past it: for lines whose order against others is not fixed
+    /// (a service's start-up next to `SHELL ready`).
+    WaitSeen(String),
     /// Wait for a line containing this text, and require it to arrive
     /// between `min` and `max` milliseconds (host time) after the previous
     /// waited-for line.
@@ -454,6 +458,10 @@ pub fn run_case(
                         }
                         None => false,
                     }
+                }
+                Action::WaitSeen(part) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    find_line_containing(complete, 0, part).is_some()
                 }
                 Action::WaitGap(part, min, max) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];

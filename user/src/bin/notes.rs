@@ -1,7 +1,8 @@
 //! Notes: a small text editor for one file, `Documents/notes.txt` in the
-//! home folder (docs/d4-design.md). Typing appends at the end, Enter starts
-//! a new line, Backspace deletes the last character. Changes are saved a
-//! second after typing stops, and when the window closes.
+//! home folder (docs/d4-design.md). Left and Right move the cursor
+//! (docs/d10-design.md); typing, Enter and Backspace work at the cursor.
+//! Changes are saved a second after typing stops, and when the window
+//! closes.
 
 #![no_std]
 #![no_main]
@@ -36,9 +37,11 @@ fn main(channel: u64, home: u64) -> u8 {
         }
     }
     let mut editing = false;
+    // Cursor: a byte offset into the text (it starts at the end).
+    let mut cursor = len;
     let mut msg = [0u8; MAX_MESSAGE];
     loop {
-        if draw(&win, &text[..len], editing).is_err() {
+        if draw(&win, &text[..len], cursor, editing).is_err() {
             return 0; // the window server went away
         }
         let timeout = if editing { SAVE_AFTER } else { WAIT_FOREVER };
@@ -55,20 +58,22 @@ fn main(channel: u64, home: u64) -> u8 {
                 Ok(n) => match Key::parse(&msg[..n]) {
                     Some(Key::Char(c)) if c.is_ascii() && !c.is_ascii_control() => {
                         if len < CAPACITY {
-                            text[len] = c as u8;
-                            len += 1;
+                            insert(&mut text, &mut len, &mut cursor, c as u8);
                             editing = true;
                         }
                     }
                     Some(Key::Enter) if len < CAPACITY => {
-                        text[len] = b'\n';
-                        len += 1;
+                        insert(&mut text, &mut len, &mut cursor, b'\n');
                         editing = true;
                     }
-                    Some(Key::Back) if len > 0 => {
+                    Some(Key::Back) if cursor > 0 => {
+                        text.copy_within(cursor..len, cursor - 1);
                         len -= 1;
+                        cursor -= 1;
                         editing = true;
                     }
+                    Some(Key::Left) => cursor = cursor.saturating_sub(1),
+                    Some(Key::Right) => cursor = (cursor + 1).min(len),
                     _ => {}
                 },
                 Err(Error::Again) => break,
@@ -83,6 +88,14 @@ fn main(channel: u64, home: u64) -> u8 {
             }
         }
     }
+}
+
+/// Inserts `b` at the cursor (the caller checked there is room).
+fn insert(text: &mut [u8; CAPACITY], len: &mut usize, cursor: &mut usize, b: u8) {
+    text.copy_within(*cursor..*len, *cursor + 1);
+    text[*cursor] = b;
+    *len += 1;
+    *cursor += 1;
 }
 
 /// Rewrites the file; true on success.
@@ -115,7 +128,7 @@ fn visual_lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
         })
 }
 
-fn draw(win: &Window, text: &[u8], editing: bool) -> Result<(), Error> {
+fn draw(win: &Window, text: &[u8], cursor: usize, editing: bool) -> Result<(), Error> {
     win.title("Notes")?;
     let mut head = Line::new();
     let _ = write!(
@@ -125,7 +138,14 @@ fn draw(win: &Window, text: &[u8], editing: bool) -> Result<(), Error> {
         if editing { "editing" } else { "saved" }
     );
     win.line(0, head.as_str())?;
-    // The last lines that fit under the heading, the cursor after them.
+    // The text with the cursor drawn in it: `_` at the end, `|` inside.
+    let mut shown_text = [0u8; CAPACITY + 1];
+    let n = text.len();
+    shown_text[..cursor].copy_from_slice(&text[..cursor]);
+    shown_text[cursor] = if cursor == n { b'_' } else { b'|' };
+    shown_text[cursor + 1..=n].copy_from_slice(&text[cursor..]);
+    let text = &shown_text[..=n];
+    // The last lines that fit under the heading.
     let total = visual_lines(text).count();
     let room = MAX_LINES - 1;
     let skip = total.saturating_sub(room);
@@ -133,9 +153,6 @@ fn draw(win: &Window, text: &[u8], editing: bool) -> Result<(), Error> {
     for (k, l) in visual_lines(text).skip(skip).enumerate() {
         let mut line = Line::new();
         let _ = line.write_str(core::str::from_utf8(l).unwrap_or("?"));
-        if skip + k + 1 == total {
-            let _ = line.write_str("_");
-        }
         win.line(1 + k, line.as_str())?;
         shown = k + 1;
     }

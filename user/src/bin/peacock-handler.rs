@@ -1125,6 +1125,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 }
                 Some(DecodedKey::RawKey(KeyCode::ArrowUp)) => desk.send_key(Key::Up),
                 Some(DecodedKey::RawKey(KeyCode::ArrowDown)) => desk.send_key(Key::Down),
+                Some(DecodedKey::RawKey(KeyCode::ArrowLeft)) => desk.send_key(Key::Left),
+                Some(DecodedKey::RawKey(KeyCode::ArrowRight)) => desk.send_key(Key::Right),
                 Some(DecodedKey::Unicode('\n')) => desk.send_key(Key::Enter),
                 Some(DecodedKey::Unicode('\u{8}')) => desk.send_key(Key::Back),
                 Some(DecodedKey::Unicode(c)) if (' '..='~').contains(&c) => {
