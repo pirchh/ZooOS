@@ -105,7 +105,8 @@ and verification:
 | 5b-3 | C library: route 3 chosen (Linux system calls; docs/feasibility/libc-route.md) | in progress |
 | L1 | Linux system calls, step 1: a static musl "hello" runs unmodified (docs/linux1-design.md) | done 2026-10-31 |
 | L2 | Memory (`brk`, `mmap`), read-only files, time (docs/linux2-design.md) | done 2026-10-31 |
-| L3 | Writable files in the home folder, directories, an environment | proposed |
+| L3 | Folders, working directory, uname, environment (docs/linux3-design.md) | done 2026-10-31 |
+| L4 | Writable files in the home folder (through BadgerHandler) | proposed |
 
 ## Services (owner direction 2026-10-30)
 

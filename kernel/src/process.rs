@@ -165,7 +165,9 @@ struct Proc {
     /// files (descriptor 3 is index 0): initrd data and read position
     /// (docs/linux2-design.md).
     linux_brk: Option<(u64, u64)>,
-    linux_files: Vec<Option<(&'static [u8], u64)>>,
+    linux_files: Vec<Option<LinuxFile>>,
+    /// Linux programs' working directory, as an initrd path (`""` is `/`).
+    linux_cwd: String,
     /// Pages committed through `vm_commit`.
     committed: u64,
     /// User exception handler entry (docs/posix3-design.md); 0 if none.
@@ -249,6 +251,7 @@ impl Proc {
             vmas: Vec::new(),
             linux_brk: None,
             linux_files: Vec::new(),
+            linux_cwd: String::new(),
             committed: 0,
             exc_handler: 0,
         }
@@ -907,6 +910,25 @@ impl Scheduler {
         }
     }
 
+    /// Linux descriptor `fd` of task `i`'s process (3 and up).
+    fn linux_file(&mut self, i: usize, fd: u64) -> Option<&mut LinuxFile> {
+        let k = fd.checked_sub(3)? as usize;
+        self.proc(i).linux_files.get_mut(k)?.as_mut()
+    }
+
+    /// The user path at `addr`, resolved against the working directory.
+    fn linux_path(
+        &mut self,
+        i: usize,
+        ok: &impl Fn(u64, u64, bool) -> bool,
+        addr: u64,
+    ) -> Option<String> {
+        let mut name = [0u8; LINUX_PATH_MAX];
+        let n = user_cstr(ok, addr, &mut name)?;
+        let path = core::str::from_utf8(&name[..n]).ok()?;
+        Some(linux_resolve(&self.proc(i).linux_cwd, path))
+    }
+
     /// A Linux x86-64 system call (docs/linux1-design.md): number in RAX,
     /// arguments in RDI, RSI, RDX, R10, R8, R9; errors as negative errno.
     fn linux_syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
@@ -1105,23 +1127,21 @@ impl Scheduler {
                 unsafe { (a3 as *mut u64).write_unaligned(1) };
                 Outcome::Ret(8)
             }
-            // ---- files: read-only, from the initrd ----
+            // ---- files and folders: read-only, from the initrd ----
             // open(path, flags), openat(dirfd, path, flags)
             2 | 257 => {
                 let (path, flags) = if number == 2 { (a1, a2) } else { (a2, a3) };
                 if flags & 3 != 0 {
                     return fail(EROFS);
                 }
-                let mut name = [0u8; LINUX_PATH_MAX];
-                let Some(n) = user_cstr(&ok, path, &mut name) else {
+                let Some(path) = self.linux_path(i, &ok, path) else {
                     return fail(EFAULT);
                 };
-                let Some(data) = core::str::from_utf8(&name[..n])
-                    .ok()
-                    .and_then(initrd_path)
-                    .and_then(initrd::find)
-                else {
-                    return fail(ENOENT);
+                let file = match initrd_kind(&path) {
+                    Some(Kind::File(_)) if flags & O_DIRECTORY != 0 => return fail(ENOTDIR),
+                    Some(Kind::File(data)) => LinuxFile::File(data, 0),
+                    Some(Kind::Dir) => LinuxFile::Dir(path, 0),
+                    None => return fail(ENOENT),
                 };
                 let files = &mut self.proc(i).linux_files;
                 let slot = match files.iter().position(Option::is_none) {
@@ -1132,7 +1152,7 @@ impl Scheduler {
                     }
                     None => return fail(EMFILE),
                 };
-                files[slot] = Some((data, 0));
+                files[slot] = Some(file);
                 Outcome::Ret(slot as i64 + 3)
             }
             // close(fd)
@@ -1170,12 +1190,10 @@ impl Scheduler {
                 if a1 == 0 {
                     return Outcome::Ret(0); // standard input: at its end
                 }
-                let Some(Some((data, pos))) = a1
-                    .checked_sub(3)
-                    .and_then(|k| self.proc(i).linux_files.get(k as usize))
-                    .copied()
-                else {
-                    return fail(EBADF);
+                let (data, pos) = match self.linux_file(i, a1) {
+                    Some(LinuxFile::File(data, pos)) => (*data, *pos),
+                    Some(LinuxFile::Dir(..)) => return fail(EISDIR),
+                    None => return fail(EBADF),
                 };
                 let mut at = pos as usize;
                 let mut total = 0usize;
@@ -1195,60 +1213,106 @@ impl Scheduler {
                     at += n;
                     total += n;
                 }
-                if let Some(Some(file)) = self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
-                    file.1 = at as u64;
+                if let Some(LinuxFile::File(_, pos)) = self.linux_file(i, a1) {
+                    *pos = at as u64;
                 }
                 Outcome::Ret(total as i64)
             }
-            // lseek(fd, offset, whence)
+            // lseek(fd, offset, whence); on a folder only a rewind.
             8 => {
-                let Some(Some((data, pos))) = a1
-                    .checked_sub(3)
-                    .and_then(|k| self.proc(i).linux_files.get(k as usize))
-                    .copied()
-                else {
-                    return fail(EBADF);
+                let (len, pos) = match self.linux_file(i, a1) {
+                    Some(LinuxFile::File(data, pos)) => (data.len() as i64, *pos as i64),
+                    Some(LinuxFile::Dir(_, pos)) if a2 == 0 && a3 == 0 => {
+                        *pos = 0;
+                        return Outcome::Ret(0);
+                    }
+                    Some(LinuxFile::Dir(..)) => return fail(EINVAL),
+                    None => return fail(EBADF),
                 };
                 let from = match a3 {
                     0 => 0i64,
-                    1 => pos as i64,
-                    2 => data.len() as i64,
+                    1 => pos,
+                    2 => len,
                     _ => return fail(EINVAL),
                 };
                 let new = from.saturating_add(a2 as i64);
                 if new < 0 {
                     return fail(EINVAL);
                 }
-                if let Some(Some(file)) = self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
-                    file.1 = new as u64;
+                if let Some(LinuxFile::File(_, pos)) = self.linux_file(i, a1) {
+                    *pos = new as u64;
                 }
                 Outcome::Ret(new)
             }
-            // fstat(fd, st); stat(path, st); newfstatat(dirfd, path, st, flags)
-            5 | 4 | 262 => {
+            // getdents64(fd, buf, count): a folder's entries, `.` and `..`
+            // first.
+            217 => {
+                let (dir, start) = match self.linux_file(i, a1) {
+                    Some(LinuxFile::Dir(path, pos)) => (path.clone(), *pos),
+                    Some(LinuxFile::File(..)) => return fail(ENOTDIR),
+                    None => return fail(EBADF),
+                };
+                let mut entries =
+                    alloc::vec![(String::from("."), true), (String::from(".."), true)];
+                entries.extend(initrd_children(&dir));
+                let mut out = alloc::vec::Vec::new();
+                let mut next = start;
+                for (k, (name, is_dir)) in entries.iter().enumerate().skip(start) {
+                    // struct linux_dirent64: ino, off, reclen, type, name.
+                    let reclen = (19 + name.len() + 1).div_ceil(8) * 8;
+                    if out.len() + reclen > a3 as usize {
+                        break;
+                    }
+                    let mut rec = alloc::vec![0u8; reclen];
+                    rec[0..8].copy_from_slice(&(k as u64 + 1).to_le_bytes());
+                    rec[8..16].copy_from_slice(&(k as u64 + 1).to_le_bytes());
+                    rec[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
+                    rec[18] = if *is_dir { 4 } else { 8 }; // DT_DIR, DT_REG
+                    rec[19..19 + name.len()].copy_from_slice(name.as_bytes());
+                    out.extend_from_slice(&rec);
+                    next = k + 1;
+                }
+                if out.is_empty() && next < entries.len() {
+                    return fail(EINVAL); // buffer too small for one entry
+                }
+                if !out.is_empty() {
+                    if !ok(a2, out.len() as u64, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(out.as_ptr(), a2 as *mut u8, out.len())
+                    };
+                }
+                if let Some(LinuxFile::Dir(_, pos)) = self.linux_file(i, a1) {
+                    *pos = next;
+                }
+                Outcome::Ret(out.len() as i64)
+            }
+            // fstat(fd, st); stat(path, st); lstat(path, st);
+            // newfstatat(dirfd, path, st, flags)
+            5 | 4 | 6 | 262 => {
                 let (fd, path, st) = match number {
                     5 => (Some(a1), 0, a2),
-                    4 => (None, a1, a2),
+                    4 | 6 => (None, a1, a2),
                     _ if f.r10 & AT_EMPTY_PATH != 0 => (Some(a1), 0, a3),
                     _ => (None, a2, a3),
                 };
-                let size = match (fd, path) {
-                    (Some(0..=2), _) => None,
-                    (Some(fd), _) => match self.proc(i).linux_files.get((fd - 3) as usize) {
-                        Some(Some((data, _))) => Some(data.len() as u64),
-                        _ => return fail(EBADF),
+                // (mode, size)
+                let (mode, len) = match fd {
+                    Some(0..=2) => (0o020_620u32, 0),
+                    Some(fd) => match self.linux_file(i, fd) {
+                        Some(LinuxFile::File(data, _)) => (0o100_444, data.len() as u64),
+                        Some(LinuxFile::Dir(..)) => (0o040_555, 0),
+                        None => return fail(EBADF),
                     },
-                    (None, path) => {
-                        let mut name = [0u8; LINUX_PATH_MAX];
-                        let Some(n) = user_cstr(&ok, path, &mut name) else {
+                    None => {
+                        let Some(path) = self.linux_path(i, &ok, path) else {
                             return fail(EFAULT);
                         };
-                        match core::str::from_utf8(&name[..n])
-                            .ok()
-                            .and_then(initrd_path)
-                            .and_then(initrd::find)
-                        {
-                            Some(data) => Some(data.len() as u64),
+                        match initrd_kind(&path) {
+                            Some(Kind::File(data)) => (0o100_444, data.len() as u64),
+                            Some(Kind::Dir) => (0o040_555, 0),
                             None => return fail(ENOENT),
                         }
                     }
@@ -1256,22 +1320,100 @@ impl Scheduler {
                 if !ok(st, 144, true) {
                     return fail(EFAULT);
                 }
-                // struct stat (x86-64): mode at 24, size at 48, blksize at
-                // 56, blocks at 64; the rest zero. A regular read-only file,
-                // or a character device for the standard descriptors.
+                // struct stat (x86-64): nlink at 16, mode at 24, uid and gid
+                // at 28 and 32, size at 48, blksize at 56, blocks at 64.
                 let mut buf = [0u8; 144];
-                let (mode, len) = match size {
-                    Some(len) => (0o100_444u32, len),
-                    None => (0o020_620u32, 0),
-                };
                 buf[16..24].copy_from_slice(&1u64.to_le_bytes());
                 buf[24..28].copy_from_slice(&mode.to_le_bytes());
+                buf[28..32].copy_from_slice(&LINUX_UID.to_le_bytes());
+                buf[32..36].copy_from_slice(&LINUX_UID.to_le_bytes());
                 buf[48..56].copy_from_slice(&len.to_le_bytes());
                 buf[56..64].copy_from_slice(&4096u64.to_le_bytes());
                 buf[64..72].copy_from_slice(&len.div_ceil(512).to_le_bytes());
                 // SAFETY: checked as writable user memory.
                 unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), st as *mut u8, 144) };
                 Outcome::Ret(0)
+            }
+            // access(path, mode), faccessat(dirfd, path, mode)
+            21 | 269 => {
+                let (path, mode) = if number == 21 { (a1, a2) } else { (a2, a3) };
+                let Some(path) = self.linux_path(i, &ok, path) else {
+                    return fail(EFAULT);
+                };
+                match initrd_kind(&path) {
+                    None => fail(ENOENT),
+                    Some(_) if mode & 2 != 0 => fail(EROFS), // W_OK
+                    Some(_) => Outcome::Ret(0),
+                }
+            }
+            // getcwd(buf, size): the length written, NUL included.
+            79 => {
+                let cwd = alloc::format!("/{}", self.proc(i).linux_cwd);
+                let n = cwd.len() + 1;
+                if (a2 as usize) < n {
+                    return fail(ERANGE);
+                }
+                if !ok(a1, n as u64, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(cwd.as_ptr(), a1 as *mut u8, cwd.len());
+                    (a1 as *mut u8).add(cwd.len()).write(0);
+                }
+                Outcome::Ret(n as i64)
+            }
+            // chdir(path)
+            80 => {
+                let Some(path) = self.linux_path(i, &ok, a1) else {
+                    return fail(EFAULT);
+                };
+                match initrd_kind(&path) {
+                    Some(Kind::Dir) => {
+                        self.proc(i).linux_cwd = path;
+                        Outcome::Ret(0)
+                    }
+                    Some(Kind::File(_)) => fail(ENOTDIR),
+                    None => fail(ENOENT),
+                }
+            }
+            // uname(buf): six 65-byte fields. The system reports itself as
+            // Linux, as other kernels' Linux layers do, so programs that
+            // check take their Linux paths (docs/linux3-design.md).
+            63 => {
+                if !ok(a1, 6 * 65, true) {
+                    return fail(EFAULT);
+                }
+                let fields = [
+                    "Linux",
+                    "zoo",
+                    "6.1.0-zooos",
+                    concat!("ZooOS ", env!("CARGO_PKG_VERSION")),
+                    "x86_64",
+                    "(none)",
+                ];
+                let mut buf = [0u8; 6 * 65];
+                for (k, v) in fields.iter().enumerate() {
+                    buf[k * 65..k * 65 + v.len()].copy_from_slice(v.as_bytes());
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), a1 as *mut u8, buf.len()) };
+                Outcome::Ret(0)
+            }
+            // getuid, getgid, geteuid, getegid: one ordinary user.
+            102 | 104 | 107 | 108 => Outcome::Ret(i64::from(LINUX_UID)),
+            // getppid: started by the kernel.
+            110 => Outcome::Ret(0),
+            // fcntl(fd, cmd, arg): descriptor flags (close-on-exec has no
+            // meaning yet) and status flags (always read-only).
+            72 => {
+                if a1 > 2 && self.linux_file(i, a1).is_none() {
+                    return fail(EBADF);
+                }
+                match a2 {
+                    1..=4 => Outcome::Ret(0), // F_GETFD, F_SETFD, F_GETFL, F_SETFL
+                    _ => fail(EINVAL),
+                }
             }
             // ---- time ----
             // clock_gettime(clock, ts)
@@ -2625,6 +2767,15 @@ fn load_image(
 
 // ---- Linux programs (docs/linux1-design.md) -----------------------------
 
+/// The environment every Linux program starts with.
+const LINUX_ENV: [&str; 5] = [
+    "HOME=/home/user",
+    "PATH=/linux",
+    "USER=user",
+    "LANG=C.UTF-8",
+    "TERM=dumb",
+];
+
 /// Auxiliary-vector keys musl reads at start-up.
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -2670,6 +2821,14 @@ fn linux_stack(
         argv[argc] = put_bytes(&mut top, arg.as_bytes());
         argc += 1;
     }
+    // The environment (docs/linux3-design.md).
+    let mut env = [0u64; LINUX_ENV.len()];
+    let mut env_count = 0;
+    for v in LINUX_ENV {
+        put_bytes(&mut top, &[0]);
+        env[env_count] = put_bytes(&mut top, v.as_bytes());
+        env_count += 1;
+    }
     // Program headers: the ELF header's table, found in a loaded segment.
     let phoff = u64::from_le_bytes(file[32..40].try_into().unwrap_or([0; 8]));
     let phnum = u64::from(u16::from_le_bytes([file[56], file[57]]));
@@ -2686,8 +2845,8 @@ fn linux_stack(
         (AT_RANDOM, random_at),
         (AT_NULL, 0),
     ];
-    // argc, argv[], NULL, envp NULL, auxv pairs.
-    let words = 1 + argc + 1 + 1 + 2 * aux.len();
+    // argc, argv[], NULL, envp[], NULL, auxv pairs.
+    let words = 1 + argc + 1 + env_count + 1 + 2 * aux.len();
     let mut at = (top - words * 8) & !15;
     let rsp = base + at as u64;
     let mut word = |v: u64| {
@@ -2699,6 +2858,9 @@ fn linux_stack(
         word(a);
     }
     word(0);
+    for &e in &env[..env_count] {
+        word(e);
+    }
     word(0);
     for (k, v) in aux {
         word(k);
@@ -2719,6 +2881,7 @@ const LINUX_RW: u64 = zoo_abi::prot::READ | zoo_abi::prot::WRITE;
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
 const AT_EMPTY_PATH: u64 = 0x1000;
+const O_DIRECTORY: u64 = 0o200_000;
 
 fn page_up(a: u64) -> u64 {
     a.div_ceil(4096) * 4096
@@ -2742,18 +2905,87 @@ fn user_cstr(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64, buf: &mut [u8]) ->
     None
 }
 
-/// A Linux path as an initrd name: `/etc/services` → `etc/services`.
-/// Relative paths start at `/`; `.` and `..` are refused.
-fn initrd_path(path: &str) -> Option<&str> {
-    let p = path.trim_start_matches('/');
-    if p.is_empty() || p.split('/').any(|c| c == "." || c == "..") {
-        return None;
+/// An open Linux descriptor: an initrd file and its position, or a folder
+/// (an initrd path) and the next entry to list.
+enum LinuxFile {
+    File(&'static [u8], u64),
+    Dir(String, usize),
+}
+
+/// What an initrd path names.
+enum Kind {
+    File(&'static [u8]),
+    Dir,
+}
+
+/// The uid and gid Linux programs see.
+const LINUX_UID: u32 = 1000;
+
+/// `path` against working directory `cwd` (both without a leading `/`),
+/// with `.` and `..` applied: `/etc/services` → `etc/services`.
+fn linux_resolve(cwd: &str, path: &str) -> String {
+    let mut parts: alloc::vec::Vec<&str> = if path.starts_with('/') {
+        alloc::vec::Vec::new()
+    } else {
+        cwd.split('/').filter(|c| !c.is_empty()).collect()
+    };
+    for c in path.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
     }
-    Some(p)
+    parts.join("/")
+}
+
+/// A file, or a folder: the root, or any prefix of a packed file's path.
+fn initrd_kind(path: &str) -> Option<Kind> {
+    if path.is_empty() {
+        return Some(Kind::Dir);
+    }
+    if let Some(data) = initrd::find(path) {
+        return Some(Kind::File(data));
+    }
+    let mut dir = false;
+    initrd::for_each(|name, _| {
+        dir |= name.len() > path.len()
+            && name.starts_with(path)
+            && name.as_bytes()[path.len()] == b'/';
+    });
+    dir.then_some(Kind::Dir)
+}
+
+/// The names directly inside folder `dir`, sorted, with whether each is a
+/// folder.
+fn initrd_children(dir: &str) -> alloc::vec::Vec<(String, bool)> {
+    let mut found = alloc::collections::BTreeMap::new();
+    initrd::for_each(|name, _| {
+        let rest = if dir.is_empty() {
+            Some(name)
+        } else {
+            name.strip_prefix(dir).and_then(|r| r.strip_prefix('/'))
+        };
+        if let Some(rest) = rest {
+            let (first, more) = match rest.split_once('/') {
+                Some((first, _)) => (first, true),
+                None => (rest, false),
+            };
+            if !first.is_empty() {
+                *found.entry(String::from(first)).or_insert(false) |= more;
+            }
+        }
+    });
+    found.into_iter().collect()
 }
 
 /// Linux error numbers used here.
 const ENOENT: i64 = 2;
+const ENOTDIR: i64 = 20;
+const EISDIR: i64 = 21;
+const ERANGE: i64 = 34;
 const EBADF: i64 = 9;
 const ENOMEM: i64 = 12;
 const EMFILE: i64 = 24;
