@@ -39,7 +39,7 @@ impl Memory {
         unsafe { OffsetPageTable::new(self.table(p4), VirtAddr::new(self.phys_offset)) }
     }
 
-    fn zeroed_frame(&mut self) -> Result<PhysFrame, SpaceError> {
+    pub fn zeroed_frame(&mut self) -> Result<PhysFrame, SpaceError> {
         let f = self.frames.allocate().ok_or(SpaceError::OutOfMemory)?;
         // SAFETY: the frame was just allocated, so nothing else uses it; the
         // window maps it writable.

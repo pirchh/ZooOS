@@ -96,6 +96,24 @@ enum Object {
     LogReader,
     /// The data disk (docs/s5-design.md).
     Block,
+    /// Shared memory pages (docs/f1-design.md).
+    Shm(Arc<ShmPages>),
+}
+
+/// Pages several processes can map. Each handle and each mapping holds a
+/// reference; when the last goes, the frames are queued for the next reap
+/// (which holds the memory lock) rather than freed here.
+struct ShmPages {
+    frames: Vec<PhysFrame>,
+}
+
+/// Frames of shared memory nobody refers to any more, freed by `reap`.
+static SHM_FREED: Mutex<Vec<PhysFrame>> = Mutex::new(Vec::new());
+
+impl Drop for ShmPages {
+    fn drop(&mut self) {
+        SHM_FREED.lock().append(&mut self.frames);
+    }
 }
 
 #[derive(Clone)]
@@ -148,6 +166,9 @@ struct Proc {
     /// Read-only file mappings of ramdisk pages: (address, pages). Never
     /// freed through the frame allocator; unmapped before the space is freed.
     file_maps: Vec<(u64, u64)>,
+    /// Shared memory mapped here: (address, pages, the pages), unmapped
+    /// without freeing before the space is freed.
+    shm_maps: Vec<(u64, u64, Arc<ShmPages>)>,
     /// May call `log_attach` and `block_attach` (the resident supervisor).
     log_ok: bool,
     /// Program name and arguments, NUL-separated (`args_get`).
@@ -244,6 +265,7 @@ impl Proc {
             heap_next: HEAP_BASE,
             map_next: MAP_BASE,
             file_maps: Vec::new(),
+            shm_maps: Vec::new(),
             log_ok: false,
             live: 1,
             members: 1,
@@ -805,6 +827,10 @@ impl Scheduler {
     /// Frees exited tasks that are not the current one, and a process's
     /// memory once its last thread is freed.
     fn reap(&mut self, mem: &mut Memory) {
+        // Shared memory released since the last reap.
+        for f in core::mem::take(&mut *SHM_FREED.lock()) {
+            let _ = mem.frames.deallocate(f);
+        }
         let current = self.current;
         let mut keep = Vec::new();
         for i in core::mem::take(&mut self.zombies) {
@@ -832,10 +858,18 @@ impl Scheduler {
                 // Ramdisk pages: likewise never freed.
                 mem.unmap_user_keep(p.p4, va, pages);
             }
+            for (va, pages, _) in &p.shm_maps {
+                // Shared pages: freed when their last reference goes.
+                mem.unmap_user_keep(p.p4, *va, *pages);
+            }
             mem.free_address_space(p.p4);
             self.thread_exits.retain(|&(pid, _, _)| pid != p.pid);
         }
         self.zombies = keep;
+        // And what the processes just reaped held.
+        for f in core::mem::take(&mut *SHM_FREED.lock()) {
+            let _ = mem.frames.deallocate(f);
+        }
     }
 
     /// Makes task `i` current and returns the frame to resume. Re-runs a
@@ -1833,6 +1867,71 @@ impl Scheduler {
                 }
                 self.proc(i).heap_next = start + pages * 4096;
                 Outcome::Ret(start as i64)
+            }
+            sys::SHM_CREATE => {
+                // a1 = pages.
+                if a1 == 0 || a1 > zoo_abi::SHM_MAX_PAGES {
+                    return err(Error::Inval);
+                }
+                if self.proc(i).free_slots() < 1 || (mem.frames.available() as u64) < a1 + 64 {
+                    return err(Error::NoMem);
+                }
+                let mut frames = Vec::with_capacity(a1 as usize);
+                for _ in 0..a1 {
+                    match mem.zeroed_frame() {
+                        Ok(f) => frames.push(f),
+                        Err(_) => {
+                            for f in frames {
+                                let _ = mem.frames.deallocate(f);
+                            }
+                            return err(Error::NoMem);
+                        }
+                    }
+                }
+                let h = self
+                    .proc(i)
+                    .insert(HandleEntry {
+                        object: Object::Shm(Arc::new(ShmPages { frames })),
+                        rights: 0,
+                    })
+                    .expect("checked a free slot");
+                Outcome::Ret(h as i64)
+            }
+            sys::SHM_MAP => {
+                // a1 = handle; maps every page read/write, returns the address.
+                let pages = match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Shm(p),
+                        ..
+                    }) => p.clone(),
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                };
+                let n = pages.frames.len() as u64;
+                let va = self.proc(i).map_next;
+                for (k, &frame) in pages.frames.iter().enumerate() {
+                    if mem
+                        .map_user_frame(p4, va + k as u64 * 4096, frame, true)
+                        .is_err()
+                    {
+                        mem.unmap_user_keep(p4, va, k as u64);
+                        return err(Error::NoMem);
+                    }
+                }
+                let t = self.proc(i);
+                t.shm_maps.push((va, n, pages));
+                // Leave an unmapped page between mappings.
+                t.map_next = va + (n + 1) * 4096;
+                Outcome::Ret(va as i64)
+            }
+            sys::SHM_UNMAP => {
+                // a1 = an address `shm_map` returned.
+                let Some(k) = self.proc(i).shm_maps.iter().position(|m| m.0 == a1) else {
+                    return err(Error::NotFound);
+                };
+                let (va, n, _pages) = self.proc(i).shm_maps.remove(k);
+                mem.unmap_user_keep(p4, va, n);
+                Outcome::Ret(0)
             }
             sys::FS_MAP => {
                 let size = core::mem::size_of::<MapInfo>() as u64;
@@ -3042,8 +3141,10 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
         if s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
             return frame;
         }
-        // Preemption: plain round-robin, including the kernel task.
-        s.prefer_user = false;
+        // Preemption: round-robin. The kernel task takes a turn only when it
+        // has work; idle, it would halt until the next tick while a program
+        // is ready (docs/f1-design.md: the 10 ms stalls).
+        s.prefer_user = KERNEL_IDLE.load(Ordering::Relaxed);
         let next = s.switch_away(frame, m);
         s.prefer_user = true;
         next

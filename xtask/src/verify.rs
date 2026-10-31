@@ -804,6 +804,36 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "file-speed",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run bowhead-test",
+                    "ZOO_OS PROC start pid=26 name=bowhead-test",
+                    "ZOO_OS PROC start pid=27 name=badger-handler",
+                    "ZOO_OS PROC killed pid=27 name=badger-handler by=26",
+                    "ZOO_OS PROC exit pid=26 name=bowhead-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "file throughput: 1 MiB written and read back through BadgerHandler, timed (numbers meaningful with --accel)",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run bowhead-test")),
+                    Action::WaitContains("BowheadTest: 1 MiB write ".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=bowhead-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,

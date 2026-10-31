@@ -70,6 +70,16 @@ struct Session {
     chan: Handle,
     node: usize,
     rights: u64,
+    /// The client's shared buffer, mapped here (docs/f1-design.md).
+    shm: Option<u64>,
+}
+
+/// Unmaps a session's shared buffer when it ends.
+fn end_session(s: Session) {
+    if let Some(addr) = s.shm {
+        let _ = zoo_rt::shm_unmap(addr);
+    }
+    let _ = close(s.chan);
 }
 
 fn valid_component(c: &str) -> bool {
@@ -365,6 +375,7 @@ impl Badger {
             chan: mine,
             node,
             rights,
+            shm: None,
         });
         Ok(theirs)
     }
@@ -381,9 +392,9 @@ impl Badger {
             Op::Open => 0,
             Op::CreateDir | Op::CreateFile => dir_rights::CREATE,
             Op::RemoveDir | Op::RemoveFile => dir_rights::REMOVE,
-            Op::Write | Op::Truncate => dir_rights::WRITE,
+            Op::Write | Op::Truncate | Op::WriteBulk => dir_rights::WRITE,
             Op::Rename => dir_rights::CREATE | dir_rights::REMOVE,
-            Op::List | Op::Stat | Op::Read => dir_rights::READ,
+            Op::List | Op::Stat | Op::Read | Op::ReadBulk => dir_rights::READ,
         };
         if rights & need != need {
             return fsproto::reply(chan, Err(Error::Rights), &[]).is_ok();
@@ -488,6 +499,61 @@ impl Badger {
                 Ok(to) => t.rename(base, path, to).map(|_| 0),
                 Err(_) => Err(Error::Inval),
             },
+            // Bulk transfers through the session's shared buffer; without
+            // one, AGAIN (docs/f1-design.md).
+            Op::ReadBulk | Op::WriteBulk => {
+                let len = req
+                    .data
+                    .get(..4)
+                    .and_then(|b| b.try_into().ok())
+                    .map_or(usize::MAX, |b| u32::from_le_bytes(b) as usize);
+                match self.sessions[k].shm {
+                    None => Err(Error::Again),
+                    Some(_) if len > fsproto::BULK_SIZE => Err(Error::Inval),
+                    Some(shared) => {
+                        let offset = req.arg as usize;
+                        if req.op == Op::ReadBulk {
+                            t.resolve(base, path).and_then(|id| {
+                                let n = t.node(id).ok_or(Error::NotFound)?;
+                                if n.kind != Kind::File {
+                                    return Err(Error::Inval);
+                                }
+                                let data = n.content.bytes();
+                                let start = offset.min(data.len());
+                                let end = (start + len).min(data.len());
+                                // SAFETY: the client waits for this reply
+                                // before touching the buffer again; `end -
+                                // start <= len <= BULK_SIZE` fits in it.
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        data[start..end].as_ptr(),
+                                        shared as *mut u8,
+                                        end - start,
+                                    )
+                                };
+                                Ok((end - start) as u64)
+                            })
+                        } else {
+                            match offset.checked_add(len).filter(|&e| e <= MAX_FILE) {
+                                None => Err(Error::Inval),
+                                Some(end) => t.resolve(base, path).and_then(|id| {
+                                    let v = t.file_mut(id)?;
+                                    if v.len() < end {
+                                        v.resize(end, 0);
+                                    }
+                                    // SAFETY: the client filled the buffer
+                                    // and waits for this reply; `len` fits.
+                                    let src = unsafe {
+                                        core::slice::from_raw_parts(shared as *const u8, len)
+                                    };
+                                    v[offset..end].copy_from_slice(src);
+                                    Ok(len as u64)
+                                }),
+                            }
+                        }
+                    }
+                }
+            }
         };
         let changes = matches!(
             req.op,
@@ -496,6 +562,7 @@ impl Badger {
                 | Op::RemoveDir
                 | Op::RemoveFile
                 | Op::Write
+                | Op::WriteBulk
                 | Op::Truncate
                 | Op::Rename
         );
@@ -596,14 +663,28 @@ fn main(control: u64, disk: u64) -> u8 {
                 Ok(n) => {
                     let msg = buf[..n].to_vec();
                     if !b.request(k, &msg) {
-                        let _ = close(b.sessions.swap_remove(k).chan);
+                        end_session(b.sessions.swap_remove(k));
                         continue;
                     }
                 }
                 Err(Error::Again) => {}
+                Err(Error::WrongKind) => {
+                    // A handle: the client's shared buffer.
+                    if let Ok((h, tag)) = zoo_rt::try_recv_handle(b.sessions[k].chan) {
+                        if tag == fsproto::TAG_SHM
+                            && let Ok(addr) = zoo_rt::shm_map(h)
+                            && let Some(old) = b.sessions[k].shm.replace(addr)
+                        {
+                            let _ = zoo_rt::shm_unmap(old);
+                        }
+                        // The mapping keeps the pages; the handle can go.
+                        let _ = close(h);
+                    }
+                    continue;
+                }
                 Err(_) => {
                     // The client closed its folder handle.
-                    let _ = close(b.sessions.swap_remove(k).chan);
+                    end_session(b.sessions.swap_remove(k));
                     continue;
                 }
             }

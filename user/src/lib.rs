@@ -250,8 +250,96 @@ pub fn dir_stat(dir: Handle, path: &str) -> Result<DirEntry, Error> {
     fsproto::decode_entry(&b[..n]).ok_or(Error::Inval)
 }
 
+/// Shared memory: `pages` zeroed pages as a handle (docs/f1-design.md).
+pub fn shm_create(pages: u64) -> Result<Handle, Error> {
+    result(syscall(sys::SHM_CREATE, pages, 0, 0))
+}
+
+/// Maps shared memory read/write into this process; returns its address.
+pub fn shm_map(h: Handle) -> Result<u64, Error> {
+    result(syscall(sys::SHM_MAP, h, 0, 0))
+}
+
+/// Unmaps what `shm_map` mapped at `addr`.
+pub fn shm_unmap(addr: u64) -> Result<(), Error> {
+    result(syscall(sys::SHM_UNMAP, addr, 0, 0)).map(|_| ())
+}
+
+/// Transfers above this size use the folder's shared buffer.
+const BULK_MIN: usize = 2048;
+
+/// Folder handles with a shared buffer attached: (handle, address). A
+/// small table; a folder not in it uses the message path.
+static BULK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static mut BULK_TABLE: [(Handle, u64); 8] = [(NO_HANDLE, 0); 8];
+
+/// The shared buffer for folder `dir`, attaching one on first use.
+fn bulk_buffer(dir: Handle) -> Option<u64> {
+    use core::sync::atomic::Ordering;
+    // A simple lock: the table is touched briefly, by any thread.
+    while BULK
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    // SAFETY: only touched while holding the `BULK` lock above.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(BULK_TABLE) };
+    let found = table.iter().find(|e| e.0 == dir).map(|e| e.1);
+    let result = found.or_else(|| {
+        let slot = table.iter().position(|e| e.0 == NO_HANDLE)?;
+        let h = shm_create(fsproto::BULK_PAGES).ok()?;
+        let addr = match shm_map(h) {
+            Ok(a) => a,
+            Err(_) => {
+                let _ = close(h);
+                return None;
+            }
+        };
+        if send_handle(dir, h, fsproto::TAG_SHM).is_err() {
+            let _ = close(h);
+            let _ = shm_unmap(addr);
+            return None;
+        }
+        table[slot] = (dir, addr);
+        Some(addr)
+    });
+    BULK.store(false, Ordering::Release);
+    result
+}
+
 /// Reads file `path` from `offset` into `buf`; returns the bytes read.
 pub fn file_read(dir: Handle, path: &str, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
+    if buf.len() > BULK_MIN
+        && let Some(shared) = bulk_buffer(dir)
+    {
+        let mut done = 0;
+        while done < buf.len() {
+            let want = (buf.len() - done).min(fsproto::BULK_SIZE);
+            let len = (want as u32).to_le_bytes();
+            let (n, _) = fsproto::call(
+                dir,
+                Op::ReadBulk,
+                offset + done as u64,
+                0,
+                path,
+                &len,
+                &mut [],
+            )?;
+            let n = (n as usize).min(want);
+            // SAFETY: the reply came, so BadgerHandler has finished with
+            // the shared buffer (requests and replies alternate), and `n`
+            // fits in it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(shared as *const u8, buf[done..].as_mut_ptr(), n)
+            };
+            if n == 0 {
+                break;
+            }
+            done += n;
+        }
+        return Ok(done);
+    }
     let mut done = 0;
     while done < buf.len() {
         let want = (buf.len() - done).min(fsproto::MAX_DATA);
@@ -288,6 +376,32 @@ pub fn file_create(dir: Handle, path: &str) -> Result<(), Error> {
 
 /// Writes `data` at `offset` of file `path`, growing it (needs WRITE).
 pub fn file_write(dir: Handle, path: &str, offset: u64, data: &[u8]) -> Result<usize, Error> {
+    if data.len() > BULK_MIN
+        && let Some(shared) = bulk_buffer(dir)
+    {
+        let mut done = 0;
+        while done < data.len() {
+            let n = (data.len() - done).min(fsproto::BULK_SIZE);
+            // SAFETY: no request is outstanding, so BadgerHandler is not
+            // using the buffer; `n` fits in it.
+            unsafe { core::ptr::copy_nonoverlapping(data[done..].as_ptr(), shared as *mut u8, n) };
+            let len = (n as u32).to_le_bytes();
+            let (w, _) = fsproto::call(
+                dir,
+                Op::WriteBulk,
+                offset + done as u64,
+                0,
+                path,
+                &len,
+                &mut [],
+            )?;
+            if w as usize != n {
+                return Err(Error::Inval);
+            }
+            done += n;
+        }
+        return Ok(done);
+    }
     let room = fsproto::room(path);
     if room == 0 {
         return Err(Error::Inval);

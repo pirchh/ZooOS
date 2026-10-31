@@ -114,6 +114,55 @@ fn checks() -> Result<(), (u8, &'static str)> {
     for h in [x0, x1, y1] {
         let _ = close(h);
     }
+
+    // 6. Shared memory (docs/f1-design.md): one set of pages behind two
+    // mappings, the second through a handle passed over a channel. The
+    // pages outlive the handles while mapped; once unmapped and closed the
+    // kernel frees them, which its boot leak check confirms.
+    use zoo_rt::{shm_create, shm_map, shm_unmap};
+    check(
+        shm_create(0) == Err(Error::Inval),
+        15,
+        "no empty shared memory",
+    )?;
+    check(
+        shm_create(zoo_abi::SHM_MAX_PAGES + 1) == Err(Error::Inval),
+        15,
+        "size limit",
+    )?;
+    let (s0, s1) = channel_create().map_err(|_| (15, "channel s"))?;
+    let h = shm_create(4).map_err(|_| (15, "shm_create"))?;
+    let p = shm_map(h).map_err(|_| (15, "shm_map"))? as *mut u64;
+    // SAFETY: `p` maps 4 fresh pages (16 KiB) of this process.
+    unsafe {
+        for k in 0..2048 {
+            p.add(k).write_volatile(k as u64 * 0x9E37);
+        }
+    }
+    check(send_handle(s0, h, 9).is_ok(), 15, "send the shared memory")?;
+    let (h2, _) = recv_handle(s1).map_err(|_| (15, "receive it"))?;
+    let q = shm_map(h2).map_err(|_| (15, "second mapping"))? as *mut u64;
+    check(q != p, 15, "a second address")?;
+    check(close(h2).is_ok(), 15, "close the handle")?;
+    // SAFETY: both map the same 4 pages, still mapped after the close.
+    let same = unsafe {
+        q.add(1000).write_volatile(77);
+        (0..2048).all(|k| k == 1000 || q.add(k).read_volatile() == k as u64 * 0x9E37)
+            && p.add(1000).read_volatile() == 77
+    };
+    check(same, 15, "both mappings see the same pages")?;
+    check(
+        shm_unmap(p as u64).is_ok() && shm_unmap(q as u64).is_ok(),
+        15,
+        "unmap",
+    )?;
+    check(
+        shm_unmap(p as u64) == Err(Error::NotFound),
+        15,
+        "unmapped once",
+    )?;
+    let _ = close(s0);
+    let _ = close(s1);
     Ok(())
 }
 

@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Fast files step 1: shared-memory bulk transfers (2026-10-31)
+
+Design and measurements: docs/f1-design.md. Owner direction: speed first;
+measure, then change.
+
+- Shared-memory objects (calls 59-61, ABI version 17): reference-counted
+  pages, freed at the next reap after the last handle or mapping goes.
+- BadgerHandler sessions can attach a 64 KiB shared buffer; `ReadBulk`
+  and `WriteBulk` move up to 64 KiB per round trip. `zoo_rt`'s
+  `file_read`/`file_write` use it above 2 KiB, so every native program
+  gains without changes. The file service stays an isolated process; a
+  kernel file cache is a later option, if measurements call for it.
+- The timer no longer gives an idle kernel task the CPU while a program is
+  ready (it halted until the next tick: up to 10 ms lost). Version 0.42.0.
+
 ## Linux step 3: folders, working directory, uname, environment (2026-10-31)
 
 Design: docs/linux3-design.md.
