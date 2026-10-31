@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D10 section
-(version 0.38.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L1 section
+(version 0.39.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 1 results: a static musl program runs unmodified (version 0.39.0)
+
+Design: docs/linux1-design.md (§5 as implemented). Owner decision: route
+3 in docs/feasibility/libc-route.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 12 min 38 s, every case as
+expected (`assistant-live` `SKIP`). New case `linux-hello` (6.0 s):
+`linux hello alpha` → `PROC start pid=26 name=hello`, `[26:hello] Hello
+from Linux musl: argc=2 argv[0]=hello argv[1]=alpha`, `PROC exit pid=26
+name=hello code=0`; no `unsupported syscall` line. The program is built
+with `zig cc -target x86_64-linux-musl -static` from plain C with
+`printf`.
+
+Then, under WHPX: `assistant-live` pass in 49.3 s; `linux-hello` pass in
+4.0 s.
+
+**Negative controls** (temporary kernel edits, reverted):
+
+| Change | Result |
+| --- | --- |
+| `writev` returns `ENOSYS` | `FAIL linux-hello` (timeout): nothing printed |
+| argc written one too high in the start-up stack | `FAIL linux-hello` (timeout): musl printed `argc=3 argv[0]=hello argv[1]=alpha argv[2]=(null)` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: real
+hardware.
 
 ## Desktop step 10 results: a cursor in Notes, and a start-up race fixed (version 0.38.0)
 
