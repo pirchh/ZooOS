@@ -1013,6 +1013,36 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-redpoll",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux redpoll-test",
+                    "ZOO_OS PROC start pid=26 name=redpoll-test",
+                    "ZOO_OS PROC start pid=27 name=redpoll-test",
+                    "ZOO_OS PROC exit pid=27 name=redpoll-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=redpoll-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a Linux program linked at Wine's preloader address reserves the low 2 GiB, maps at 0x400000 and carves pages",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux redpoll-test")),
+                    Action::WaitContains("RedpollTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=redpoll-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
