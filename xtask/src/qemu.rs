@@ -24,6 +24,14 @@ pub fn set_accel(name: &str) {
     let _ = ACCEL.set(name.to_string());
 }
 
+static USB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the next machine gets a USB controller with a keyboard and a
+/// mouse (docs/h1-design.md).
+pub fn set_usb(on: bool) {
+    USB.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn accel() -> String {
     ACCEL.get().cloned().unwrap_or_else(|| "tcg".into())
 }
@@ -106,6 +114,16 @@ fn machine_args(
     }
     if headless {
         args.extend(["-display".into(), "none".into()]);
+    }
+    if USB.load(std::sync::atomic::Ordering::Relaxed) {
+        args.extend([
+            "-device".into(),
+            "qemu-xhci,id=xhci".into(),
+            "-device".into(),
+            "usb-kbd,bus=xhci.0".into(),
+            "-device".into(),
+            "usb-mouse,bus=xhci.0".into(),
+        ]);
     }
     Ok(args.into_iter().map(OsString::from).collect())
 }
