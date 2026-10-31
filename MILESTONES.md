@@ -128,6 +128,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D4 | Notes: a text editor whose typing survives a reboot (docs/d4-design.md) | done 2026-10-31 |
 | D5 | Date and time (UTC) in the menu bar (docs/d5-design.md) | done 2026-10-31 |
 | D6 | The everyday (fast-boot) build starts in the desktop (docs/d6-design.md) | done 2026-10-31 |
+| D7 | Files browses the home folder, previews text files (docs/d7-design.md) | done 2026-10-31 |
 
 ## Boot speed
 

@@ -944,7 +944,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             clip: (0, 0, w, h),
         },
         apps: [
-            App::new("Files", "files", false),
+            App::new("Files", "files", true),
             App::new("Crash Test", "crash-test", false),
             App::new("Assistant", "assistant", true),
             App::new("Notes", "notes", true),
