@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H3 section
-(version 0.33.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H4 section
+(version 0.34.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 4 results: USB hubs (version 0.34.0)
+
+Design: docs/h4-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 58 s, every case as
+expected (`assistant-live` `SKIP`). New case `usb-hub` (7.8 s): `port=5
+vendor=0x0409 product=0x55aa class=9` (QEMU's hub), `port=5.1
+hid=keyboard … input ready`, `port=5.2 hid=mouse … input ready`,
+`devices=3`; `echo hub` typed through the keyboard behind the hub →
+`SHELL line=echo hub`. `usb` and `usb-desktop` pass unchanged.
+
+Then `--accel whpx --case assistant-live`: pass in 50.1 s.
+
+**Negative control** (temporary edit to `kernel/src/xhci.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| Hub port left out of the route string | `FAIL usb-hub` (timeout): `port=5.1 error=command failed`, `port=5.2 error=command failed`, `devices=1` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: a
+clean-copy verify; real hardware.
 
 ## Hardware step 3 results: the local APIC timer (version 0.33.0)
 
