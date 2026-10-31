@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H5 section
-(version 0.35.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D8 section
+(version 0.36.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,27 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 8 results: resize windows (version 0.36.0)
+
+Design: docs/d8-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 12 min 40 s, every case as
+expected (`assistant-live` `SKIP`). New case `resize` (8.7 s): Crash
+Test's corner dragged by (−200, −100) → `resized Crash Test to 404x240`;
+screenshot: focused, its text shown, close button at (1042, 60) and not at
+(1242, 60), desktop colour at (900, 300) below the new bottom edge.
+
+Then `--accel whpx --case assistant-live`: pass in 49.0 s.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Resize corner never grabs | `FAIL resize` (timeout: no `resized` line) |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: real hardware.
 
 ## Clean-copy verification of version 0.35.0 (2026-10-31)
 

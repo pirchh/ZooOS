@@ -129,6 +129,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D5 | Date and time (UTC) in the menu bar (docs/d5-design.md) | done 2026-10-31 |
 | D6 | The everyday (fast-boot) build starts in the desktop (docs/d6-design.md) | done 2026-10-31 |
 | D7 | Files browses the home folder, previews text files (docs/d7-design.md) | done 2026-10-31 |
+| D8 | Resize windows from the bottom-right corner (docs/d8-design.md) | done 2026-10-31 |
 
 ## Real hardware (USB boot on the owner's other PCs; never the dev PC)
 
