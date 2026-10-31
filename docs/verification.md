@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L3 section
-(version 0.41.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The F1 section
+(version 0.42.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,44 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Fast files step 1 results: shared-memory bulk transfers (version 0.42.0)
+
+Design and measurements: docs/f1-design.md.
+
+**Benchmark** (`cargo xtask verify --skip-model --accel whpx --case
+file-speed`, `bowhead-test`, 1 MiB through a private BadgerHandler):
+
+| | Before (4 runs) | After (9 runs) |
+| --- | --- | --- |
+| Read | 40–107 Mcycles | 0.37–0.59 Mcycles |
+| Write, file growing | 123–133 Mcycles | 6.9–7.8 Mcycles |
+| Write again (warm) | — | 0.31–0.57 Mcycles |
+
+The benchmark also exposed a scheduler stall (some runs one 10 ms tick
+slower): the timer gave the CPU to the idle kernel task while a program
+was ready. Fixed in this step; no stall in the runs after it.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 11 min 17 s (earlier runs
+today: 12–17 min), every case as expected (`assistant-live` `SKIP`); the
+boot checks include the new shared-memory check in `ptarmigan-test`, and
+`TEST process-cleanup ok` confirms its pages were freed. New case
+`file-speed`.
+
+Then `--accel whpx --case assistant-live`: pass in 32.8 s (earlier runs
+today: 48–68 s). The shorter suite and live times came after the
+scheduler fix; they are observations, not a controlled measurement.
+
+**Negative controls** (temporary edits, restored and compared):
+
+| Change | Result |
+| --- | --- |
+| BadgerHandler's bulk read one byte short | `FAIL file-speed`: the boot check `arcticfox-test` (reads over 2 KiB) already exits 41 |
+| Shared pages never freed | `FAIL normal`: `PANIC self-test process-cleanup: 520754 frames free, expected 520790` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `zoo-user`,
+`xtask`, `zoo-abi`): 0 warnings. `cargo test -p xtask -p zoo-abi
+--locked`: all passed. Not run: real hardware.
 
 ## Linux step 3 results: folders, working directory, uname, environment (version 0.41.0)
 

@@ -20,8 +20,9 @@ pub mod tar;
 /// 19-25 and 41-45 now return `NOSYS` (their numbers stay reserved).
 /// Version 14 (services step 5) added calls 52-55; version 15 (desktop
 /// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
-/// and command lines in `spawn`.
-pub const ABI_VERSION: u64 = 16;
+/// and command lines in `spawn`; version 17 (fast files step 1) added
+/// calls 59-61.
+pub const ABI_VERSION: u64 = 17;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -97,7 +98,14 @@ pub mod sys {
     pub const ARGS_GET: u64 = 57;
     /// Wall-clock or monotonic time in nanoseconds.
     pub const CLOCK: u64 = 58;
+    /// Shared memory (docs/f1-design.md): create, map, unmap.
+    pub const SHM_CREATE: u64 = 59;
+    pub const SHM_MAP: u64 = 60;
+    pub const SHM_UNMAP: u64 = 61;
 }
+
+/// Most pages in one shared-memory object.
+pub const SHM_MAX_PAGES: u64 = 256;
 
 /// `clock` argument: nanoseconds since 1970-01-01 UTC.
 pub const CLOCK_REALTIME: u64 = 0;

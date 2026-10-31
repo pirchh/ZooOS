@@ -15,6 +15,12 @@ use zoo_abi::{DirEntry, MAX_DIR_NAME, MAX_MESSAGE};
 /// Handle-message tags.
 pub const TAG_ROOT: u64 = 3;
 pub const TAG_DIR: u64 = 4;
+/// A shared buffer for bulk transfers on this folder channel
+/// (docs/f1-design.md).
+pub const TAG_SHM: u64 = 5;
+/// Pages in a client's bulk buffer, and its size.
+pub const BULK_PAGES: u64 = 16;
+pub const BULK_SIZE: usize = BULK_PAGES as usize * 4096;
 
 const HEADER: usize = 1 + 8 + 2 + 1;
 /// Most file bytes in one reply.
@@ -34,6 +40,10 @@ pub enum Op {
     Truncate = 9,
     RemoveFile = 10,
     Rename = 11,
+    /// Read into / write from the session's shared buffer: offset in `arg`,
+    /// length (u32) in the data.
+    ReadBulk = 12,
+    WriteBulk = 13,
 }
 
 impl Op {
@@ -50,6 +60,8 @@ impl Op {
             9 => Op::Truncate,
             10 => Op::RemoveFile,
             11 => Op::Rename,
+            12 => Op::ReadBulk,
+            13 => Op::WriteBulk,
             _ => return None,
         })
     }

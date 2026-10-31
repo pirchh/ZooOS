@@ -149,6 +149,13 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | H5 | Key repeat for USB keyboards (docs/h5-design.md) | done 2026-10-31 |
 | H2 | Boot a USB stick on one of the owner's other PCs (needs the owner: hardware details, a named USB device) | proposed |
 
+## Speed (owner direction 2026-10-31: speed first)
+
+| Step | Content | Status |
+| --- | --- | --- |
+| F1 | Shared-memory bulk file transfers; scheduler stall fixed (docs/f1-design.md) | done 2026-10-31 |
+| F2 | Faster first-time writes (file growth); interrupt-driven input | proposed |
+
 ## Boot speed
 
 | Step | Content | Status |
