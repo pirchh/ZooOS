@@ -110,7 +110,8 @@ and verification:
 | L5 | Processes (`fork`/`vfork`/`execve`/`wait4`), pipes, `dup`, signals with default actions (docs/linux5-design.md) | done 2026-10-31 |
 | F2 | Kernel output and memory reuse off the hot path: buffered serial, batched console drawing, warm frame reuse (docs/f2-design.md) | done 2026-10-31 |
 | L6 | Signal handlers and frames, fault signals, threads and futexes, lazy anonymous memory (docs/linux6-design.md) | done 2026-10-31 |
-| L7 | Sockets and `poll`/`epoll`, `eventfd`, timers: what Wine's server and event loops need | proposed |
+| L7 | Unix stream sockets with `SCM_RIGHTS`, `poll`/`select`/`epoll`, `eventfd`, non-blocking descriptors (docs/linux7-design.md) | done 2026-10-31 |
+| L8 | Files Wine needs: `mmap` of files, `memfd`, `ftruncate` on shared memory, `timerfd`, file locks; then building and running Wine itself | proposed |
 
 ## Services (owner direction 2026-10-30)
 

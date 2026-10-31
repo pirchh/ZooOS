@@ -947,6 +947,39 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-ermine",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux ermine-test",
+                    "ZOO_OS PROC start pid=26 name=ermine-test",
+                    // The socket client; the echo child.
+                    "ZOO_OS PROC start pid=27 name=ermine-test",
+                    "ZOO_OS PROC exit pid=27 name=ermine-test code=0",
+                    "ZOO_OS PROC start pid=28 name=ermine-test",
+                    "ZOO_OS PROC exit pid=28 name=ermine-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "a Linux musl program uses Unix sockets, descriptor passing, poll, select, epoll and eventfd",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux ermine-test")),
+                    Action::WaitContains("ErmineTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=ermine-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
