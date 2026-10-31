@@ -17,13 +17,13 @@ flowchart TB
     subgraph KERNEL["ZooOS kernel (Rust, no_std)"]
         MEM["Memory<br/>frames, page tables, heap, guard pages"]
         SCHED["Scheduler<br/>processes + threads, preemptive, futexes"]
-        SYSC["System calls (ABI v8)<br/>channels, spawn, vm memory,<br/>exceptions, files, display, input"]
+        SYSC["System calls (ABI v16)<br/>channels, spawn, vm memory, exceptions,<br/>block disk, display, input, mouse, clock, args"]
         FS["In-memory filesystem<br/>/bin read-only, /home/user writable,<br/>directory capabilities"]
-        DRV["Drivers<br/>framebuffer console, keyboard, mouse, serial, timer"]
+        DRV["Drivers<br/>framebuffer console, PS/2 keyboard + mouse,<br/>USB xHCI (keyboard, mouse, hubs), virtio disk,<br/>local APIC timer (ACPI PM-calibrated), RTC, serial"]
         SHELL["Kernel shell (zoo&gt;)<br/>help, ls, ps, run, desktop"]
     end
 
-    subgraph BOOTCHECKS["Arctic boot tests (run every boot)"]
+    subgraph BOOTCHECKS["Arctic boot tests (normal build; fast boot skips them)"]
         ZK1["Zookeeper<br/>supervisor: starts, restarts and checks services"]
         BELUGA["BelugaTest: message ping-pong"]
         LEMMING["LemmingTest: crashes on purpose (restart policy)"]
@@ -36,16 +36,17 @@ flowchart TB
         ZK1 --> BELUGA & LEMMING & MUSKOX & NARWHAL & ARCTICFOX & CARIBOU & WALRUS & WOLVERINE
     end
 
-    subgraph DESKTOP["Desktop session (shell: desktop)"]
+    subgraph DESKTOP["Desktop session (starts at boot in the everyday build; Esc for the shell)"]
         ZK2["Zookeeper (session mode)<br/>hands out the home-folder handle,<br/>restarts the window server"]
-        PEACOCK["PeacockHandler<br/>window server: screen, keyboard, mouse"]
-        FILES["Files (app)<br/>file browser"]
+        PEACOCK["PeacockHandler<br/>window server: windows, dock, mouse,<br/>menu-bar clock, partial redraws"]
+        FILES["Files (app)<br/>browses the home folder"]
+        NOTES["Notes (app, from the dock)<br/>text editor, autosave"]
         CRASH["Crash Test (app)<br/>crashes on purpose to show recovery"]
         ASSIST["Assistant (app)<br/>input, plan + confirm, cancel"]
         ELEPHCARIBOU["ElephantHandler<br/>model service: Qwen2.5 via zoo-infer,<br/>picks a command; no file access"]
         OTTER["OtterHandler<br/>file broker: search, list, inspect,<br/>plan, create, undo"]
         ZK2 --> PEACOCK
-        PEACOCK --> FILES & CRASH & ASSIST
+        PEACOCK --> FILES & CRASH & ASSIST & NOTES
         ASSIST -- "request in words" --> ELEPHANT
         ELEPHANT -- "chosen command" --> ASSIST
         ASSIST -- "command" --> OTTER
