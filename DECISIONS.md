@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 2: memory, read-only files and time (2026-10-31)
+
+Design: docs/linux2-design.md.
+
+- Linux `mmap`/`munmap`/`brk`/`mprotect` are built on ZooOS's
+  reserve/commit calls; files are read-only from the initrd with a
+  per-process descriptor table; `clock_gettime` and relative sleeps use
+  the existing clock and sleep. Blocked Linux calls are re-run by the
+  Linux handler. Version 0.40.0.
+
 ## Linux step 1: static musl programs run (2026-10-31)
 
 Design: docs/linux1-design.md.

@@ -737,6 +737,38 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-eider",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux eider-test",
+                    "ZOO_OS PROC start pid=26 name=eider-test",
+                    "ZOO_OS PROC exit pid=26 name=eider-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a Linux musl program uses malloc, files (stdio and raw calls) and the clock",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux eider-test")),
+                    Action::WaitContains("EiderTest: memory ok".into()),
+                    Action::WaitContains("EiderTest: /etc/services 180 bytes, 5 lines".into()),
+                    Action::WaitContains("EiderTest: slept ".into()),
+                    Action::WaitClock("EiderTest: unix=".into()),
+                    Action::WaitContains("EiderTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=eider-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,

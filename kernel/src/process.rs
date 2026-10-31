@@ -161,6 +161,11 @@ struct Proc {
     /// Address-space reservations (start, len), sorted by start
     /// (docs/posix2-design.md).
     vmas: Vec<(u64, u64)>,
+    /// Linux programs: the `brk` area (base, current break), and open
+    /// files (descriptor 3 is index 0): initrd data and read position
+    /// (docs/linux2-design.md).
+    linux_brk: Option<(u64, u64)>,
+    linux_files: Vec<Option<(&'static [u8], u64)>>,
     /// Pages committed through `vm_commit`.
     committed: u64,
     /// User exception handler entry (docs/posix3-design.md); 0 if none.
@@ -242,6 +247,8 @@ impl Proc {
             members: 1,
             ended: false,
             vmas: Vec::new(),
+            linux_brk: None,
+            linux_files: Vec::new(),
             committed: 0,
             exc_handler: 0,
         }
@@ -865,7 +872,12 @@ impl Scheduler {
             // SAFETY: a blocked task's saved frame stays valid on its own
             // kernel stack until it is resumed, which is now.
             let f = unsafe { &mut *frame };
-            match self.syscall(i, f, mem) {
+            let outcome = if f.vector == crate::trap::VEC_LINUX {
+                self.linux_syscall(i, f, mem)
+            } else {
+                self.syscall(i, f, mem)
+            };
+            match outcome {
                 Outcome::Ret(v) => {
                     f.rax = v as u64;
                     if let Some(area) = &self.task(i).fpu {
@@ -895,7 +907,6 @@ impl Scheduler {
         }
     }
 
-    /// Runs system call `f.rax` for task `i`, whose address space is active.
     /// A Linux x86-64 system call (docs/linux1-design.md): number in RAX,
     /// arguments in RDI, RSI, RDX, R10, R8, R9; errors as negative errno.
     fn linux_syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
@@ -984,6 +995,338 @@ impl Scheduler {
             },
             // set_tid_address
             218 => Outcome::Ret(self.task(i).tid as i64),
+            // ---- memory (docs/linux2-design.md) ----
+            // brk(new): grows or shrinks one reserved area; returns the
+            // break, unchanged when the request cannot be met.
+            12 => {
+                let (base, cur) = match self.proc(i).linux_brk {
+                    Some(b) => b,
+                    None => match self.vm_call(i, sys::VM_RESERVE, 0, LINUX_BRK_SIZE, 0, p4, mem) {
+                        Outcome::Ret(b) if b > 0 => {
+                            self.proc(i).linux_brk = Some((b as u64, b as u64));
+                            (b as u64, b as u64)
+                        }
+                        _ => return Outcome::Ret(0),
+                    },
+                };
+                if a1 < base || a1 > base + LINUX_BRK_SIZE {
+                    return Outcome::Ret(cur as i64);
+                }
+                let (old_end, new_end) = (page_up(cur), page_up(a1));
+                let done = if new_end > old_end {
+                    self.vm_call(
+                        i,
+                        sys::VM_COMMIT,
+                        old_end,
+                        new_end - old_end,
+                        LINUX_RW,
+                        p4,
+                        mem,
+                    )
+                } else if new_end < old_end {
+                    self.vm_call(i, sys::VM_DECOMMIT, new_end, old_end - new_end, 0, p4, mem)
+                } else {
+                    Outcome::Ret(0)
+                };
+                if !matches!(done, Outcome::Ret(0)) {
+                    return Outcome::Ret(cur as i64);
+                }
+                self.proc(i).linux_brk = Some((base, a1));
+                Outcome::Ret(a1 as i64)
+            }
+            // mmap(addr, len, prot, flags, fd, offset): anonymous private
+            // memory only, at an address the kernel chooses.
+            9 => {
+                let flags = f.r10;
+                if flags & MAP_ANONYMOUS == 0 || flags & MAP_FIXED != 0 || a2 == 0 {
+                    return fail(EINVAL);
+                }
+                let len = page_up(a2);
+                let base = match self.vm_call(i, sys::VM_RESERVE, 0, len, 0, p4, mem) {
+                    Outcome::Ret(b) if b > 0 => b as u64,
+                    _ => return fail(ENOMEM),
+                };
+                if a3 & LINUX_RW != 0 {
+                    let prot = a3 | zoo_abi::prot::READ;
+                    if !matches!(
+                        self.vm_call(i, sys::VM_COMMIT, base, len, prot, p4, mem),
+                        Outcome::Ret(0)
+                    ) {
+                        let _ = self.vm_call(i, sys::VM_RELEASE, base, 0, 0, p4, mem);
+                        return fail(ENOMEM);
+                    }
+                }
+                Outcome::Ret(base as i64)
+            }
+            // munmap(addr, len): a whole area is released, part of one is
+            // decommitted; nothing mapped there is not an error.
+            11 => {
+                if a1 % 4096 != 0 || a2 == 0 {
+                    return fail(EINVAL);
+                }
+                let len = page_up(a2);
+                let whole = self.proc(i).vmas.iter().any(|&(s, l)| s == a1 && l == len);
+                if whole {
+                    let _ = self.vm_call(i, sys::VM_RELEASE, a1, 0, 0, p4, mem);
+                } else {
+                    let _ = self.vm_call(i, sys::VM_DECOMMIT, a1, len, 0, p4, mem);
+                }
+                Outcome::Ret(0)
+            }
+            // mprotect: readable protections only (PROT_NONE is not kept).
+            10 => {
+                if a3 == 0 {
+                    return Outcome::Ret(0);
+                }
+                match self.vm_call(
+                    i,
+                    sys::VM_PROTECT,
+                    a1,
+                    page_up(a2),
+                    a3 | zoo_abi::prot::READ,
+                    p4,
+                    mem,
+                ) {
+                    Outcome::Ret(0) => Outcome::Ret(0),
+                    _ => fail(ENOMEM),
+                }
+            }
+            // madvise: advice only.
+            28 => Outcome::Ret(0),
+            // sched_getaffinity(pid, len, mask): one CPU.
+            204 => {
+                if a2 < 8 {
+                    return fail(EINVAL);
+                }
+                if !ok(a3, 8, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe { (a3 as *mut u64).write_unaligned(1) };
+                Outcome::Ret(8)
+            }
+            // ---- files: read-only, from the initrd ----
+            // open(path, flags), openat(dirfd, path, flags)
+            2 | 257 => {
+                let (path, flags) = if number == 2 { (a1, a2) } else { (a2, a3) };
+                if flags & 3 != 0 {
+                    return fail(EROFS);
+                }
+                let mut name = [0u8; LINUX_PATH_MAX];
+                let Some(n) = user_cstr(&ok, path, &mut name) else {
+                    return fail(EFAULT);
+                };
+                let Some(data) = core::str::from_utf8(&name[..n])
+                    .ok()
+                    .and_then(initrd_path)
+                    .and_then(initrd::find)
+                else {
+                    return fail(ENOENT);
+                };
+                let files = &mut self.proc(i).linux_files;
+                let slot = match files.iter().position(Option::is_none) {
+                    Some(k) => k,
+                    None if files.len() < LINUX_FILES_MAX => {
+                        files.push(None);
+                        files.len() - 1
+                    }
+                    None => return fail(EMFILE),
+                };
+                files[slot] = Some((data, 0));
+                Outcome::Ret(slot as i64 + 3)
+            }
+            // close(fd)
+            3 => {
+                if a1 < 3 {
+                    return Outcome::Ret(0);
+                }
+                match self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
+                    Some(slot @ Some(_)) => {
+                        *slot = None;
+                        Outcome::Ret(0)
+                    }
+                    _ => fail(EBADF),
+                }
+            }
+            // read(fd, buf, len), readv(fd, iov, count)
+            0 | 19 => {
+                // The (address, length) pieces to fill.
+                let mut pieces = alloc::vec::Vec::new();
+                if number == 0 {
+                    pieces.push((a2, a3));
+                } else {
+                    if a3 > 1024 || !ok(a2, a3 * 16, false) {
+                        return fail(EINVAL);
+                    }
+                    for k in 0..a3 {
+                        // SAFETY: inside the iovec array checked above.
+                        let piece = unsafe {
+                            let p = (a2 + 16 * k) as *const u64;
+                            (p.read_unaligned(), p.add(1).read_unaligned())
+                        };
+                        pieces.push(piece);
+                    }
+                }
+                if a1 == 0 {
+                    return Outcome::Ret(0); // standard input: at its end
+                }
+                let Some(Some((data, pos))) = a1
+                    .checked_sub(3)
+                    .and_then(|k| self.proc(i).linux_files.get(k as usize))
+                    .copied()
+                else {
+                    return fail(EBADF);
+                };
+                let mut at = pos as usize;
+                let mut total = 0usize;
+                for (base, len) in pieces {
+                    let n = (len as usize).min(data.len().saturating_sub(at));
+                    if n == 0 {
+                        continue;
+                    }
+                    if !ok(base, n as u64, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory; `at + n` is
+                    // inside the initrd file.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data[at..].as_ptr(), base as *mut u8, n)
+                    };
+                    at += n;
+                    total += n;
+                }
+                if let Some(Some(file)) = self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
+                    file.1 = at as u64;
+                }
+                Outcome::Ret(total as i64)
+            }
+            // lseek(fd, offset, whence)
+            8 => {
+                let Some(Some((data, pos))) = a1
+                    .checked_sub(3)
+                    .and_then(|k| self.proc(i).linux_files.get(k as usize))
+                    .copied()
+                else {
+                    return fail(EBADF);
+                };
+                let from = match a3 {
+                    0 => 0i64,
+                    1 => pos as i64,
+                    2 => data.len() as i64,
+                    _ => return fail(EINVAL),
+                };
+                let new = from.saturating_add(a2 as i64);
+                if new < 0 {
+                    return fail(EINVAL);
+                }
+                if let Some(Some(file)) = self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
+                    file.1 = new as u64;
+                }
+                Outcome::Ret(new)
+            }
+            // fstat(fd, st); stat(path, st); newfstatat(dirfd, path, st, flags)
+            5 | 4 | 262 => {
+                let (fd, path, st) = match number {
+                    5 => (Some(a1), 0, a2),
+                    4 => (None, a1, a2),
+                    _ if f.r10 & AT_EMPTY_PATH != 0 => (Some(a1), 0, a3),
+                    _ => (None, a2, a3),
+                };
+                let size = match (fd, path) {
+                    (Some(0..=2), _) => None,
+                    (Some(fd), _) => match self.proc(i).linux_files.get((fd - 3) as usize) {
+                        Some(Some((data, _))) => Some(data.len() as u64),
+                        _ => return fail(EBADF),
+                    },
+                    (None, path) => {
+                        let mut name = [0u8; LINUX_PATH_MAX];
+                        let Some(n) = user_cstr(&ok, path, &mut name) else {
+                            return fail(EFAULT);
+                        };
+                        match core::str::from_utf8(&name[..n])
+                            .ok()
+                            .and_then(initrd_path)
+                            .and_then(initrd::find)
+                        {
+                            Some(data) => Some(data.len() as u64),
+                            None => return fail(ENOENT),
+                        }
+                    }
+                };
+                if !ok(st, 144, true) {
+                    return fail(EFAULT);
+                }
+                // struct stat (x86-64): mode at 24, size at 48, blksize at
+                // 56, blocks at 64; the rest zero. A regular read-only file,
+                // or a character device for the standard descriptors.
+                let mut buf = [0u8; 144];
+                let (mode, len) = match size {
+                    Some(len) => (0o100_444u32, len),
+                    None => (0o020_620u32, 0),
+                };
+                buf[16..24].copy_from_slice(&1u64.to_le_bytes());
+                buf[24..28].copy_from_slice(&mode.to_le_bytes());
+                buf[48..56].copy_from_slice(&len.to_le_bytes());
+                buf[56..64].copy_from_slice(&4096u64.to_le_bytes());
+                buf[64..72].copy_from_slice(&len.div_ceil(512).to_le_bytes());
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), st as *mut u8, 144) };
+                Outcome::Ret(0)
+            }
+            // ---- time ----
+            // clock_gettime(clock, ts)
+            228 => {
+                let ns = match a1 {
+                    0 | 8 => match rtc::realtime_ns() {
+                        Some(ns) => ns,
+                        None => return fail(EINVAL),
+                    },
+                    1 | 4 | 7 | 9 => rtc::monotonic_ns(),
+                    _ => return fail(EINVAL),
+                };
+                if !ok(a2, 16, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe {
+                    let p = a2 as *mut u64;
+                    p.write_unaligned(ns / 1_000_000_000);
+                    p.add(1).write_unaligned(ns % 1_000_000_000);
+                }
+                Outcome::Ret(0)
+            }
+            // nanosleep(req, rem), clock_nanosleep(clock, flags, req, rem):
+            // relative sleeps, rounded up to timer ticks.
+            35 | 230 => {
+                let req = if number == 35 { a1 } else { a3 };
+                if number == 230 && a2 & 1 != 0 {
+                    return fail(EINVAL); // TIMER_ABSTIME: not yet
+                }
+                if !ok(req, 16, false) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as readable user memory.
+                let (sec, nsec) = unsafe {
+                    let p = req as *const u64;
+                    (p.read_unaligned(), p.add(1).read_unaligned())
+                };
+                if nsec >= 1_000_000_000 {
+                    return fail(EINVAL);
+                }
+                let tick_ns = 1_000_000_000 / u64::from(interrupts::TIMER_HZ);
+                let ticks = sec
+                    .saturating_mul(u64::from(interrupts::TIMER_HZ))
+                    .saturating_add(nsec.div_ceil(tick_ns));
+                let now = interrupts::ticks();
+                let t = self.task(i);
+                let deadline = *t.sleep_until.get_or_insert(now.saturating_add(ticks));
+                if now >= deadline {
+                    t.sleep_until = None;
+                    Outcome::Ret(0)
+                } else {
+                    Outcome::Block
+                }
+            }
             n => {
                 let (word, bit) = ((n / 64) as usize, n % 64);
                 if word < LINUX_REPORTED.len()
@@ -996,6 +1339,7 @@ impl Scheduler {
         }
     }
 
+    /// Runs system call `f.rax` for task `i`, whose address space is active.
     fn syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
         let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
         let p4 = self.task(i).p4.expect("system call from a user task");
@@ -2367,8 +2711,53 @@ fn linux_stack(
 /// copy stays small.
 const LINUX_WRITE_MAX: u64 = 64 * 1024;
 
+/// Linux programs' `brk` area (reserved on first use), and limits.
+const LINUX_BRK_SIZE: u64 = 64 * 1024 * 1024;
+const LINUX_PATH_MAX: usize = 256;
+const LINUX_FILES_MAX: usize = 64;
+const LINUX_RW: u64 = zoo_abi::prot::READ | zoo_abi::prot::WRITE;
+const MAP_FIXED: u64 = 0x10;
+const MAP_ANONYMOUS: u64 = 0x20;
+const AT_EMPTY_PATH: u64 = 0x1000;
+
+fn page_up(a: u64) -> u64 {
+    a.div_ceil(4096) * 4096
+}
+
+/// A NUL-terminated user string into `buf`; its length, or `None` if it
+/// is unreadable or too long.
+fn user_cstr(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64, buf: &mut [u8]) -> Option<usize> {
+    for (k, slot) in buf.iter_mut().enumerate() {
+        let a = addr.checked_add(k as u64)?;
+        if !ok(a, 1, false) {
+            return None;
+        }
+        // SAFETY: just checked as one readable byte of user memory.
+        let b = unsafe { (a as *const u8).read() };
+        if b == 0 {
+            return Some(k);
+        }
+        *slot = b;
+    }
+    None
+}
+
+/// A Linux path as an initrd name: `/etc/services` → `etc/services`.
+/// Relative paths start at `/`; `.` and `..` are refused.
+fn initrd_path(path: &str) -> Option<&str> {
+    let p = path.trim_start_matches('/');
+    if p.is_empty() || p.split('/').any(|c| c == "." || c == "..") {
+        return None;
+    }
+    Some(p)
+}
+
 /// Linux error numbers used here.
+const ENOENT: i64 = 2;
 const EBADF: i64 = 9;
+const ENOMEM: i64 = 12;
+const EMFILE: i64 = 24;
+const EROFS: i64 = 30;
 const EFAULT: i64 = 14;
 const EINVAL: i64 = 22;
 const ENOTTY: i64 = 25;

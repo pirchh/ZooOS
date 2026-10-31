@@ -104,7 +104,8 @@ and verification:
 | 5b-2 | File descriptors: now part of the Linux personality (route 3) | superseded |
 | 5b-3 | C library: route 3 chosen (Linux system calls; docs/feasibility/libc-route.md) | in progress |
 | L1 | Linux system calls, step 1: a static musl "hello" runs unmodified (docs/linux1-design.md) | done 2026-10-31 |
-| L2 | Memory (`brk`, `mmap`), files and time for real programs | proposed |
+| L2 | Memory (`brk`, `mmap`), read-only files, time (docs/linux2-design.md) | done 2026-10-31 |
+| L3 | Writable files in the home folder, directories, an environment | proposed |
 
 ## Services (owner direction 2026-10-30)
 
