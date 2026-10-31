@@ -223,7 +223,12 @@ fn execute(line: &str) {
             kprintln!("{:>4}  {:<16} {}", pid, name, state);
         }),
         "ls" => initrd::for_each(|name, size| kprintln!("{:>8}  {}", size, name)),
-        "run" => match process::spawn_from_kernel(rest.trim()) {
+        "run" => match process::spawn_from_kernel(
+            &rest
+                .split_whitespace()
+                .collect::<alloc::vec::Vec<_>>()
+                .join("\0"),
+        ) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
         },

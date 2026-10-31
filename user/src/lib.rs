@@ -392,6 +392,25 @@ pub fn wait_any(handles: &[Handle], timeout: u64) -> Result<usize, Error> {
     .map(|k| k as usize)
 }
 
+/// This process's command line (program name, then arguments, separated
+/// by NUL bytes); copies up to `buf.len()` bytes and returns the full
+/// length.
+pub fn args_get(buf: &mut [u8]) -> Result<usize, Error> {
+    result(syscall(
+        sys::ARGS_GET,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    ))
+    .map(|n| n as usize)
+}
+
+/// Nanoseconds: `zoo_abi::CLOCK_REALTIME` since 1970 (UTC), or
+/// `zoo_abi::CLOCK_MONOTONIC` since boot.
+pub fn clock(which: u64) -> Result<u64, Error> {
+    result(syscall(sys::CLOCK, which, 0, 0))
+}
+
 /// Mouse events waiting for the display owner (at most `buf.len()`).
 pub fn mouse_read(buf: &mut [zoo_abi::MouseEvent]) -> Result<usize, Error> {
     result(syscall(

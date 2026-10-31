@@ -19,8 +19,9 @@ pub mod tar;
 /// Version 13 (services step 4b) removed the in-kernel filesystem: calls
 /// 19-25 and 41-45 now return `NOSYS` (their numbers stay reserved).
 /// Version 14 (services step 5) added calls 52-55; version 15 (desktop
-/// step 1) added call 56.
-pub const ABI_VERSION: u64 = 15;
+/// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
+/// and command lines in `spawn`.
+pub const ABI_VERSION: u64 = 16;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -92,7 +93,19 @@ pub mod sys {
     pub const BLOCK_SIZE: u64 = 55;
     /// Mouse events, for the display owner.
     pub const MOUSE_READ: u64 = 56;
+    /// The process's command line (docs/posix5b1-design.md).
+    pub const ARGS_GET: u64 = 57;
+    /// Wall-clock or monotonic time in nanoseconds.
+    pub const CLOCK: u64 = 58;
 }
+
+/// `clock` argument: nanoseconds since 1970-01-01 UTC.
+pub const CLOCK_REALTIME: u64 = 0;
+/// `clock` argument: nanoseconds since boot.
+pub const CLOCK_MONOTONIC: u64 = 1;
+/// Longest command line `spawn` accepts: the program name, then each
+/// argument after a NUL byte.
+pub const MAX_CMDLINE: usize = 512;
 
 /// Error codes; system calls return `-(code as i64)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -143,6 +143,17 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX step 5b-1: process arguments and the clock (2026-10-31)
+
+Design: docs/posix5b1-design.md. Step 5b (libc port) is split: 5b-1
+arguments and time, 5b-2 file descriptors, then the libc port itself.
+
+- Command lines ride in `spawn`'s name argument (program, then NUL-
+  separated arguments), so existing callers are unchanged; call 57
+  `args_get` returns them.
+- Wall-clock time from the CMOS RTC read once at boot (UTC) plus timer
+  ticks; call 58 `clock`. 10 ms resolution. ABI version 16; version 0.24.0.
+
 ## Desktop step 3: a dock and close buttons (2026-10-31)
 
 Design: docs/d3-design.md.

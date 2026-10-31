@@ -18,6 +18,7 @@ use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
 };
 use crate::mouse;
+use crate::rtc;
 use crate::trap::{self, TrapFrame};
 use crate::virtio_blk;
 use alloc::boxed::Box;
@@ -35,7 +36,6 @@ use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::BLOCK_BYTES;
-use zoo_abi::MouseEvent;
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, EXC_RESUME, EXC_UNHANDLED, Error,
     ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsEntry, HEAP_BASE, HEAP_LIMIT, HandleMsg, MAP_BASE,
@@ -43,6 +43,7 @@ use zoo_abi::{
     VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED,
     VM_START, VmInfo, elf, prot, sys,
 };
+use zoo_abi::{CLOCK_MONOTONIC, CLOCK_REALTIME, MAX_CMDLINE, MouseEvent};
 use zoo_abi::{WAIT_ANY_MAX, WAIT_FOREVER};
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -149,6 +150,8 @@ struct Proc {
     file_maps: Vec<(u64, u64)>,
     /// May call `log_attach` and `block_attach` (the resident supervisor).
     log_ok: bool,
+    /// Program name and arguments, NUL-separated (`args_get`).
+    cmdline: String,
     /// Threads that have not exited.
     live: usize,
     /// Threads not yet reaped; the address space is freed when this is 0.
@@ -226,6 +229,7 @@ impl Proc {
         Proc {
             pid,
             name: String::from(name),
+            cmdline: String::from(name),
             p4,
             handles: [const { None }; MAX_HANDLES],
             generation: [0; MAX_HANDLES],
@@ -631,16 +635,18 @@ impl Scheduler {
         order.find(|&i| ready(i)).unwrap_or(0)
     }
 
-    /// Loads, maps and readies program `name`; `give` become its start-up
-    /// handles (in `rdi` and `rsi`, `NO_HANDLE` where absent). Returns
-    /// (task index, pid).
+    /// Loads, maps and readies the program a command line names (the part
+    /// before the first NUL; the rest are its arguments); `give` become its
+    /// start-up handles (in `rdi` and `rsi`, `NO_HANDLE` where absent).
+    /// Returns (task index, pid).
     fn spawn(
         &mut self,
         mem: &mut Memory,
-        name: &str,
+        cmdline: &str,
         give: [Option<HandleEntry>; 2],
     ) -> Result<(usize, u64), Error> {
-        if !valid_name(name) || name.len() > MAX_PATH {
+        let name = cmdline.split('\0').next().unwrap_or("");
+        if cmdline.len() > MAX_CMDLINE || !valid_name(name) || name.len() > MAX_PATH {
             return Err(Error::Inval);
         }
         let mut path = String::from("bin/");
@@ -665,6 +671,7 @@ impl Scheduler {
         let pid = self.next_pid;
         self.next_pid += 1;
         let mut proc = Proc::new(pid, name, p4);
+        proc.cmdline = String::from(cmdline);
         let [arg, arg2] = give.map(|g| match g {
             Some(entry) => proc
                 .insert(entry)
@@ -920,7 +927,7 @@ impl Scheduler {
                 Outcome::Ret(0)
             }
             sys::SPAWN => {
-                if a2 == 0 || a2 > MAX_PATH as u64 {
+                if a2 == 0 || a2 > MAX_CMDLINE as u64 {
                     return err(Error::Inval);
                 }
                 if !ok(a1, a2, false) {
@@ -1523,6 +1530,27 @@ impl Scheduler {
                 // Woken by any send, close or exit (wake_all) or the timer.
                 Outcome::Block
             }
+            sys::ARGS_GET => {
+                // a1 = buffer, a2 = its length; returns the full length.
+                let cmdline = self.proc(i).cmdline.as_bytes();
+                let n = cmdline.len().min(a2 as usize);
+                if n > 0 {
+                    if !ok(a1, n as u64, true) {
+                        return err(Error::Fault);
+                    }
+                    // SAFETY: checked writable user range in the active space.
+                    unsafe { core::ptr::copy_nonoverlapping(cmdline.as_ptr(), a1 as *mut u8, n) };
+                }
+                Outcome::Ret(cmdline.len() as i64)
+            }
+            sys::CLOCK => match a1 {
+                CLOCK_REALTIME => match rtc::realtime_ns() {
+                    Some(ns) => Outcome::Ret(ns as i64),
+                    None => err(Error::NotFound),
+                },
+                CLOCK_MONOTONIC => Outcome::Ret(rtc::monotonic_ns() as i64),
+                _ => err(Error::Inval),
+            },
             sys::MOUSE_READ => {
                 // a1 = buffer of `MouseEvent`s, a2 = how many fit.
                 let me = self.task(i).pid;
@@ -1645,7 +1673,7 @@ impl Scheduler {
             }
             sys::EXCEPTION_RETURN => self.exception_return(i, f, a1, a2, p4, mem),
             sys::SPAWN_WITH => {
-                if a2 == 0 || a2 > MAX_PATH as u64 {
+                if a2 == 0 || a2 > MAX_CMDLINE as u64 {
                     return err(Error::Inval);
                 }
                 if !ok(a1, a2, false) || !ok(a3, 16, false) {
