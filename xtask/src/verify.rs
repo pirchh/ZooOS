@@ -1732,14 +1732,16 @@ fn persist_case(normal: &Expectation, name: &'static str, step: u8, timeout: Dur
     let say = |cmd: &str| Action::Keys(typed(cmd));
     let wait = |line: &str| Action::WaitFor(line.into());
     let contains = |part: &str| Action::WaitContains(part.into());
-    // Loading happens while the supervisor starts, before the shell is
-    // ready, so those lines are awaited first.
+    // Loading happens while the supervisor starts and may finish just
+    // before or just after `SHELL ready`, so these lines are matched
+    // anywhere in the log (a fixed order made persist-3 flaky).
+    let seen = |part: &str| Action::WaitSeen(part.into());
     let mut steps = match step {
         1 => vec![],
-        2 => vec![contains("BadgerHandler: loaded generation 2 from slot B")],
+        2 => vec![seen("BadgerHandler: loaded generation 2 from slot B")],
         _ => vec![
-            contains("BadgerHandler: slot B: generation 2 failed its check, ignored"),
-            contains("BadgerHandler: loaded generation 1 from slot A"),
+            seen("BadgerHandler: slot B: generation 2 failed its check, ignored"),
+            seen("BadgerHandler: loaded generation 1 from slot A"),
         ],
     };
     steps.push(wait("ZOO_OS SHELL ready"));
@@ -2202,8 +2204,8 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
     let first = name == "notes-1";
     let mut steps = Vec::new();
     if !first {
-        // Loading happens before the shell is ready.
-        steps.push(Action::WaitContains(
+        // Loading may finish just before or after the shell is ready.
+        steps.push(Action::WaitSeen(
             "BadgerHandler: loaded generation 1 from slot A".into(),
         ));
     }
