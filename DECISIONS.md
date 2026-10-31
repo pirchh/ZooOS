@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 5: processes and pipes (2026-10-31)
+
+Design and measurements: docs/linux5-design.md.
+
+- `fork` copies the address space; copy-on-write is deferred until a
+  measurement shows it matters (a fork with 4 MiB touched costs the same
+  as one without today).
+- `vfork` / `clone(CLONE_VM|CLONE_VFORK)` (musl's `posix_spawn`) copy
+  nothing: the child borrows the parent's space until `execve` or exit.
+- Each child gets its own BadgerHandler session (an `Open` on the
+  parent's channel), so requests from two programs never share a channel.
+- Pipes are 64 KiB rings of physical pages, not kernel-heap memory.
+- Signals have their default actions only; handlers are L6.
+- The fork timing exposed that one kernel log line costs about 1 ms
+  (polled serial plus a full-framebuffer console scroll). That is F2.
+  Version 0.44.0.
+
 ## Linux step 4: writable files in the home folder (2026-10-31)
 
 Design and measurements: docs/linux4-design.md.

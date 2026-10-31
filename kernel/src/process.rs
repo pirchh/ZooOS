@@ -198,6 +198,24 @@ struct Proc {
     committed: u64,
     /// User exception handler entry (docs/posix3-design.md); 0 if none.
     exc_handler: u64,
+    /// A Linux program (docs/linux1-design.md).
+    linux: bool,
+    /// Linux descriptors with close-on-exec set (bit `fd`).
+    linux_cloexec: u64,
+    /// The pid of the Linux program that started this one (0: the kernel),
+    /// and the children this one started: pid and, once ended, the Linux
+    /// wait status (docs/linux5-design.md).
+    linux_parent: u64,
+    linux_children: Vec<(u64, Option<i32>)>,
+    /// Running in its parent's address space (`vfork`) until it execs or
+    /// ends; the space is then not freed with this process.
+    linux_borrowed: bool,
+    /// Blocked signals, and the actions set with `rt_sigaction`: signal and
+    /// `(handler, flags, restorer, mask)`.
+    linux_sigmask: u64,
+    linux_sigactions: Vec<(u8, [u64; 4])>,
+    /// The signal that ended the process, if one did.
+    linux_term_sig: Option<u8>,
 }
 
 /// One thread. Each user thread belongs to a `Proc`; the kernel task does not.
@@ -238,6 +256,8 @@ struct Task {
     exc_stack: u64,
     /// Running its exception handler; a fault now is fatal.
     in_exception: bool,
+    /// A `vfork` waiting for this child to exec or end.
+    vfork_child: Option<u64>,
 }
 
 impl Task {
@@ -262,6 +282,7 @@ impl Task {
             futex_woken: false,
             exc_stack: 0,
             in_exception: false,
+            vfork_child: None,
         }
     }
 }
@@ -292,7 +313,31 @@ impl Proc {
             linux_shm: None,
             committed: 0,
             exc_handler: 0,
+            linux: false,
+            linux_cloexec: 0,
+            linux_parent: 0,
+            linux_children: Vec::new(),
+            linux_borrowed: false,
+            linux_sigmask: 0,
+            linux_sigactions: Vec::new(),
+            linux_term_sig: None,
         }
+    }
+
+    fn set_cloexec(&mut self, fd: usize, on: bool) {
+        if on {
+            self.linux_cloexec |= 1 << fd;
+        } else {
+            self.linux_cloexec &= !(1 << fd);
+        }
+    }
+
+    /// The handler set for Linux signal `sig` (0: default, 1: ignore).
+    fn sig_handler(&self, sig: u64) -> u64 {
+        self.linux_sigactions
+            .iter()
+            .find(|a| u64::from(a.0) == sig)
+            .map_or(0, |a| a.1[0])
     }
 
     fn free_slots(&self) -> usize {
@@ -733,7 +778,8 @@ impl Scheduler {
             return Err(Error::NoMem);
         };
         let rsp = if linux {
-            linux_stack(mem, stack_page, cmdline, file, &image)
+            let args: Vec<&str> = cmdline.split('\0').take(LINUX_ARGS_MAX).collect();
+            linux_stack(mem, stack_page, &args, &LINUX_ENV, file, &image)
         } else {
             USER_STACK_TOP - 8
         };
@@ -754,17 +800,16 @@ impl Scheduler {
             None => NO_HANDLE,
         });
         if linux {
+            proc.linux = true;
+            proc.linux_files = alloc::vec![
+                Some(LinuxFile::Console { input: true }),
+                Some(LinuxFile::Console { input: false }),
+                Some(LinuxFile::Console { input: false }),
+            ];
             proc.linux_home = (arg != NO_HANDLE).then_some(arg);
             proc.linux_shm = proc.linux_home.and_then(|h| attach_bulk(mem, &proc, h));
         }
-        let pidx = match self.procs.iter().position(|p| p.is_none()) {
-            Some(k) => k,
-            None => {
-                self.procs.push(None);
-                self.procs.len() - 1
-            }
-        };
-        self.procs[pidx] = Some(proc);
+        let pidx = self.add_proc(proc);
         let mut task = Task::new(pid, pid, name);
         // SysV: at function entry, rsp + 8 is 16-byte aligned.
         task.frame = Self::first_frame(top, image.entry, rsp, arg, arg2);
@@ -784,7 +829,7 @@ impl Scheduler {
         let Some(pidx) = self.task(i).proc else {
             return;
         };
-        let (pid, name, handles) = {
+        let (pid, name, handles, files, parent, term) = {
             let p = self.procs[pidx].as_mut().expect("process slot in use");
             if p.ended {
                 return;
@@ -792,7 +837,15 @@ impl Scheduler {
             p.ended = true;
             p.live = 0;
             let handles: Vec<HandleEntry> = p.handles.iter_mut().filter_map(Option::take).collect();
-            (p.pid, p.name.clone(), handles)
+            let files = core::mem::take(&mut p.linux_files);
+            (
+                p.pid,
+                p.name.clone(),
+                handles,
+                files,
+                p.linux_parent,
+                p.linux_term_sig,
+            )
         };
         for k in 0..self.tasks.len() {
             if let Some(t) = &mut self.tasks[k]
@@ -805,8 +858,39 @@ impl Scheduler {
             }
         }
         handles.into_iter().for_each(release);
-        if let ExitStatus::Code(code) = status {
+        // Pipe ends close here, so readers see the end of the data now.
+        drop(files);
+        if let Some(sig) = term {
+            kprintln!("ZOO_OS PROC exit pid={} name={} signal={}", pid, name, sig);
+        } else if let ExitStatus::Code(code) = status {
             kprintln!("ZOO_OS PROC exit pid={} name={} code={}", pid, name, code);
+        }
+        // The Linux wait status, for the parent's `wait4`.
+        if parent != 0 {
+            let wstatus = match (term, status) {
+                (Some(sig), _) => i32::from(sig),
+                (None, ExitStatus::Code(c)) => i32::from(c) << 8,
+                (None, ExitStatus::Crashed) => SIGSEGV as i32,
+                (None, ExitStatus::Killed) => SIGKILL as i32,
+            };
+            for p in self.procs.iter_mut().flatten() {
+                if p.pid == parent
+                    && let Some(c) = p.linux_children.iter_mut().find(|c| c.0 == pid)
+                {
+                    c.1 = Some(wstatus);
+                }
+            }
+        }
+        // `vfork` children running in this process's memory end with it.
+        let borrowers: Vec<usize> = (0..self.tasks.len())
+            .filter(|&k| {
+                matches!(&self.tasks[k], Some(t) if t.state != State::Exited
+                    && t.proc.is_some_and(|q| matches!(&self.procs[q],
+                        Some(p) if p.linux_borrowed && p.linux_parent == pid)))
+            })
+            .collect();
+        for k in borrowers {
+            self.finish(k, ExitStatus::Killed);
         }
         if self.display_owner == Some(pid) {
             self.display_owner = None;
@@ -884,7 +968,9 @@ impl Scheduler {
                 // Shared pages: freed when their last reference goes.
                 mem.unmap_user_keep(p.p4, *va, *pages);
             }
-            mem.free_address_space(p.p4);
+            if !p.linux_borrowed {
+                mem.free_address_space(p.p4);
+            }
             self.thread_exits.retain(|&(pid, _, _)| pid != p.pid);
         }
         self.zombies = keep;
@@ -966,10 +1052,452 @@ impl Scheduler {
         }
     }
 
-    /// Linux descriptor `fd` of task `i`'s process (3 and up).
+    /// Linux descriptor `fd` of task `i`'s process.
     fn linux_file(&mut self, i: usize, fd: u64) -> Option<&mut LinuxFile> {
-        let k = fd.checked_sub(3)? as usize;
-        self.proc(i).linux_files.get_mut(k)?.as_mut()
+        self.proc(i)
+            .linux_files
+            .get_mut(usize::try_from(fd).ok()?)?
+            .as_mut()
+    }
+
+    /// Adds a process to the table; returns its index.
+    fn add_proc(&mut self, proc: Proc) -> usize {
+        let pidx = match self.procs.iter().position(|p| p.is_none()) {
+            Some(k) => k,
+            None => {
+                self.procs.push(None);
+                self.procs.len() - 1
+            }
+        };
+        self.procs[pidx] = Some(proc);
+        pidx
+    }
+
+    /// A live thread of process `pid`.
+    fn task_of_pid(&self, pid: u64) -> Option<usize> {
+        self.tasks.iter().position(|t| {
+            matches!(t, Some(t) if t.pid == pid && t.proc.is_some() && t.state != State::Exited)
+        })
+    }
+
+    /// Puts `file` in the lowest free Linux descriptor at or above `min`.
+    fn alloc_fd(
+        &mut self,
+        i: usize,
+        min: usize,
+        file: LinuxFile,
+        cloexec: bool,
+    ) -> Result<usize, i64> {
+        if min >= LINUX_FILES_MAX {
+            return Err(EINVAL);
+        }
+        let p = self.proc(i);
+        let files = &mut p.linux_files;
+        while files.len() < min {
+            files.push(None);
+        }
+        let fd = match files.iter().skip(min).position(Option::is_none) {
+            Some(k) => min + k,
+            None if files.len() < LINUX_FILES_MAX => {
+                files.push(None);
+                files.len() - 1
+            }
+            None => return Err(EMFILE),
+        };
+        files[fd] = Some(file);
+        p.set_cloexec(fd, cloexec);
+        Ok(fd)
+    }
+
+    /// `write`/`writev` on descriptor `fd` (docs/linux5-design.md).
+    fn linux_write(&mut self, i: usize, fd: u64, bytes: &[u8], mem: &Memory) -> Outcome {
+        match self.linux_file(i, fd) {
+            // Standard output and error go to the program's log.
+            Some(LinuxFile::Console { input: false }) => {
+                let t = self.task(i);
+                let text = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+                log_user(t.pid, &t.name, text);
+                Outcome::Ret(bytes.len() as i64)
+            }
+            Some(LinuxFile::Pipe(end)) if end.write => {
+                let pipe = end.pipe.clone();
+                self.pipe_write(i, &pipe, bytes, mem)
+            }
+            Some(LinuxFile::Home { .. }) => self.home_write(i, fd, bytes, mem),
+            _ => Outcome::Ret(-EBADF),
+        }
+    }
+
+    /// Writes into a pipe: up to `PIPE_BUF` bytes all at once, more as
+    /// room allows; blocks while it is full.
+    fn pipe_write(
+        &mut self,
+        i: usize,
+        pipe: &Arc<Mutex<Pipe>>,
+        bytes: &[u8],
+        mem: &Memory,
+    ) -> Outcome {
+        if bytes.is_empty() {
+            return Outcome::Ret(0);
+        }
+        let n = {
+            let mut p = pipe.lock();
+            if p.readers == 0 {
+                drop(p);
+                return self.linux_sigpipe(i);
+            }
+            let room = PIPE_SIZE - p.len;
+            if room == 0 || (bytes.len() <= PIPE_BUF && room < bytes.len()) {
+                return Outcome::Block;
+            }
+            let n = bytes.len().min(room);
+            let at = (p.head + p.len) % PIPE_SIZE;
+            ring_copy(mem, &p.frames, at, bytes.as_ptr() as *mut u8, n, true);
+            p.len += n;
+            n
+        };
+        self.wake_all();
+        Outcome::Ret(n as i64)
+    }
+
+    /// Reads from a pipe into user `pieces`: what is there, blocking while
+    /// it is empty and has writers; 0 once it is empty and has none.
+    fn pipe_read(
+        &mut self,
+        i: usize,
+        pipe: &Arc<Mutex<Pipe>>,
+        pieces: &[(u64, u64)],
+        mem: &Memory,
+    ) -> Outcome {
+        let p4 = self.task(i).p4.expect("Linux call from a user task");
+        if pieces.iter().all(|x| x.1 == 0) {
+            return Outcome::Ret(0);
+        }
+        let total = {
+            let mut p = pipe.lock();
+            if p.len == 0 {
+                return if p.writers == 0 {
+                    Outcome::Ret(0)
+                } else {
+                    Outcome::Block
+                };
+            }
+            let mut total = 0;
+            for &(base, len) in pieces {
+                let n = (len as usize).min(p.len);
+                if n == 0 {
+                    continue;
+                }
+                if !mem.user_range_ok(p4, base, n as u64, true) {
+                    if total == 0 {
+                        return Outcome::Ret(-EFAULT);
+                    }
+                    break;
+                }
+                ring_copy(mem, &p.frames, p.head, base as *mut u8, n, false);
+                p.head = (p.head + n) % PIPE_SIZE;
+                p.len -= n;
+                total += n;
+                if p.len == 0 {
+                    break;
+                }
+            }
+            total
+        };
+        self.wake_all();
+        Outcome::Ret(total as i64)
+    }
+
+    /// A write to a pipe nobody reads: SIGPIPE, which ends the program by
+    /// default; otherwise the write fails with EPIPE.
+    fn linux_sigpipe(&mut self, i: usize) -> Outcome {
+        self.linux_signal(i, SIGPIPE);
+        if self.proc(i).ended {
+            Outcome::Exit(0)
+        } else {
+            Outcome::Ret(-EPIPE)
+        }
+    }
+
+    /// Sends Linux signal `sig` (1..=64) to the process of task `k`, with
+    /// the default actions (docs/linux5-design.md): most signals end it;
+    /// SIGCHLD, SIGCONT, SIGURG, SIGWINCH and the stop signals (no job
+    /// control yet) are ignored. Running a program's own handler is L6.
+    fn linux_signal(&mut self, k: usize, sig: u64) {
+        let handler = if sig == SIGKILL {
+            0
+        } else {
+            self.proc(k).sig_handler(sig)
+        };
+        match handler {
+            0 if matches!(sig, 17..=23 | 28) => {}
+            0 => {
+                self.proc(k).linux_term_sig = Some(sig as u8);
+                self.finish(k, ExitStatus::Killed);
+            }
+            1 => {}
+            _ => {
+                let pid = self.task(k).pid;
+                kprintln!(
+                    "ZOO_OS INFO linux signal handler not run pid={} signal={}",
+                    pid,
+                    sig
+                );
+            }
+        }
+    }
+
+    /// The folder handle BadgerHandler sends after an `Open` reply on task
+    /// `i`'s home channel: `None` while it has not arrived, `Some(None)` if
+    /// something else came or the channel closed.
+    fn home_handle(&mut self, i: usize) -> Option<Option<HandleEntry>> {
+        let Some(h) = self.proc(i).linux_home else {
+            return Some(None);
+        };
+        let Some(HandleEntry {
+            object: Object::Endpoint { chan, side },
+            ..
+        }) = self.proc(i).get(h).cloned()
+        else {
+            return Some(None);
+        };
+        let mut c = chan.lock();
+        match c.queues[side].front() {
+            None if c.open[1 - side] => None,
+            Some(Msg::Handle(..)) => match c.queues[side].pop_front() {
+                Some(Msg::Handle(e, _)) => Some(Some(e)),
+                _ => Some(None),
+            },
+            _ => Some(None),
+        }
+    }
+
+    /// `fork`, `vfork` and `clone(CLONE_VM | CLONE_VFORK)` for task `i`
+    /// (docs/linux5-design.md). The child gets a copy of the address space,
+    /// or (`share`) runs in the parent's until it execs or ends while the
+    /// parent waits; it gets the descriptors and its own home-folder
+    /// session, and resumes from this call with 0 (on `stack`, if given).
+    fn linux_fork(
+        &mut self,
+        i: usize,
+        f: &TrapFrame,
+        mem: &mut Memory,
+        share: bool,
+        stack: u64,
+    ) -> Outcome {
+        if let Some(child) = self.task(i).vfork_child {
+            let waiting = self
+                .procs
+                .iter()
+                .flatten()
+                .any(|p| p.pid == child && p.linux_borrowed && !p.ended);
+            if waiting {
+                return Outcome::Block;
+            }
+            self.task(i).vfork_child = None;
+            return Outcome::Ret(child as i64);
+        }
+        {
+            let p = self.proc(i);
+            if !p.file_maps.is_empty() || !p.shm_maps.is_empty() || p.display_pages > 0 {
+                return Outcome::Ret(-ENOSYS);
+            }
+        }
+        // The child's own home-folder session: a separate channel, so the
+        // two programs' requests and replies never mix.
+        let home = if self.proc(i).linux_home.is_some() {
+            let (s, _) = step!(self.fs(i, Op::Open, zoo_abi::dir_rights::ALL, 0, "", &[]));
+            if s < 0 {
+                return Outcome::Ret(-zoo_errno(s));
+            }
+            match self.home_handle(i) {
+                None => return Outcome::Block,
+                Some(None) => return Outcome::Ret(-EIO),
+                Some(Some(e)) => Some(e),
+            }
+        } else {
+            None
+        };
+        let give_back = |e: Option<HandleEntry>| {
+            if let Some(e) = e {
+                release(e);
+            }
+        };
+        let Ok((index, slot)) = self.free_task_slots() else {
+            give_back(home);
+            return Outcome::Ret(-EAGAIN);
+        };
+        let parent_p4 = self.proc(i).p4;
+        let p4 = if share {
+            parent_p4
+        } else {
+            match mem.copy_address_space(parent_p4) {
+                Ok(p) => p,
+                Err(_) => {
+                    give_back(home);
+                    return Outcome::Ret(-ENOMEM);
+                }
+            }
+        };
+        let Ok(top) = mem.map_kernel_stack(slot) else {
+            if !share {
+                mem.free_address_space(p4);
+            }
+            give_back(home);
+            return Outcome::Ret(-ENOMEM);
+        };
+        self.kstack_used[slot] = true;
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        let parent = self.proc(i);
+        parent.linux_children.push((pid, None));
+        let mut child = Proc::new(pid, &parent.name, p4);
+        child.cmdline = parent.cmdline.clone();
+        child.heap_next = parent.heap_next;
+        child.map_next = parent.map_next;
+        child.vmas = parent.vmas.clone();
+        child.committed = parent.committed;
+        child.linux = true;
+        child.linux_brk = parent.linux_brk;
+        child.linux_files = parent.linux_files.clone();
+        child.linux_cloexec = parent.linux_cloexec;
+        child.linux_cwd = parent.linux_cwd.clone();
+        child.linux_parent = parent.pid;
+        child.linux_borrowed = share;
+        child.linux_sigmask = parent.linux_sigmask;
+        child.linux_sigactions = parent.linux_sigactions.clone();
+        if let Some(e) = home {
+            let h = child.insert(e).expect("new process has free handle slots");
+            child.linux_home = Some(h);
+            child.linux_shm = attach_bulk(mem, &child, h);
+        }
+        let name = child.name.clone();
+        let pidx = self.add_proc(child);
+        let mut frame = *f;
+        frame.rax = 0;
+        if stack != 0 {
+            frame.rsp = stack;
+        }
+        let frame_addr = top - core::mem::size_of::<TrapFrame>() as u64;
+        // SAFETY: the kernel stack `[top - KSTACK_SIZE, top)` was just mapped
+        // writable and belongs to the new task alone; the frame fits at its
+        // top.
+        unsafe { (frame_addr as *mut TrapFrame).write(frame) };
+        // The kernel does not use x87/SSE, so the registers still hold the
+        // parent's state.
+        let mut area = Box::new(fpu::new_state());
+        fpu::save(&mut area);
+        let fs_base = self.task(i).fs_base;
+        let mut task = Task::new(pid, pid, &name);
+        task.frame = frame_addr;
+        task.fpu = Some(area);
+        task.p4 = Some(p4);
+        task.proc = Some(pidx);
+        task.kstack = Some((slot, top));
+        task.fs_base = fs_base;
+        self.tasks[index] = Some(task);
+        kprintln!("ZOO_OS PROC start pid={} name={}", pid, name);
+        if share {
+            self.task(i).vfork_child = Some(pid);
+            return Outcome::Block;
+        }
+        Outcome::Ret(pid as i64)
+    }
+
+    /// `execve`: replaces task `i`'s program with `linux/<name>` from the
+    /// initrd (docs/linux5-design.md). Nothing changes unless it succeeds.
+    fn linux_exec(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        mem: &mut Memory,
+        path: &str,
+        argv: Vec<String>,
+        env: Vec<String>,
+    ) -> Outcome {
+        let fail = |e: i64| Outcome::Ret(-e);
+        let name = match path.strip_prefix("linux/") {
+            Some(n) if valid_name(n) => n,
+            _ if initrd_kind(path).is_some() || self.home_rel(i, path).is_some() => {
+                return fail(EACCES);
+            }
+            _ => return fail(ENOENT),
+        };
+        let Some(file) = initrd::find(path) else {
+            return fail(ENOENT);
+        };
+        let Ok(image) = elf::parse(file, USER_IMAGE_START, USER_IMAGE_END) else {
+            return fail(ENOEXEC);
+        };
+        // Strings, pointers and auxiliary vector must fit the stack's top page.
+        let bytes: usize = argv.iter().chain(&env).map(|s| s.len() + 1).sum();
+        let words = 1 + argv.len() + 1 + env.len() + 1 + 2 * LINUX_AUX_COUNT;
+        if argv.len() > LINUX_ARGS_MAX
+            || env.len() > LINUX_ARGS_MAX
+            || bytes + 16 + words * 8 + 16 > 4096
+        {
+            return fail(E2BIG);
+        }
+        let Ok(p4) = mem.new_address_space() else {
+            return fail(ENOMEM);
+        };
+        let Ok(stack_page) = load_image(mem, p4, file, &image) else {
+            mem.free_address_space(p4);
+            return fail(ENOMEM);
+        };
+        let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let vars: Vec<&str> = env.iter().map(String::as_str).collect();
+        let rsp = linux_stack(mem, stack_page, &args, &vars, file, &image);
+        // From here on the call succeeds.
+        let pid = self.task(i).pid;
+        let p = self.proc(i);
+        let (old, borrowed) = (p.p4, p.linux_borrowed);
+        p.p4 = p4;
+        p.linux_borrowed = false;
+        p.name = String::from(name);
+        p.cmdline = args.join("\0");
+        p.vmas.clear();
+        p.linux_brk = None;
+        p.committed = 0;
+        p.heap_next = HEAP_BASE;
+        p.map_next = MAP_BASE;
+        p.exc_handler = 0;
+        for fd in 0..p.linux_files.len() {
+            if p.linux_cloexec >> fd & 1 != 0 {
+                p.linux_files[fd] = None;
+            }
+        }
+        p.linux_cloexec = 0;
+        // Caught signals return to their default action; ignored stay so.
+        p.linux_sigactions.retain(|a| a.1[0] == 1);
+        let t = self.task(i);
+        t.p4 = Some(p4);
+        t.name = String::from(name);
+        t.fs_base = 0;
+        let area = Box::new(fpu::new_state());
+        fpu::restore(&area);
+        t.fpu = Some(area);
+        FsBase::write(VirtAddr::new(0));
+        // SAFETY: `p4` maps the kernel half like every process table, so the
+        // running kernel code and stack stay mapped; this task no longer
+        // uses the old table.
+        unsafe { Cr3::write(p4, Cr3::read().1) };
+        if !borrowed {
+            mem.free_address_space(old);
+        }
+        let sel = gdt::selectors();
+        *f = TrapFrame {
+            rip: image.entry,
+            cs: sel.user_code.0 as u64,
+            rflags: RFLAGS_IF | RFLAGS_RESERVED,
+            rsp,
+            ss: sel.user_data.0 as u64,
+            vector: f.vector,
+            ..TrapFrame::default()
+        };
+        kprintln!("ZOO_OS PROC exec pid={} name={}", pid, name);
+        self.wake_all();
+        Outcome::Resume
     }
 
     /// The user path at `addr`, resolved against the working directory.
@@ -1133,12 +1661,6 @@ impl Scheduler {
         let p4 = self.task(i).p4.expect("system call from a user task");
         let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
         let fail = |e: i64| Outcome::Ret(-e);
-        // Standard output and error go to the program's log, line by line.
-        let out = |s: &mut Self, bytes: &[u8]| {
-            let t = s.task(i);
-            let text = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-            log_user(t.pid, &t.name, text);
-        };
         match number {
             // write(fd, buf, len)
             1 => {
@@ -1148,14 +1670,7 @@ impl Scheduler {
                 // SAFETY: just checked as readable user memory of the
                 // running process.
                 let bytes = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
-                if a1 >= 3 {
-                    return self.home_write(i, a1, bytes, mem);
-                }
-                if a1 == 0 {
-                    return fail(EBADF);
-                }
-                out(self, bytes);
-                Outcome::Ret(a3 as i64)
+                self.linux_write(i, a1, bytes, mem)
             }
             // writev(fd, iov, count)
             20 => {
@@ -1185,14 +1700,7 @@ impl Scheduler {
                         return fail(EINVAL);
                     }
                 }
-                if a1 >= 3 {
-                    return self.home_write(i, a1, &all, mem);
-                }
-                if a1 == 0 {
-                    return fail(EBADF);
-                }
-                out(self, &all);
-                Outcome::Ret(all.len() as i64)
+                self.linux_write(i, a1, &all, mem)
             }
             // ioctl: no terminals yet.
             16 => fail(ENOTTY),
@@ -1392,26 +1900,20 @@ impl Scheduler {
                         None => return fail(ENOENT),
                     }
                 };
-                let files = &mut self.proc(i).linux_files;
-                let slot = match files.iter().position(Option::is_none) {
-                    Some(k) => k,
-                    None if files.len() < LINUX_FILES_MAX => {
-                        files.push(None);
-                        files.len() - 1
-                    }
-                    None => return fail(EMFILE),
-                };
-                files[slot] = Some(file);
-                Outcome::Ret(slot as i64 + 3)
+                match self.alloc_fd(i, 0, file, flags & O_CLOEXEC != 0) {
+                    Ok(fd) => Outcome::Ret(fd as i64),
+                    Err(e) => fail(e),
+                }
             }
             // close(fd)
             3 => {
-                if a1 < 3 {
-                    return Outcome::Ret(0);
-                }
-                match self.proc(i).linux_files.get_mut((a1 - 3) as usize) {
+                let p = self.proc(i);
+                match p.linux_files.get_mut(a1 as usize) {
                     Some(slot @ Some(_)) => {
                         *slot = None;
+                        p.set_cloexec(a1 as usize, false);
+                        // A pipe's reader may now see its end.
+                        self.wake_all();
                         Outcome::Ret(0)
                     }
                     _ => fail(EBADF),
@@ -1436,10 +1938,13 @@ impl Scheduler {
                         pieces.push(piece);
                     }
                 }
-                if a1 == 0 {
-                    return Outcome::Ret(0); // standard input: at its end
-                }
                 let (data, pos) = match self.linux_file(i, a1).cloned() {
+                    // Standard input: at its end (no terminal yet).
+                    Some(LinuxFile::Console { input: true }) => return Outcome::Ret(0),
+                    Some(LinuxFile::Pipe(end)) if !end.write => {
+                        return self.pipe_read(i, &end.pipe, &pieces, mem);
+                    }
+                    Some(LinuxFile::Console { .. } | LinuxFile::Pipe(_)) => return fail(EBADF),
                     Some(LinuxFile::File(data, pos)) => (data, pos),
                     Some(LinuxFile::Home { path, pos, .. }) => {
                         // One request: the first piece, up to the shared
@@ -1541,6 +2046,7 @@ impl Scheduler {
                         return Outcome::Ret(0);
                     }
                     Some(LinuxFile::Dir(..) | LinuxFile::HomeDir(..)) => return fail(EINVAL),
+                    Some(LinuxFile::Console { .. } | LinuxFile::Pipe(_)) => return fail(ESPIPE),
                     None => return fail(EBADF),
                 };
                 let from = match a3 {
@@ -1567,7 +2073,7 @@ impl Scheduler {
                 let (home, dir, start) = match self.linux_file(i, a1).cloned() {
                     Some(LinuxFile::Dir(path, pos)) => (false, path, pos),
                     Some(LinuxFile::HomeDir(path, pos)) => (true, path, pos),
-                    Some(LinuxFile::File(..) | LinuxFile::Home { .. }) => return fail(ENOTDIR),
+                    Some(_) => return fail(ENOTDIR),
                     None => return fail(EBADF),
                 };
                 let mut out = alloc::vec::Vec::new();
@@ -1638,8 +2144,12 @@ impl Scheduler {
                 };
                 // A home-folder path to ask BadgerHandler about, or (mode, size).
                 let (home_path, known) = match fd {
-                    Some(0..=2) => (None, Some((0o020_620u32, 0))),
                     Some(fd) => match self.linux_file(i, fd).cloned() {
+                        Some(LinuxFile::Console { .. }) => (None, Some((0o020_620u32, 0))),
+                        Some(LinuxFile::Pipe(end)) => {
+                            let len = end.pipe.lock().len as u64;
+                            (None, Some((0o010_600, len)))
+                        }
                         Some(LinuxFile::File(data, _)) => {
                             (None, Some((0o100_444, data.len() as u64)))
                         }
@@ -1862,18 +2372,281 @@ impl Scheduler {
             }
             // getuid, getgid, geteuid, getegid: one ordinary user.
             102 | 104 | 107 | 108 => Outcome::Ret(i64::from(LINUX_UID)),
-            // getppid: started by the kernel.
-            110 => Outcome::Ret(0),
-            // fcntl(fd, cmd, arg): descriptor flags (close-on-exec has no
-            // meaning yet) and status flags.
+            // getppid: 0 when started by the kernel.
+            110 => Outcome::Ret(self.proc(i).linux_parent as i64),
+            // fcntl(fd, cmd, arg): duplicate, close-on-exec, status flags
+            // (setting them is accepted and has no effect yet).
             72 => {
-                if a1 > 2 && self.linux_file(i, a1).is_none() {
+                let Some(file) = self.linux_file(i, a1).cloned() else {
                     return fail(EBADF);
-                }
+                };
+                let fd = a1 as usize;
                 match a2 {
-                    1..=4 => Outcome::Ret(0), // F_GETFD, F_SETFD, F_GETFL, F_SETFL
+                    // F_DUPFD, F_DUPFD_CLOEXEC
+                    0 | 1030 => match self.alloc_fd(i, a3 as usize, file, a2 == 1030) {
+                        Ok(new) => Outcome::Ret(new as i64),
+                        Err(e) => fail(e),
+                    },
+                    // F_GETFD, F_SETFD
+                    1 => Outcome::Ret((self.proc(i).linux_cloexec >> fd & 1) as i64),
+                    2 => {
+                        self.proc(i).set_cloexec(fd, a3 & 1 != 0);
+                        Outcome::Ret(0)
+                    }
+                    // F_GETFL: the access mode, and append.
+                    3 => Outcome::Ret(match file {
+                        LinuxFile::Pipe(end) if end.write => 1,
+                        LinuxFile::Console { input: false } => 1,
+                        LinuxFile::Home {
+                            write: true,
+                            append,
+                            ..
+                        } => 1 | if append { O_APPEND as i64 } else { 0 },
+                        _ => 0,
+                    }),
+                    4 => Outcome::Ret(0), // F_SETFL
                     _ => fail(EINVAL),
                 }
+            }
+            // ---- processes, pipes, signals (docs/linux5-design.md) ----
+            // fork(), vfork(), clone(flags, stack, …)
+            57 => self.linux_fork(i, f, mem, false, 0),
+            58 => self.linux_fork(i, f, mem, true, 0),
+            56 => match a1 & !0xff {
+                0 => self.linux_fork(i, f, mem, false, a2),
+                x if x == CLONE_VM | CLONE_VFORK => self.linux_fork(i, f, mem, true, a2),
+                _ => {
+                    kprintln!("ZOO_OS INFO linux clone flags={:#x} unsupported", a1);
+                    fail(ENOSYS)
+                }
+            },
+            // execve(path, argv, envp)
+            59 => {
+                let Some(path) = self.linux_path(i, &ok, a1) else {
+                    return fail(EFAULT);
+                };
+                let mut lists = [Vec::new(), Vec::new()];
+                for (list, addr) in lists.iter_mut().zip([a2, a3]) {
+                    if addr == 0 {
+                        continue;
+                    }
+                    for k in 0..=LINUX_ARGS_MAX as u64 {
+                        let at = addr + 8 * k;
+                        if !ok(at, 8, false) {
+                            return fail(EFAULT);
+                        }
+                        // SAFETY: checked as readable user memory.
+                        let p = unsafe { (at as *const u64).read_unaligned() };
+                        if p == 0 {
+                            break;
+                        }
+                        if k == LINUX_ARGS_MAX as u64 {
+                            return fail(E2BIG);
+                        }
+                        let mut buf = [0u8; LINUX_ARG_MAX];
+                        let Some(n) = user_cstr(&ok, p, &mut buf) else {
+                            return fail(E2BIG);
+                        };
+                        let Ok(s) = core::str::from_utf8(&buf[..n]) else {
+                            return fail(EINVAL);
+                        };
+                        list.push(String::from(s));
+                    }
+                }
+                let [argv, env] = lists;
+                self.linux_exec(i, f, mem, &path, argv, env)
+            }
+            // wait4(pid, status, options, rusage): pid > 0 one child, else
+            // any (there is one process group).
+            61 => {
+                let (want, st, nohang, ru) = (a1 as i64, a2, a3 & 1 != 0, f.r10);
+                if (st != 0 && !ok(st, 4, true)) || (ru != 0 && !ok(ru, 144, true)) {
+                    return fail(EFAULT);
+                }
+                let kids = &mut self.proc(i).linux_children;
+                let fits = |pid: u64| want <= 0 || pid == want as u64;
+                if !kids.iter().any(|c| fits(c.0)) {
+                    return fail(ECHILD);
+                }
+                if let Some(k) = kids.iter().position(|c| fits(c.0) && c.1.is_some()) {
+                    let (pid, status) = kids.remove(k);
+                    // SAFETY: both checked as writable user memory.
+                    unsafe {
+                        if st != 0 {
+                            (st as *mut i32).write_unaligned(status.unwrap_or(0));
+                        }
+                        if ru != 0 {
+                            core::ptr::write_bytes(ru as *mut u8, 0, 144);
+                        }
+                    }
+                    return Outcome::Ret(pid as i64);
+                }
+                if nohang {
+                    Outcome::Ret(0)
+                } else {
+                    Outcome::Block
+                }
+            }
+            // pipe(fds), pipe2(fds, flags)
+            22 | 293 => {
+                let flags = if number == 293 { a2 } else { 0 };
+                if flags & !O_CLOEXEC != 0 {
+                    return fail(EINVAL);
+                }
+                if !ok(a1, 8, true) {
+                    return fail(EFAULT);
+                }
+                let Some(pipe) = Pipe::new(mem) else {
+                    return fail(ENOMEM);
+                };
+                let pipe = Arc::new(Mutex::new(pipe));
+                let reader = LinuxFile::Pipe(PipeEnd::new(pipe.clone(), false));
+                let writer = LinuxFile::Pipe(PipeEnd::new(pipe, true));
+                let cloexec = flags & O_CLOEXEC != 0;
+                let r = match self.alloc_fd(i, 0, reader, cloexec) {
+                    Ok(fd) => fd,
+                    Err(e) => return fail(e),
+                };
+                let w = match self.alloc_fd(i, 0, writer, cloexec) {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        self.proc(i).linux_files[r] = None;
+                        return fail(e);
+                    }
+                };
+                // SAFETY: checked as writable user memory (two ints).
+                unsafe {
+                    (a1 as *mut i32).write_unaligned(r as i32);
+                    (a1 as *mut i32).add(1).write_unaligned(w as i32);
+                }
+                Outcome::Ret(0)
+            }
+            // dup(fd)
+            32 => match self.linux_file(i, a1).cloned() {
+                Some(file) => match self.alloc_fd(i, 0, file, false) {
+                    Ok(fd) => Outcome::Ret(fd as i64),
+                    Err(e) => fail(e),
+                },
+                None => fail(EBADF),
+            },
+            // dup2(old, new), dup3(old, new, flags)
+            33 | 292 => {
+                let flags = if number == 292 { a3 } else { 0 };
+                if flags & !O_CLOEXEC != 0 || (number == 292 && a1 == a2) {
+                    return fail(EINVAL);
+                }
+                let Some(file) = self.linux_file(i, a1).cloned() else {
+                    return fail(EBADF);
+                };
+                let fd = a2 as usize;
+                if fd >= LINUX_FILES_MAX {
+                    return fail(EBADF);
+                }
+                if a1 == a2 {
+                    return Outcome::Ret(fd as i64);
+                }
+                let p = self.proc(i);
+                while p.linux_files.len() <= fd {
+                    p.linux_files.push(None);
+                }
+                // What `new` had open closes.
+                p.linux_files[fd] = Some(file);
+                p.set_cloexec(fd, flags & O_CLOEXEC != 0);
+                self.wake_all();
+                Outcome::Ret(fd as i64)
+            }
+            // kill(pid, sig), tkill(tid, sig), tgkill(tgid, tid, sig): to
+            // Linux programs only; pid 0 is the caller (one process group).
+            62 | 200 | 234 => {
+                let (pid, sig) = if number == 234 { (a1, a3) } else { (a1, a2) };
+                let (pid, sig) = (pid as i64, sig);
+                if sig > 64 {
+                    return fail(EINVAL);
+                }
+                let me = self.task(i).pid;
+                let target = match pid {
+                    0 => me,
+                    p if p > 0 => p as u64,
+                    _ => return fail(ESRCH),
+                };
+                let Some(k) = self.task_of_pid(target) else {
+                    return fail(ESRCH);
+                };
+                if !self.proc(k).linux {
+                    return fail(EPERM);
+                }
+                if sig == 0 {
+                    return Outcome::Ret(0);
+                }
+                self.linux_signal(k, sig);
+                if self.proc(i).ended {
+                    Outcome::Exit(0)
+                } else {
+                    Outcome::Ret(0)
+                }
+            }
+            // rt_sigaction(sig, act, oldact, size): recorded; the default
+            // actions apply (docs/linux5-design.md).
+            13 => {
+                let (sig, act, old) = (a1, a2, a3);
+                if !(1..=64).contains(&sig) || (act != 0 && (sig == SIGKILL || sig == SIGSTOP)) {
+                    return fail(EINVAL);
+                }
+                if (act != 0 && !ok(act, 32, false)) || (old != 0 && !ok(old, 32, true)) {
+                    return fail(EFAULT);
+                }
+                let mut new = [0u64; 4];
+                if act != 0 {
+                    for (k, v) in new.iter_mut().enumerate() {
+                        // SAFETY: checked as readable user memory.
+                        *v = unsafe { (act as *const u64).add(k).read_unaligned() };
+                    }
+                }
+                let list = &mut self.proc(i).linux_sigactions;
+                if old != 0 {
+                    let cur = list
+                        .iter()
+                        .find(|a| u64::from(a.0) == sig)
+                        .map_or([0u64; 4], |a| a.1);
+                    for (k, v) in cur.iter().enumerate() {
+                        // SAFETY: checked as writable user memory.
+                        unsafe { (old as *mut u64).add(k).write_unaligned(*v) };
+                    }
+                }
+                if act != 0 {
+                    list.retain(|a| u64::from(a.0) != sig);
+                    if new[0] != 0 {
+                        list.push((sig as u8, new));
+                    }
+                }
+                Outcome::Ret(0)
+            }
+            // rt_sigprocmask(how, set, oldset, size)
+            14 => {
+                let (how, set, old) = (a1, a2, a3);
+                if (set != 0 && !ok(set, 8, false)) || (old != 0 && !ok(old, 8, true)) {
+                    return fail(EFAULT);
+                }
+                let cur = self.proc(i).linux_sigmask;
+                let new = if set == 0 {
+                    cur
+                } else {
+                    // SAFETY: checked as readable user memory.
+                    let s = unsafe { (set as *const u64).read_unaligned() };
+                    match how {
+                        0 => cur | s,
+                        1 => cur & !s,
+                        2 => s,
+                        _ => return fail(EINVAL),
+                    }
+                };
+                if old != 0 {
+                    // SAFETY: checked as writable user memory.
+                    unsafe { (old as *mut u64).write_unaligned(cur) };
+                }
+                // SIGKILL and SIGSTOP cannot be blocked.
+                self.proc(i).linux_sigmask = new & !(1 << (SIGKILL - 1) | 1 << (SIGSTOP - 1));
+                Outcome::Ret(0)
             }
             // ---- time ----
             // clock_gettime(clock, ts)
@@ -3311,13 +4084,15 @@ const AT_ENTRY: u64 = 9;
 const AT_RANDOM: u64 = 25;
 
 /// Writes the System V process stack into the stack's top page (`page`,
-/// mapped at `USER_STACK_TOP - 4096`): argument strings and 16 random
-/// bytes at the top, then (16-byte aligned) argc, argv, an empty
-/// environment and the auxiliary vector. Returns the initial RSP.
+/// mapped at `USER_STACK_TOP - 4096`): argument and environment strings and
+/// 16 random bytes at the top, then (16-byte aligned) argc, argv, envp and
+/// the auxiliary vector. Returns the initial RSP. The caller makes sure it
+/// all fits the page (at most `LINUX_ARGS_MAX` of each).
 fn linux_stack(
     mem: &Memory,
     page: PhysFrame,
-    cmdline: &str,
+    args: &[&str],
+    vars: &[&str],
     file: &[u8],
     image: &elf::Image,
 ) -> u64 {
@@ -3326,8 +4101,9 @@ fn linux_stack(
     let mut top = 4096usize;
     // SAFETY (all writes below): `kva` is the freshly mapped, zeroed top
     // stack page of the new process, reached through the physical-memory
-    // window; every offset stays inside it (`cmdline` is at most
-    // MAX_CMDLINE bytes and at most 64 arguments are kept).
+    // window; every offset stays inside it (the caller checked the sizes:
+    // a spawn's command line is at most MAX_CMDLINE bytes with the fixed
+    // environment, and `execve` checks its total).
     let put_bytes = |top: &mut usize, bytes: &[u8]| -> u64 {
         *top -= bytes.len();
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), kva.add(*top), bytes.len()) };
@@ -3339,17 +4115,17 @@ fn linux_stack(
     let random: [u8; 16] =
         (u128::from(tsc).wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).to_le_bytes();
     let random_at = put_bytes(&mut top, &random);
-    let mut argv = [0u64; 64];
+    let mut argv = [0u64; LINUX_ARGS_MAX];
     let mut argc = 0;
-    for arg in cmdline.split('\0').take(argv.len()) {
+    for arg in args.iter().take(argv.len()) {
         put_bytes(&mut top, &[0]);
         argv[argc] = put_bytes(&mut top, arg.as_bytes());
         argc += 1;
     }
     // The environment (docs/linux3-design.md).
-    let mut env = [0u64; LINUX_ENV.len()];
+    let mut env = [0u64; LINUX_ARGS_MAX];
     let mut env_count = 0;
-    for v in LINUX_ENV {
+    for v in vars.iter().take(env.len()) {
         put_bytes(&mut top, &[0]);
         env[env_count] = put_bytes(&mut top, v.as_bytes());
         env_count += 1;
@@ -3412,6 +4188,19 @@ const O_EXCL: u64 = 0o200;
 const O_TRUNC: u64 = 0o1000;
 const O_APPEND: u64 = 0o2000;
 const AT_REMOVEDIR: u64 = 0x200;
+const O_CLOEXEC: u64 = 0o2_000_000;
+const CLONE_VM: u64 = 0x100;
+const CLONE_VFORK: u64 = 0x4000;
+const SIGKILL: u64 = 9;
+const SIGSEGV: u64 = 11;
+const SIGPIPE: u64 = 13;
+const SIGSTOP: u64 = 19;
+/// Most arguments (and, separately, environment strings) at start-up, and
+/// the longest single one `execve` takes.
+const LINUX_ARGS_MAX: usize = 64;
+const LINUX_ARG_MAX: usize = 1024;
+/// Entries in the auxiliary vector `linux_stack` writes (with AT_NULL).
+const LINUX_AUX_COUNT: usize = 7;
 
 fn page_up(a: u64) -> u64 {
     a.div_ceil(4096) * 4096
@@ -3422,10 +4211,11 @@ fn page_up(a: u64) -> u64 {
 fn user_cstr(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64, buf: &mut [u8]) -> Option<usize> {
     for (k, slot) in buf.iter_mut().enumerate() {
         let a = addr.checked_add(k as u64)?;
-        if !ok(a, 1, false) {
+        // One check per page: the rest of a checked page is readable too.
+        if (k == 0 || a & 0xFFF == 0) && !ok(a, 1, false) {
             return None;
         }
-        // SAFETY: just checked as one readable byte of user memory.
+        // SAFETY: checked above as part of a readable user page.
         let b = unsafe { (a as *const u8).read() };
         if b == 0 {
             return Some(k);
@@ -3440,6 +4230,12 @@ fn user_cstr(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64, buf: &mut [u8]) ->
 /// (paths relative to it, docs/linux4-design.md).
 #[derive(Clone)]
 enum LinuxFile {
+    /// Standard input (at its end) or output (the program's log).
+    Console {
+        input: bool,
+    },
+    /// One end of a pipe (docs/linux5-design.md).
+    Pipe(PipeEnd),
     File(&'static [u8], u64),
     Dir(String, usize),
     Home {
@@ -3449,6 +4245,112 @@ enum LinuxFile {
         append: bool,
     },
     HomeDir(String, usize),
+}
+
+/// A pipe: a ring of `PIPE_PAGES` physical pages (not the kernel heap),
+/// with counts of the descriptors open on each end.
+struct Pipe {
+    frames: Vec<PhysFrame>,
+    head: usize,
+    len: usize,
+    readers: usize,
+    writers: usize,
+}
+
+impl Pipe {
+    fn new(mem: &mut Memory) -> Option<Pipe> {
+        let mut frames = Vec::with_capacity(PIPE_PAGES);
+        for _ in 0..PIPE_PAGES {
+            match mem.frames.allocate() {
+                Some(f) => frames.push(f),
+                None => {
+                    for f in frames {
+                        let _ = mem.frames.deallocate(f);
+                    }
+                    return None;
+                }
+            }
+        }
+        Some(Pipe {
+            frames,
+            head: 0,
+            len: 0,
+            readers: 0,
+            writers: 0,
+        })
+    }
+}
+
+impl Drop for Pipe {
+    fn drop(&mut self) {
+        // Freed by the next reap, which holds the memory lock.
+        SHM_FREED.lock().append(&mut self.frames);
+    }
+}
+
+/// One descriptor's end of a pipe; copies and drops keep the counts.
+struct PipeEnd {
+    pipe: Arc<Mutex<Pipe>>,
+    write: bool,
+}
+
+impl PipeEnd {
+    fn new(pipe: Arc<Mutex<Pipe>>, write: bool) -> PipeEnd {
+        {
+            let mut p = pipe.lock();
+            if write {
+                p.writers += 1;
+            } else {
+                p.readers += 1;
+            }
+        }
+        PipeEnd { pipe, write }
+    }
+}
+
+impl Clone for PipeEnd {
+    fn clone(&self) -> PipeEnd {
+        PipeEnd::new(self.pipe.clone(), self.write)
+    }
+}
+
+impl Drop for PipeEnd {
+    fn drop(&mut self) {
+        let mut p = self.pipe.lock();
+        if self.write {
+            p.writers -= 1;
+        } else {
+            p.readers -= 1;
+        }
+    }
+}
+
+/// Pipe size (as Linux's default) and the size written all at once.
+const PIPE_PAGES: usize = 16;
+const PIPE_SIZE: usize = PIPE_PAGES * 4096;
+const PIPE_BUF: usize = 4096;
+
+/// Copies `n` bytes between `buf` and a pipe ring from ring offset `at`
+/// (wrapping): into the ring if `into`, else out of it.
+fn ring_copy(mem: &Memory, frames: &[PhysFrame], at: usize, buf: *mut u8, n: usize, into: bool) {
+    let mut done = 0;
+    while done < n {
+        let pos = (at + done) % PIPE_SIZE;
+        let (k, o) = (pos / 4096, pos % 4096);
+        let span = (n - done).min(4096 - o);
+        // SAFETY: `k` < PIPE_PAGES and `o + span` <= 4096, so the ring side
+        // is inside one of its pages (physical window); the caller checked
+        // `buf..buf + n` for the direction used.
+        unsafe {
+            let ring = mem.phys_to_virt(frames[k].start_address()).add(o);
+            if into {
+                core::ptr::copy_nonoverlapping(buf.add(done), ring, span);
+            } else {
+                core::ptr::copy_nonoverlapping(ring, buf.add(done), span);
+            }
+        }
+        done += span;
+    }
 }
 
 /// What one BadgerHandler request gave: a reply (status, bytes), a wait
@@ -3501,6 +4403,7 @@ fn zoo_errno(status: i64) -> i64 {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum Op {
+    Open = 1,
     List = 2,
     Stat = 3,
     Read = 4,
@@ -3657,7 +4560,14 @@ fn initrd_children(dir: &str) -> alloc::vec::Vec<(String, bool)> {
 }
 
 /// Linux error numbers used here.
+const EPERM: i64 = 1;
 const ENOENT: i64 = 2;
+const ESRCH: i64 = 3;
+const E2BIG: i64 = 7;
+const ENOEXEC: i64 = 8;
+const ECHILD: i64 = 10;
+const ESPIPE: i64 = 29;
+const EPIPE: i64 = 32;
 const ENOTDIR: i64 = 20;
 const EIO: i64 = 5;
 const EAGAIN: i64 = 11;

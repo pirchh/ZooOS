@@ -869,6 +869,42 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-guillemot",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux guillemot-test",
+                    "ZOO_OS PROC start pid=26 name=guillemot-test",
+                ]);
+                e.then(&guillemot_children()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>());
+                e.then(&["ZOO_OS PROC exit pid=26 name=guillemot-test code=0"]);
+                e
+            },
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a Linux musl program forks, pipes, execs, spawns, kills and waits",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux guillemot-test")),
+                    Action::WaitContains(
+                        "GuillemotTest: exec output: Hello from Linux musl: argc=2 argv[0]=hello argv[1]=from-guillemot"
+                            .into(),
+                    ),
+                    Action::WaitContains("GuillemotTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=guillemot-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
@@ -2816,4 +2852,41 @@ fn corrupt_newest_snapshot(path: &std::path::Path) -> Result<String, String> {
     Ok(format!(
         "corrupted generation {generation} (slot at byte {slot}): flipped byte {at}"
     ))
+}
+
+/// Every process line `guillemot-test`'s children print, in order
+/// (c/linux/guillemot-test.c; pids are given out in sequence from 27).
+fn guillemot_children() -> Vec<String> {
+    let g = "guillemot-test";
+    let mut lines = Vec::new();
+    let mut child = |pid: u32, exec: bool, end: &str| {
+        lines.push(format!("ZOO_OS PROC start pid={pid} name={g}"));
+        let name = if exec {
+            lines.push(format!("ZOO_OS PROC exec pid={pid} name=hello"));
+            "hello"
+        } else {
+            g
+        };
+        lines.push(format!("ZOO_OS PROC exit pid={pid} name={name} {end}"));
+    };
+    // Exit code, memory, pipe; execvp; posix_spawn; a missing program;
+    // SIGTERM; SIGPIPE; the 256 KiB pipe; the home-folder write.
+    child(27, false, "code=7");
+    child(28, false, "code=0");
+    child(29, false, "code=0");
+    child(30, true, "code=0");
+    child(31, true, "code=0");
+    child(32, false, "code=127");
+    child(33, false, "signal=15");
+    child(34, false, "signal=13");
+    child(35, false, "code=0");
+    child(36, false, "code=0");
+    // Timings: 50 forks, 10 forks with 4 MiB, 50 spawns.
+    for pid in 37..97 {
+        child(pid, false, "code=0");
+    }
+    for pid in 97..147 {
+        child(pid, true, "code=0");
+    }
+    lines
 }
