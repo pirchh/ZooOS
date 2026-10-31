@@ -193,18 +193,31 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mut head = SELF_TESTS.to_vec();
     head.extend(BOOT_PROCESSES);
     head.extend(BEAVERS_START);
-    let mut normal = expect(Mode::Normal, &head);
-    normal
-        .then_any_order(&BEAVERS_EXIT)
-        .then(&BADGER_START)
-        .then(&ARCTICFOX)
-        .then(&OTTER)
-        .then(&BADGER_EXIT)
-        .then(&ANT)
-        .then(&MOLE)
-        .then(&GECKO)
-        .then(&PTARMIGAN)
-        .then(&BOOT_PROCESSES_END);
+    let boot = |mode: Mode| {
+        let mut e = expect(mode, &head);
+        e.then_any_order(&BEAVERS_EXIT)
+            .then(&BADGER_START)
+            .then(&ARCTICFOX)
+            .then(&OTTER)
+            .then(&BADGER_EXIT)
+            .then(&ANT)
+            .then(&MOLE)
+            .then(&GECKO)
+            .then(&PTARMIGAN)
+            .then(&BOOT_PROCESSES_END);
+        e
+    };
+    let normal = boot(Mode::Normal);
+    let mut big_screen = boot(Mode::BigScreen);
+    big_screen.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+    ]);
     // B1: the same system without the boot checks. D6: it starts in the
     // desktop; after Escape the shell runs a C program.
     let mut fast_head = SELF_TESTS.to_vec();
@@ -612,6 +625,26 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 },
             }),
             screen_checks: vec![("1-click", check_click_focus)],
+        },
+        Case {
+            name: "big-screen",
+            mode: Mode::BigScreen,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: false,
+            expectation: big_screen,
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a screen wider than 1920: the desktop uses its top-left 1920x1200 part instead of refusing it",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.insert(2, Action::WaitContains("PeacockHandler: display ".into()));
+                    steps.push(Action::Screenshot("1-desktop"));
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-desktop", check_big_screen)],
         },
         Case {
             name: "files-browse",
@@ -1817,6 +1850,30 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
 }
 
 const MENU_BAR_H: usize = 24;
+
+// ---- Large screens (docs/usb-boot.md) -----------------------------------
+
+fn check_big_screen(img: &screen::Image) -> Result<String, String> {
+    if img.width <= 1920 {
+        return Err(format!(
+            "the screen is {}x{}; this case needs one wider than 1920",
+            img.width, img.height
+        ));
+    }
+    let report = check_desktop_started(img)?;
+    // Right of the desktop: painted black once.
+    let outside = img.pixel(img.width - 2, 10);
+    if outside != Some([0, 0, 0]) {
+        return Err(format!(
+            "outside the desktop at ({}, 10): {outside:?}",
+            img.width - 2
+        ));
+    }
+    Ok(format!(
+        "{}x{} screen: {report}; the area right of x=1920 is black",
+        img.width, img.height
+    ))
+}
 
 // ---- D7 Files (docs/d7-design.md §3) -------------------------------------
 

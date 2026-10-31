@@ -919,17 +919,39 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             return 2;
         }
     };
-    let (w, h) = (info.width as usize, info.height as usize);
-    if info.bytes_per_pixel != 4 || w > MAX_W || h > MAX_H || w < 640 || h < 400 {
+    let (full_w, full_h) = (info.width as usize, info.height as usize);
+    if info.bytes_per_pixel != 4 || full_w < 640 || full_h < 400 {
         zoo_rt::log!(
             "PeacockHandler: unsupported display {}x{}x{}",
-            w,
-            h,
+            full_w,
+            full_h,
             info.bytes_per_pixel
         );
         return 3;
     }
-    zoo_rt::log!("PeacockHandler: display {}x{} acquired", w, h);
+    // A screen larger than the back buffer: the desktop uses its top-left
+    // part and the rest is painted once (docs/usb-boot.md).
+    let (w, h) = (full_w.min(MAX_W), full_h.min(MAX_H));
+    if (w, h) != (full_w, full_h) {
+        zoo_rt::log!(
+            "PeacockHandler: display {}x{}: using {}x{}",
+            full_w,
+            full_h,
+            w,
+            h
+        );
+        let fb = info.base as *mut u32;
+        for y in 0..full_h {
+            let from = if y < h { w } else { 0 };
+            for x in from..full_w {
+                // SAFETY: (x, y) is inside the mapped framebuffer
+                // (`stride * height` pixels of 4 bytes).
+                unsafe { fb.add(y * info.stride as usize + x).write_volatile(0) };
+            }
+        }
+    } else {
+        zoo_rt::log!("PeacockHandler: display {}x{} acquired", w, h);
+    }
     // SAFETY: this process is single-threaded and this is the only place a
     // reference to the back buffer is created.
     let back = unsafe { &mut *core::ptr::addr_of_mut!(BACK) };

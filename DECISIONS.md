@@ -143,6 +143,18 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 2a: ready for a USB stick (2026-10-31)
+
+Plan and risks: docs/usb-boot.md.
+
+- `cargo xtask usb-image` builds the everyday image into
+  `build/usb/zoo-os-usb.img` and prints its SHA-256. It never writes a
+  device: the owner writes the stick, on a device they name, and boots it
+  only on another PC.
+- The desktop uses the top-left 1920×1200 of a larger screen instead of
+  refusing it; test-only kernel mode `big-screen` exercises this in QEMU.
+  Version 0.32.0.
+
 ## Hardware step 1b: USB keyboard and mouse input (2026-10-31)
 
 Design: docs/h1b-design.md.

@@ -15,6 +15,7 @@ bench = false
 # the boot-check programs (docs/b1-design.md); the others are test modes.
 [features]
 fast-boot = []
+big-screen = []
 panic-test = []
 fault-write-protect = []
 fault-heap-guard = []
