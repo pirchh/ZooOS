@@ -74,6 +74,9 @@ fn seed_files(dir: &Path) -> Result<Vec<(String, PathBuf)>, String> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Normal,
+    /// The normal system without the boot-check programs
+    /// (docs/b1-design.md): what `cargo xtask run` boots by default.
+    FastBoot,
     Panic,
     FaultWriteProtect,
     FaultHeapGuard,
@@ -82,8 +85,9 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [Mode; 6] = [
+    pub const ALL: [Mode; 7] = [
         Mode::Normal,
+        Mode::FastBoot,
         Mode::Panic,
         Mode::FaultWriteProtect,
         Mode::FaultHeapGuard,
@@ -95,6 +99,7 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Normal => "normal",
+            Mode::FastBoot => "fast-boot",
             Mode::Panic => "panic",
             Mode::FaultWriteProtect => "fault-write-protect",
             Mode::FaultHeapGuard => "fault-heap-guard",

@@ -24,6 +24,10 @@ Quick start (after installing the prerequisites in tools/firmware/README.md):
     cargo xtask verify
     cargo xtask run
 
+`run` boots the fast-boot build, which skips the boot-check programs
+(docs/b1-design.md); `cargo xtask run --mode normal` boots with them, as
+`verify` does.
+
 Naming: the project was renamed from the placeholder OriginsOS to ZooOS on
 2026-10-30. Technical identifiers use zoo-os. The runtime/service supervisor
 planned for M3 will be called Zookeeper, and services animal-named handlers.

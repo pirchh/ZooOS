@@ -127,6 +127,12 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D3 | Close buttons; auto-hiding dock that reopens apps (docs/d3-design.md) | done 2026-10-31 |
 | D4 | Notes: a text editor whose typing survives a reboot (docs/d4-design.md) | done 2026-10-31 |
 
+## Boot speed
+
+| Step | Content | Status |
+| --- | --- | --- |
+| B1 | Fast boot: check programs only in test builds; boot timing in the harness (docs/b1-design.md) | done 2026-10-31 |
+
 ## M6 — Windows application stages
 
 Minimal console, simple GUI, installer/multiprocess program, then selected Opera

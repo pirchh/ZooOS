@@ -7,6 +7,7 @@ use crate::markers::{self, Expectation, Verdict};
 use crate::process::{ChildGuard, Shutdown};
 use crate::qmp::{self, Qmp};
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -359,6 +360,10 @@ pub fn run_case(
     let mut screenshots = Vec::new();
     let steps: &[Action] = interaction.map_or(&[], |i| &i.steps);
     let mut passed_at: Option<Instant> = None;
+    // When each serial line was first seen (milliseconds since QEMU
+    // started, to the poll interval), written to `serial-times.log`.
+    let mut times = String::new();
+    let mut timed_upto = 0usize;
     let outcome = loop {
         let text = fs::read(&log)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
@@ -366,6 +371,14 @@ pub fn run_case(
         if text.len() != last_len {
             last_len = text.len();
             last_growth = Instant::now();
+            let complete = text.rfind('\n').map_or(0, |i| i + 1);
+            if complete > timed_upto {
+                let ms = start.elapsed().as_millis();
+                for line in text[timed_upto..complete].lines() {
+                    let _ = writeln!(times, "{ms:>7} {line}");
+                }
+                timed_upto = complete;
+            }
         }
         // Run as many interaction steps as are ready now.
         let mut harness_error = None;
@@ -503,6 +516,7 @@ pub fn run_case(
         std::thread::sleep(POLL);
     };
     let elapsed = start.elapsed();
+    let _ = fs::write(dir.join("serial-times.log"), &times);
     drop(qmp_conn);
     let shutdown = match guard.shutdown(KILL_BOUND)? {
         Shutdown::Killed => "terminated by harness".to_string(),

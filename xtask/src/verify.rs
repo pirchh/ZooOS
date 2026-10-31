@@ -197,6 +197,20 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         .then(&GECKO)
         .then(&PTARMIGAN)
         .then(&BOOT_PROCESSES_END);
+    // B1: the same system without the boot checks; a C program runs.
+    let mut fast_head = SELF_TESTS.to_vec();
+    fast_head.extend([
+        "ZOO_OS PROC start pid=1 name=zookeeper",
+        "ZOO_OS PROC start pid=2 name=badger-handler",
+        "ZOO_OS PROC start pid=3 name=beaver-handler",
+        "ZOO_OS PROC start pid=4 name=seal-test",
+        "ZOO_OS READY",
+        "ZOO_OS SHELL ready",
+        "ZOO_OS SHELL line=run tern-test fast",
+        "ZOO_OS PROC start pid=5 name=tern-test",
+        "ZOO_OS PROC exit pid=5 name=tern-test code=0",
+    ]);
+    let fast_boot = expect(Mode::FastBoot, &fast_head);
     let mut keyboard = normal.clone();
     keyboard.then(&["ZOO_OS SHELL line=echo hi", "ZOO_OS SHELL line=mem"]);
     let mut scroll = normal.clone();
@@ -268,6 +282,25 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "self-tests, the Zookeeper process scenario, READY; no PANIC or EXCEPTION",
             interaction: None,
+            screen_checks: vec![],
+        },
+        Case {
+            name: "fast-boot",
+            mode: Mode::FastBoot,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: fast_boot,
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "fast boot: no check programs; supervisor, services, shell and a C program work",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run tern-test fast")),
+                    Action::WaitContains("TernTest: argc=2 argv=tern-test,fast".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=5 name=tern-test code=0".into()),
+                ],
+            }),
             screen_checks: vec![],
         },
         Case {

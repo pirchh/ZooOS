@@ -22,10 +22,12 @@ usage: cargo xtask <command> [options]
 commands:
   doctor                    check prerequisites (installs nothing)
   build [--mode M]          build kernel(s) and UEFI disk image(s)
-                            M = all (default) | normal | panic | fault-write-protect
-                                | fault-heap-guard | fault-stack-overflow | triple-fault
+                            M = all (default) | normal | fast-boot | panic
+                                | fault-write-protect | fault-heap-guard
+                                | fault-stack-overflow | triple-fault
   run [--mode M | --panic] [--timeout-secs N]
-                            build one mode (default normal), then boot it in QEMU
+                            build one mode (default fast-boot: no boot-check
+                            programs), then boot it in QEMU
                             with COM1 on this terminal
                             (Ctrl+C stops QEMU; no timeout unless given)
   infer [--prompt TEXT] [--tokens N]
@@ -84,7 +86,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     return Err("use either --panic or --mode, not both".into());
                 }
                 (true, _) => image::Mode::Panic,
-                (false, _) if opts.mode.is_none() => image::Mode::Normal,
+                (false, _) if opts.mode.is_none() => image::Mode::FastBoot,
                 (false, [one]) => *one,
                 _ => return Err("run takes exactly one mode, not `all`".into()),
             };

@@ -10,9 +10,11 @@ name = "zoo-os-kernel"
 test = false
 bench = false
 
-# Test modes. Each builds a separate kernel image; at most one may be enabled
-# (enforced in main.rs). No feature = the normal kernel.
+# Modes. Each builds a separate kernel image; at most one may be enabled
+# (enforced in main.rs). No feature = the normal kernel. `fast-boot` skips
+# the boot-check programs (docs/b1-design.md); the others are test modes.
 [features]
+fast-boot = []
 panic-test = []
 fault-write-protect = []
 fault-heap-guard = []
