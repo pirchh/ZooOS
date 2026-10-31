@@ -76,6 +76,8 @@ const APPS: usize = 4;
 const NOTES: usize = 3;
 /// Where Notes opens: (x, y, w, h).
 const NOTES_RECT: (usize, usize, usize, usize) = (200, 100, 640, 480);
+/// Two presses within this many ticks (and 4 px) are a double-click.
+const DOUBLE_CLICK: u64 = 50;
 /// Resizing: the bottom-right corner area that grabs, and the smallest
 /// window.
 const RESIZE_CORNER: usize = 12;
@@ -399,6 +401,10 @@ struct Desktop {
     /// Window being resized from its bottom-right corner, and the
     /// pointer's offset from that corner (docs/d8-design.md).
     resize: Option<(usize, usize, usize)>,
+    /// The last press on a title bar: (tick, x, y), for double-clicks.
+    last_click: (u64, usize, usize),
+    /// A zoomed window's rectangle before zooming (docs/d9-design.md).
+    unzoomed: [Option<(usize, usize, usize, usize)>; APPS],
     /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
     damage: [(usize, usize, usize, usize); MAX_DAMAGE],
     damaged: usize,
@@ -499,6 +505,31 @@ impl Desktop {
             x + w - CLOSE_GAP - CLOSE_SIZE,
             y + (TITLE_H - CLOSE_SIZE) / 2,
         )
+    }
+
+    /// Double-click on a title bar: fill the space between the bars, or go
+    /// back to the size and place from before.
+    fn toggle_zoom(&mut self, i: usize) {
+        self.damage_window(i);
+        self.drag = None;
+        match self.unzoomed[i].take() {
+            Some(r) => {
+                self.wins[i] = r;
+                zoo_rt::log!("PeacockHandler: restored {}", self.apps[i].label);
+            }
+            None => {
+                self.unzoomed[i] = Some(self.wins[i]);
+                let (w, h) = (self.screen.w, self.screen.h);
+                self.wins[i] = (
+                    MARGIN,
+                    BAR_H + MARGIN,
+                    w - 2 * MARGIN,
+                    h - 2 * BAR_H - 2 * MARGIN,
+                );
+                zoo_rt::log!("PeacockHandler: zoomed {}", self.apps[i].label);
+            }
+        }
+        self.damage_window(i);
     }
 
     /// The pointer is in window `i`'s bottom-right resize corner.
@@ -660,7 +691,18 @@ impl Desktop {
                 self.set_focus(i);
                 let (wx, wy, ww, wh) = self.wins[i];
                 if self.py < wy + TITLE_H {
-                    self.drag = Some((i, self.px - wx, self.py - wy));
+                    let now = zoo_rt::ticks();
+                    let (t, lx, ly) = self.last_click;
+                    if now.saturating_sub(t) <= DOUBLE_CLICK
+                        && self.px.abs_diff(lx) <= 4
+                        && self.py.abs_diff(ly) <= 4
+                    {
+                        self.toggle_zoom(i);
+                        self.last_click = (0, 0, 0);
+                    } else {
+                        self.last_click = (now, self.px, self.py);
+                        self.drag = Some((i, self.px - wx, self.py - wy));
+                    }
                 } else if self.on_resize_corner(i) {
                     self.resize = Some((i, wx + ww - self.px, wy + wh - self.py));
                 }
@@ -1013,6 +1055,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         held: false,
         drag: None,
         resize: None,
+        last_click: (0, 0, 0),
+        unzoomed: [None; APPS],
         damage: [(0, 0, 0, 0); MAX_DAMAGE],
         damaged: 0,
         full: true,

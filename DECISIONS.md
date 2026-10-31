@@ -143,6 +143,13 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 9: double-click to zoom (2026-10-31)
+
+Design: docs/d9-design.md.
+
+- A double-click on a title bar zooms a window to fill the desktop area,
+  and restores it the second time. Version 0.37.0.
+
 ## Desktop step 8: resize windows (2026-10-31)
 
 Design: docs/d8-design.md.

@@ -823,6 +823,46 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-resized", check_resized)],
         },
         Case {
+            name: "zoom",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "double-click a title bar to zoom a window, and again to restore it",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        // The Assistant's title bar at (900, 424).
+                        Action::Mouse(260, 24),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::WaitContains("PeacockHandler: zoomed Assistant".into()),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-zoomed"),
+                        // Its title bar is now at the top: (900, 60).
+                        Action::Mouse(0, -364),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::WaitContains("PeacockHandler: restored Assistant".into()),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("2-restored"),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-zoomed", check_zoomed), ("2-restored", check_restored)],
+        },
+        Case {
             name: "dock",
             mode: Mode::Normal,
             custom_image: None,
@@ -2214,6 +2254,39 @@ fn check_resized(img: &screen::Image) -> Result<String, String> {
     }
     Ok(format!(
         "`Crash Test` focused at {title:?}, now 404x240: close button at the new edge, desktop below it"
+    ))
+}
+
+// ---- D9 zoom case (docs/d9-design.md) -------------------------------------
+
+fn check_zoomed(img: &screen::Image) -> Result<String, String> {
+    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    if at != (32, 52) {
+        return Err(format!(
+            "`Assistant` title at {at:?}, expected (32, 52) when zoomed"
+        ));
+    }
+    absent(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    absent(img, "Crash Test", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    // The close button at the zoomed window's right edge.
+    if img.pixel(1242, 60) != Some(CLOSE_RED) {
+        return Err("no close button at the zoomed right edge (1242, 60)".into());
+    }
+    Ok(format!(
+        "`Assistant` zoomed: title at {at:?}, covering Files and Crash Test"
+    ))
+}
+
+fn check_restored(img: &screen::Image) -> Result<String, String> {
+    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    if at != (660, 416) {
+        return Err(format!(
+            "`Assistant` title at {at:?}, expected (660, 416) after restoring"
+        ));
+    }
+    let files = need(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    Ok(format!(
+        "`Assistant` restored to {at:?}; `Files` visible again at {files:?}"
     ))
 }
 
