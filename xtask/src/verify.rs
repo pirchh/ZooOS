@@ -210,6 +210,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let redraw = mouse_expectation(&normal);
     let frames = mouse_expectation(&normal);
     let dock = dock_expectation(&normal);
+    let notes = notes_expectation(&normal);
     let mut args_clock = normal.clone();
     args_clock.then(&[
         "ZOO_OS SHELL line=run tern-test alpha beta",
@@ -466,6 +467,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }),
             screen_checks: vec![],
         },
+        notes_case(notes.clone(), "notes-1", s.timeout * 2),
+        notes_case(notes, "notes-2", s.timeout * 2),
         Case {
             name: "dock",
             mode: Mode::Normal,
@@ -1603,6 +1606,109 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
 
 const MENU_BAR_H: usize = 24;
 
+// ---- D4 Notes cases (docs/d4-design.md §3) -----------------------------
+
+/// The desktop; Notes is opened from the dock, then the session ends.
+fn notes_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=notes",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=31 name=notes code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+/// `notes-1` types into Notes on a fresh disk; `notes-2` boots the same
+/// disk again and finds the typing.
+fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -> Case {
+    let first = name == "notes-1";
+    let mut steps = Vec::new();
+    if !first {
+        // Loading happens before the shell is ready.
+        steps.push(Action::WaitContains(
+            "BadgerHandler: loaded generation 1 from slot A".into(),
+        ));
+    }
+    steps.extend(start_desktop());
+    steps.extend([
+        // The Notes tile: centre (784, 708).
+        Action::Mouse(144, 308),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: opened Notes".into()),
+        // Up into the window, so the dock hides.
+        Action::Mouse(0, -400),
+    ]);
+    if first {
+        steps.extend([
+            Action::Keys(typed("Hello from Notes")),
+            Action::Keys(typed("second line")),
+            Action::WaitContains("Notes: saved".into()),
+            Action::WaitContains("BadgerHandler: saved generation 1 to slot A".into()),
+        ]);
+    }
+    steps.extend([
+        Action::Settle(QUIET),
+        Action::Screenshot("1-notes"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Case {
+        name,
+        mode: Mode::Normal,
+        custom_image: None,
+        disk: Disk::Shared {
+            name: "notes",
+            reset: first,
+            corrupt: false,
+        },
+        expectation,
+        timeout,
+        want: "pass",
+        purpose: if first {
+            "Notes: open from the dock, type two lines, saved to the home folder and the disk"
+        } else {
+            "Notes after a reboot of the same disk: the typed lines are back"
+        },
+        interaction: Some(Interaction { steps }),
+        screen_checks: vec![("1-notes", check_notes)],
+    }
+}
+
+fn check_notes(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Notes", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let head = need(img, "Documents/notes.txt (saved)", CONTENT_TEXT, CONTENT)?;
+    let old = need(img, "Shopping: flour, eggs, milk.", CONTENT_TEXT, CONTENT)?;
+    let typed = need(img, "Hello from Notes", CONTENT_TEXT, CONTENT)?;
+    let second = need(img, "second line", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Hello from Notez", CONTENT_TEXT, CONTENT)?;
+    // The seed file has CRLF line ends; a shown carriage return is `?`.
+    absent(img, "Shopping: flour, eggs, milk.?", CONTENT_TEXT, CONTENT)?;
+    if !(old.1 < typed.1 && typed.1 < second.1) {
+        return Err(format!(
+            "lines out of order: original {old:?}, typed {typed:?}, second {second:?}"
+        ));
+    }
+    Ok(format!(
+        "`Notes` focused {title:?}, `(saved)` {head:?}; original text {old:?}, then `Hello from Notes` {typed:?} and `second line` {second:?}"
+    ))
+}
+
 // ---- D3 dock case (docs/d3-design.md §3) -------------------------------
 
 /// Crash Test is closed (it ends normally and is not restarted), then
@@ -1631,32 +1737,32 @@ fn dock_expectation(normal: &Expectation) -> Expectation {
     e
 }
 
-/// Dock geometry on the 1280x800 screen: panel at (488, 676), 304x92;
-/// slot `i` starts at x = 496 + 96 i; tiles 48 px at y = 684; names at
-/// y = 736; running dots (4 px) at (slot + 46, 756).
+/// Dock geometry on the 1280x800 screen with four apps: panel at
+/// (440, 676), 400x92; slot `i` starts at x = 448 + 96 i; tiles 48 px at
+/// y = 684; names at y = 736; running dots (4 px) at (slot + 46, 756).
 const DOCK_BG: u32 = 0xDDE3E8;
 const DOCK_TEXT_RGB: [u8; 3] = [0x20, 0x20, 0x20];
 
 fn dock_dot(img: &screen::Image, slot: usize) -> bool {
-    img.pixel(496 + 96 * slot + 47, 757) == Some(DOCK_TEXT_RGB)
+    img.pixel(448 + 96 * slot + 47, 757) == Some(DOCK_TEXT_RGB)
 }
 
 fn dock_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
-        // Pointer to (500, 700), inside the dock but clear of the tiles.
-        Action::Mouse(-140, 300),
+        // Pointer to (452, 700), inside the dock but clear of the tiles.
+        Action::Mouse(-188, 300),
         Action::Settle(QUIET),
         Action::Screenshot("1-dock"),
         // Crash Test's close button: centre (1242, 60).
-        Action::Mouse(742, -640),
+        Action::Mouse(790, -640),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: closed Crash Test".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-closed"),
-        // The Crash Test tile: centre (640, 708).
-        Action::Mouse(-602, 648),
+        // The Crash Test tile: centre (592, 708).
+        Action::Mouse(-650, 648),
         Action::Settle(QUIET),
         Action::Screenshot("3-dock-closed"),
         Action::Button(true),
@@ -1676,11 +1782,12 @@ fn check_dock_shown(img: &screen::Image) -> Result<String, String> {
     let files = need(img, "Files", BAR_TEXT, DOCK_BG)?;
     let crash = need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
     let assistant = need(img, "Assistant", BAR_TEXT, DOCK_BG)?;
-    if !(0..3).all(|i| dock_dot(img, i)) {
-        return Err("a running dot is missing in the dock".into());
+    let notes = need(img, "Notes", BAR_TEXT, DOCK_BG)?;
+    if !(0..3).all(|i| dock_dot(img, i)) || dock_dot(img, 3) {
+        return Err("running dots should mark the first three apps only".into());
     }
     Ok(format!(
-        "dock tiles `Files` {files:?}, `Crash Test` {crash:?}, `Assistant` {assistant:?}, three running dots"
+        "dock tiles `Files` {files:?}, `Crash Test` {crash:?}, `Assistant` {assistant:?}, `Notes` {notes:?}; running dots under the first three, none under Notes"
     ))
 }
 
@@ -1697,7 +1804,7 @@ fn check_closed(img: &screen::Image) -> Result<String, String> {
 
 fn check_dock_closed(img: &screen::Image) -> Result<String, String> {
     need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
-    if !dock_dot(img, 0) || dock_dot(img, 1) || !dock_dot(img, 2) {
+    if !dock_dot(img, 0) || dock_dot(img, 1) || !dock_dot(img, 2) || dock_dot(img, 3) {
         return Err("dots should mark Files and the Assistant only".into());
     }
     Ok("dock: no running dot under Crash Test, dots under Files and Assistant".into())

@@ -125,6 +125,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D1 | PS/2 mouse; pointer; click to focus; drag windows by the title bar (docs/d1-design.md) | done 2026-10-31 |
 | D2 | Redraw only what changed; measured frame cost (docs/d2-design.md) | done 2026-10-31 |
 | D3 | Close buttons; auto-hiding dock that reopens apps (docs/d3-design.md) | done 2026-10-31 |
+| D4 | Notes: a text editor whose typing survives a reboot (docs/d4-design.md) | done 2026-10-31 |
 
 ## M6 — Windows application stages
 

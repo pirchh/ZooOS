@@ -143,6 +143,16 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 4: Notes (2026-10-31)
+
+Design: docs/d4-design.md.
+
+- A plain-named app, `notes` (Notes), edits `Documents/notes.txt` in the
+  home folder: append-only editing, autosave one second after typing
+  stops and on close. Opened from the dock; not started with the session.
+- Text files may use CRLF; apps that show text treat CRLF as a line
+  break. Version 0.25.0.
+
 ## POSIX step 5b-1: process arguments and the clock (2026-10-31)
 
 Design: docs/posix5b1-design.md. Step 5b (libc port) is split: 5b-1

@@ -45,7 +45,7 @@ const DOCK_BG: u32 = 0xDDE3E8;
 const DOCK_TEXT: u32 = 0x202020;
 const TILE_TEXT: u32 = 0xFFFFFF;
 /// Dock tile colours, indexed like the applications.
-const TILE: [u32; 3] = [0x3D7EBF, 0xD9822B, 0x3E9E6B];
+const TILE: [u32; APPS] = [0x3D7EBF, 0xD9822B, 0x3E9E6B, 0xC9A227];
 const POINTER: u32 = 0xFFFFFF;
 const POINTER_EDGE: u32 = 0x000000;
 
@@ -71,6 +71,11 @@ const MAX_DAMAGE: usize = 8;
 /// Pointer arrow size.
 const POINTER_W: usize = 12;
 const POINTER_H: usize = 17;
+/// Applications, in dock order; Notes is the last.
+const APPS: usize = 4;
+const NOTES: usize = 3;
+/// Where Notes opens: (x, y, w, h).
+const NOTES_RECT: (usize, usize, usize, usize) = (200, 100, 640, 480);
 /// Close button: size, and gap from the title bar's right end.
 const CLOSE_SIZE: usize = 12;
 const CLOSE_GAP: usize = 8;
@@ -323,15 +328,15 @@ fn blend(bg: u32, fg: u32, i: u8) -> u32 {
 
 struct Desktop {
     screen: Screen,
-    apps: [App; 3],
+    apps: [App; APPS],
     /// Home directory handle; copies go to the Assistant.
     home: u64,
     focus: usize,
     status: Line,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
-    wins: [(usize, usize, usize, usize); 3],
+    wins: [(usize, usize, usize, usize); APPS],
     /// Drawing order, back to front; the focused window is last.
-    order: [usize; 3],
+    order: [usize; APPS],
     /// Pointer position.
     px: usize,
     py: usize,
@@ -355,7 +360,7 @@ struct Desktop {
 impl Desktop {
     /// The starting layout: Files on the left; Crash Test and the Assistant
     /// stacked on the right.
-    fn layout(w: usize, h: usize) -> [(usize, usize, usize, usize); 3] {
+    fn layout(w: usize, h: usize) -> [(usize, usize, usize, usize); APPS] {
         let win_w = (w - 3 * MARGIN) / 2;
         let top_y = BAR_H + MARGIN;
         let full_h = h - top_y - BAR_H - MARGIN;
@@ -364,6 +369,7 @@ impl Desktop {
             (MARGIN, top_y, win_w, full_h),
             (2 * MARGIN + win_w, top_y, win_w, half_h),
             (2 * MARGIN + win_w, top_y + half_h + MARGIN, win_w, half_h),
+            NOTES_RECT,
         ]
     }
 
@@ -409,11 +415,11 @@ impl Desktop {
             self.damage_window(self.focus);
             self.damage_window(i);
             self.damage_menu_bar();
-        } else if self.order[2] != i {
+        } else if self.order[APPS - 1] != i {
             self.damage_window(i);
         }
         self.focus = i;
-        let mut order = [0; 3];
+        let mut order = [0; APPS];
         let mut k = 0;
         for &j in self.order.iter().filter(|&&j| j != i) {
             order[k] = j;
@@ -894,12 +900,13 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             App::new("Files", "files", false),
             App::new("Crash Test", "crash-test", false),
             App::new("Assistant", "assistant", true),
+            App::new("Notes", "notes", true),
         ],
         home,
         focus: 0,
         status: Line::new(),
         wins: Desktop::layout(w, h),
-        order: [1, 2, 0],
+        order: [3, 1, 2, 0],
         px: w / 2,
         py: h / 2,
         held: false,
@@ -916,7 +923,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         desk.status,
         "Tab: next window   Arrows/Enter/Backspace: use window   Esc: leave the desktop"
     );
-    for app in desk.apps.iter_mut() {
+    // Notes opens from the dock (docs/d4-design.md).
+    desk.apps[NOTES].closed = true;
+    for app in desk.apps.iter_mut().filter(|a| !a.closed) {
         if !app.start(home) {
             zoo_rt::log!("PeacockHandler: cannot start {}", app.program);
         }
