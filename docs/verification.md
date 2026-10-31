@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H2a section
-(version 0.32.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H3 section
+(version 0.33.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 3 results: the local APIC timer (version 0.33.0)
+
+Design: docs/h3-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 13 min 24 s, every case as
+expected (`assistant-live` `SKIP`), all on `timer source=lapic
+pm-timer=0x608`. New case `timer-rate`: `TernTest: waited` came 4,964 ms
+after `waiting 500 ticks` (4–6 s required); 4,965 ms and, under WHPX,
+4,958 ms in the earlier single runs. `fast-boot` under WHPX: pass with
+`source=lapic`.
+
+Then `--accel whpx --case assistant-live`: pass in 58.5 s
+(`source=lapic per-tick=125071`).
+
+PIT fallback (a temporary edit forcing it): `timer-rate` 4,958 ms and
+`desktop` pass with `source=pit reason=forced-for-test`.
+
+**Negative control** (temporary edit to `kernel/src/apic.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| Calibration doubled | `FAIL timer-rate` (`harness-error`): `waited came 10012 ms after the previous line (expected 4000-6000 ms)` |
+
+Other checks: `cargo clippy` (kernel normal, `fast-boot`, `panic-test`;
+`xtask`): 0 warnings. `cargo test -p xtask --locked`: all passed. Not
+run: a clean-copy verify; real hardware.
 
 ## Hardware step 2a results: ready for a USB stick (version 0.32.0)
 
