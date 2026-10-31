@@ -293,6 +293,81 @@ impl Memory {
         }
     }
 
+    /// A new address space with a private copy of every user page of `src`
+    /// at the same address and with the same access (Linux `fork`,
+    /// docs/linux5-design.md). Every user page of `src` must be
+    /// allocator-owned (no device, ramdisk or shared mappings). On failure
+    /// nothing is left allocated.
+    pub fn copy_address_space(&mut self, src: PhysFrame) -> Result<PhysFrame, SpaceError> {
+        let dst = self.new_address_space()?;
+        let parents =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+        // The leaves to copy: (address, frame, flags), gathered first so the
+        // source tables are only read while the destination is built.
+        let mut leaves = alloc::vec::Vec::new();
+        // SAFETY: `src` is a live process table; its tables are only read.
+        unsafe {
+            let l4 = self.table(src);
+            for (i4, e4) in l4.iter().enumerate().take(UPPER_HALF_FIRST_P4) {
+                let Ok(t3) = e4.frame() else { continue };
+                for (i3, e3) in self.table(t3).iter().enumerate() {
+                    let Ok(t2) = e3.frame() else { continue };
+                    for (i2, e2) in self.table(t2).iter().enumerate() {
+                        let Ok(t1) = e2.frame() else { continue };
+                        for (i1, e1) in self.table(t1).iter().enumerate() {
+                            if !e1.flags().contains(PageTableFlags::PRESENT) {
+                                continue;
+                            }
+                            let va = ((i4 as u64) << 39)
+                                | ((i3 as u64) << 30)
+                                | ((i2 as u64) << 21)
+                                | ((i1 as u64) << 12);
+                            let leaf = e1.frame().expect("user leaf is a 4 KiB frame");
+                            leaves.push((va, leaf, e1.flags()));
+                        }
+                    }
+                }
+            }
+        }
+        for (va, from, flags) in leaves {
+            let Some(frame) = self.frames.allocate() else {
+                self.free_address_space(dst);
+                return Err(SpaceError::OutOfMemory);
+            };
+            // SAFETY: `frame` was just allocated and `from` is a mapped user
+            // page of `src`; both are whole pages in the physical window and
+            // distinct.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.phys_to_virt(from.start_address()),
+                    self.phys_to_virt(frame.start_address()),
+                    4096,
+                )
+            };
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va));
+            // SAFETY: `dst` is the fresh space built here; `frame` is new.
+            let r = unsafe {
+                self.space(dst).map_to_with_table_flags(
+                    page,
+                    frame,
+                    flags,
+                    parents,
+                    &mut self.frames,
+                )
+            };
+            match r {
+                // `dst` is not active, so there is nothing to flush.
+                Ok(flush) => flush.ignore(),
+                Err(_) => {
+                    let _ = self.frames.deallocate(frame);
+                    self.free_address_space(dst);
+                    return Err(SpaceError::OutOfMemory);
+                }
+            }
+        }
+        Ok(dst)
+    }
+
     /// Frees every user page and page table under `p4`, then `p4` itself.
     /// The space must not be active (CR3) on this CPU.
     pub fn free_address_space(&mut self, p4: PhysFrame) {
