@@ -126,7 +126,7 @@
   <text x="654" y="557" class="desc">hands out the home-folder permission, restarts the window server</text>
   <rect x="640" y="600" width="360" height="56" rx="8" fill="#ffe9d1" stroke="#d9822b"/>
   <text x="654" y="624" class="name">PeacockHandler</text>
-  <text x="654" y="643" class="desc">window server: owns screen + keyboard, restarts apps</text>
+  <text x="654" y="643" class="desc">window server: screen, keyboard, mouse; restarts apps</text>
   <path d="M820 570 L820 598" class="edge"/>
 
   <rect x="490" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>

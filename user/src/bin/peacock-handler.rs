@@ -2,7 +2,8 @@
 //! display and keyboard, runs three applications (Files, Crash Test and the
 //! Assistant, docs/m5c2-design.md) over channels, draws a menu bar, the
 //! windows and a status line, routes keys to the focused window, and
-//! restarts applications that crash.
+//! restarts applications that crash. The mouse (docs/d1-design.md) moves a
+//! pointer; a click focuses a window and a title-bar drag moves it.
 //!
 //! Its second start-up handle is the home directory (from Zookeeper); each
 //! start of the Assistant gets a fresh copy, which it passes on to the file
@@ -15,7 +16,7 @@ use core::fmt::Write as _;
 use noto_sans_mono_bitmap::{FontWeight, RasterHeight, get_raster, get_raster_width};
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
-use zoo_abi::{FORMAT_BGR, MAX_MESSAGE};
+use zoo_abi::{FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
 use zoo_rt::{
     Error, Line, channel_create, close, dir_open, dir_rights, display_acquire, input_read, log,
@@ -36,6 +37,8 @@ const CONTENT: u32 = 0xFFFFFF;
 const CONTENT_TEXT: u32 = 0x202020;
 const SELECTED: u32 = 0xCFE3F7;
 const BORDER: u32 = 0x5A6670;
+const POINTER: u32 = 0xFFFFFF;
+const POINTER_EDGE: u32 = 0x000000;
 
 const WEIGHT: FontWeight = FontWeight::Regular;
 const SIZE: RasterHeight = RasterHeight::Size16;
@@ -264,9 +267,115 @@ struct Desktop {
     home: u64,
     focus: usize,
     status: Line,
+    /// Window rectangles (x, y, w, h), indexed like `apps`.
+    wins: [(usize, usize, usize, usize); 3],
+    /// Drawing order, back to front; the focused window is last.
+    order: [usize; 3],
+    /// Pointer position.
+    px: usize,
+    py: usize,
+    /// Left button held on the previous event.
+    held: bool,
+    /// Window being dragged, and the grab offset inside it.
+    drag: Option<(usize, usize, usize)>,
 }
 
 impl Desktop {
+    /// The starting layout: Files on the left; Crash Test and the Assistant
+    /// stacked on the right.
+    fn layout(w: usize, h: usize) -> [(usize, usize, usize, usize); 3] {
+        let win_w = (w - 3 * MARGIN) / 2;
+        let top_y = BAR_H + MARGIN;
+        let full_h = h - top_y - BAR_H - MARGIN;
+        let half_h = (full_h - MARGIN) / 2;
+        [
+            (MARGIN, top_y, win_w, full_h),
+            (2 * MARGIN + win_w, top_y, win_w, half_h),
+            (2 * MARGIN + win_w, top_y + half_h + MARGIN, win_w, half_h),
+        ]
+    }
+
+    fn set_focus(&mut self, i: usize) {
+        self.focus = i;
+        let mut order = [0; 3];
+        let mut k = 0;
+        for &j in self.order.iter().filter(|&&j| j != i) {
+            order[k] = j;
+            k += 1;
+        }
+        order[k] = i;
+        self.order = order;
+    }
+
+    /// Topmost window under the pointer.
+    fn window_at(&self, x: usize, y: usize) -> Option<usize> {
+        self.order.iter().rev().copied().find(|&i| {
+            let (wx, wy, ww, wh) = self.wins[i];
+            x >= wx && x < wx + ww && y >= wy && y < wy + wh
+        })
+    }
+
+    /// Applies one mouse event; true if the screen changed.
+    fn mouse(&mut self, e: MouseEvent) -> bool {
+        let (w, h) = (self.screen.w, self.screen.h);
+        // The mouse reports dy positive upwards; screen y grows downwards.
+        self.px = (self.px as isize + e.dx as isize).clamp(0, w as isize - 1) as usize;
+        self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
+        let down = e.buttons & 1 != 0;
+        if down && !self.held {
+            if let Some(i) = self.window_at(self.px, self.py) {
+                if i != self.focus {
+                    zoo_rt::log!("PeacockHandler: click focuses {}", self.apps[i].label);
+                }
+                self.set_focus(i);
+                let (wx, wy, _, _) = self.wins[i];
+                if self.py < wy + TITLE_H {
+                    self.drag = Some((i, self.px - wx, self.py - wy));
+                }
+            }
+        } else if down {
+            if let Some((i, ox, oy)) = self.drag {
+                let (_, _, ww, wh) = self.wins[i];
+                // Keep the border on screen and part of the title bar
+                // reachable.
+                let x = (self.px as isize - ox as isize).clamp(1, w as isize - 48) as usize;
+                let y = (self.py as isize - oy as isize)
+                    .clamp(BAR_H as isize + 1, (h - BAR_H - TITLE_H) as isize)
+                    as usize;
+                self.wins[i] = (x, y, ww, wh);
+            }
+        } else if let Some((i, _, _)) = self.drag.take() {
+            let (x, y, _, _) = self.wins[i];
+            zoo_rt::log!(
+                "PeacockHandler: moved {} to ({}, {})",
+                self.apps[i].label,
+                x,
+                y
+            );
+        }
+        self.held = down;
+        true
+    }
+
+    /// A white arrow with a black edge, its tip at the pointer.
+    fn draw_pointer(&mut self) {
+        let (px, py) = (self.px, self.py);
+        let s = &mut self.screen;
+        for r in 0..17usize {
+            // Rows 0-11: the head, widening by one pixel a row; rows 12-16:
+            // the stem.
+            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
+            for c in from..=to {
+                let (x, y) = (px + c, py + r);
+                if x >= s.w || y >= s.h {
+                    continue;
+                }
+                let edge = c == from || c == to || r == 11 || r == 16;
+                s.back[y * s.w + x] = if edge { POINTER_EDGE } else { POINTER };
+            }
+        }
+    }
+
     fn render(&mut self) {
         let (w, h) = (self.screen.w, self.screen.h);
         let s = &mut self.screen;
@@ -288,17 +397,10 @@ impl Desktop {
             16 * CHAR_W,
         );
 
-        // Files on the left; Crash Test and the Assistant stacked on the right.
-        let win_w = (w - 3 * MARGIN) / 2;
-        let top_y = BAR_H + MARGIN;
-        let full_h = h - top_y - BAR_H - MARGIN;
-        let half_h = (full_h - MARGIN) / 2;
-        for (i, app) in self.apps.iter().enumerate() {
-            let (x, win_y, win_h) = match i {
-                0 => (MARGIN, top_y, full_h),
-                1 => (2 * MARGIN + win_w, top_y, half_h),
-                _ => (2 * MARGIN + win_w, top_y + half_h + MARGIN, half_h),
-            };
+        // Windows, back to front.
+        for i in self.order {
+            let app = &self.apps[i];
+            let (x, win_y, win_w, win_h) = self.wins[i];
             let (tbg, tfg) = if i == self.focus {
                 (TITLE_FOCUSED, TITLE_FOCUSED_TEXT)
             } else {
@@ -347,7 +449,8 @@ impl Desktop {
             BAR,
             w - 16,
         );
-        s.present();
+        self.draw_pointer();
+        self.screen.present();
     }
 
     fn send_key(&self, key: Key) {
@@ -430,6 +533,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         home,
         focus: 0,
         status: Line::new(),
+        wins: Desktop::layout(w, h),
+        order: [1, 2, 0],
+        px: w / 2,
+        py: h / 2,
+        held: false,
+        drag: None,
     };
     let _ = write!(
         desk.status,
@@ -457,7 +566,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             };
             match decoder.process_keyevent(event) {
                 Some(DecodedKey::Unicode('\t')) => {
-                    desk.focus = (desk.focus + 1) % desk.apps.len();
+                    desk.set_focus((desk.focus + 1) % desk.apps.len());
                     dirty = true;
                 }
                 Some(DecodedKey::Unicode('\u{1b}')) => {
@@ -482,6 +591,13 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 }
                 _ => {}
             }
+        }
+
+        // Mouse.
+        let mut events = [MouseEvent::default(); 16];
+        let n = zoo_rt::mouse_read(&mut events).unwrap_or(0);
+        for &e in &events[..n] {
+            dirty |= desk.mouse(e);
         }
 
         // Applications.

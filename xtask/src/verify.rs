@@ -199,6 +199,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mut never = normal.clone();
     never.then(&["ZOO_OS NEVER-EMITTED"]);
     let desktop = desktop_expectation(&normal);
+    let mouse = mouse_expectation(&normal);
     let mut inference = normal.clone();
     inference.then(&[
         "ZOO_OS SHELL line=run elephant-handler",
@@ -386,6 +387,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 ("3-app-restart", check_app_restart),
                 ("4-server-restart", check_server_restart),
                 ("5-console", check_console_back),
+            ],
+        },
+        Case {
+            name: "mouse",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: mouse,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "desktop mouse: pointer drawn, a click focuses a window, a title-bar drag moves it",
+            interaction: Some(mouse_steps()),
+            screen_checks: vec![
+                ("1-pointer", check_pointer),
+                ("2-click", check_click_focus),
+                ("3-drag", check_drag),
             ],
         },
         Case {
@@ -1312,6 +1329,117 @@ fn desktop_steps() -> Interaction {
             Action::Screenshot("5-console"),
         ],
     }
+}
+
+// ---- D1 mouse case (docs/d1-design.md §3) -----------------------------
+
+/// The desktop started, used with the mouse, then left with Escape.
+fn mouse_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+/// Screen positions for a 1280x800 display (the QEMU default here): the
+/// pointer starts at the centre; the Assistant's title bar starts at
+/// (652, 412) and its title text at (660, 416).
+const POINTER_START: (usize, usize) = (640, 400);
+const ASSISTANT_TITLE_TEXT: (usize, usize) = (660, 416);
+/// The drag: grab the Assistant title at (900, 424), move by (-300, -100).
+const DRAG: (i32, i32) = (-300, -100);
+
+fn mouse_steps() -> Interaction {
+    Interaction {
+        steps: vec![
+            Action::WaitFor("ZOO_OS SHELL ready".into()),
+            Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
+            Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("1-pointer"),
+            // Into the Crash Test window (840, 200) and click.
+            Action::Mouse(200, -200),
+            Action::Button(true),
+            Action::Button(false),
+            Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("2-click"),
+            // Onto the Assistant's title bar (900, 424), then drag it.
+            Action::Mouse(60, 224),
+            Action::Button(true),
+            Action::Mouse(DRAG.0, DRAG.1),
+            Action::Button(false),
+            Action::WaitContains("PeacockHandler: moved Assistant to (352, 312)".into()),
+            Action::Settle(QUIET),
+            Action::Screenshot("3-drag"),
+            Action::Keys(vec!["esc"]),
+            Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+        ],
+    }
+}
+
+const BLACK: [u8; 3] = [0, 0, 0];
+const WHITE: [u8; 3] = [255, 255, 255];
+
+fn check_pointer(img: &screen::Image) -> Result<String, String> {
+    let (x, y) = POINTER_START;
+    // The arrow's tip and left edge are black, its inside white (row 6,
+    // columns 1-5), and nothing is drawn left of the tip.
+    let edge = img.pixel(x, y + 6);
+    let inside = img.pixel(x + 3, y + 6);
+    let left = img.pixel(x - 2, y + 6);
+    if edge != Some(BLACK) || inside != Some(WHITE) || left == Some(BLACK) {
+        return Err(format!(
+            "no pointer at {:?}: edge {edge:?}, inside {inside:?}, left of it {left:?}",
+            POINTER_START
+        ));
+    }
+    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    Ok(format!(
+        "pointer arrow at {:?}; `Files` focused at {title:?}",
+        POINTER_START
+    ))
+}
+
+fn check_click_focus(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let bar = need(img, "Crash Test", BAR_TEXT, BAR)?;
+    absent(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    Ok(format!(
+        "after one click: `Crash Test` focused at {title:?} and named in the menu bar at {bar:?}; `Files` no longer focused"
+    ))
+}
+
+fn check_drag(img: &screen::Image) -> Result<String, String> {
+    let want = (
+        (ASSISTANT_TITLE_TEXT.0 as i32 + DRAG.0) as usize,
+        (ASSISTANT_TITLE_TEXT.1 as i32 + DRAG.1) as usize,
+    );
+    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    if at != want {
+        return Err(format!(
+            "`Assistant` title at {at:?}, expected {want:?} after the drag"
+        ));
+    }
+    absent(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    Ok(format!(
+        "`Assistant` title moved from {ASSISTANT_TITLE_TEXT:?} to {at:?} and focused"
+    ))
 }
 
 /// Finds `text` in colours `fg` on `bg`, or explains what is missing.

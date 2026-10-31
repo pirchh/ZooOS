@@ -143,6 +143,19 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 1: a mouse (2026-10-31)
+
+Design: docs/d1-design.md.
+
+- PS/2 mouse in the kernel (IRQ12); events reach the display owner
+  through a new call, 56 `mouse_read`, rather than the keyboard stream
+  (§4 says why). ABI version 15.
+- PeacockHandler keeps window positions and stacking order: a click
+  focuses a window and raises it, a title-bar drag moves it. Tab still
+  cycles focus. Version 0.21.0.
+- QEMU's mouse is relative; an absolute pointer (USB tablet) and real
+  hardware mice (USB HID) are later work.
+
 ## Services step 5: persistent files (2026-10-31)
 
 Design: docs/s5-design.md.

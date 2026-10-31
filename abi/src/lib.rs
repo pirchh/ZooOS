@@ -18,8 +18,9 @@ pub mod tar;
 /// error 19; version 12 (services step 4a) added call 51.
 /// Version 13 (services step 4b) removed the in-kernel filesystem: calls
 /// 19-25 and 41-45 now return `NOSYS` (their numbers stay reserved).
-/// Version 14 (services step 5) added calls 52-55.
-pub const ABI_VERSION: u64 = 14;
+/// Version 14 (services step 5) added calls 52-55; version 15 (desktop
+/// step 1) added call 56.
+pub const ABI_VERSION: u64 = 15;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -89,6 +90,8 @@ pub mod sys {
     pub const BLOCK_WRITE: u64 = 54;
     /// Device size in bytes.
     pub const BLOCK_SIZE: u64 = 55;
+    /// Mouse events, for the display owner.
+    pub const MOUSE_READ: u64 = 56;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -253,6 +256,18 @@ impl FsEntry {
 pub struct HandleMsg {
     pub handle: u64,
     pub tag: u64,
+}
+
+/// One mouse event from `mouse_read`: relative motion (`dy` positive
+/// upwards, as the mouse reports it) and the buttons held (bit 0 left,
+/// bit 1 right, bit 2 middle).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MouseEvent {
+    pub dx: i16,
+    pub dy: i16,
+    pub buttons: u8,
+    pub _pad: [u8; 3],
 }
 
 /// Bytes per block for `block_read`/`block_write`.

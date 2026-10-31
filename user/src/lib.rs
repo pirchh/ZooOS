@@ -392,6 +392,17 @@ pub fn wait_any(handles: &[Handle], timeout: u64) -> Result<usize, Error> {
     .map(|k| k as usize)
 }
 
+/// Mouse events waiting for the display owner (at most `buf.len()`).
+pub fn mouse_read(buf: &mut [zoo_abi::MouseEvent]) -> Result<usize, Error> {
+    result(syscall(
+        sys::MOUSE_READ,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    ))
+    .map(|n| n as usize)
+}
+
 /// A block-device handle for the data disk (the resident supervisor only).
 pub fn block_attach() -> Result<Handle, Error> {
     result(syscall(sys::BLOCK_ATTACH, 0, 0, 0))

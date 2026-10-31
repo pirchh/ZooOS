@@ -11,7 +11,8 @@ desktop. M3 adds the first parts of "Process loader and address spaces",
 service supervisor" (Zookeeper), "Versioned syscalls and IPC", "Validated
 handles" and a read-only initial filesystem (docs/m3-design.md). M4 adds a
 first "Compositor and window server" (PeacockHandler: two side-by-side
-windows, keyboard focus, back-buffered frames) and two native applications
+windows, keyboard focus, back-buffered frames; D1 adds the mouse: click to
+focus, drag to move, docs/d1-design.md) and two native applications
 (docs/m4-design.md); the scene graph, design system, toolkit and
 accessibility are still proposed. Every other component is proposed.
 Updated: 2026-10-30

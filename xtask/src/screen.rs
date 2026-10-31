@@ -28,7 +28,7 @@ impl Image {
         }
     }
 
-    fn pixel(&self, x: usize, y: usize) -> Option<[u8; 3]> {
+    pub fn pixel(&self, x: usize, y: usize) -> Option<[u8; 3]> {
         if x >= self.width || y >= self.height {
             return None;
         }
