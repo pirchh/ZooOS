@@ -358,6 +358,19 @@ pub fn try_recv_handle(chan: Handle) -> Result<(Handle, u64), Error> {
     recv_handle_flags(chan, zoo_abi::RECV_NONBLOCK)
 }
 
+/// Waits until one of `handles` is ready (a channel with a message or a
+/// closed peer, an ended process or thread) and returns its index;
+/// `TIMEDOUT` after `timeout` ticks (`zoo_abi::WAIT_FOREVER` for none).
+pub fn wait_any(handles: &[Handle], timeout: u64) -> Result<usize, Error> {
+    result(syscall(
+        sys::WAIT_ANY,
+        handles.as_ptr() as u64,
+        handles.len() as u64,
+        timeout,
+    ))
+    .map(|k| k as usize)
+}
+
 /// A log-reader handle (the resident supervisor only).
 pub fn log_attach() -> Result<Handle, Error> {
     result(syscall(sys::LOG_ATTACH, 0, 0, 0))

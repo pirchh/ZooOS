@@ -94,6 +94,31 @@ fn connect_to_beaver(chan: u64) -> bool {
             }
         }
     }
+    // Round-trip time: 50 pings straight to BeaverHandler.
+    let t0 = zoo_rt::ticks();
+    let mut answered = 0;
+    for _ in 0..50 {
+        if send(beaver, b"ping").is_err() {
+            break;
+        }
+        let deadline = zoo_rt::ticks() + 100;
+        loop {
+            match try_recv(beaver, &mut buf) {
+                Ok(n) if &buf[..n] == b"pong" => {
+                    answered += 1;
+                    break;
+                }
+                Ok(_) => {}
+                Err(Error::Again) if zoo_rt::ticks() < deadline => zoo_rt::yield_now(),
+                Err(_) => break,
+            }
+        }
+    }
+    zoo_rt::log!(
+        "seal-test: {} of 50 ping round trips to beaver-handler took {} ticks",
+        answered,
+        zoo_rt::ticks() - t0
+    );
     let _ = close(beaver);
     if lines > 0 {
         zoo_rt::log!(

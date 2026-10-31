@@ -454,7 +454,14 @@ fn find_line(text: &str, from: usize, want: &str) -> Option<usize> {
     let mut pos = from.min(text.len());
     for line in text[pos..].split_inclusive('\n') {
         pos += line.len();
-        if line.trim_end() == want {
+        // Exact, or at the end of the line: the shell prompt (`zoo> `) is
+        // printed without a newline, so a kernel line that arrives while it
+        // is showing shares its line, as the marker checker already allows.
+        let mut line = line.trim_end();
+        while let Some(rest) = line.strip_prefix("zoo> ") {
+            line = rest;
+        }
+        if line == want {
             return Some(pos);
         }
     }
@@ -482,4 +489,19 @@ fn type_keys(q: &mut Qmp, keys: &[&str]) -> Result<(), String> {
         std::thread::sleep(KEY_GAP);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_line;
+
+    #[test]
+    fn find_line_matches_exact_and_after_a_prompt() {
+        let log = "a\nzoo> ZOO_OS PROC start pid=24 name=seal-test\nb\n";
+        assert!(find_line(log, 0, "ZOO_OS PROC start pid=24 name=seal-test").is_some());
+        assert!(find_line(log, 0, "a").is_some());
+        // Only a prompt may come before the wanted text.
+        assert!(find_line("xyz ZOO_OS READY\n", 0, "ZOO_OS READY").is_none());
+        assert!(find_line(log, 0, "PROC start pid=24 name=seal-test").is_none());
+    }
 }

@@ -136,7 +136,11 @@ fn main(chan: u64, reader: u64) -> u8 {
             k += 1;
         }
         if !busy {
-            zoo_rt::sleep(5);
+            // Wake on a request from anyone, or after 10 ticks to collect
+            // new log lines (the log buffer has no notification).
+            let mut watch = alloc::vec![chan];
+            watch.extend(clients.iter().copied());
+            let _ = zoo_rt::wait_any(&watch, 10);
         }
     }
 }
