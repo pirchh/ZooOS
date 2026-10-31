@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX 5b-1 section
-(version 0.24.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D4 section
+(version 0.25.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,32 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 4 results: Notes (version 0.25.0)
+
+Design: docs/d4-design.md (§4 as implemented).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 13 min 35 s, every case as
+expected (`assistant-live` `SKIP`), the dock case on the four-tile layout.
+New cases, two boots of one data disk:
+
+| Case | Time | What it shows |
+| --- | --- | --- |
+| notes-1 | 12.6 s | Notes opened from the dock (`PROC start pid=31 name=notes`); `Hello from Notes` and `second line` typed; `Notes: saved`, then `BadgerHandler: saved generation 1 to slot A`; screen: `(saved)`, the original two lines without stray `?`, then the typed lines in order |
+| notes-2 | 9.8 s | reboot: `loaded generation 1 from slot A`; Notes shows the typed lines again |
+
+Then `--accel whpx --case assistant-live`: pass in 61.5 s.
+
+**Negative controls** (temporary edits to Notes, reverted):
+
+| Change | Result |
+| --- | --- |
+| No save on the timer | `FAIL notes-1` (timeout waiting for `Notes: saved`); `FAIL notes-2` (timeout: nothing to load) |
+| CRLF not handled (the first version's bug) | `FAIL notes-1`: `wrong text Shopping: flour, eggs, milk.? matched at (208, 152)` |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## POSIX step 5b-1 results: process arguments and the clock (version 0.24.0)
 
