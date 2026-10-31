@@ -209,6 +209,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mouse = mouse_expectation(&normal);
     let redraw = mouse_expectation(&normal);
     let frames = mouse_expectation(&normal);
+    let dock = dock_expectation(&normal);
     let mut inference = normal.clone();
     inference.then(&[
         "ZOO_OS SHELL line=run elephant-handler",
@@ -437,6 +438,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "frame cost of pointer movement, full repaints vs partial redraws (numbers meaningful with --accel)",
             interaction: Some(frames_steps()),
             screen_checks: vec![],
+        },
+        Case {
+            name: "dock",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: dock,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "dock and close buttons: close Crash Test (not restarted), reopen it from the dock",
+            interaction: Some(dock_steps()),
+            screen_checks: vec![
+                ("1-dock", check_dock_shown),
+                ("2-closed", check_closed),
+                ("3-dock-closed", check_dock_closed),
+                ("4-reopened", check_reopened),
+            ],
         },
         Case {
             name: "assistant",
@@ -1557,6 +1575,116 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
 }
 
 const MENU_BAR_H: usize = 24;
+
+// ---- D3 dock case (docs/d3-design.md §3) -------------------------------
+
+/// Crash Test is closed (it ends normally and is not restarted), then
+/// started again from the dock.
+fn dock_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC start pid=31 name=crash-test",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=31 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+/// Dock geometry on the 1280x800 screen: panel at (488, 676), 304x92;
+/// slot `i` starts at x = 496 + 96 i; tiles 48 px at y = 684; names at
+/// y = 736; running dots (4 px) at (slot + 46, 756).
+const DOCK_BG: u32 = 0xDDE3E8;
+const DOCK_TEXT_RGB: [u8; 3] = [0x20, 0x20, 0x20];
+
+fn dock_dot(img: &screen::Image, slot: usize) -> bool {
+    img.pixel(496 + 96 * slot + 47, 757) == Some(DOCK_TEXT_RGB)
+}
+
+fn dock_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.extend([
+        // Pointer to (500, 700), inside the dock but clear of the tiles.
+        Action::Mouse(-140, 300),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-dock"),
+        // Crash Test's close button: centre (1242, 60).
+        Action::Mouse(742, -640),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: closed Crash Test".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-closed"),
+        // The Crash Test tile: centre (640, 708).
+        Action::Mouse(-602, 648),
+        Action::Settle(QUIET),
+        Action::Screenshot("3-dock-closed"),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: opened Crash Test".into()),
+        // Away from the dock, so it hides.
+        Action::Mouse(0, -308),
+        Action::Settle(QUIET),
+        Action::Screenshot("4-reopened"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_dock_shown(img: &screen::Image) -> Result<String, String> {
+    let files = need(img, "Files", BAR_TEXT, DOCK_BG)?;
+    let crash = need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
+    let assistant = need(img, "Assistant", BAR_TEXT, DOCK_BG)?;
+    if !(0..3).all(|i| dock_dot(img, i)) {
+        return Err("a running dot is missing in the dock".into());
+    }
+    Ok(format!(
+        "dock tiles `Files` {files:?}, `Crash Test` {crash:?}, `Assistant` {assistant:?}, three running dots"
+    ))
+}
+
+fn check_closed(img: &screen::Image) -> Result<String, String> {
+    absent(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    absent(img, "Crash Test", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    absent(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Files", BAR_TEXT, DOCK_BG)?;
+    let files = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    Ok(format!(
+        "Crash Test window gone, `Files` still focused at {files:?}, dock hidden"
+    ))
+}
+
+fn check_dock_closed(img: &screen::Image) -> Result<String, String> {
+    need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
+    if !dock_dot(img, 0) || dock_dot(img, 1) || !dock_dot(img, 2) {
+        return Err("dots should mark Files and the Assistant only".into());
+    }
+    Ok("dock: no running dot under Crash Test, dots under Files and Assistant".into())
+}
+
+fn check_reopened(img: &screen::Image) -> Result<String, String> {
+    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let body = need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
+    absent(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    absent(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
+    Ok(format!(
+        "Crash Test reopened and focused: title {title:?}, text {body:?}; dock hidden"
+    ))
+}
 
 const BLACK: [u8; 3] = [0, 0, 0];
 const WHITE: [u8; 3] = [255, 255, 255];

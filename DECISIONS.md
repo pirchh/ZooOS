@@ -143,6 +143,16 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 3: a dock and close buttons (2026-10-31)
+
+Design: docs/d3-design.md.
+
+- Close buttons at the right end of title bars (macOS has them at the
+  left; the right keeps existing title positions). A closed app ends
+  normally (bounded wait, then kill) and is not restarted.
+- An auto-hiding dock above the status line reopens closed apps and
+  raises running ones. Version 0.23.0.
+
 ## Desktop step 2: redraw only what changed (2026-10-31)
 
 Design: docs/d2-design.md.
