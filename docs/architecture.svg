@@ -76,9 +76,9 @@
     <text x="502" y="404" class="desc">channels, spawn, vm memory,</text>
     <text x="502" y="420" class="desc">exceptions, files, display, input</text>
     <rect x="755" y="360" width="225" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
-    <text x="767" y="384" class="name">Filesystem (in memory)</text>
-    <text x="767" y="404" class="desc">/bin read-only, /home/user</text>
-    <text x="767" y="420" class="desc">writable, folder permissions</text>
+    <text x="767" y="384" class="name">Initrd (read-only)</text>
+    <text x="767" y="404" class="desc">programs, seed files, model;</text>
+    <text x="767" y="420" class="desc">files live in BadgerHandler</text>
     <rect x="995" y="360" width="175" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
     <text x="1007" y="384" class="name">Drivers</text>
     <text x="1007" y="404" class="desc">screen, keyboard,</text>
@@ -185,8 +185,8 @@
   <text x="1214" y="714" class="desc">health pings + restarts</text>
   <text x="1214" y="730" class="desc">(S1: services, logs)</text>
   <text x="1204" y="756" class="desc">✓ BeaverHandler (logs)</text>
-  <text x="1204" y="782" class="desc">• Filesystem moved out of</text>
-  <text x="1214" y="798" class="desc">the kernel into a service</text>
+  <text x="1204" y="782" class="desc">✓ Filesystem is a service:</text>
+  <text x="1214" y="798" class="desc">BadgerHandler (S4b)</text>
   <text x="1204" y="824" class="desc">• Disk driver: files that</text>
   <text x="1214" y="840" class="desc">survive a reboot</text>
   <text x="1204" y="866" class="desc">• libc for C programs</text>

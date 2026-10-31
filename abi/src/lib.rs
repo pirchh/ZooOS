@@ -16,7 +16,9 @@ pub mod tar;
 /// version 9 (services step 1) added call 46; version 10 (services step 2)
 /// added calls 47-48; version 11 (services step 3) added calls 49-50 and
 /// error 19; version 12 (services step 4a) added call 51.
-pub const ABI_VERSION: u64 = 12;
+/// Version 13 (services step 4b) removed the in-kernel filesystem: calls
+/// 19-25 and 41-45 now return `NOSYS` (their numbers stay reserved).
+pub const ABI_VERSION: u64 = 13;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -168,7 +170,7 @@ pub const MAX_MESSAGE: usize = 256;
 /// Messages queued per channel direction.
 pub const CHANNEL_DEPTH: usize = 8;
 /// Handle slots per process.
-pub const MAX_HANDLES: usize = 16;
+pub const MAX_HANDLES: usize = 64;
 /// Largest program-name length accepted by `spawn`.
 pub const MAX_PATH: usize = 64;
 /// "No handle" for `spawn`'s third argument.
@@ -245,7 +247,7 @@ pub struct HandleMsg {
 }
 
 /// Most handles one `wait_any` call watches.
-pub const WAIT_ANY_MAX: usize = 16;
+pub const WAIT_ANY_MAX: usize = 64;
 /// `wait_any` timeout meaning "no timeout".
 pub const WAIT_FOREVER: u64 = u64::MAX;
 
@@ -344,23 +346,6 @@ pub mod dir_rights {
 /// Longest path accepted by the directory calls, and longest name.
 pub const MAX_FS_PATH: usize = 256;
 pub const MAX_DIR_NAME: usize = 64;
-
-/// Second argument of calls 20-25 and 41-45 (the first is the directory
-/// handle). `path` is relative to the handle's directory. `arg` is the
-/// rights for `dir_open`, the entry index for `dir_list`, the byte offset
-/// for `file_read`/`file_write` and the new length for `file_truncate`.
-/// `buf` receives a `DirEntry` (`dir_list`, `dir_stat`) or file bytes
-/// (`file_read`), holds the bytes for `file_write`, and the destination
-/// path for `rename`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct FsArgs {
-    pub path: u64,
-    pub path_len: u64,
-    pub arg: u64,
-    pub buf: u64,
-    pub buf_len: u64,
-}
 
 pub const KIND_DIR: u64 = 1;
 pub const KIND_FILE: u64 = 2;

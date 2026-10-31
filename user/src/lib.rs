@@ -8,12 +8,11 @@ extern crate alloc;
 
 use core::arch::asm;
 use core::fmt;
-pub use zoo_abi::{
-    DirEntry, DisplayInfo, Error, FsArgs, FsEntry, MapInfo, NO_HANDLE, dir_rights, sys,
-};
+pub use zoo_abi::{DirEntry, DisplayInfo, Error, FsEntry, MapInfo, NO_HANDLE, dir_rights, sys};
 
 pub mod app;
 pub mod exception;
+pub mod fsproto;
 mod heap;
 pub mod thread;
 pub mod vm;
@@ -221,100 +220,122 @@ pub fn narwhal_series(param: f64, n: u64, trace: &mut alloc::vec::Vec<f64>) -> f
     acc + trace.iter().sum::<f64>() * 1e-9
 }
 
-/// The root directory handle; only for a process the kernel started, once.
-pub fn fs_root() -> Result<Handle, Error> {
-    result(syscall(sys::FS_ROOT, 0, 0, 0))
-}
+// ---- Files and folders through BadgerHandler (docs/s4-design.md) ----------
+//
+// A folder handle is a channel to BadgerHandler. These keep the signatures
+// the system calls had; each is one or more request/reply exchanges. One
+// request at a time per folder handle (threads sharing a handle must take
+// turns).
 
-fn dir_call(number: u64, dir: Handle, path: &str, arg: u64, buf: &mut [u8]) -> Result<u64, Error> {
-    let args = FsArgs {
-        path: path.as_ptr() as u64,
-        path_len: path.len() as u64,
-        arg,
-        buf: buf.as_mut_ptr() as u64,
-        buf_len: buf.len() as u64,
-    };
-    result(syscall(number, dir, &args as *const FsArgs as u64, 0))
-}
+use fsproto::Op;
 
-fn entry_call(number: u64, dir: Handle, path: &str, arg: u64) -> Result<DirEntry, Error> {
-    let mut e = DirEntry::default();
-    // SAFETY: `DirEntry` is plain `repr(C)` integers and bytes; any bytes
-    // the kernel writes are a valid value. The slice covers exactly `e`.
-    let buf = unsafe {
-        core::slice::from_raw_parts_mut(
-            &mut e as *mut DirEntry as *mut u8,
-            core::mem::size_of::<DirEntry>(),
-        )
-    };
-    dir_call(number, dir, path, arg, buf)?;
-    Ok(e)
-}
-
-/// A handle to the directory at `path` under `dir`, with `rights` (no wider
+/// A handle to the folder at `path` under `dir`, with `rights` (no wider
 /// than `dir`'s).
 pub fn dir_open(dir: Handle, path: &str, rights: u64) -> Result<Handle, Error> {
-    dir_call(sys::DIR_OPEN, dir, path, rights, &mut [])
+    fsproto::call(dir, Op::Open, rights, 0, path, &[], &mut [])?;
+    fsproto::take_dir(dir)
 }
 
-/// The `index`-th entry of the directory at `path`; `NOTFOUND` past the end.
+/// The `index`-th entry of the folder at `path`; `NOTFOUND` past the end.
 pub fn dir_list(dir: Handle, path: &str, index: u64) -> Result<DirEntry, Error> {
-    entry_call(sys::DIR_LIST, dir, path, index)
+    let mut b = [0u8; zoo_abi::MAX_MESSAGE];
+    let (_, n) = fsproto::call(dir, Op::List, index, 0, path, &[], &mut b)?;
+    fsproto::decode_entry(&b[..n]).ok_or(Error::Inval)
 }
 
 /// Kind and size of `path` (its name is left empty).
 pub fn dir_stat(dir: Handle, path: &str) -> Result<DirEntry, Error> {
-    entry_call(sys::DIR_STAT, dir, path, 0)
+    let mut b = [0u8; zoo_abi::MAX_MESSAGE];
+    let (_, n) = fsproto::call(dir, Op::Stat, 0, 0, path, &[], &mut b)?;
+    fsproto::decode_entry(&b[..n]).ok_or(Error::Inval)
 }
 
 /// Reads file `path` from `offset` into `buf`; returns the bytes read.
 pub fn file_read(dir: Handle, path: &str, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
-    dir_call(sys::FILE_READ, dir, path, offset, buf).map(|n| n as usize)
+    let mut done = 0;
+    while done < buf.len() {
+        let want = (buf.len() - done).min(fsproto::MAX_DATA);
+        let (n, _) = fsproto::call(
+            dir,
+            Op::Read,
+            offset + done as u64,
+            want as u16,
+            path,
+            &[],
+            &mut buf[done..done + want],
+        )?;
+        if n == 0 {
+            break;
+        }
+        done += n as usize;
+    }
+    Ok(done)
 }
 
 pub fn dir_create(dir: Handle, path: &str) -> Result<(), Error> {
-    dir_call(sys::DIR_CREATE, dir, path, 0, &mut []).map(|_| ())
+    fsproto::call(dir, Op::CreateDir, 0, 0, path, &[], &mut []).map(|_| ())
 }
 
-/// Removes the empty directory at `path`.
+/// Removes the empty folder at `path`.
 pub fn dir_remove(dir: Handle, path: &str) -> Result<(), Error> {
-    dir_call(sys::DIR_REMOVE, dir, path, 0, &mut []).map(|_| ())
-}
-
-fn path_call(number: u64, dir: Handle, path: &str, arg: u64, buf: &[u8]) -> Result<u64, Error> {
-    let args = FsArgs {
-        path: path.as_ptr() as u64,
-        path_len: path.len() as u64,
-        arg,
-        buf: buf.as_ptr() as u64,
-        buf_len: buf.len() as u64,
-    };
-    result(syscall(number, dir, &args as *const FsArgs as u64, 0))
+    fsproto::call(dir, Op::RemoveDir, 0, 0, path, &[], &mut []).map(|_| ())
 }
 
 /// Creates an empty file at `path` (needs CREATE).
 pub fn file_create(dir: Handle, path: &str) -> Result<(), Error> {
-    path_call(sys::FILE_CREATE, dir, path, 0, &[]).map(|_| ())
+    fsproto::call(dir, Op::CreateFile, 0, 0, path, &[], &mut []).map(|_| ())
 }
 
 /// Writes `data` at `offset` of file `path`, growing it (needs WRITE).
 pub fn file_write(dir: Handle, path: &str, offset: u64, data: &[u8]) -> Result<usize, Error> {
-    path_call(sys::FILE_WRITE, dir, path, offset, data).map(|n| n as usize)
+    let room = fsproto::room(path);
+    if room == 0 {
+        return Err(Error::Inval);
+    }
+    if data.is_empty() {
+        fsproto::call(dir, Op::Write, offset, 0, path, &[], &mut [])?;
+        return Ok(0);
+    }
+    let mut done = 0;
+    while done < data.len() {
+        let chunk = &data[done..(done + room).min(data.len())];
+        let (n, _) = fsproto::call(
+            dir,
+            Op::Write,
+            offset + done as u64,
+            0,
+            path,
+            chunk,
+            &mut [],
+        )?;
+        done += n as usize;
+    }
+    Ok(done)
 }
 
 /// Sets the length of file `path` (needs WRITE).
 pub fn file_truncate(dir: Handle, path: &str, len: u64) -> Result<(), Error> {
-    path_call(sys::FILE_TRUNCATE, dir, path, len, &[]).map(|_| ())
+    fsproto::call(dir, Op::Truncate, len, 0, path, &[], &mut []).map(|_| ())
 }
 
 /// Removes file `path` (needs REMOVE).
 pub fn file_remove(dir: Handle, path: &str) -> Result<(), Error> {
-    path_call(sys::FILE_REMOVE, dir, path, 0, &[]).map(|_| ())
+    fsproto::call(dir, Op::RemoveFile, 0, 0, path, &[], &mut []).map(|_| ())
 }
 
 /// Moves `from` to `to`, both under `dir` (needs CREATE and REMOVE).
 pub fn rename(dir: Handle, from: &str, to: &str) -> Result<(), Error> {
-    path_call(sys::RENAME, dir, from, 0, to.as_bytes()).map(|_| ())
+    fsproto::call(dir, Op::Rename, 0, 0, from, to.as_bytes(), &mut []).map(|_| ())
+}
+
+/// Starts a private BadgerHandler (for the boot checks) and returns
+/// (process, control channel, root folder handle).
+pub fn start_badger() -> Result<(Handle, Handle, Handle), Error> {
+    let (mine, theirs) = channel_create()?;
+    let process = spawn("badger-handler", Some(theirs))?;
+    send(mine, b"root")?;
+    let (root, _tag) = recv_handle(mine)?;
+    Ok((process, mine, root))
 }
 
 /// Starts `name`, moving up to two handles into it (its `main` receives
