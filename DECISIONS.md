@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 7: Unix sockets and event waits (2026-10-31)
+
+Design and measurements: docs/linux7-design.md.
+
+- A connected Unix stream socket is two L5 pipes; `SCM_RIGHTS`
+  descriptors ride on the byte count they were sent with, so `recvmsg`
+  returns them with exactly the right message.
+- Bound names live in one kernel table ("@abstract", "/path"), freed on
+  close; no socket files in the file system.
+- One readiness function serves poll, select and epoll; waits block until
+  the general wake-up or their timeout. epoll is level-triggered (EPOLLET
+  treated as level); EPOLLONESHOT honoured.
+- Non-blocking mode is a per-descriptor bit; would-block calls on pipes,
+  sockets and eventfds return EAGAIN. Socket round trip under WHPX: about
+  9,000 cycles. Version 0.47.0.
+
 ## Linux step 6: signal handlers, threads and lazy memory (2026-10-31)
 
 Design and measurements: docs/linux6-design.md.

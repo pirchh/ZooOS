@@ -219,6 +219,8 @@ struct Proc {
     linux_sigsrc: [u32; 64],
     /// The signal that ended the process, if one did.
     linux_term_sig: Option<u8>,
+    /// Linux descriptors in non-blocking mode (bit `fd`, docs/linux7-design.md).
+    linux_nonblock: u64,
     /// Anonymous memory committed when first touched (docs/linux6-design.md):
     /// (start, length, Linux protection) ranges inside reservations.
     linux_lazy: Vec<(u64, u64, u64)>,
@@ -344,7 +346,20 @@ impl Proc {
             linux_sigsrc: [0; 64],
             linux_term_sig: None,
             linux_lazy: Vec::new(),
+            linux_nonblock: 0,
         }
+    }
+
+    fn set_nonblock(&mut self, fd: usize, on: bool) {
+        if on {
+            self.linux_nonblock |= 1 << fd;
+        } else {
+            self.linux_nonblock &= !(1 << fd);
+        }
+    }
+
+    fn nonblock(&self, fd: u64) -> bool {
+        fd < 64 && self.linux_nonblock >> fd & 1 != 0
     }
 
     fn set_cloexec(&mut self, fd: usize, on: bool) {
@@ -453,6 +468,10 @@ struct Scheduler {
     /// A home-folder handle the supervisor sent for the next desktop
     /// session (docs/s4-design.md §3).
     pending_home: Option<HandleEntry>,
+    /// Bound Unix socket names (docs/linux7-design.md): "@name" for the
+    /// abstract name space, "/path" for paths. A name is free again once
+    /// its socket is closed.
+    unix_names: Vec<(String, alloc::sync::Weak<Mutex<Sock>>)>,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -498,6 +517,7 @@ pub fn init() {
             supervisor: None,
             prefer_user: true,
             pending_home: None,
+            unix_names: Vec::new(),
         });
     });
 }
@@ -1181,8 +1201,218 @@ impl Scheduler {
                 self.pipe_write(i, &pipe, bytes, mem)
             }
             Some(LinuxFile::Home { .. }) => self.home_write(i, fd, bytes, mem),
+            Some(LinuxFile::Sock(s)) => {
+                let s = s.clone();
+                self.sock_send(i, &s, bytes, Vec::new(), false, mem)
+            }
+            Some(LinuxFile::Event(e)) => {
+                if bytes.len() < 8 {
+                    return Outcome::Ret(-EINVAL);
+                }
+                let v = u64::from_le_bytes(bytes[..8].try_into().unwrap_or([0; 8]));
+                if v == u64::MAX {
+                    return Outcome::Ret(-EINVAL);
+                }
+                {
+                    let mut ev = e.lock();
+                    if ev.count.saturating_add(v) > EVENTFD_MAX {
+                        return Outcome::Block;
+                    }
+                    ev.count += v;
+                }
+                self.wake_all();
+                Outcome::Ret(8)
+            }
             _ => Outcome::Ret(-EBADF),
         }
+    }
+
+    /// Sends `bytes` (and descriptors, attached to the first byte) on a
+    /// connected Unix socket: its outgoing pipe.
+    fn sock_send(
+        &mut self,
+        i: usize,
+        sock: &Arc<Mutex<Sock>>,
+        bytes: &[u8],
+        fds: Vec<LinuxFile>,
+        nosignal: bool,
+        mem: &Memory,
+    ) -> Outcome {
+        let tx = match &*sock.lock() {
+            Sock::Connected { tx: Some(tx), .. } => tx.pipe.clone(),
+            Sock::Connected { tx: None, .. } => return Outcome::Ret(-EPIPE),
+            _ => return Outcome::Ret(-ENOTCONN),
+        };
+        let (readers, at) = {
+            let p = tx.lock();
+            (p.readers, p.total_in)
+        };
+        if readers == 0 {
+            return if nosignal {
+                Outcome::Ret(-EPIPE)
+            } else {
+                self.linux_sigpipe(i)
+            };
+        }
+        let r = self.pipe_write(i, &tx, bytes, mem);
+        if matches!(r, Outcome::Ret(n) if n > 0) && !fds.is_empty() {
+            tx.lock().fds.push_back((at, fds));
+        }
+        r
+    }
+
+    /// Receives from a connected Unix socket: like a pipe read, stopping
+    /// before bytes that carry descriptors so each `recvmsg` gets the
+    /// descriptors sent with its first byte (returned with the outcome).
+    fn sock_recv(
+        &mut self,
+        i: usize,
+        sock: &Arc<Mutex<Sock>>,
+        pieces: &[(u64, u64)],
+        mem: &mut Memory,
+    ) -> (Outcome, Vec<LinuxFile>) {
+        let rx = match &*sock.lock() {
+            Sock::Connected { rx, .. } => rx.pipe.clone(),
+            _ => return (Outcome::Ret(-ENOTCONN), Vec::new()),
+        };
+        let (start, limit) = {
+            let p = rx.lock();
+            let start = p.total_out;
+            let next = p.fds.iter().map(|f| f.0).find(|&at| at > start);
+            (start, next.map_or(usize::MAX, |at| (at - start) as usize))
+        };
+        let r = self.pipe_read(i, &rx, pieces, mem, limit);
+        let mut got = Vec::new();
+        if let Outcome::Ret(n) = r
+            && n > 0
+        {
+            let mut stale = Vec::new();
+            {
+                let mut p = rx.lock();
+                while let Some(&(at, _)) = p.fds.front() {
+                    if at >= start + n as u64 {
+                        break;
+                    }
+                    let (at, files) = p.fds.pop_front().expect("front checked");
+                    if at == start {
+                        got = files;
+                    } else {
+                        stale.push(files);
+                    }
+                }
+            }
+            // Dropped with the pipe's lock released (they may hold ends of
+            // this same pipe).
+            drop(stale);
+        }
+        (r, got)
+    }
+
+    /// Whether a Linux file is ready (POLL* bits) for poll, select and
+    /// epoll.
+    fn linux_ready(file: &LinuxFile) -> u64 {
+        let pipe_side = |pipe: &Arc<Mutex<Pipe>>, write: bool| -> u64 {
+            let p = pipe.lock();
+            if write {
+                if p.readers == 0 {
+                    POLLERR
+                } else if p.len < PIPE_SIZE {
+                    POLLOUT
+                } else {
+                    0
+                }
+            } else {
+                (if p.len > 0 { POLLIN } else { 0 }) | (if p.writers == 0 { POLLHUP } else { 0 })
+            }
+        };
+        match file {
+            // Standard input is at its end: readable (0 bytes).
+            LinuxFile::Console { input: true } => POLLIN,
+            LinuxFile::Console { input: false } => POLLOUT,
+            LinuxFile::Pipe(end) => pipe_side(&end.pipe, end.write),
+            LinuxFile::Sock(s) => match &*s.lock() {
+                Sock::Fresh | Sock::Bound(_) => POLLOUT | POLLHUP,
+                Sock::Listening { backlog, .. } => {
+                    if backlog.is_empty() {
+                        0
+                    } else {
+                        POLLIN
+                    }
+                }
+                Sock::Connected { rx, tx, .. } => {
+                    let r = pipe_side(&rx.pipe, false);
+                    // The peer closed: readable to the end, and RDHUP.
+                    let r = if r & POLLHUP != 0 {
+                        r | POLLIN | POLLRDHUP
+                    } else {
+                        r
+                    };
+                    let w = tx.as_ref().map_or(0, |t| pipe_side(&t.pipe, true));
+                    let hup = if r & POLLHUP != 0 && tx.is_none() {
+                        POLLHUP
+                    } else {
+                        0
+                    };
+                    (r & !POLLHUP) | w | hup
+                }
+            },
+            LinuxFile::Event(e) => {
+                let ev = e.lock();
+                (if ev.count > 0 { POLLIN } else { 0 })
+                    | (if ev.count < EVENTFD_MAX { POLLOUT } else { 0 })
+            }
+            LinuxFile::Epoll(_) => 0,
+            _ => POLLIN | POLLOUT,
+        }
+    }
+
+    /// Ends a poll-style wait: the ready count now, or, with none ready,
+    /// 0 once the timeout (nanoseconds; `None` for none) has passed, else
+    /// blocks.
+    fn linux_wait_result(&mut self, i: usize, count: i64, timeout: Option<u64>) -> Outcome {
+        let t = self.task(i);
+        if count > 0 || timeout == Some(0) {
+            t.sleep_until = None;
+            return Outcome::Ret(count);
+        }
+        if let Some(ns) = timeout {
+            let tick_ns = 1_000_000_000 / u64::from(interrupts::TIMER_HZ);
+            let now = interrupts::ticks();
+            let deadline = *t
+                .sleep_until
+                .get_or_insert(now.saturating_add(ns.div_ceil(tick_ns).max(1)));
+            if now >= deadline {
+                t.sleep_until = None;
+                return Outcome::Ret(0);
+            }
+        }
+        Outcome::Block
+    }
+
+    /// True if a blocked call on a non-blocking descriptor (or with
+    /// MSG_DONTWAIT) should fail with EAGAIN instead.
+    fn linux_would_block_fails(&mut self, i: usize, f: &TrapFrame) -> bool {
+        let fd = match f.rax {
+            0 | 1 | 19 | 20 | 43 | 288 | 44 | 45 | 46 | 47 | 42 => f.rdi,
+            _ => return false,
+        };
+        {
+            let t = self.task(i);
+            if t.fs_pending || t.fs_hold {
+                return false;
+            }
+        }
+        let dontwait = match f.rax {
+            44 | 45 => f.r10 & MSG_DONTWAIT != 0,
+            46 | 47 => f.rdx & MSG_DONTWAIT != 0,
+            _ => false,
+        };
+        let nb = self.proc(i).nonblock(fd);
+        (nb || dontwait)
+            && matches!(
+                self.linux_file(i, fd),
+                Some(LinuxFile::Pipe(_) | LinuxFile::Sock(_) | LinuxFile::Event(_))
+            )
     }
 
     /// Writes into a pipe: up to `PIPE_BUF` bytes all at once, more as
@@ -1211,6 +1441,7 @@ impl Scheduler {
             let at = (p.head + p.len) % PIPE_SIZE;
             ring_copy(mem, &p.frames, at, bytes.as_ptr() as *mut u8, n, true);
             p.len += n;
+            p.total_in += n as u64;
             n
         };
         self.wake_all();
@@ -1225,6 +1456,7 @@ impl Scheduler {
         pipe: &Arc<Mutex<Pipe>>,
         pieces: &[(u64, u64)],
         mem: &mut Memory,
+        limit: usize,
     ) -> Outcome {
         let p4 = self.task(i).p4.expect("Linux call from a user task");
         if pieces.iter().all(|x| x.1 == 0) {
@@ -1248,7 +1480,7 @@ impl Scheduler {
             }
             let mut total = 0;
             for &(base, len) in pieces {
-                let n = (len as usize).min(p.len);
+                let n = (len as usize).min(p.len).min(limit - total);
                 if n == 0 {
                     continue;
                 }
@@ -1261,8 +1493,9 @@ impl Scheduler {
                 ring_copy(mem, &p.frames, p.head, base as *mut u8, n, false);
                 p.head = (p.head + n) % PIPE_SIZE;
                 p.len -= n;
+                p.total_out += n as u64;
                 total += n;
-                if p.len == 0 {
+                if p.len == 0 || total == limit {
                     break;
                 }
             }
@@ -1481,7 +1714,7 @@ impl Scheduler {
         if handler > 1 {
             let restart = self.proc(i).sig_flags(sig) & SA_RESTART != 0;
             // pause and the sleeps never restart, as on Linux.
-            if restart && !matches!(f.rax, 34 | 35 | 230) {
+            if restart && !matches!(f.rax, 7 | 23 | 34 | 35 | 230 | 232 | 270 | 271 | 281 | 441) {
                 // Back to the `syscall` instruction; RAX still holds the
                 // call number.
                 f.rip -= 2;
@@ -1877,6 +2110,7 @@ impl Scheduler {
         child.linux_brk = parent.linux_brk;
         child.linux_files = parent.linux_files.clone();
         child.linux_cloexec = parent.linux_cloexec;
+        child.linux_nonblock = parent.linux_nonblock;
         child.linux_cwd = parent.linux_cwd.clone();
         child.linux_parent = parent.pid;
         child.linux_borrowed = share;
@@ -1987,6 +2221,7 @@ impl Scheduler {
         for fd in 0..p.linux_files.len() {
             if p.linux_cloexec >> fd & 1 != 0 {
                 p.linux_files[fd] = None;
+                p.linux_nonblock &= !(1 << fd);
             }
         }
         p.linux_cloexec = 0;
@@ -2058,6 +2293,9 @@ impl Scheduler {
                 }
                 _ => break,
             }
+        }
+        if matches!(outcome, Outcome::Block) && self.linux_would_block_fails(i, f) {
+            outcome = Outcome::Ret(-EAGAIN);
         }
         if !matches!(outcome, Outcome::Block) {
             let t = self.task(i);
@@ -2268,7 +2506,40 @@ impl Scheduler {
                 self.linux_write(i, a1, &all, mem)
             }
             // ioctl: no terminals yet.
-            16 => fail(ENOTTY),
+            // ioctl: FIONBIO and FIONREAD; no terminals yet.
+            16 => {
+                if self.linux_file(i, a1).is_none() {
+                    return fail(EBADF);
+                }
+                match a2 {
+                    0x5421 => {
+                        if !ok(a3, 4, false) {
+                            return fail(EFAULT);
+                        }
+                        // SAFETY: checked as readable user memory.
+                        let on = unsafe { (a3 as *const i32).read_unaligned() } != 0;
+                        self.proc(i).set_nonblock(a1 as usize, on);
+                        Outcome::Ret(0)
+                    }
+                    0x541B => {
+                        let n = match self.linux_file(i, a1) {
+                            Some(LinuxFile::Pipe(end)) => end.pipe.lock().len,
+                            Some(LinuxFile::Sock(s)) => match &*s.lock() {
+                                Sock::Connected { rx, .. } => rx.pipe.lock().len,
+                                _ => 0,
+                            },
+                            _ => return fail(ENOTTY),
+                        };
+                        if !ok(a3, 4, true) {
+                            return fail(EFAULT);
+                        }
+                        // SAFETY: checked as writable user memory.
+                        unsafe { (a3 as *mut i32).write_unaligned(n as i32) };
+                        Outcome::Ret(0)
+                    }
+                    _ => fail(ENOTTY),
+                }
+            }
             // getpid, gettid
             39 => Outcome::Ret(self.task(i).pid as i64),
             186 => Outcome::Ret(self.task(i).tid as i64),
@@ -2498,7 +2769,10 @@ impl Scheduler {
                     }
                 };
                 match self.alloc_fd(i, 0, file, flags & O_CLOEXEC != 0) {
-                    Ok(fd) => Outcome::Ret(fd as i64),
+                    Ok(fd) => {
+                        self.proc(i).set_nonblock(fd, flags & O_NONBLOCK != 0);
+                        Outcome::Ret(fd as i64)
+                    }
                     Err(e) => fail(e),
                 }
             }
@@ -2509,6 +2783,7 @@ impl Scheduler {
                     Some(slot @ Some(_)) => {
                         *slot = None;
                         p.set_cloexec(a1 as usize, false);
+                        p.set_nonblock(a1 as usize, false);
                         // A pipe's reader may now see its end.
                         self.wake_all();
                         Outcome::Ret(0)
@@ -2539,9 +2814,37 @@ impl Scheduler {
                     // Standard input: at its end (no terminal yet).
                     Some(LinuxFile::Console { input: true }) => return Outcome::Ret(0),
                     Some(LinuxFile::Pipe(end)) if !end.write => {
-                        return self.pipe_read(i, &end.pipe, &pieces, mem);
+                        return self.pipe_read(i, &end.pipe, &pieces, mem, usize::MAX);
                     }
-                    Some(LinuxFile::Console { .. } | LinuxFile::Pipe(_)) => return fail(EBADF),
+                    // Descriptors sent along are dropped by a plain read.
+                    Some(LinuxFile::Sock(s)) => return self.sock_recv(i, &s, &pieces, mem).0,
+                    Some(LinuxFile::Event(e)) => {
+                        let Some(&(base, len)) = pieces.iter().find(|p| p.1 > 0) else {
+                            return fail(EINVAL);
+                        };
+                        if len < 8 {
+                            return fail(EINVAL);
+                        }
+                        if !ok(base, 8, true) {
+                            return fail(EFAULT);
+                        }
+                        let v = {
+                            let mut ev = e.lock();
+                            if ev.count == 0 {
+                                return Outcome::Block;
+                            }
+                            let v = if ev.semaphore { 1 } else { ev.count };
+                            ev.count -= v;
+                            v
+                        };
+                        // SAFETY: checked as writable user memory.
+                        unsafe { (base as *mut u64).write_unaligned(v) };
+                        self.wake_all();
+                        return Outcome::Ret(8);
+                    }
+                    Some(LinuxFile::Console { .. } | LinuxFile::Pipe(_) | LinuxFile::Epoll(_)) => {
+                        return fail(EINVAL);
+                    }
                     Some(LinuxFile::File(data, pos)) => (data, pos),
                     Some(LinuxFile::Home { path, pos, .. }) => {
                         // One request: the first piece, up to the shared
@@ -2643,7 +2946,13 @@ impl Scheduler {
                         return Outcome::Ret(0);
                     }
                     Some(LinuxFile::Dir(..) | LinuxFile::HomeDir(..)) => return fail(EINVAL),
-                    Some(LinuxFile::Console { .. } | LinuxFile::Pipe(_)) => return fail(ESPIPE),
+                    Some(
+                        LinuxFile::Console { .. }
+                        | LinuxFile::Pipe(_)
+                        | LinuxFile::Sock(_)
+                        | LinuxFile::Event(_)
+                        | LinuxFile::Epoll(_),
+                    ) => return fail(ESPIPE),
                     None => return fail(EBADF),
                 };
                 let from = match a3 {
@@ -2747,6 +3056,8 @@ impl Scheduler {
                             let len = end.pipe.lock().len as u64;
                             (None, Some((0o010_600, len)))
                         }
+                        Some(LinuxFile::Sock(_)) => (None, Some((0o140_777, 0))),
+                        Some(LinuxFile::Event(_) | LinuxFile::Epoll(_)) => (None, Some((0o600, 0))),
                         Some(LinuxFile::File(data, _)) => {
                             (None, Some((0o100_444, data.len() as u64)))
                         }
@@ -2981,7 +3292,11 @@ impl Scheduler {
                 match a2 {
                     // F_DUPFD, F_DUPFD_CLOEXEC
                     0 | 1030 => match self.alloc_fd(i, a3 as usize, file, a2 == 1030) {
-                        Ok(new) => Outcome::Ret(new as i64),
+                        Ok(new) => {
+                            let nb = self.proc(i).nonblock(a1);
+                            self.proc(i).set_nonblock(new, nb);
+                            Outcome::Ret(new as i64)
+                        }
                         Err(e) => fail(e),
                     },
                     // F_GETFD, F_SETFD
@@ -2990,18 +3305,32 @@ impl Scheduler {
                         self.proc(i).set_cloexec(fd, a3 & 1 != 0);
                         Outcome::Ret(0)
                     }
-                    // F_GETFL: the access mode, and append.
-                    3 => Outcome::Ret(match file {
-                        LinuxFile::Pipe(end) if end.write => 1,
-                        LinuxFile::Console { input: false } => 1,
-                        LinuxFile::Home {
-                            write: true,
-                            append,
-                            ..
-                        } => 1 | if append { O_APPEND as i64 } else { 0 },
-                        _ => 0,
-                    }),
-                    4 => Outcome::Ret(0), // F_SETFL
+                    // F_GETFL: the access mode, append and non-blocking.
+                    3 => {
+                        let nb = if self.proc(i).nonblock(a1) {
+                            O_NONBLOCK as i64
+                        } else {
+                            0
+                        };
+                        Outcome::Ret(
+                            nb | match file {
+                                LinuxFile::Pipe(end) if end.write => 1,
+                                LinuxFile::Console { input: false } => 1,
+                                LinuxFile::Sock(_) | LinuxFile::Event(_) => 2,
+                                LinuxFile::Home {
+                                    write: true,
+                                    append,
+                                    ..
+                                } => 1 | if append { O_APPEND as i64 } else { 0 },
+                                _ => 0,
+                            },
+                        )
+                    }
+                    // F_SETFL: only O_NONBLOCK has an effect.
+                    4 => {
+                        self.proc(i).set_nonblock(fd, a3 & O_NONBLOCK != 0);
+                        Outcome::Ret(0)
+                    }
                     _ => fail(EINVAL),
                 }
             }
@@ -3091,7 +3420,7 @@ impl Scheduler {
             // pipe(fds), pipe2(fds, flags)
             22 | 293 => {
                 let flags = if number == 293 { a2 } else { 0 };
-                if flags & !O_CLOEXEC != 0 {
+                if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
                     return fail(EINVAL);
                 }
                 if !ok(a1, 8, true) {
@@ -3115,6 +3444,9 @@ impl Scheduler {
                         return fail(e);
                     }
                 };
+                let nb = flags & O_NONBLOCK != 0;
+                self.proc(i).set_nonblock(r, nb);
+                self.proc(i).set_nonblock(w, nb);
                 // SAFETY: checked as writable user memory (two ints).
                 unsafe {
                     (a1 as *mut i32).write_unaligned(r as i32);
@@ -3125,7 +3457,11 @@ impl Scheduler {
             // dup(fd)
             32 => match self.linux_file(i, a1).cloned() {
                 Some(file) => match self.alloc_fd(i, 0, file, false) {
-                    Ok(fd) => Outcome::Ret(fd as i64),
+                    Ok(fd) => {
+                        let nb = self.proc(i).nonblock(a1);
+                        self.proc(i).set_nonblock(fd, nb);
+                        Outcome::Ret(fd as i64)
+                    }
                     Err(e) => fail(e),
                 },
                 None => fail(EBADF),
@@ -3153,6 +3489,8 @@ impl Scheduler {
                 // What `new` had open closes.
                 p.linux_files[fd] = Some(file);
                 p.set_cloexec(fd, flags & O_CLOEXEC != 0);
+                let nb = p.nonblock(a1);
+                p.set_nonblock(fd, nb);
                 self.wake_all();
                 Outcome::Ret(fd as i64)
             }
@@ -3379,6 +3717,763 @@ impl Scheduler {
             }
             // pause(): until a signal is handled (EINTR).
             34 => Outcome::Block,
+            // ---- sockets, events and waits (docs/linux7-design.md) ----
+            // socket(domain, type, protocol): Unix stream sockets.
+            41 => {
+                if a1 != AF_UNIX {
+                    return fail(EAFNOSUPPORT);
+                }
+                if a2 & 0xF != SOCK_STREAM {
+                    return fail(ESOCKTNOSUPPORT);
+                }
+                let file = LinuxFile::Sock(Arc::new(Mutex::new(Sock::Fresh)));
+                match self.alloc_fd(i, 0, file, a2 & O_CLOEXEC != 0) {
+                    Ok(fd) => {
+                        self.proc(i).set_nonblock(fd, a2 & O_NONBLOCK != 0);
+                        Outcome::Ret(fd as i64)
+                    }
+                    Err(e) => fail(e),
+                }
+            }
+            // socketpair(domain, type, protocol, sv)
+            53 => {
+                if a1 != AF_UNIX {
+                    return fail(EAFNOSUPPORT);
+                }
+                if a2 & 0xF != SOCK_STREAM {
+                    return fail(ESOCKTNOSUPPORT);
+                }
+                if !ok(f.r10, 8, true) {
+                    return fail(EFAULT);
+                }
+                let (Some(a), Some(b)) = (Pipe::new(mem), Pipe::new(mem)) else {
+                    return fail(ENOMEM);
+                };
+                let (a, b) = (Arc::new(Mutex::new(a)), Arc::new(Mutex::new(b)));
+                let me = self.task(i).pid;
+                let end = |rx: &Arc<Mutex<Pipe>>, tx: &Arc<Mutex<Pipe>>| {
+                    LinuxFile::Sock(Arc::new(Mutex::new(Sock::Connected {
+                        rx: PipeEnd::new(rx.clone(), false),
+                        tx: Some(PipeEnd::new(tx.clone(), true)),
+                        peer_pid: me,
+                        local: String::new(),
+                        peer: String::new(),
+                    })))
+                };
+                let (x, y) = (end(&a, &b), end(&b, &a));
+                let cloexec = a2 & O_CLOEXEC != 0;
+                let fx = match self.alloc_fd(i, 0, x, cloexec) {
+                    Ok(fd) => fd,
+                    Err(e) => return fail(e),
+                };
+                let fy = match self.alloc_fd(i, 0, y, cloexec) {
+                    Ok(fd) => fd,
+                    Err(e) => {
+                        self.proc(i).linux_files[fx] = None;
+                        return fail(e);
+                    }
+                };
+                let nb = a2 & O_NONBLOCK != 0;
+                self.proc(i).set_nonblock(fx, nb);
+                self.proc(i).set_nonblock(fy, nb);
+                // SAFETY: checked as writable user memory (two ints).
+                unsafe {
+                    (f.r10 as *mut i32).write_unaligned(fx as i32);
+                    (f.r10 as *mut i32).add(1).write_unaligned(fy as i32);
+                }
+                Outcome::Ret(0)
+            }
+            // bind(fd, addr, len)
+            49 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(if self.linux_file(i, a1).is_some() {
+                        ENOTSOCK
+                    } else {
+                        EBADF
+                    });
+                };
+                let cwd = self.proc(i).linux_cwd.clone();
+                let name = match unix_name(&ok, a2, a3, &cwd) {
+                    Ok(n) => n,
+                    Err(e) => return fail(e),
+                };
+                self.unix_names.retain(|(_, w)| w.strong_count() > 0);
+                if self.unix_names.iter().any(|(n, _)| *n == name) {
+                    return fail(EADDRINUSE);
+                }
+                let mut st = s.lock();
+                if !matches!(*st, Sock::Fresh) {
+                    return fail(EINVAL);
+                }
+                *st = Sock::Bound(name.clone());
+                drop(st);
+                self.unix_names.push((name, Arc::downgrade(&s)));
+                Outcome::Ret(0)
+            }
+            // listen(fd, backlog)
+            50 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let me = self.task(i).pid;
+                let max = (a2 as i32).clamp(1, 128) as usize;
+                let mut st = s.lock();
+                match &mut *st {
+                    Sock::Bound(name) => {
+                        let name = core::mem::take(name);
+                        *st = Sock::Listening {
+                            name,
+                            backlog: VecDeque::new(),
+                            max,
+                            owner: me,
+                        };
+                        Outcome::Ret(0)
+                    }
+                    Sock::Listening { max: m, .. } => {
+                        *m = max;
+                        Outcome::Ret(0)
+                    }
+                    _ => fail(EINVAL),
+                }
+            }
+            // accept(fd, addr, len), accept4(fd, addr, len, flags)
+            43 | 288 => {
+                let flags = if number == 288 { f.r10 } else { 0 };
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let conn = {
+                    let mut st = s.lock();
+                    let Sock::Listening { name, backlog, .. } = &mut *st else {
+                        return fail(EINVAL);
+                    };
+                    match backlog.pop_front() {
+                        Some((rx, tx, peer_pid, peer)) => Sock::Connected {
+                            rx,
+                            tx: Some(tx),
+                            peer_pid,
+                            local: name.clone(),
+                            peer,
+                        },
+                        None => return Outcome::Block,
+                    }
+                };
+                if a2 != 0 {
+                    let _ = put_unix_name(&ok, a2, a3, "");
+                }
+                let file = LinuxFile::Sock(Arc::new(Mutex::new(conn)));
+                match self.alloc_fd(i, 0, file, flags & O_CLOEXEC != 0) {
+                    Ok(fd) => {
+                        self.proc(i).set_nonblock(fd, flags & O_NONBLOCK != 0);
+                        Outcome::Ret(fd as i64)
+                    }
+                    Err(e) => fail(e),
+                }
+            }
+            // connect(fd, addr, len)
+            42 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let local = match &*s.lock() {
+                    Sock::Fresh => String::new(),
+                    Sock::Bound(n) => n.clone(),
+                    Sock::Connected { .. } => return fail(EISCONN),
+                    Sock::Listening { .. } => return fail(EINVAL),
+                };
+                let cwd = self.proc(i).linux_cwd.clone();
+                let name = match unix_name(&ok, a2, a3, &cwd) {
+                    Ok(n) => n,
+                    Err(e) => return fail(e),
+                };
+                let target = self
+                    .unix_names
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .and_then(|(_, w)| w.upgrade());
+                let Some(target) = target else {
+                    return fail(ECONNREFUSED);
+                };
+                let owner = match &*target.lock() {
+                    Sock::Listening {
+                        backlog,
+                        max,
+                        owner,
+                        ..
+                    } => {
+                        if backlog.len() >= *max {
+                            return Outcome::Block;
+                        }
+                        *owner
+                    }
+                    _ => return fail(ECONNREFUSED),
+                };
+                let (Some(a), Some(b)) = (Pipe::new(mem), Pipe::new(mem)) else {
+                    return fail(ENOMEM);
+                };
+                let (a, b) = (Arc::new(Mutex::new(a)), Arc::new(Mutex::new(b)));
+                let me = self.task(i).pid;
+                if let Sock::Listening { backlog, .. } = &mut *target.lock() {
+                    backlog.push_back((
+                        PipeEnd::new(a.clone(), false),
+                        PipeEnd::new(b.clone(), true),
+                        me,
+                        local.clone(),
+                    ));
+                }
+                *s.lock() = Sock::Connected {
+                    rx: PipeEnd::new(b, false),
+                    tx: Some(PipeEnd::new(a, true)),
+                    peer_pid: owner,
+                    local,
+                    peer: name,
+                };
+                self.wake_all();
+                Outcome::Ret(0)
+            }
+            // shutdown(fd, how): writing ends for SHUT_WR and SHUT_RDWR.
+            48 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let mut st = s.lock();
+                let Sock::Connected { tx, .. } = &mut *st else {
+                    return fail(ENOTCONN);
+                };
+                if a2 > 2 {
+                    return fail(EINVAL);
+                }
+                if a2 != 0 {
+                    let old = tx.take();
+                    drop(st);
+                    drop(old);
+                    self.wake_all();
+                }
+                Outcome::Ret(0)
+            }
+            // getsockname(fd, addr, len), getpeername(fd, addr, len)
+            51 | 52 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let name = match (&*s.lock(), number) {
+                    (Sock::Connected { local, .. }, 51) => local.clone(),
+                    (Sock::Connected { peer, .. }, _) => peer.clone(),
+                    (_, 52) => return fail(ENOTCONN),
+                    (Sock::Bound(n) | Sock::Listening { name: n, .. }, _) => n.clone(),
+                    (Sock::Fresh, _) => String::new(),
+                };
+                match put_unix_name(&ok, a2, a3, &name) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(e) => fail(e),
+                }
+            }
+            // setsockopt: accepted (Unix sockets have nothing to tune yet).
+            54 => match self.linux_file(i, a1) {
+                Some(LinuxFile::Sock(_)) => Outcome::Ret(0),
+                Some(_) => fail(ENOTSOCK),
+                None => fail(EBADF),
+            },
+            // getsockopt(fd, level, name, value, len)
+            55 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let (val, lenp) = (f.r10, f.r8);
+                if !ok(lenp, 4, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                let room = unsafe { (lenp as *const u32).read_unaligned() } as usize;
+                let mut out = [0u8; 12];
+                let n = match (a2, a3) {
+                    // SOL_SOCKET: SO_PEERCRED (pid, uid, gid)
+                    (1, 17) => {
+                        let pid = match &*s.lock() {
+                            Sock::Connected { peer_pid, .. } => *peer_pid as u32,
+                            _ => 0,
+                        };
+                        out[0..4].copy_from_slice(&pid.to_le_bytes());
+                        out[4..8].copy_from_slice(&LINUX_UID.to_le_bytes());
+                        out[8..12].copy_from_slice(&LINUX_UID.to_le_bytes());
+                        12
+                    }
+                    (1, opt) => {
+                        let v: i32 = match opt {
+                            3 => 1,         // SO_TYPE: SOCK_STREAM
+                            7 | 8 => 65536, // SO_SNDBUF, SO_RCVBUF
+                            30 => i32::from(matches!(*s.lock(), Sock::Listening { .. })),
+                            _ => 0, // SO_ERROR and the rest
+                        };
+                        out[0..4].copy_from_slice(&v.to_le_bytes());
+                        4
+                    }
+                    _ => return fail(ENOPROTOOPT),
+                };
+                let n = n.min(room);
+                if n > 0 && !ok(val, n as u64, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: both checked as writable user memory.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(out.as_ptr(), val as *mut u8, n);
+                    (lenp as *mut u32).write_unaligned(n as u32);
+                }
+                Outcome::Ret(0)
+            }
+            // sendto(fd, buf, len, flags, addr, alen): the address is
+            // ignored on a connected stream socket.
+            44 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let len = a3.min(LINUX_WRITE_MAX);
+                if len > 0 && !ok(a2, len, false) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as readable user memory.
+                let bytes = unsafe { core::slice::from_raw_parts(a2 as *const u8, len as usize) };
+                self.sock_send(i, &s, bytes, Vec::new(), f.r10 & MSG_NOSIGNAL != 0, mem)
+            }
+            // recvfrom(fd, buf, len, flags, addr, alen)
+            45 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                let (addr, alen) = (f.r8, f.r9);
+                let (r, _) = self.sock_recv(i, &s, &[(a2, a3)], mem);
+                if matches!(r, Outcome::Ret(n) if n >= 0) && addr != 0 {
+                    let p4 = self.task(i).p4.expect("user task");
+                    let ok2 = |a: u64, l: u64, w: bool| mem.user_range_ok(p4, a, l, w);
+                    let _ = put_unix_name(&ok2, addr, alen, "");
+                }
+                r
+            }
+            // sendmsg(fd, msg, flags): data from the iovecs, descriptors
+            // from an SCM_RIGHTS control message.
+            46 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                if !ok(a2, 56, false) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked readable `msghdr` (56 bytes).
+                let m = unsafe { core::ptr::read_unaligned(a2 as *const [u64; 7]) };
+                let (iov, iovlen, ctl, ctllen) = (m[2], m[3], m[4], m[5]);
+                if iovlen > 1024 || (iovlen > 0 && !ok(iov, iovlen * 16, false)) {
+                    return fail(EINVAL);
+                }
+                let mut all = Vec::new();
+                for k in 0..iovlen {
+                    // SAFETY: inside the checked iovec array.
+                    let (base, len) = unsafe {
+                        let p = (iov + 16 * k) as *const u64;
+                        (p.read_unaligned(), p.add(1).read_unaligned())
+                    };
+                    if len == 0 {
+                        continue;
+                    }
+                    if all.len() as u64 + len > LINUX_WRITE_MAX || !ok(base, len, false) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as readable user memory.
+                    all.extend_from_slice(unsafe {
+                        core::slice::from_raw_parts(base as *const u8, len as usize)
+                    });
+                }
+                let mut fds = Vec::new();
+                if ctl != 0 && ctllen >= 16 {
+                    if ctllen > 4096 || !ok(ctl, ctllen, false) {
+                        return fail(EFAULT);
+                    }
+                    let mut at = 0u64;
+                    while at + 16 <= ctllen {
+                        // SAFETY: inside the checked control buffer.
+                        let (clen, level, ty) = unsafe {
+                            let p = (ctl + at) as *const u8;
+                            (
+                                (p as *const u64).read_unaligned(),
+                                (p.add(8) as *const i32).read_unaligned(),
+                                (p.add(12) as *const i32).read_unaligned(),
+                            )
+                        };
+                        if clen < 16 || at + clen > ctllen {
+                            return fail(EINVAL);
+                        }
+                        if level == 1 && ty == 1 {
+                            for k in 0..(clen - 16) / 4 {
+                                // SAFETY: inside this control message.
+                                let fd = unsafe {
+                                    ((ctl + at + 16 + 4 * k) as *const i32).read_unaligned()
+                                };
+                                match self.linux_file(i, fd as u64).cloned() {
+                                    Some(file) if fd >= 0 => fds.push(file),
+                                    _ => return fail(EBADF),
+                                }
+                            }
+                        }
+                        at += clen.div_ceil(8) * 8;
+                    }
+                }
+                self.sock_send(i, &s, &all, fds, a3 & MSG_NOSIGNAL != 0, mem)
+            }
+            // recvmsg(fd, msg, flags): data into the iovecs, received
+            // descriptors as an SCM_RIGHTS control message.
+            47 => {
+                let Some(LinuxFile::Sock(s)) = self.linux_file(i, a1).cloned() else {
+                    return fail(ENOTSOCK);
+                };
+                if !ok(a2, 56, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked `msghdr` (56 bytes).
+                let m = unsafe { core::ptr::read_unaligned(a2 as *const [u64; 7]) };
+                let (name, iov, iovlen, ctl, ctllen) = (m[0], m[2], m[3], m[4], m[5]);
+                if iovlen > 1024 || (iovlen > 0 && !ok(iov, iovlen * 16, false)) {
+                    return fail(EINVAL);
+                }
+                if ctl != 0 && ctllen > 0 && !ok(ctl, ctllen, true) {
+                    return fail(EFAULT);
+                }
+                let mut pieces = Vec::new();
+                for k in 0..iovlen {
+                    // SAFETY: inside the checked iovec array.
+                    pieces.push(unsafe {
+                        let p = (iov + 16 * k) as *const u64;
+                        (p.read_unaligned(), p.add(1).read_unaligned())
+                    });
+                }
+                let (r, got) = self.sock_recv(i, &s, &pieces, mem);
+                let Outcome::Ret(n) = r else {
+                    return r;
+                };
+                if n < 0 {
+                    return r;
+                }
+                // Received descriptors go into the table first.
+                let cloexec = a3 & MSG_CMSG_CLOEXEC != 0;
+                let mut new_fds = Vec::new();
+                for file in got {
+                    match self.alloc_fd(i, 0, file, cloexec) {
+                        Ok(fd) => new_fds.push(fd as i32),
+                        Err(_) => break,
+                    }
+                }
+                let room = if ctl == 0 {
+                    0
+                } else {
+                    ctllen.saturating_sub(16) / 4
+                };
+                let mut flags = 0i32;
+                let fit = (new_fds.len() as u64).min(room) as usize;
+                for &fd in &new_fds[fit..] {
+                    // No room in the control buffer: closed, as Linux does.
+                    self.proc(i).linux_files[fd as usize] = None;
+                    flags |= MSG_CTRUNC;
+                }
+                let used = if fit > 0 { 16 + 4 * fit as u64 } else { 0 };
+                // SAFETY: `msghdr` and the control buffer were checked as
+                // writable; `used` fits the control buffer.
+                unsafe {
+                    if fit > 0 {
+                        let p = ctl as *mut u8;
+                        (p as *mut u64).write_unaligned(used);
+                        (p.add(8) as *mut i32).write_unaligned(1); // SOL_SOCKET
+                        (p.add(12) as *mut i32).write_unaligned(1); // SCM_RIGHTS
+                        for (k, fd) in new_fds[..fit].iter().enumerate() {
+                            (p.add(16 + 4 * k) as *mut i32).write_unaligned(*fd);
+                        }
+                    }
+                    let h = a2 as *mut u8;
+                    (h.add(40) as *mut u64).write_unaligned(used.div_ceil(8) * 8);
+                    (h.add(48) as *mut i32).write_unaligned(flags);
+                    if name != 0 {
+                        // An unnamed peer: no address.
+                        (h.add(8) as *mut u32).write_unaligned(0);
+                    }
+                }
+                Outcome::Ret(n)
+            }
+            // eventfd(initval), eventfd2(initval, flags)
+            284 | 290 => {
+                let flags = if number == 290 { a2 } else { 0 };
+                if flags & !(EFD_SEMAPHORE | O_NONBLOCK | O_CLOEXEC) != 0 {
+                    return fail(EINVAL);
+                }
+                let file = LinuxFile::Event(Arc::new(Mutex::new(EventFd {
+                    count: a1 & 0xFFFF_FFFF,
+                    semaphore: flags & EFD_SEMAPHORE != 0,
+                })));
+                match self.alloc_fd(i, 0, file, flags & O_CLOEXEC != 0) {
+                    Ok(fd) => {
+                        self.proc(i).set_nonblock(fd, flags & O_NONBLOCK != 0);
+                        Outcome::Ret(fd as i64)
+                    }
+                    Err(e) => fail(e),
+                }
+            }
+            // poll(fds, n, timeout ms), ppoll(fds, n, timespec, sigmask):
+            // the signal mask argument is not applied.
+            7 | 271 => {
+                let (fds, n) = (a1, a2);
+                if n > 4096 {
+                    return fail(EINVAL);
+                }
+                if n > 0 && !ok(fds, n * 8, true) {
+                    return fail(EFAULT);
+                }
+                let timeout = if number == 7 {
+                    let ms = a3 as i32;
+                    (ms >= 0).then(|| ms as u64 * 1_000_000)
+                } else if a3 == 0 {
+                    None
+                } else {
+                    match read_timespec(&ok, a3) {
+                        Ok(ns) => Some(ns),
+                        Err(e) => return fail(e),
+                    }
+                };
+                let mut count = 0i64;
+                for k in 0..n {
+                    let at = fds + 8 * k;
+                    // SAFETY: inside the checked `pollfd` array.
+                    let (fd, events) = unsafe {
+                        (
+                            (at as *const i32).read_unaligned(),
+                            ((at + 4) as *const u16).read_unaligned(),
+                        )
+                    };
+                    let rev = if fd < 0 {
+                        0
+                    } else {
+                        match self.linux_file(i, fd as u64) {
+                            None => POLLNVAL,
+                            Some(file) => {
+                                Self::linux_ready(file) & (u64::from(events) | POLLERR | POLLHUP)
+                            }
+                        }
+                    };
+                    // SAFETY: inside the checked `pollfd` array.
+                    unsafe { ((at + 6) as *mut u16).write_unaligned(rev as u16) };
+                    if rev != 0 {
+                        count += 1;
+                    }
+                }
+                self.linux_wait_result(i, count, timeout)
+            }
+            // select(n, read, write, except, timeval),
+            // pselect6(n, read, write, except, timespec, sigmask)
+            23 | 270 => {
+                let n = a1 as usize;
+                if n > 1024 {
+                    return fail(EINVAL);
+                }
+                let words = n.div_ceil(64);
+                let sets = [a2, a3, f.r10];
+                for &set in &sets {
+                    if set != 0 && words > 0 && !ok(set, words as u64 * 8, true) {
+                        return fail(EFAULT);
+                    }
+                }
+                let tmo = f.r8;
+                let timeout = if tmo == 0 {
+                    None
+                } else if number == 23 {
+                    if !ok(tmo, 16, false) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked readable `timeval`.
+                    let (sec, usec) = unsafe {
+                        let p = tmo as *const u64;
+                        (p.read_unaligned(), p.add(1).read_unaligned())
+                    };
+                    Some(
+                        sec.saturating_mul(1_000_000_000)
+                            .saturating_add(usec.saturating_mul(1000)),
+                    )
+                } else {
+                    match read_timespec(&ok, tmo) {
+                        Ok(ns) => Some(ns),
+                        Err(e) => return fail(e),
+                    }
+                };
+                let mut input = [[0u64; 16]; 3];
+                for (row, &set) in input.iter_mut().zip(&sets) {
+                    if set == 0 {
+                        continue;
+                    }
+                    for (w, word) in row.iter_mut().enumerate().take(words) {
+                        // SAFETY: inside the checked set.
+                        *word = unsafe { ((set + 8 * w as u64) as *const u64).read_unaligned() };
+                    }
+                }
+                let mut output = [[0u64; 16]; 3];
+                let mut count = 0i64;
+                for fd in 0..n {
+                    let (w, b) = (fd / 64, 1u64 << (fd % 64));
+                    if (input[0][w] | input[1][w] | input[2][w]) & b == 0 {
+                        continue;
+                    }
+                    let Some(file) = self.linux_file(i, fd as u64) else {
+                        return fail(EBADF);
+                    };
+                    let r = Self::linux_ready(file);
+                    let want = [POLLIN | POLLHUP | POLLERR, POLLOUT | POLLERR, POLLPRI];
+                    for k in 0..3 {
+                        if input[k][w] & b != 0 && r & want[k] != 0 {
+                            output[k][w] |= b;
+                            count += 1;
+                        }
+                    }
+                }
+                let outcome = self.linux_wait_result(i, count, timeout);
+                if !matches!(outcome, Outcome::Block) {
+                    for (row, &set) in output.iter().zip(&sets) {
+                        if set == 0 {
+                            continue;
+                        }
+                        for (w, word) in row.iter().enumerate().take(words) {
+                            // SAFETY: inside the checked set.
+                            unsafe { ((set + 8 * w as u64) as *mut u64).write_unaligned(*word) };
+                        }
+                    }
+                }
+                outcome
+            }
+            // epoll_create(size), epoll_create1(flags)
+            213 | 291 => {
+                let cloexec = number == 291 && a1 & O_CLOEXEC != 0;
+                if (number == 213 && a1 as i32 <= 0) || (number == 291 && a1 & !O_CLOEXEC != 0) {
+                    return fail(EINVAL);
+                }
+                let file = LinuxFile::Epoll(Arc::new(Mutex::new(Vec::new())));
+                match self.alloc_fd(i, 0, file, cloexec) {
+                    Ok(fd) => Outcome::Ret(fd as i64),
+                    Err(e) => fail(e),
+                }
+            }
+            // epoll_ctl(epfd, op, fd, event)
+            233 => {
+                let (fd, ev) = (a3, f.r10);
+                let Some(LinuxFile::Epoll(ep)) = self.linux_file(i, a1).cloned() else {
+                    return fail(if self.linux_file(i, a1).is_some() {
+                        EINVAL
+                    } else {
+                        EBADF
+                    });
+                };
+                match self.linux_file(i, fd) {
+                    None => return fail(EBADF),
+                    Some(LinuxFile::Epoll(_)) => return fail(EINVAL),
+                    Some(_) if fd == a1 => return fail(EINVAL),
+                    Some(_) => {}
+                }
+                let (events, data) = if a2 == 2 {
+                    (0, 0)
+                } else {
+                    if !ok(ev, 12, false) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked readable `epoll_event` (packed: u32, u64).
+                    unsafe {
+                        (
+                            u64::from((ev as *const u32).read_unaligned()),
+                            ((ev + 4) as *const u64).read_unaligned(),
+                        )
+                    }
+                };
+                let mut items = ep.lock();
+                let at = items.iter().position(|it| it.fd == fd);
+                match (a2, at) {
+                    (1, Some(_)) => fail(EEXIST),
+                    (1, None) => {
+                        items.push(EpollItem {
+                            fd,
+                            events,
+                            data,
+                            off: false,
+                        });
+                        Outcome::Ret(0)
+                    }
+                    (2, Some(k)) => {
+                        items.remove(k);
+                        Outcome::Ret(0)
+                    }
+                    (3, Some(k)) => {
+                        items[k] = EpollItem {
+                            fd,
+                            events,
+                            data,
+                            off: false,
+                        };
+                        Outcome::Ret(0)
+                    }
+                    (2 | 3, None) => fail(ENOENT),
+                    _ => fail(EINVAL),
+                }
+            }
+            // epoll_wait(epfd, events, max, timeout ms), epoll_pwait(…,
+            // sigmask), epoll_pwait2(…, timespec, sigmask): level-triggered
+            // (EPOLLET is treated as level), EPOLLONESHOT honoured.
+            232 | 281 | 441 => {
+                let (out, max) = (a2, a3 as i32);
+                let Some(LinuxFile::Epoll(ep)) = self.linux_file(i, a1).cloned() else {
+                    return fail(EINVAL);
+                };
+                if max <= 0 {
+                    return fail(EINVAL);
+                }
+                if !ok(out, max as u64 * 12, true) {
+                    return fail(EFAULT);
+                }
+                let timeout = if number == 441 {
+                    if f.r10 == 0 {
+                        None
+                    } else {
+                        match read_timespec(&ok, f.r10) {
+                            Ok(ns) => Some(ns),
+                            Err(e) => return fail(e),
+                        }
+                    }
+                } else {
+                    let ms = f.r10 as i32;
+                    (ms >= 0).then(|| ms as u64 * 1_000_000)
+                };
+                let items: Vec<EpollItem> = ep.lock().clone();
+                let (mut count, mut fired, mut gone) = (0i64, Vec::new(), Vec::new());
+                for it in items.iter().filter(|it| !it.off) {
+                    let Some(file) = self.linux_file(i, it.fd) else {
+                        gone.push(it.fd);
+                        continue;
+                    };
+                    let r = Self::linux_ready(file) & (it.events | POLLERR | POLLHUP) & 0xFFFF;
+                    if r == 0 {
+                        continue;
+                    }
+                    let at = out + 12 * count as u64;
+                    // SAFETY: inside the checked output array (`count < max`).
+                    unsafe {
+                        (at as *mut u32).write_unaligned(r as u32);
+                        ((at + 4) as *mut u64).write_unaligned(it.data);
+                    }
+                    if it.events & EPOLLONESHOT != 0 {
+                        fired.push(it.fd);
+                    }
+                    count += 1;
+                    if count == max as i64 {
+                        break;
+                    }
+                }
+                if !fired.is_empty() || !gone.is_empty() {
+                    let mut items = ep.lock();
+                    items.retain(|it| !gone.contains(&it.fd));
+                    for it in items.iter_mut().filter(|it| fired.contains(&it.fd)) {
+                        it.off = true;
+                    }
+                }
+                self.linux_wait_result(i, count, timeout)
+            }
             // sched_yield
             24 => Outcome::Yield,
             // set_robust_list: accepted (robust mutexes are not cleaned up).
@@ -5011,6 +6106,22 @@ const O_TRUNC: u64 = 0o1000;
 const O_APPEND: u64 = 0o2000;
 const AT_REMOVEDIR: u64 = 0x200;
 const O_CLOEXEC: u64 = 0o2_000_000;
+const O_NONBLOCK: u64 = 0o4000;
+const AF_UNIX: u64 = 1;
+const SOCK_STREAM: u64 = 1;
+const MSG_DONTWAIT: u64 = 0x40;
+const MSG_NOSIGNAL: u64 = 0x4000;
+const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;
+const MSG_CTRUNC: i32 = 8;
+const EFD_SEMAPHORE: u64 = 1;
+const POLLIN: u64 = 0x1;
+const POLLPRI: u64 = 0x2;
+const POLLOUT: u64 = 0x4;
+const POLLERR: u64 = 0x8;
+const POLLHUP: u64 = 0x10;
+const POLLNVAL: u64 = 0x20;
+const POLLRDHUP: u64 = 0x2000;
+const EPOLLONESHOT: u64 = 1 << 30;
 const CLONE_VM: u64 = 0x100;
 const CLONE_VFORK: u64 = 0x4000;
 const SIGILL: u64 = 4;
@@ -5128,6 +6239,11 @@ enum LinuxFile {
     },
     /// One end of a pipe (docs/linux5-design.md).
     Pipe(PipeEnd),
+    /// A Unix stream socket, an eventfd, an epoll set
+    /// (docs/linux7-design.md); duplicates share the object.
+    Sock(Arc<Mutex<Sock>>),
+    Event(Arc<Mutex<EventFd>>),
+    Epoll(Arc<Mutex<Vec<EpollItem>>>),
     File(&'static [u8], u64),
     Dir(String, usize),
     Home {
@@ -5147,6 +6263,11 @@ struct Pipe {
     len: usize,
     readers: usize,
     writers: usize,
+    /// Bytes ever written and read, and descriptors sent with the byte at
+    /// a given count (a Unix socket's `SCM_RIGHTS`, docs/linux7-design.md).
+    total_in: u64,
+    total_out: u64,
+    fds: VecDeque<(u64, Vec<LinuxFile>)>,
 }
 
 impl Pipe {
@@ -5169,6 +6290,9 @@ impl Pipe {
             len: 0,
             readers: 0,
             writers: 0,
+            total_in: 0,
+            total_out: 0,
+            fds: VecDeque::new(),
         })
     }
 }
@@ -5215,6 +6339,130 @@ impl Drop for PipeEnd {
             p.readers -= 1;
         }
     }
+}
+
+/// A Unix stream socket's state. A connection is two pipes, one each way.
+enum Sock {
+    Fresh,
+    Bound(String),
+    Listening {
+        name: String,
+        /// Connections not yet accepted: (incoming, outgoing, peer pid,
+        /// peer name).
+        backlog: VecDeque<(PipeEnd, PipeEnd, u64, String)>,
+        max: usize,
+        owner: u64,
+    },
+    Connected {
+        rx: PipeEnd,
+        /// `None` after `shutdown` for writing.
+        tx: Option<PipeEnd>,
+        peer_pid: u64,
+        local: String,
+        peer: String,
+    },
+}
+
+/// An eventfd counter.
+struct EventFd {
+    count: u64,
+    semaphore: bool,
+}
+
+/// The largest eventfd count.
+const EVENTFD_MAX: u64 = u64::MAX - 1;
+
+/// One descriptor in an epoll set: events wanted, user data, and whether
+/// EPOLLONESHOT has disabled it.
+#[derive(Clone)]
+struct EpollItem {
+    fd: u64,
+    events: u64,
+    data: u64,
+    off: bool,
+}
+
+/// The name in a `sockaddr_un` at `addr` (`len` bytes): "@" and the bytes
+/// of an abstract name, or "/" and a path resolved against `cwd`.
+fn unix_name(
+    ok: &impl Fn(u64, u64, bool) -> bool,
+    addr: u64,
+    len: u64,
+    cwd: &str,
+) -> Result<String, i64> {
+    if !(3..=110).contains(&len) {
+        return Err(EINVAL);
+    }
+    if !ok(addr, len, false) {
+        return Err(EFAULT);
+    }
+    let mut raw = [0u8; 110];
+    // SAFETY: checked as `len` readable user bytes; `len <= 110`.
+    unsafe { core::ptr::copy_nonoverlapping(addr as *const u8, raw.as_mut_ptr(), len as usize) };
+    if u16::from_le_bytes([raw[0], raw[1]]) != AF_UNIX as u16 {
+        return Err(EAFNOSUPPORT);
+    }
+    let path = &raw[2..len as usize];
+    if path[0] == 0 {
+        let mut s = String::from("@");
+        s.extend(path[1..].iter().map(|&b| char::from(b)));
+        return Ok(s);
+    }
+    let end = path.iter().position(|&b| b == 0).unwrap_or(path.len());
+    let text = core::str::from_utf8(&path[..end]).map_err(|_| EINVAL)?;
+    let mut s = String::from("/");
+    s.push_str(&linux_resolve(cwd, text));
+    Ok(s)
+}
+
+/// Writes a `sockaddr_un` for `name` (as `unix_name` makes them; "" for an
+/// unnamed socket) at `addr`, room `*lenp`, and stores its full length.
+fn put_unix_name(
+    ok: &impl Fn(u64, u64, bool) -> bool,
+    addr: u64,
+    lenp: u64,
+    name: &str,
+) -> Result<(), i64> {
+    if !ok(lenp, 4, true) {
+        return Err(EFAULT);
+    }
+    // SAFETY: checked as writable user memory.
+    let room = unsafe { (lenp as *const u32).read_unaligned() } as usize;
+    let mut raw = Vec::with_capacity(112);
+    raw.extend_from_slice(&(AF_UNIX as u16).to_le_bytes());
+    if let Some(abs) = name.strip_prefix('@') {
+        raw.push(0);
+        raw.extend(abs.chars().map(|c| c as u8));
+    } else if !name.is_empty() {
+        raw.extend_from_slice(name.as_bytes());
+        raw.push(0);
+    }
+    let n = raw.len().min(room);
+    if n > 0 && !ok(addr, n as u64, true) {
+        return Err(EFAULT);
+    }
+    // SAFETY: both checked as writable user memory.
+    unsafe {
+        core::ptr::copy_nonoverlapping(raw.as_ptr(), addr as *mut u8, n);
+        (lenp as *mut u32).write_unaligned(raw.len() as u32);
+    }
+    Ok(())
+}
+
+/// A `timespec` at `addr` in nanoseconds.
+fn read_timespec(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64) -> Result<u64, i64> {
+    if !ok(addr, 16, false) {
+        return Err(EFAULT);
+    }
+    // SAFETY: checked readable `timespec`.
+    let (sec, nsec) = unsafe {
+        let p = addr as *const u64;
+        (p.read_unaligned(), p.add(1).read_unaligned())
+    };
+    if nsec >= 1_000_000_000 {
+        return Err(EINVAL);
+    }
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
 }
 
 /// Pipe size (as Linux's default) and the size written all at once.
@@ -5457,6 +6705,14 @@ const ENOENT: i64 = 2;
 const ESRCH: i64 = 3;
 const EINTR: i64 = 4;
 const ETIMEDOUT: i64 = 110;
+const ENOTSOCK: i64 = 88;
+const ENOPROTOOPT: i64 = 92;
+const ESOCKTNOSUPPORT: i64 = 94;
+const EAFNOSUPPORT: i64 = 97;
+const EADDRINUSE: i64 = 98;
+const EISCONN: i64 = 106;
+const ENOTCONN: i64 = 107;
+const ECONNREFUSED: i64 = 111;
 const E2BIG: i64 = 7;
 const ENOEXEC: i64 = 8;
 const ECHILD: i64 = 10;
