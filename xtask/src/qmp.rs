@@ -104,6 +104,14 @@ impl Qmp {
         self.command(&cmd).map(|_| ())
     }
 
+    /// Presses (`down`) or releases one key, named by its QEMU qcode.
+    pub fn key_event(&mut self, qcode: &str, down: bool) -> Result<(), String> {
+        let cmd = format!(
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"key","data":{{"down":{down},"key":{{"type":"qcode","data":"{qcode}"}}}}}}]}}}}"#
+        );
+        self.command(&cmd).map(|_| ())
+    }
+
     /// Presses (`down`) or releases the left mouse button.
     pub fn mouse_button(&mut self, down: bool) -> Result<(), String> {
         let cmd = format!(

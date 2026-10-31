@@ -143,6 +143,14 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 5: key repeat for USB keyboards (2026-10-31)
+
+Design: docs/h5-design.md.
+
+- The kernel repeats the last pressed USB key (500 ms delay, 30 ms rate)
+  as set-1 make codes, as a PS/2 keyboard would. Harness gained
+  `HoldKey` and prefix markers. Version 0.35.0.
+
 ## Hardware step 4: USB hubs (2026-10-31)
 
 Design: docs/h4-design.md.

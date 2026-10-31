@@ -86,6 +86,14 @@ impl Expectation {
         self
     }
 
+    /// Appends one marker that must start with `prefix` (for lines whose
+    /// end varies, such as a count).
+    pub fn then_prefix(&mut self, prefix: &str) -> &mut Self {
+        self.required
+            .push(Step::One(Matcher::Prefix(prefix.to_string())));
+        self
+    }
+
     /// Appends exact markers that must all follow, in any order.
     pub fn then_any_order(&mut self, lines: &[&str]) -> &mut Self {
         self.required.push(Step::AnyOrder(

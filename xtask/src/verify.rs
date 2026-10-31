@@ -599,6 +599,35 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "usb-repeat",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Direct,
+            expectation: {
+                // At least ten x's: one press and repeats (about 34
+                // expected); the exact count depends on timing.
+                let mut e = normal.clone();
+                e.then_prefix("ZOO_OS SHELL line=xxxxxxxxxx");
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "USB keyboard repeat: holding x for 1.5 s types it many times, then it stops",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::HoldKey("x", 1500),
+                    // The serial log goes quiet only if the repeat stopped
+                    // when the key was released.
+                    Action::Settle(QUIET),
+                    Action::Keys(vec!["ret"]),
+                    Action::WaitContains("ZOO_OS SHELL line=xxxxxxxxxx".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "usb-hub",
             mode: Mode::Normal,
             custom_image: None,

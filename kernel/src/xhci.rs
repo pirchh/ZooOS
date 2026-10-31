@@ -219,6 +219,9 @@ struct Hid {
     len: u32,
     /// The previous keyboard report (to find presses and releases).
     last: [u8; 8],
+    /// Key repeat (docs/h5-design.md): the held key's set-1 code and the
+    /// tick of its next repeat.
+    repeat: Option<(u16, u64)>,
     /// Reports received.
     reports: u64,
 }
@@ -317,7 +320,10 @@ impl Xhci {
                 }
                 h.reports += 1;
                 match h.kind {
-                    HidKind::Keyboard => keyboard_report(&mut h.last, &report),
+                    HidKind::Keyboard => {
+                        let now = crate::interrupts::ticks();
+                        keyboard_report(&mut h.last, &report, &mut h.repeat, now)
+                    }
                     HidKind::Mouse => crate::mouse::push_event(
                         i16::from(report[1] as i8),
                         // USB reports y downwards; the queue holds y upwards.
@@ -327,6 +333,17 @@ impl Xhci {
                 }
             }
             self.queue_report(i);
+        }
+        // USB keyboards report changes only; repeating a held key is the
+        // host's job (a PS/2 keyboard does it itself).
+        let now = crate::interrupts::ticks();
+        for h in self.hids.iter_mut().flatten() {
+            if let Some((code, at)) = h.repeat
+                && now >= at
+            {
+                send(code, false);
+                h.repeat = Some((code, now + REPEAT_EVERY));
+            }
         }
     }
 
@@ -971,6 +988,7 @@ fn start_hid(
         buf,
         len: mps.min(8),
         last: [0; 8],
+        repeat: None,
         reports: 0,
     });
     Ok(())
@@ -1061,9 +1079,20 @@ fn send(code: u16, released: bool) {
     crate::keyboard::push((code & 0x7F) as u8 | if released { 0x80 } else { 0 });
 }
 
+/// Ticks before a held key starts repeating, and between repeats (about
+/// 33 a second), like a PS/2 keyboard's defaults.
+const REPEAT_DELAY: u64 = 50;
+const REPEAT_EVERY: u64 = 3;
+
 /// Turns a boot-protocol keyboard report (modifiers, reserved, six key
-/// usages) into set-1 press and release codes, like a PS/2 keyboard.
-fn keyboard_report(last: &mut [u8; 8], report: &[u8; 8]) {
+/// usages) into set-1 press and release codes, like a PS/2 keyboard, and
+/// keeps track of which key repeats: the one pressed last, until released.
+fn keyboard_report(
+    last: &mut [u8; 8],
+    report: &[u8; 8],
+    repeat: &mut Option<(u16, u64)>,
+    now: u64,
+) {
     // 0x01 in the key array: too many keys pressed; nothing reliable.
     if report[2..].contains(&1) {
         return;
@@ -1081,6 +1110,9 @@ fn keyboard_report(last: &mut [u8; 8], report: &[u8; 8]) {
             && code != 0
         {
             send(code, true);
+            if repeat.is_some_and(|(r, _)| r == code) {
+                *repeat = None;
+            }
         }
     }
     for &u in &report[2..] {
@@ -1090,6 +1122,7 @@ fn keyboard_report(last: &mut [u8; 8], report: &[u8; 8]) {
             && code != 0
         {
             send(code, false);
+            *repeat = Some((code, now + REPEAT_DELAY));
         }
     }
     *last = *report;

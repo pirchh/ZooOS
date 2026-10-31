@@ -297,6 +297,8 @@ pub enum Action {
     Mouse(i32, i32),
     /// Press (true) or release the left mouse button.
     Button(bool),
+    /// Hold this key (a QEMU qcode) down for this many milliseconds.
+    HoldKey(&'static str, u64),
     /// Wait for a line containing this text followed by Unix seconds, and
     /// require them to be within `CLOCK_TOLERANCE` of the host's clock.
     WaitClock(String),
@@ -505,6 +507,19 @@ pub fn run_case(
                         break;
                     }
                 },
+                Action::HoldKey(key, ms) => {
+                    let held = q.key_event(key, true).and_then(|()| {
+                        std::thread::sleep(Duration::from_millis(*ms));
+                        q.key_event(key, false)
+                    });
+                    match held {
+                        Ok(()) => true,
+                        Err(e) => {
+                            harness_error = Some(e);
+                            break;
+                        }
+                    }
+                }
                 Action::Button(down) => match q.mouse_button(*down) {
                     Ok(()) => {
                         std::thread::sleep(KEY_GAP);
