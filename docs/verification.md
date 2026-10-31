@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L2 section
-(version 0.40.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L3 section
+(version 0.41.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 3 results: folders, working directory, uname, environment (version 0.41.0)
+
+Design: docs/linux3-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 15 min 10 s, every case as
+expected (`assistant-live` `SKIP`). New case `linux-skua`: `uname Linux
+x86_64`, `HOME=/home/user USER=user`, `/home/user: Documents Music
+Photos`, `cwd /home/user; Documents/notes.txt starts "Shopping: flour,
+eggs, milk."`, `all checks passed`, exit 0, no unsupported calls (a first
+run showed `fcntl`, then added).
+
+Then, under WHPX: `assistant-live` pass in 48.8 s; `linux-skua` pass in
+3.8 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored):
+
+| Change | Result |
+| --- | --- |
+| No `.` and `..` in listings | `FAIL linux-skua`: `FAILED readdir . and ..`, exit 21 |
+| `..` not applied in paths | `FAIL linux-skua`: `FAILED chdir ..`, exit 34 |
+| Empty environment | `FAIL linux-skua`: `FAILED environment`, exit 11 |
+
+The first attempt at the first control did not apply its edit (`cargo
+fmt` had reformatted the line) and so passed; it was rerun with the edit
+applied and failed as above.
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: real
+hardware.
 
 ## Linux step 2 results: memory, read-only files and time (version 0.40.0)
 

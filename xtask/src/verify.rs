@@ -769,6 +769,41 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-skua",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux skua-test",
+                    "ZOO_OS PROC start pid=26 name=skua-test",
+                    "ZOO_OS PROC exit pid=26 name=skua-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a Linux musl program uses uname, its environment, folders, the working directory and access",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux skua-test")),
+                    Action::WaitContains("SkuaTest: uname Linux x86_64".into()),
+                    Action::WaitContains("SkuaTest: HOME=/home/user USER=user".into()),
+                    Action::WaitContains("SkuaTest: /home/user: Documents Music Photos".into()),
+                    Action::WaitContains(
+                        "SkuaTest: cwd /home/user; Documents/notes.txt starts \"Shopping: flour, eggs, milk.\""
+                            .into(),
+                    ),
+                    Action::WaitContains("SkuaTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=skua-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,

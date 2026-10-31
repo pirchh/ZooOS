@@ -150,6 +150,15 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 3: folders, working directory, uname, environment (2026-10-31)
+
+Design: docs/linux3-design.md.
+
+- Initrd folders are path prefixes; folder descriptors, `getdents64`, a
+  per-process working directory with `.`/`..`, a fixed environment.
+- `uname` reports `Linux` (release `6.1.0-zooos`, version `ZooOS …`), as
+  other kernels' Linux layers do. Version 0.41.0.
+
 ## Linux step 2: memory, read-only files and time (2026-10-31)
 
 Design: docs/linux2-design.md.
