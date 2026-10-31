@@ -329,6 +329,23 @@ pub fn spawn_with(name: &str, give: [Option<Handle>; 2]) -> Result<Handle, Error
     ))
 }
 
+/// A log-reader handle (the resident supervisor only).
+pub fn log_attach() -> Result<Handle, Error> {
+    result(syscall(sys::LOG_ATTACH, 0, 0, 0))
+}
+
+/// One line from the kernel log buffer (`<tick> <pid> <name> <text>`);
+/// `AGAIN` when it is empty.
+pub fn log_read(reader: Handle, buf: &mut [u8]) -> Result<usize, Error> {
+    result(syscall(
+        sys::LOG_READ,
+        reader,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    ))
+    .map(|n| n as usize)
+}
+
 /// Pid of the process behind handle `h`, or the caller's own for `NO_HANDLE`.
 pub fn process_id(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::PROCESS_ID, h, 0, 0))

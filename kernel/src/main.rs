@@ -30,6 +30,7 @@ mod gdt;
 mod initrd;
 mod interrupts;
 mod keyboard;
+mod klog;
 mod memory;
 mod process;
 mod selftest;
