@@ -143,6 +143,14 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 6: start in the desktop (2026-10-31)
+
+Design: docs/d6-design.md.
+
+- The fast-boot build (what `cargo xtask run` boots) starts the desktop
+  session by itself; Escape leaves it for the debug shell. Test builds
+  stay in the shell. Version 0.28.0.
+
 ## Desktop step 5: date and time in the menu bar (2026-10-31)
 
 Design: docs/d5-design.md.

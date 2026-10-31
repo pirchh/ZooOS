@@ -201,7 +201,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         .then(&GECKO)
         .then(&PTARMIGAN)
         .then(&BOOT_PROCESSES_END);
-    // B1: the same system without the boot checks; a C program runs.
+    // B1: the same system without the boot checks. D6: it starts in the
+    // desktop; after Escape the shell runs a C program.
     let mut fast_head = SELF_TESTS.to_vec();
     fast_head.extend([
         "ZOO_OS PROC start pid=1 name=zookeeper",
@@ -210,11 +211,29 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC start pid=4 name=seal-test",
         "ZOO_OS READY",
         "ZOO_OS SHELL ready",
-        "ZOO_OS SHELL line=run tern-test fast",
-        "ZOO_OS PROC start pid=5 name=tern-test",
-        "ZOO_OS PROC exit pid=5 name=tern-test code=0",
+        "ZOO_OS SHELL autostart desktop",
+        "ZOO_OS PROC start pid=5 name=zookeeper",
+        "ZOO_OS PROC start pid=6 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=6 name=peacock-handler",
+        "ZOO_OS PROC start pid=7 name=files",
+        "ZOO_OS PROC start pid=8 name=crash-test",
+        "ZOO_OS PROC start pid=9 name=assistant",
+        "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=6",
     ]);
-    let fast_boot = expect(Mode::FastBoot, &fast_head);
+    let mut fast_boot = expect(Mode::FastBoot, &fast_head);
+    fast_boot
+        .then_any_order(&[
+            "ZOO_OS PROC exit pid=7 name=files code=0",
+            "ZOO_OS PROC exit pid=8 name=crash-test code=0",
+            "ZOO_OS PROC exit pid=9 name=assistant code=0",
+            "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
+        ])
+        .then(&[
+            "ZOO_OS SHELL line=run tern-test fast",
+            "ZOO_OS PROC start pid=10 name=tern-test",
+            "ZOO_OS PROC exit pid=10 name=tern-test code=0",
+        ]);
     let mut keyboard = normal.clone();
     keyboard.then(&["ZOO_OS SHELL line=echo hi", "ZOO_OS SHELL line=mem"]);
     let mut scroll = normal.clone();
@@ -306,16 +325,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: fast_boot,
             timeout: s.timeout,
             want: "pass",
-            purpose: "fast boot: no check programs; supervisor, services, shell and a C program work",
+            purpose: "fast boot: no check programs; starts in the desktop; after Escape the shell runs a C program",
             interaction: Some(Interaction {
                 steps: vec![
-                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::Settle(QUIET),
+                    Action::Screenshot("1-desktop"),
+                    Action::Keys(vec!["esc"]),
+                    Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+                    Action::Settle(QUIET),
                     Action::Keys(typed("run tern-test fast")),
                     Action::WaitContains("TernTest: argc=2 argv=tern-test,fast".into()),
-                    Action::WaitFor("ZOO_OS PROC exit pid=5 name=tern-test code=0".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=10 name=tern-test code=0".into()),
                 ],
             }),
-            screen_checks: vec![],
+            screen_checks: vec![("1-desktop", check_desktop_started)],
         },
         Case {
             name: "panic",
