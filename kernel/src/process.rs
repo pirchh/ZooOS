@@ -13,6 +13,7 @@ use crate::gdt;
 use crate::initrd;
 use crate::interrupts;
 use crate::keyboard;
+use crate::klog;
 use crate::kprintln;
 use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
@@ -90,6 +91,8 @@ enum Object {
     Thread {
         tid: u64,
     },
+    /// Reads the kernel log buffer (docs/s2-design.md).
+    LogReader,
 }
 
 #[derive(Clone)]
@@ -127,6 +130,8 @@ struct Proc {
     file_maps: Vec<(u64, u64)>,
     /// May still call `fs_root` (started by the kernel, not yet called).
     root_ok: bool,
+    /// May call `log_attach` (the resident supervisor).
+    log_ok: bool,
     /// Threads that have not exited.
     live: usize,
     /// Threads not yet reaped; the address space is freed when this is 0.
@@ -212,6 +217,7 @@ impl Proc {
             map_next: MAP_BASE,
             file_maps: Vec::new(),
             root_ok: false,
+            log_ok: false,
             live: 1,
             members: 1,
             ended: false,
@@ -425,7 +431,8 @@ pub fn start_supervisor() -> Result<u64, Error> {
             return Err(Error::Busy);
         }
         let (kernel_end, zookeeper_end) = control_channel(b"supervise");
-        let (_, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
+        let (i, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
+        s.proc(i).log_ok = true;
         s.supervisor = Some((pid, kernel_end));
         Ok(pid)
     })
@@ -1323,6 +1330,41 @@ impl Scheduler {
                     None => err(Error::BadHandle),
                 }
             }
+            sys::LOG_ATTACH => {
+                let p = self.proc(i);
+                if !p.log_ok {
+                    return err(Error::Rights);
+                }
+                match p.insert(HandleEntry {
+                    object: Object::LogReader,
+                    rights: RIGHT_RECV,
+                }) {
+                    Some(h) => Outcome::Ret(h as i64),
+                    None => err(Error::NoMem),
+                }
+            }
+            sys::LOG_READ => {
+                // a1 = log-reader handle, a2/a3 = buffer. Returns the bytes of
+                // one line, `AGAIN` when the buffer is empty.
+                match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::LogReader,
+                        ..
+                    }) => {}
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                }
+                if !ok(a2, a3, true) {
+                    return err(Error::Fault);
+                }
+                let Some(line) = klog::pop() else {
+                    return err(Error::Again);
+                };
+                let n = line.len().min(a3 as usize);
+                // SAFETY: `n` bytes fit the checked writable user range.
+                unsafe { core::ptr::copy_nonoverlapping(line.as_ptr(), a2 as *mut u8, n) };
+                Outcome::Ret(n as i64)
+            }
             sys::SET_EXCEPTION_HANDLER => {
                 if a1 >= USER_HALF_END {
                     return err(Error::Inval);
@@ -2041,6 +2083,7 @@ fn log_user(pid: u64, name: &str, bytes: &[u8]) {
         }
         let text = text.replace("ZOO_OS", "ZOO-OS");
         kprintln!("[{}:{}] {}", pid, name, text);
+        klog::push(pid, name, &text);
     }
 }
 

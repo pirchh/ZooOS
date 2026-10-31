@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S1 section
-(version 0.15.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S2 section
+(version 0.16.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 2 results: log routing (version 0.16.0)
+
+Design: docs/s2-design.md. Kernel log buffer (`kernel/src/klog.rs`), calls
+47 `log_attach` and 48 `log_read` (ABI version 10), BeaverHandler draining
+the buffer, `logs [text]`.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 561 s, every case as
+expected (`assistant-live` `SKIP`; `services` OK in 20.1 s). Then
+`--accel whpx --case assistant-live`: pass in 48.6 s. (In this run
+`negative-timeout` again timed out waiting for `NEVER-EMITTED`; in the S1
+run boot was slow enough that it timed out on an earlier marker. Either way
+the timeout is rejected.)
+
+From the `services` case:
+
+    ZOO_OS SHELL line=logs puffin
+    [    14.24] [26:puffin-test] PuffinTest: hello from C
+    [    14.24] [26:puffin-test] PuffinTest: crc32 0x414fa339, sqrt(2) ok, 64 KiB heap crc32 0x85400450
+    [    14.24] [26:puffin-test] PuffinTest: all C checks passed
+
+and plain `logs` begins with `(32 earlier matching lines not shown)` followed
+by boot-time lines from Zookeeper, showing output from every program.
+
+**Negative control:** with `klog::push` removed, `FAIL services …
+got=timeout`: the supervisor's events never reach BeaverHandler, so the
+`logs` check before `run puffin-test` never matches.
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed. Not run: a clean-copy verify.
 
 ## Services step 1 results: resident supervisor (version 0.15.0)
 

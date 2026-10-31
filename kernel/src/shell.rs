@@ -148,7 +148,7 @@ fn execute(line: &str) {
             kprintln!("run <program>   start a program from /bin");
             kprintln!("desktop         start the desktop (Esc in it returns here)");
             kprintln!("services        system services and their state");
-            kprintln!("logs            recent supervisor events (BeaverHandler)");
+            kprintln!("logs [text]     recent log lines, optionally only those containing text");
             kprintln!("poke <svc> <x>  send a test request to a service");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
@@ -186,7 +186,11 @@ fn execute(line: &str) {
             Err(e) => kprintln!("desktop: {}", e.name()),
         },
         "services" => supervisor_request("status"),
-        "logs" => supervisor_request("logs"),
+        "logs" => {
+            let mut req = String::from("logs ");
+            req.push_str(rest.trim());
+            supervisor_request(&req);
+        }
         "poke" => {
             let mut req = String::from("poke ");
             req.push_str(rest.trim());

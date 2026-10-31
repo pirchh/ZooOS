@@ -143,6 +143,18 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 2: log routing (2026-10-30)
+
+Design: docs/s2-design.md.
+
+- Program log lines still go to the serial console and are also copied
+  into a 128-line kernel buffer; BeaverHandler drains it through a
+  log-reader handle that only the resident supervisor can obtain and pass
+  on (`etc/services` flag `logs`).
+- `logs [text]` filters; at most 30 lines per answer.
+- Calls 47 `log_attach`, 48 `log_read`; ABI version 10. Version 0.16.0.
+- Name lookup moves to S3 because it needs handles passed in messages.
+
 ## Services step 1: resident supervisor (2026-10-30)
 
 Design: docs/s1-design.md.

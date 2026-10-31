@@ -1024,6 +1024,11 @@ fn services_expectation(normal: &Expectation) -> Expectation {
         &c25,
         "ZOO_OS SHELL line=services",
         "ZOO_OS SHELL line=logs",
+        // S2: any program's output reaches BeaverHandler.
+        "ZOO_OS SHELL line=run puffin-test",
+        "ZOO_OS PROC start pid=26 name=puffin-test",
+        "ZOO_OS PROC exit pid=26 name=puffin-test code=0",
+        "ZOO_OS SHELL line=logs puffin",
     ]);
     e.clone()
 }
@@ -1057,6 +1062,14 @@ fn services_steps() -> Interaction {
             say("logs"),
             Action::WaitContains("seal-test unresponsive; restarting (2 of 3)".into()),
             Action::WaitContains("seal-test crashed; restart limit reached, left stopped".into()),
+            Action::Settle(QUIET),
+            say("run puffin-test"),
+            wait("ZOO_OS PROC exit pid=26 name=puffin-test code=0"),
+            Action::Settle(QUIET),
+            say("logs puffin"),
+            // BeaverHandler's format (`[secs] [pid:name] text`), not the
+            // program's own console line.
+            Action::WaitContains("] [26:puffin-test] PuffinTest: all C checks passed".into()),
             Action::Settle(QUIET),
         ],
     }

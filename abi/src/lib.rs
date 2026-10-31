@@ -13,8 +13,9 @@ pub mod tar;
 /// version 5 (POSIX step 1) added calls 27-31 and error 18; version 6
 /// (POSIX step 2) added calls 32-37; version 7 (POSIX step 3) added calls
 /// 38-40; version 8 (POSIX step 4) added calls 41-45 and the WRITE right;
-/// version 9 (services step 1) added call 46.
-pub const ABI_VERSION: u64 = 9;
+/// version 9 (services step 1) added call 46; version 10 (services step 2)
+/// added calls 47-48.
+pub const ABI_VERSION: u64 = 10;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -66,6 +67,10 @@ pub mod sys {
     pub const RENAME: u64 = 45;
     /// Pid of a process handle, or of the caller for `NO_HANDLE`.
     pub const PROCESS_ID: u64 = 46;
+    /// A log-reader handle (the resident supervisor only).
+    pub const LOG_ATTACH: u64 = 47;
+    /// Next line from the kernel log buffer.
+    pub const LOG_READ: u64 = 48;
 }
 
 /// Error codes; system calls return `-(code as i64)`.

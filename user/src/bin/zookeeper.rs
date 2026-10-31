@@ -539,6 +539,8 @@ enum SvcState {
 struct Svc {
     name: alloc::string::String,
     max: u32,
+    /// Gets the kernel log reader as its second start-up handle.
+    logs: bool,
     state: SvcState,
     chan: Handle,
     process: Handle,
@@ -554,8 +556,8 @@ struct Supervisor {
     svcs: alloc::vec::Vec<Svc>,
 }
 
-/// Reads `etc/services`: `name max_restarts` per line, `#` comments.
-fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32)> {
+/// Reads `etc/services`: `name max_restarts [logs]` per line, `#` comments.
+fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32, bool)> {
     let mut out = alloc::vec::Vec::new();
     let Some(data) = zoo_rt::fs_find("etc/services").and_then(|i| zoo_rt::fs_map(i).ok()) else {
         return out;
@@ -570,36 +572,38 @@ fn read_service_list() -> alloc::vec::Vec<(alloc::string::String, u32)> {
         if let (Some(name), Some(max)) = (parts.next(), parts.next())
             && let Ok(max) = max.parse()
         {
-            out.push((alloc::string::String::from(name), max));
+            let logs = parts.next() == Some("logs");
+            out.push((alloc::string::String::from(name), max, logs));
         }
     }
     out
 }
 
 impl Supervisor {
-    /// Records a supervision event: serial log and BeaverHandler.
+    /// Records a supervision event. Like every program's log output it
+    /// reaches BeaverHandler through the kernel log buffer.
     fn event(&self, args: core::fmt::Arguments) {
         let mut l = zoo_rt::Line::new();
         let _ = core::fmt::Write::write_fmt(&mut l, args);
         zoo_rt::log!("Zookeeper: {}", l.as_str());
-        if let Some(logger) = self
-            .svcs
-            .iter()
-            .find(|s| s.name == "beaver-handler" && s.state == SvcState::Running)
-        {
-            let mut m = zoo_rt::Line::new();
-            let _ = core::fmt::Write::write_fmt(&mut m, format_args!("log {}", l.as_str()));
-            let _ = send(logger.chan, m.as_str().as_bytes());
-        }
     }
 
     fn start(&mut self, k: usize) {
         let s = &mut self.svcs[k];
+        // A fresh log reader for each start: handles move into the child.
+        let reader = if s.logs {
+            zoo_rt::log_attach().ok()
+        } else {
+            None
+        };
         let started = channel_create().and_then(|(mine, theirs)| {
-            spawn(&s.name, Some(theirs))
+            zoo_rt::spawn_with(&s.name, [Some(theirs), reader])
                 .map(|p| (mine, p))
                 .inspect_err(|_| {
                     let _ = close(mine);
+                    if let Some(r) = reader {
+                        let _ = close(r);
+                    }
                 })
         });
         match started {
@@ -670,8 +674,9 @@ impl Supervisor {
                 );
                 self.reply(l.as_str());
             }
-        } else if req == "logs" {
-            self.relay_logs();
+        } else if let Some(filter) = req.strip_prefix("logs") {
+            let filter = alloc::string::String::from(filter.trim());
+            self.relay_logs(&filter);
         } else if let Some(rest) = req.strip_prefix("poke ") {
             let (name, what) = rest.split_once(' ').unwrap_or((rest, ""));
             match self
@@ -693,7 +698,7 @@ impl Supervisor {
     }
 
     /// Asks BeaverHandler for its lines and passes them on (bounded wait).
-    fn relay_logs(&mut self) {
+    fn relay_logs(&mut self, filter: &str) {
         let Some(k) = self
             .svcs
             .iter()
@@ -703,7 +708,9 @@ impl Supervisor {
             return;
         };
         let chan = self.svcs[k].chan;
-        if send(chan, b"dump").is_err() {
+        let mut req = zoo_rt::Line::new();
+        let _ = core::fmt::Write::write_fmt(&mut req, format_args!("dump {}", filter));
+        if send(chan, req.as_str().as_bytes()).is_err() {
             self.reply("beaver-handler did not take the request");
             return;
         }
@@ -728,10 +735,11 @@ fn supervise(control: Handle) -> u8 {
         control,
         svcs: alloc::vec::Vec::new(),
     };
-    for (name, max) in read_service_list() {
+    for (name, max, logs) in read_service_list() {
         sup.svcs.push(Svc {
             name,
             max,
+            logs,
             state: SvcState::Failed,
             chan: zoo_rt::NO_HANDLE,
             process: zoo_rt::NO_HANDLE,
