@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The F1 section
-(version 0.42.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L4 section
+(version 0.43.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,41 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 4 results: writable files in the home folder (version 0.43.0)
+
+Design: docs/linux4-design.md. New case `linux-fulmar`: `fulmar-test`
+(static musl C) makes a folder, writes, appends, renames, lists,
+unlinks, truncates and times 1 MiB in `/home/user`; ZooOS's shell then
+`cat`s the file it left (`line one`, `line two`).
+
+**Measured** (`cargo xtask verify --skip-model --accel whpx --case
+linux-fulmar`, three runs each, the program's own `rdtsc` timing):
+
+| 1 MiB | Message path (shared buffer disabled) | Shared buffer |
+| --- | --- | --- |
+| Write | 92437 / 77554 / 80497 kcycles | 6820 / 7959 / 6426 kcycles |
+| Read | 57420 / 47356 / 44674 kcycles | 833 / 884 / 733 kcycles |
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 43 cases `OK`
+and `assistant-live` `SKIP` (it needs an accelerator); `linux-fulmar`
+passed in 9.3 s. Then `--accel whpx --case assistant-live`: pass in 33.7 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`, restored
+and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| Earlier replies of a call not kept (no replay) | `FAIL linux-fulmar` (timeout) |
+| `O_APPEND` ignored | `FAIL linux-fulmar`: `FAILED read back`, exit 24 |
+| Bulk write leaves its last byte stale while reporting it written | `FAIL linux-fulmar`: `FAILED read back`, exit 24 |
+
+(The first version of the third control wrote one byte less and said so.
+The program wrote the rest, as Linux allows, and the case passed. That is
+correct behaviour, so the control was changed.)
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: 23 passed. Not run: real hardware.
 
 ## Fast files step 1 results: shared-memory bulk transfers (version 0.42.0)
 
