@@ -820,19 +820,34 @@ impl Scheduler {
         let mut path = String::from(if linux { "linux/" } else { "bin/" });
         path.push_str(name);
         let file = initrd::find(&path).ok_or(Error::NotFound)?;
-        let image = elf::parse(file, USER_IMAGE_START, USER_IMAGE_END).map_err(|e| {
+        let image = program_image(file, linux).map_err(|e| {
             kprintln!("ZOO_OS INFO spawn {} rejected: {:?}", name, e);
             Error::Inval
         })?;
+        // A dynamically linked Linux program names its loader
+        // (docs/linux8-design.md).
+        let interp = if linux {
+            linux_interp(file, &image).map_err(|_| Error::NotFound)?
+        } else {
+            None
+        };
         let (index, slot) = self.free_task_slots()?;
         let p4 = mem.new_address_space().map_err(|_| Error::NoMem)?;
         let Ok(stack_page) = load_image(mem, p4, file, &image) else {
             mem.free_address_space(p4);
             return Err(Error::NoMem);
         };
+        if let Some((ifile, iimage)) = &interp
+            && load_segments(mem, p4, ifile, iimage).is_err()
+        {
+            mem.free_address_space(p4);
+            return Err(Error::NoMem);
+        }
+        let base = interp.as_ref().map_or(0, |x| x.1.bias);
+        let entry = interp.as_ref().map_or(image.entry, |x| x.1.entry);
         let rsp = if linux {
             let args: Vec<&str> = cmdline.split('\0').take(LINUX_ARGS_MAX).collect();
-            linux_stack(mem, stack_page, &args, &LINUX_ENV, file, &image)
+            linux_stack(mem, stack_page, &args, &LINUX_ENV, file, &image, base)
         } else {
             USER_STACK_TOP - 8
         };
@@ -865,7 +880,7 @@ impl Scheduler {
         let pidx = self.add_proc(proc);
         let mut task = Task::new(pid, pid, name);
         // SysV: at function entry, rsp + 8 is 16-byte aligned.
-        task.frame = Self::first_frame(top, image.entry, rsp, arg, arg2);
+        task.frame = Self::first_frame(top, entry, rsp, arg, arg2);
         task.fpu = Some(Box::new(fpu::new_state()));
         task.p4 = Some(p4);
         task.proc = Some(pidx);
@@ -2181,8 +2196,12 @@ impl Scheduler {
         let Some(file) = initrd::find(path) else {
             return fail(ENOENT);
         };
-        let Ok(image) = elf::parse(file, USER_IMAGE_START, USER_IMAGE_END) else {
+        let Ok(image) = program_image(file, true) else {
             return fail(ENOEXEC);
+        };
+        let interp = match linux_interp(file, &image) {
+            Ok(x) => x,
+            Err(e) => return fail(e),
         };
         // Strings, pointers and auxiliary vector must fit the stack's top page.
         let bytes: usize = argv.iter().chain(&env).map(|s| s.len() + 1).sum();
@@ -2200,9 +2219,17 @@ impl Scheduler {
             mem.free_address_space(p4);
             return fail(ENOMEM);
         };
+        if let Some((ifile, iimage)) = &interp
+            && load_segments(mem, p4, ifile, iimage).is_err()
+        {
+            mem.free_address_space(p4);
+            return fail(ENOMEM);
+        }
         let args: Vec<&str> = argv.iter().map(String::as_str).collect();
         let vars: Vec<&str> = env.iter().map(String::as_str).collect();
-        let rsp = linux_stack(mem, stack_page, &args, &vars, file, &image);
+        let base = interp.as_ref().map_or(0, |x| x.1.bias);
+        let entry = interp.as_ref().map_or(image.entry, |x| x.1.entry);
+        let rsp = linux_stack(mem, stack_page, &args, &vars, file, &image, base);
         // From here on the call succeeds.
         let pid = self.task(i).pid;
         let p = self.proc(i);
@@ -2246,7 +2273,7 @@ impl Scheduler {
         }
         let sel = gdt::selectors();
         *f = TrapFrame {
-            rip: image.entry,
+            rip: entry,
             cs: sel.user_code.0 as u64,
             rflags: RFLAGS_IF | RFLAGS_RESERVED,
             rsp,
@@ -2614,24 +2641,111 @@ impl Scheduler {
                 self.proc(i).linux_brk = Some((base, a1));
                 Outcome::Ret(a1 as i64)
             }
-            // mmap(addr, len, prot, flags, fd, offset): anonymous private
-            // memory only, at an address the kernel chooses.
+            // mmap(addr, len, prot, flags, fd, offset) (docs/linux8-design.md):
+            // anonymous memory (committed when first touched) or a private
+            // copy of an initrd file's pages; at an address the kernel
+            // chooses, or (MAP_FIXED) at `addr`, replacing what a
+            // reservation had there.
             9 => {
-                let flags = f.r10;
-                if flags & MAP_ANONYMOUS == 0 || flags & MAP_FIXED != 0 || a2 == 0 {
+                let (addr, prot, flags, fd, off) = (a1, a3, f.r10, f.r8, f.r9);
+                if a2 == 0 || !off.is_multiple_of(4096) {
                     return fail(EINVAL);
                 }
                 let len = page_up(a2);
-                let base = match self.vm_call(i, sys::VM_RESERVE, 0, len, 0, p4, mem) {
-                    Outcome::Ret(b) if b > 0 => b as u64,
-                    _ => return fail(ENOMEM),
+                let data: Option<&'static [u8]> = if flags & MAP_ANONYMOUS != 0 {
+                    None
+                } else {
+                    match self.linux_file(i, fd) {
+                        Some(LinuxFile::File(d, _)) => Some(*d),
+                        Some(_) => return fail(ENODEV),
+                        None => return fail(EBADF),
+                    }
                 };
-                if a3 & LINUX_RW != 0 {
+                let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+                let base = if fixed {
+                    if !addr.is_multiple_of(4096) {
+                        return fail(EINVAL);
+                    }
+                    let Some(end) = addr.checked_add(len) else {
+                        return fail(ENOMEM);
+                    };
+                    let vmas = &self.proc(i).vmas;
+                    let inside = vmas.iter().any(|&(s, l)| addr >= s && end <= s + l);
+                    let overlaps = vmas.iter().any(|&(s, l)| addr < s + l && s < end);
+                    if overlaps && flags & MAP_FIXED_NOREPLACE != 0 {
+                        return fail(EEXIST);
+                    }
+                    if inside {
+                        let _ = self.vm_call(i, sys::VM_DECOMMIT, addr, len, 0, p4, mem);
+                        lazy_cut(&mut self.proc(i).linux_lazy, addr, len);
+                    } else if overlaps
+                        || !matches!(
+                            self.vm_call(i, sys::VM_RESERVE, addr, len, 0, p4, mem),
+                            Outcome::Ret(b) if b as u64 == addr
+                        )
+                    {
+                        return fail(ENOMEM);
+                    }
+                    addr
+                } else {
+                    match self.vm_call(i, sys::VM_RESERVE, 0, len, 0, p4, mem) {
+                        Outcome::Ret(b) if b > 0 => b as u64,
+                        _ => return fail(ENOMEM),
+                    }
+                };
+                if prot & 7 == 0 {
+                    return Outcome::Ret(base as i64);
+                }
+                let prot = (prot & 7) | zoo_abi::prot::READ;
+                match data {
                     // Committed page by page when first touched.
-                    let prot = (a3 & 7) | zoo_abi::prot::READ;
-                    self.proc(i).linux_lazy.push((base, len, prot));
+                    None => self.proc(i).linux_lazy.push((base, len, prot)),
+                    Some(d) => {
+                        let (w, x) = (prot & 2 != 0, prot & 4 != 0);
+                        for k in 0..len / 4096 {
+                            let va = base + k * 4096;
+                            let Ok(frame) = mem.map_user_page(p4, va, w, x) else {
+                                let _ = self.vm_call(i, sys::VM_DECOMMIT, base, len, 0, p4, mem);
+                                return fail(ENOMEM);
+                            };
+                            self.proc(i).committed += 1;
+                            let at = off + k * 4096;
+                            if at < d.len() as u64 {
+                                let n = (d.len() as u64 - at).min(4096) as usize;
+                                let to = mem.phys_to_virt(frame.start_address());
+                                // SAFETY: `frame` is the fresh page just mapped
+                                // here, reached through the physical window;
+                                // `at..at + n` lies in the file and `n` fits.
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(d[at as usize..].as_ptr(), to, n)
+                                };
+                            }
+                        }
+                    }
                 }
                 Outcome::Ret(base as i64)
+            }
+            // pread64(fd, buf, count, offset): initrd files.
+            17 => {
+                let Some(LinuxFile::File(data, _)) = self.linux_file(i, a1).cloned() else {
+                    return fail(if self.linux_file(i, a1).is_some() {
+                        ESPIPE
+                    } else {
+                        EBADF
+                    });
+                };
+                let at = (f.r10 as usize).min(data.len());
+                let n = (a3 as usize).min(data.len() - at);
+                if n > 0 {
+                    if !ok(a2, n as u64, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory; inside the file.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data[at..].as_ptr(), a2 as *mut u8, n)
+                    };
+                }
+                Outcome::Ret(n as i64)
             }
             // munmap(addr, len): a whole area is released, part of one is
             // decommitted; nothing mapped there is not an error.
@@ -3042,6 +3156,10 @@ impl Scheduler {
             // fstat(fd, st); stat(path, st); lstat(path, st);
             // newfstatat(dirfd, path, st, flags)
             5 | 4 | 6 | 262 => {
+                // Device and inode: distinct per file (musl's loader tells
+                // libraries apart by them). Initrd files use their address,
+                // home-folder files a hash of their path.
+                let mut ino = 0u64;
                 let (fd, path, st) = match number {
                     5 => (Some(a1), 0, a2),
                     4 | 6 => (None, a1, a2),
@@ -3059,6 +3177,7 @@ impl Scheduler {
                         Some(LinuxFile::Sock(_)) => (None, Some((0o140_777, 0))),
                         Some(LinuxFile::Event(_) | LinuxFile::Epoll(_)) => (None, Some((0o600, 0))),
                         Some(LinuxFile::File(data, _)) => {
+                            ino = data.as_ptr() as u64;
                             (None, Some((0o100_444, data.len() as u64)))
                         }
                         Some(LinuxFile::Dir(..)) => (None, Some((0o040_555, 0))),
@@ -3076,6 +3195,7 @@ impl Scheduler {
                         } else {
                             match initrd_kind(&path) {
                                 Some(Kind::File(data)) => {
+                                    ino = data.as_ptr() as u64;
                                     (None, Some((0o100_444, data.len() as u64)))
                                 }
                                 Some(Kind::Dir) => (None, Some((0o040_555, 0))),
@@ -3087,6 +3207,9 @@ impl Scheduler {
                 let (mode, len) = match (home_path, known) {
                     (_, Some(k)) => k,
                     (Some(rel), None) => {
+                        ino = rel.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                            (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+                        });
                         let (s, entry) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
                         if s < 0 {
                             return fail(zoo_errno(s));
@@ -3105,6 +3228,8 @@ impl Scheduler {
                 // struct stat (x86-64): nlink at 16, mode at 24, uid and gid
                 // at 28 and 32, size at 48, blksize at 56, blocks at 64.
                 let mut buf = [0u8; 144];
+                buf[0..8].copy_from_slice(&1u64.to_le_bytes());
+                buf[8..16].copy_from_slice(&ino.to_le_bytes());
                 buf[16..24].copy_from_slice(&1u64.to_le_bytes());
                 buf[24..28].copy_from_slice(&mode.to_le_bytes());
                 buf[28..32].copy_from_slice(&LINUX_UID.to_le_bytes());
@@ -4478,6 +4603,14 @@ impl Scheduler {
             24 => Outcome::Yield,
             // set_robust_list: accepted (robust mutexes are not cleaned up).
             273 => Outcome::Ret(0),
+            // membarrier(cmd, flags): with one CPU every thread already sees
+            // memory in program order, so each barrier is complete at once.
+            // QUERY reports GLOBAL, PRIVATE_EXPEDITED and its registration.
+            324 => match a1 {
+                0 => Outcome::Ret(1 | 8 | 16),
+                1 | 8 | 16 => Outcome::Ret(0),
+                _ => fail(EINVAL),
+            },
             // futex(addr, op, val, timeout, addr2, val3): private futexes in
             // this process; WAIT (relative), WAIT_BITSET (absolute, all
             // bits), WAKE, WAKE_BITSET, REQUEUE, CMP_REQUEUE.
@@ -5942,6 +6075,60 @@ fn load_image(
     file: &[u8],
     image: &elf::Image,
 ) -> Result<PhysFrame, ()> {
+    load_segments(mem, p4, file, image)?;
+    let stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
+    let mut page = stack_bottom;
+    let mut top = None;
+    while page < USER_STACK_TOP {
+        top = Some(mem.map_user_page(p4, page, true, false).map_err(|_| ())?);
+        page += 4096;
+    }
+    top.ok_or(())
+}
+
+/// The image of a program: `ET_EXEC`, or for Linux programs also
+/// position-independent (`ET_DYN`), placed at `LINUX_PIE_BASE`.
+fn program_image(file: &[u8], linux: bool) -> Result<elf::Image, elf::ElfError> {
+    match elf::parse(file, USER_IMAGE_START, USER_IMAGE_END) {
+        Err(elf::ElfError::NotExecutable) if linux => {
+            elf::parse_at(file, USER_IMAGE_START, USER_IMAGE_END, Some(LINUX_PIE_BASE))
+        }
+        other => other,
+    }
+}
+
+/// The dynamic loader a Linux program names in `PT_INTERP`, from the
+/// initrd, placed at `LINUX_INTERP_BASE` (docs/linux8-design.md).
+fn linux_interp(
+    file: &'static [u8],
+    image: &elf::Image,
+) -> Result<Option<(&'static [u8], elf::Image)>, i64> {
+    let Some((off, len)) = image.interp else {
+        return Ok(None);
+    };
+    let raw = &file[off as usize..(off + len - 1) as usize];
+    let path = core::str::from_utf8(raw).map_err(|_| ENOENT)?;
+    let data = initrd::find(&linux_resolve("", path)).ok_or(ENOENT)?;
+    let loader = elf::parse_at(
+        data,
+        USER_IMAGE_START,
+        USER_IMAGE_END,
+        Some(LINUX_INTERP_BASE),
+    )
+    .map_err(|_| ELIBBAD)?;
+    if loader.interp.is_some() {
+        return Err(ELIBBAD);
+    }
+    Ok(Some((data, loader)))
+}
+
+/// Maps and fills an image's segments.
+fn load_segments(
+    mem: &mut Memory,
+    p4: PhysFrame,
+    file: &[u8],
+    image: &elf::Image,
+) -> Result<(), ()> {
     for seg in image.loadable() {
         let (start, end) = seg.page_range();
         let mut page = start;
@@ -5970,14 +6157,7 @@ fn load_image(
             page += 4096;
         }
     }
-    let stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
-    let mut page = stack_bottom;
-    let mut top = None;
-    while page < USER_STACK_TOP {
-        top = Some(mem.map_user_page(p4, page, true, false).map_err(|_| ())?);
-        page += 4096;
-    }
-    top.ok_or(())
+    Ok(())
 }
 
 // ---- Linux programs (docs/linux1-design.md) -----------------------------
@@ -5997,6 +6177,7 @@ const AT_PHDR: u64 = 3;
 const AT_PHENT: u64 = 4;
 const AT_PHNUM: u64 = 5;
 const AT_PAGESZ: u64 = 6;
+const AT_BASE: u64 = 7;
 const AT_ENTRY: u64 = 9;
 const AT_RANDOM: u64 = 25;
 
@@ -6012,6 +6193,7 @@ fn linux_stack(
     vars: &[&str],
     file: &[u8],
     image: &elf::Image,
+    loader: u64,
 ) -> u64 {
     let base = USER_STACK_TOP - 4096;
     let kva = mem.phys_to_virt(page.start_address());
@@ -6060,6 +6242,8 @@ fn linux_stack(
         (AT_PHNUM, phnum),
         (AT_PAGESZ, 4096),
         (AT_ENTRY, image.entry),
+        // Where the dynamic loader was placed (0: none).
+        (AT_BASE, loader),
         (AT_RANDOM, random_at),
         (AT_NULL, 0),
     ];
@@ -6097,6 +6281,7 @@ const LINUX_PATH_MAX: usize = 256;
 const LINUX_FILES_MAX: usize = 64;
 const LINUX_RW: u64 = zoo_abi::prot::READ | zoo_abi::prot::WRITE;
 const MAP_FIXED: u64 = 0x10;
+const MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
 const MAP_ANONYMOUS: u64 = 0x20;
 const AT_EMPTY_PATH: u64 = 0x1000;
 const O_DIRECTORY: u64 = 0o200_000;
@@ -6203,7 +6388,11 @@ fn default_ignored(sig: u64) -> bool {
 const LINUX_ARGS_MAX: usize = 64;
 const LINUX_ARG_MAX: usize = 1024;
 /// Entries in the auxiliary vector `linux_stack` writes (with AT_NULL).
-const LINUX_AUX_COUNT: usize = 7;
+const LINUX_AUX_COUNT: usize = 8;
+/// Where position-independent Linux programs and the dynamic loader go, in
+/// the program window (docs/linux8-design.md).
+const LINUX_PIE_BASE: u64 = 0x0100_0000;
+const LINUX_INTERP_BASE: u64 = 0x3000_0000;
 
 fn page_up(a: u64) -> u64 {
     a.div_ceil(4096) * 4096
@@ -6704,6 +6893,8 @@ const EPERM: i64 = 1;
 const ENOENT: i64 = 2;
 const ESRCH: i64 = 3;
 const EINTR: i64 = 4;
+const ENODEV: i64 = 19;
+const ELIBBAD: i64 = 80;
 const ETIMEDOUT: i64 = 110;
 const ENOTSOCK: i64 = 88;
 const ENOPROTOOPT: i64 = 92;

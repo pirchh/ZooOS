@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L7 section
-(version 0.47.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L8 section
+(version 0.48.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,55 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 8 results: dynamically linked programs (version 0.48.0)
+
+Design and details: docs/linux8-design.md; source provenance:
+tools/musl/README.md.
+
+- **musl 1.2.5 source:** 1,080,786 bytes, checked three ways: SHA-256
+  `a9a118bb…c75e4`; SHA-512 equal to Alpine `aports` 3.21-stable; a good
+  signature from key `8364 8929 0BB6 B70F 99FF DA05 56BC DB59 3020 450F`.
+- **`libc.so`:** built by `cargo xtask build` with Zig 0.16.0 (clang
+  21.1.0, LLD), 885,856 bytes stripped.
+
+New case `linux-dovekie`: `dovekie-test` (dynamic, needs
+`libdovekie.so`) checks the library's functions, global, constructor and
+per-thread TLS; `snprintf` called from the library; `dlopen`/`dlsym` of a
+plugin calling back; `dlerror` for a missing library. It then starts 10
+static and 10 dynamic programs. No unsupported system calls appear in its
+log.
+
+Found on the way:
+- Libraries built without a soname were recorded by their Windows build
+  path, so `-Wl,-soname` was added.
+- Zig's `cc` driver drops `--dynamic-list` and `--exclude-libs`, so the
+  link uses `zig ld.lld` directly.
+- musl's complex multiplication needs a compiler runtime, so Zig's
+  compiler-rt is built from the pinned toolchain.
+- `membarrier` (324) was unsupported in the first run and was added.
+
+**Measured** (`--skip-model --accel whpx --case linux-dovekie`, start +
+wait averages of 10): static 2134 / 2276 / 2323 kcycles, dynamic 3307 /
+2627 / 2824 kcycles.
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 47 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+38.2 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored and compared):
+
+| Change | Result |
+| --- | --- |
+| `AT_BASE` not given to the loader | `FAIL`: `PROC crash pid=26 … cause=not-present addr=0x2f0e9f08` |
+| Every file reports inode 0 | `FAIL`: exit 41 (`plugin symbols`) |
+| `MAP_FIXED` address ignored | `FAIL`: `PROC crash pid=26 … access=write cause=protection` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask -p zoo-abi --locked`: 24 and 10 passed
+(new: the alltypes generator, `ET_DYN` placement, `PT_INTERP` checks).
+Not run: real hardware.
 
 ## Linux step 7 results: Unix sockets and event waits (version 0.47.0)
 

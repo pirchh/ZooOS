@@ -24,6 +24,15 @@ pub const LINUX_PROGRAMS: [&str; 7] = [
     "ermine-test",
 ];
 
+/// Shared libraries (`c/linux/<name>.c`), packed as `lib/<name>.so`, and
+/// dynamically linked programs (output name, source, libraries), packed as
+/// `linux/<name>` (docs/linux8-design.md). Both need musl's loader.
+pub const LINUX_LIBRARIES: [&str; 2] = ["libdovekie", "libdovekie-plugin"];
+pub const LINUX_DYNAMIC: [(&str, &str, &[&str]); 2] = [
+    ("hello-dyn", "hello", &[]),
+    ("dovekie-test", "dovekie-test", &["-ldovekie"]),
+];
+
 /// Where user programs must lie (the kernel's load window).
 const IMAGE_START: u64 = 0x20_0000;
 const IMAGE_END: u64 = 0x4000_0000;
@@ -223,6 +232,75 @@ pub fn build(root: &Path, zig: &Path) -> Result<Vec<(String, Vec<u8>)>, String> 
         zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END)
             .map_err(|e| format!("linux/{name}: the kernel would reject this ELF: {e:?}"))?;
         built.push((format!("linux/{name}"), data));
+    }
+    // musl's dynamic loader, shared libraries and dynamically linked
+    // programs (docs/linux8-design.md).
+    match crate::musl::source(root) {
+        Some(src) => {
+            let so = crate::musl::build_libc_so(zig, &src, &root.join("build"))?;
+            built.push(("lib/ld-musl-x86_64.so.1".to_string(), so));
+            let run = |cmd: Command, what: &str| -> Result<(), String> {
+                let o = crate::process::output_bounded(
+                    cmd,
+                    std::time::Duration::from_secs(300),
+                    "zig cc",
+                )?;
+                if o.status.success() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "zig cc failed for {what}:\n{}",
+                        String::from_utf8_lossy(&o.stderr)
+                    ))
+                }
+            };
+            for name in LINUX_LIBRARIES {
+                let out = out_dir.join(format!("{name}.so"));
+                let mut cmd = Command::new(zig);
+                cmd.current_dir(root)
+                    .args(["cc", "-target", "x86_64-linux-musl", "-O2", "-std=c11"])
+                    .args(["-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-s"])
+                    // Programs then record the library by this name, not by
+                    // its path on the build machine.
+                    .arg(format!("-Wl,-soname,{name}.so"))
+                    .arg("-o")
+                    .arg(&out)
+                    .arg(c.join("linux").join(format!("{name}.c")));
+                println!("[build] Linux library {name}.so (zig {ZIG_VERSION}, x86_64-linux-musl)");
+                run(cmd, &format!("lib/{name}.so"))?;
+                let data = std::fs::read(&out)
+                    .map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+                built.push((format!("lib/{name}.so"), data));
+            }
+            for (name, source, libs) in LINUX_DYNAMIC {
+                let out = out_dir.join(format!("linux-{name}"));
+                let mut cmd = Command::new(zig);
+                cmd.current_dir(root)
+                    .args(["cc", "-target", "x86_64-linux-musl", "-O2", "-std=c11"])
+                    .args([
+                        "-Wall", "-Wextra", "-Werror", "-dynamic", "-fno-pie", "-no-pie", "-s",
+                    ])
+                    .arg("-o")
+                    .arg(&out)
+                    .arg(c.join("linux").join(format!("{source}.c")))
+                    .arg(format!("-L{}", out_dir.display()))
+                    .args(libs.iter());
+                println!(
+                    "[build] Linux program {name} (zig {ZIG_VERSION}, x86_64-linux-musl, dynamic)"
+                );
+                run(cmd, &format!("linux/{name}"))?;
+                let data = std::fs::read(&out)
+                    .map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+                zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END).map_err(|e| {
+                    format!("linux/{name}: the kernel would reject this ELF: {e:?}")
+                })?;
+                built.push((format!("linux/{name}"), data));
+            }
+        }
+        None => println!(
+            "[build] no musl {} source in tools/musl (tools/musl/README.md): no dynamic loader",
+            crate::musl::MUSL_VERSION
+        ),
     }
     Ok(built)
 }

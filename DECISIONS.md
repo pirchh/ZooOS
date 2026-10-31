@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 8: dynamically linked programs (2026-10-31)
+
+Design and measurements: docs/linux8-design.md.
+
+- musl 1.2.5 source downloaded with the owner's approval, verified by
+  SHA-256, Alpine's SHA-512 and musl's signature; `libc.so` (the loader)
+  is built from it by xtask with the pinned Zig, linked with LLD directly.
+- The kernel loads a program's `PT_INTERP` loader at 768 MiB (position-
+  independent programs at 16 MiB) and passes `AT_BASE`.
+- `mmap` maps initrd files as private copies and honours `MAP_FIXED`;
+  `stat` gives distinct inodes; `membarrier` is a no-op on one CPU.
+- A dynamic start costs about 0.4–1.1 Mcycles more than a static one
+  (copying the loader). Version 0.48.0.
+
 ## Linux step 7: Unix sockets and event waits (2026-10-31)
 
 Design and measurements: docs/linux7-design.md.

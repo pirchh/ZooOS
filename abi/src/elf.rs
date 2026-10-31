@@ -1,11 +1,14 @@
 //! Validating parser for the executables ZooOS loads (docs/m3-design.md §7):
-//! static ELF64 x86-64 `ET_EXEC` files whose loadable segments sit in a
-//! caller-given address window. Everything is bounds-checked; malformed input
-//! returns an error, never panics.
+//! ELF64 x86-64 `ET_EXEC` files whose loadable segments sit in a
+//! caller-given address window, and (`parse_at` with a base) position-
+//! independent `ET_DYN` files such as Linux's dynamic loader, placed at that
+//! base (docs/linux8-design.md). Everything is bounds-checked; malformed
+//! input returns an error, never panics.
 
 pub const PAGE: u64 = 4096;
 const MAX_PHDRS: usize = 16;
 const PT_LOAD: u32 = 1;
+const PT_INTERP: u32 = 3;
 pub const PF_X: u32 = 1;
 pub const PF_W: u32 = 2;
 pub const PF_R: u32 = 4;
@@ -28,6 +31,7 @@ pub enum ElfError {
     WritableAndExecutable,
     SegmentsOverlap,
     EntryNotExecutable,
+    BadInterpreter,
 }
 
 /// One `PT_LOAD` segment, validated.
@@ -59,6 +63,10 @@ impl Segment {
 pub struct Image {
     pub entry: u64,
     pub segments: [Option<Segment>; MAX_PHDRS],
+    /// File range of the `PT_INTERP` path (NUL included), if any.
+    pub interp: Option<(u64, u64)>,
+    /// What was added to every address (0 for `ET_EXEC`).
+    pub bias: u64,
 }
 
 impl Image {
@@ -77,9 +85,20 @@ fn u64_at(b: &[u8], o: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?))
 }
 
-/// Parses and validates `file`. Segments must lie inside
+/// Parses and validates an `ET_EXEC` `file`. Segments must lie inside
 /// `[window_start, window_end)`.
 pub fn parse(file: &[u8], window_start: u64, window_end: u64) -> Result<Image, ElfError> {
+    parse_at(file, window_start, window_end, None)
+}
+
+/// As `parse`; with `base`, an `ET_DYN` file is accepted instead and every
+/// address is moved up by `base` (which must be page-aligned).
+pub fn parse_at(
+    file: &[u8],
+    window_start: u64,
+    window_end: u64,
+    base: Option<u64>,
+) -> Result<Image, ElfError> {
     use ElfError::*;
     if file.len() < 64 {
         return Err(TooShort);
@@ -96,10 +115,18 @@ pub fn parse(file: &[u8], window_start: u64, window_end: u64) -> Result<Image, E
     if u16_at(file, 18) != Some(0x3E) {
         return Err(NotX86_64);
     }
-    if u16_at(file, 16) != Some(2) {
+    let want_type = if base.is_some() { 3 } else { 2 };
+    if u16_at(file, 16) != Some(want_type) {
         return Err(NotExecutable);
     }
-    let entry = u64_at(file, 24).ok_or(TooShort)?;
+    let bias = base.unwrap_or(0);
+    if !bias.is_multiple_of(PAGE) {
+        return Err(SegmentAlignment);
+    }
+    let entry = u64_at(file, 24)
+        .ok_or(TooShort)?
+        .checked_add(bias)
+        .ok_or(SegmentOutsideWindow)?;
     let phoff = u64_at(file, 32).ok_or(TooShort)?;
     let phentsize = u16_at(file, 54).ok_or(TooShort)? as u64;
     let phnum = u16_at(file, 56).ok_or(TooShort)? as u64;
@@ -116,8 +143,20 @@ pub fn parse(file: &[u8], window_start: u64, window_end: u64) -> Result<Image, E
 
     let mut segments = [None; MAX_PHDRS];
     let mut count = 0;
+    let mut interp = None;
     for i in 0..phnum {
         let h = (phoff + i * 56) as usize;
+        if u32_at(file, h) == Some(PT_INTERP) {
+            let off = u64_at(file, h + 8).ok_or(BadProgramHeaders)?;
+            let size = u64_at(file, h + 32).ok_or(BadProgramHeaders)?;
+            let end = off.checked_add(size).ok_or(BadInterpreter)?;
+            if !(2..=4096).contains(&size) || end > file.len() as u64 || file[end as usize - 1] != 0
+            {
+                return Err(BadInterpreter);
+            }
+            interp = Some((off, size));
+            continue;
+        }
         if u32_at(file, h) != Some(PT_LOAD) {
             continue;
         }
@@ -127,7 +166,10 @@ pub fn parse(file: &[u8], window_start: u64, window_end: u64) -> Result<Image, E
         let seg = Segment {
             flags: u32_at(file, h + 4).ok_or(BadProgramHeaders)?,
             file_offset: u64_at(file, h + 8).ok_or(BadProgramHeaders)?,
-            vaddr: u64_at(file, h + 16).ok_or(BadProgramHeaders)?,
+            vaddr: u64_at(file, h + 16)
+                .ok_or(BadProgramHeaders)?
+                .checked_add(bias)
+                .ok_or(SegmentOutsideWindow)?,
             file_size: u64_at(file, h + 32).ok_or(BadProgramHeaders)?,
             mem_size: u64_at(file, h + 40).ok_or(BadProgramHeaders)?,
         };
@@ -174,7 +216,12 @@ pub fn parse(file: &[u8], window_start: u64, window_end: u64) -> Result<Image, E
     if !entry_ok {
         return Err(EntryNotExecutable);
     }
-    Ok(Image { entry, segments })
+    Ok(Image {
+        entry,
+        segments,
+        interp,
+        bias,
+    })
 }
 
 #[cfg(test)]
@@ -340,6 +387,49 @@ pub(crate) mod tests {
         assert_eq!(parse(&overlapping, W0, W1), Err(ElfError::SegmentsOverlap));
         let none = build(0x20_1000, &[], 0x100);
         assert_eq!(parse(&none, W0, W1), Err(ElfError::NoLoadableSegments));
+    }
+
+    #[test]
+    fn position_independent_files_move_to_their_base() {
+        let mut f = build(
+            0x1000,
+            &[
+                (PF_R, 0, 0, 0x100, 0x100),
+                (PF_R | PF_X, 0x1000, 0x1000, 0x20, 0x20),
+            ],
+            0x1020,
+        );
+        f[16] = 3; // ET_DYN
+        assert_eq!(parse(&f, W0, W1), Err(ElfError::NotExecutable));
+        let img = parse_at(&f, W0, W1, Some(0x300_0000)).unwrap();
+        assert_eq!(img.entry, 0x300_1000);
+        assert_eq!(img.bias, 0x300_0000);
+        assert_eq!(img.loadable().next().unwrap().vaddr, 0x300_0000);
+        assert_eq!(
+            parse_at(&f, W0, W1, Some(0x123)),
+            Err(ElfError::SegmentAlignment)
+        );
+    }
+
+    #[test]
+    fn interpreter_paths_are_checked() {
+        let path = b"/lib/ld.so\0";
+        let mut f = build(
+            0x20_1000,
+            &[(PF_R | PF_X, 0x1000, 0x20_1000, 0x20, 0x20)],
+            0x1100,
+        );
+        // A PT_INTERP header in a second slot, pointing at the path.
+        f[56..58].copy_from_slice(&2u16.to_le_bytes());
+        let h = 64 + 56;
+        f[h..h + 4].copy_from_slice(&PT_INTERP.to_le_bytes());
+        f[h + 8..h + 16].copy_from_slice(&0x1080u64.to_le_bytes());
+        f[h + 32..h + 40].copy_from_slice(&(path.len() as u64).to_le_bytes());
+        f[0x1080..0x1080 + path.len()].copy_from_slice(path);
+        let img = parse(&f, W0, W1).unwrap();
+        assert_eq!(img.interp, Some((0x1080, path.len() as u64)));
+        f[0x1080 + path.len() - 1] = b'x'; // no terminating NUL
+        assert_eq!(parse(&f, W0, W1), Err(ElfError::BadInterpreter));
     }
 
     #[test]

@@ -111,7 +111,8 @@ and verification:
 | F2 | Kernel output and memory reuse off the hot path: buffered serial, batched console drawing, warm frame reuse (docs/f2-design.md) | done 2026-10-31 |
 | L6 | Signal handlers and frames, fault signals, threads and futexes, lazy anonymous memory (docs/linux6-design.md) | done 2026-10-31 |
 | L7 | Unix stream sockets with `SCM_RIGHTS`, `poll`/`select`/`epoll`, `eventfd`, non-blocking descriptors (docs/linux7-design.md) | done 2026-10-31 |
-| L8 | Files Wine needs: `mmap` of files, `memfd`, `ftruncate` on shared memory, `timerfd`, file locks; then building and running Wine itself | proposed |
+| L8 | Dynamically linked programs: musl's loader built from source, `PT_INTERP`, file-backed and fixed `mmap` (docs/linux8-design.md) | done 2026-10-31 |
+| L9 | Building and running Wine (needs its source and a PE cross-compiler: owner approval) | proposed |
 
 ## Services (owner direction 2026-10-30)
 

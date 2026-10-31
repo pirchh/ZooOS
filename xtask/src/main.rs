@@ -6,6 +6,7 @@ mod doctor;
 mod image;
 mod infer;
 mod markers;
+mod musl;
 mod process;
 mod qemu;
 mod qmp;
