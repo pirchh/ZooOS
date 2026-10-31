@@ -210,12 +210,18 @@ struct Proc {
     /// Running in its parent's address space (`vfork`) until it execs or
     /// ends; the space is then not freed with this process.
     linux_borrowed: bool,
-    /// Blocked signals, and the actions set with `rt_sigaction`: signal and
-    /// `(handler, flags, restorer, mask)`.
-    linux_sigmask: u64,
+    /// The actions set with `rt_sigaction`: signal and `(handler, flags,
+    /// restorer, mask)`, shared by the threads.
     linux_sigactions: Vec<(u8, [u64; 4])>,
+    /// Signals sent to the process and not yet taken by a thread, and the
+    /// pid that last sent each (docs/linux6-design.md).
+    linux_pending: u64,
+    linux_sigsrc: [u32; 64],
     /// The signal that ended the process, if one did.
     linux_term_sig: Option<u8>,
+    /// Anonymous memory committed when first touched (docs/linux6-design.md):
+    /// (start, length, Linux protection) ranges inside reservations.
+    linux_lazy: Vec<(u64, u64, u64)>,
 }
 
 /// One thread. Each user thread belongs to a `Proc`; the kernel task does not.
@@ -258,6 +264,16 @@ struct Task {
     in_exception: bool,
     /// A `vfork` waiting for this child to exec or end.
     vfork_child: Option<u64>,
+    /// Linux signal state of this thread (docs/linux6-design.md): blocked
+    /// signals, signals sent to it, the alternate stack (base, size,
+    /// enabled), and the address cleared and woken when it exits.
+    sigmask: u64,
+    sig_pending: u64,
+    altstack: (u64, u64, bool),
+    clear_tid: u64,
+    /// Between an `Open` reply and its folder handle (`fork`): the home
+    /// channel is still in use.
+    fs_hold: bool,
 }
 
 impl Task {
@@ -283,6 +299,11 @@ impl Task {
             exc_stack: 0,
             in_exception: false,
             vfork_child: None,
+            sigmask: 0,
+            sig_pending: 0,
+            altstack: (0, 0, false),
+            clear_tid: 0,
+            fs_hold: false,
         }
     }
 }
@@ -318,9 +339,11 @@ impl Proc {
             linux_parent: 0,
             linux_children: Vec::new(),
             linux_borrowed: false,
-            linux_sigmask: 0,
             linux_sigactions: Vec::new(),
+            linux_pending: 0,
+            linux_sigsrc: [0; 64],
             linux_term_sig: None,
+            linux_lazy: Vec::new(),
         }
     }
 
@@ -330,6 +353,14 @@ impl Proc {
         } else {
             self.linux_cloexec &= !(1 << fd);
         }
+    }
+
+    /// The `sa_flags` set for Linux signal `sig`.
+    fn sig_flags(&self, sig: u64) -> u64 {
+        self.linux_sigactions
+            .iter()
+            .find(|a| u64::from(a.0) == sig)
+            .map_or(0, |a| a.1[1])
     }
 
     /// The handler set for Linux signal `sig` (0: default, 1: ignore).
@@ -917,16 +948,20 @@ impl Scheduler {
             self.finish(i, ExitStatus::Code(code));
             return;
         }
+        let linux = self.proc(i).linux;
         let t = self.task(i);
         t.state = State::Exited;
         t.restart = false;
         let (pid, tid) = (t.pid, t.tid);
-        kprintln!(
-            "ZOO_OS INFO thread exit pid={} tid={} code={}",
-            pid,
-            tid,
-            code
-        );
+        // Linux threads come and go often; their exits are not logged.
+        if !linux {
+            kprintln!(
+                "ZOO_OS INFO thread exit pid={} tid={} code={}",
+                pid,
+                tid,
+                code
+            );
+        }
         self.thread_exits.push((pid, tid, code));
         self.zombies.push(i);
         self.wake_all();
@@ -1013,12 +1048,30 @@ impl Scheduler {
                 if let Some(area) = &t.fpu {
                     fpu::restore(area);
                 }
-                return frame;
+                // SAFETY: the saved frame of the task resuming now, on its
+                // own kernel stack.
+                if self.linux_deliver(i, unsafe { &mut *frame }, mem) {
+                    return frame;
+                }
+                i = self.pick_next();
+                continue;
             }
-            t.restart = false;
             // SAFETY: a blocked task's saved frame stays valid on its own
             // kernel stack until it is resumed, which is now.
             let f = unsafe { &mut *frame };
+            // A signal for a Linux thread ends its blocked call (EINTR or a
+            // restart) and runs the handler instead.
+            if self.linux_interrupt(i, f) {
+                if let Some(area) = &self.task(i).fpu {
+                    fpu::restore(area);
+                }
+                if self.linux_deliver(i, f, mem) {
+                    return frame;
+                }
+                i = self.pick_next();
+                continue;
+            }
+            self.task(i).restart = false;
             let outcome = if f.vector == crate::trap::VEC_LINUX {
                 self.linux_syscall(i, f, mem)
             } else {
@@ -1030,7 +1083,9 @@ impl Scheduler {
                     if let Some(area) = &self.task(i).fpu {
                         fpu::restore(area);
                     }
-                    return frame;
+                    if self.linux_deliver(i, f, mem) {
+                        return frame;
+                    }
                 }
                 Outcome::Yield => {
                     f.rax = 0;
@@ -1169,11 +1224,18 @@ impl Scheduler {
         i: usize,
         pipe: &Arc<Mutex<Pipe>>,
         pieces: &[(u64, u64)],
-        mem: &Memory,
+        mem: &mut Memory,
     ) -> Outcome {
         let p4 = self.task(i).p4.expect("Linux call from a user task");
         if pieces.iter().all(|x| x.1 == 0) {
             return Outcome::Ret(0);
+        }
+        // Commit lazily mapped buffers before taking the pipe's lock.
+        for &(base, len) in pieces {
+            if len > 0 {
+                let n = len.min(PIPE_SIZE as u64);
+                self.linux_commit(i, mem, base, n, true);
+            }
         }
         let total = {
             let mut p = pipe.lock();
@@ -1213,7 +1275,8 @@ impl Scheduler {
     /// A write to a pipe nobody reads: SIGPIPE, which ends the program by
     /// default; otherwise the write fails with EPIPE.
     fn linux_sigpipe(&mut self, i: usize) -> Outcome {
-        self.linux_signal(i, SIGPIPE);
+        let me = self.task(i).pid;
+        self.linux_send(i, SIGPIPE, me, true);
         if self.proc(i).ended {
             Outcome::Exit(0)
         } else {
@@ -1221,32 +1284,481 @@ impl Scheduler {
         }
     }
 
-    /// Sends Linux signal `sig` (1..=64) to the process of task `k`, with
-    /// the default actions (docs/linux5-design.md): most signals end it;
-    /// SIGCHLD, SIGCONT, SIGURG, SIGWINCH and the stop signals (no job
-    /// control yet) are ignored. Running a program's own handler is L6.
-    fn linux_signal(&mut self, k: usize, sig: u64) {
+    /// Commits the lazily mapped pages of `[addr, addr + len)` in task
+    /// `i`'s process with their recorded access (docs/linux6-design.md),
+    /// then says whether the whole range is accessible (writable if
+    /// `write`).
+    fn linux_commit(
+        &mut self,
+        i: usize,
+        mem: &mut Memory,
+        addr: u64,
+        len: u64,
+        write: bool,
+    ) -> bool {
+        let Some(p4) = self.task(i).p4 else {
+            return false;
+        };
+        if mem.user_range_ok(p4, addr, len, write) {
+            return true;
+        }
+        let Some(end) = addr.checked_add(len.max(1)) else {
+            return false;
+        };
+        if end > USER_HALF_END {
+            return false;
+        }
+        let mut va = addr & !0xFFF;
+        while va < end {
+            if mem.user_translate(p4, va).is_none() {
+                let Some(prot) = lazy_prot(&self.proc(i).linux_lazy, va) else {
+                    return false;
+                };
+                if mem.frames.available() < 64 {
+                    return false;
+                }
+                let (w, x) = (
+                    prot & zoo_abi::prot::WRITE != 0,
+                    prot & zoo_abi::prot::EXEC != 0,
+                );
+                if mem.map_user_page(p4, va, w, x).is_err() {
+                    return false;
+                }
+                self.proc(i).committed += 1;
+            }
+            va += 4096;
+        }
+        mem.user_range_ok(p4, addr, len, write)
+    }
+
+    /// True if task `i` is a thread of a Linux program.
+    fn is_linux(&self, i: usize) -> bool {
+        matches!(&self.tasks[i], Some(t)
+            if t.proc.is_some_and(|q| matches!(&self.procs[q], Some(p) if p.linux)))
+    }
+
+    /// Sends Linux signal `sig` (1..=64) from pid `from` to the process of
+    /// task `k`, or (`thread`) to that thread (docs/linux6-design.md).
+    /// Ignored signals are dropped. A default action that ends the program
+    /// acts at once unless every thread that could take it blocks it.
+    /// Otherwise the signal waits in a pending set until a thread that does
+    /// not block it returns to user mode; blocked calls of such threads are
+    /// woken so they can be interrupted.
+    fn linux_send(&mut self, k: usize, sig: u64, from: u64, thread: bool) {
+        let bit = 1u64 << (sig - 1);
         let handler = if sig == SIGKILL {
             0
         } else {
             self.proc(k).sig_handler(sig)
         };
-        match handler {
-            0 if matches!(sig, 17..=23 | 28) => {}
-            0 => {
-                self.proc(k).linux_term_sig = Some(sig as u8);
-                self.finish(k, ExitStatus::Killed);
-            }
-            1 => {}
-            _ => {
-                let pid = self.task(k).pid;
-                kprintln!(
-                    "ZOO_OS INFO linux signal handler not run pid={} signal={}",
-                    pid,
-                    sig
-                );
+        if handler == 1 || (handler == 0 && default_ignored(sig)) {
+            return;
+        }
+        let pidx = self.task(k).proc;
+        let blocked = sig != SIGKILL
+            && if thread {
+                self.task(k).sigmask & bit != 0
+            } else {
+                self.tasks
+                    .iter()
+                    .flatten()
+                    .filter(|t| t.proc == pidx && t.state != State::Exited)
+                    .all(|t| t.sigmask & bit != 0)
+            };
+        if handler == 0 && !blocked {
+            self.proc(k).linux_term_sig = Some(sig as u8);
+            self.finish(k, ExitStatus::Killed);
+            return;
+        }
+        self.proc(k).linux_sigsrc[(sig - 1) as usize] = from as u32;
+        if thread {
+            self.task(k).sig_pending |= bit;
+        } else {
+            self.proc(k).linux_pending |= bit;
+        }
+        for (n, t) in self.tasks.iter_mut().enumerate() {
+            if let Some(t) = t
+                && t.proc == pidx
+                && t.state == State::Blocked
+                && t.sigmask & bit == 0
+                && (!thread || n == k)
+            {
+                t.state = State::Ready;
             }
         }
+    }
+
+    /// The lowest pending signal task `i` does not block, dropping pending
+    /// ones that are now ignored.
+    fn next_deliverable(&mut self, i: usize) -> Option<u64> {
+        loop {
+            let mask = self.task(i).sigmask & !UNBLOCKABLE;
+            let ready = (self.task(i).sig_pending | self.proc(i).linux_pending) & !mask;
+            if ready == 0 {
+                return None;
+            }
+            let sig = u64::from(ready.trailing_zeros()) + 1;
+            let handler = if sig == SIGKILL {
+                0
+            } else {
+                self.proc(i).sig_handler(sig)
+            };
+            if handler == 1 || (handler == 0 && default_ignored(sig)) {
+                let bit = !(1u64 << (sig - 1));
+                self.task(i).sig_pending &= bit;
+                self.proc(i).linux_pending &= bit;
+                continue;
+            }
+            return Some(sig);
+        }
+    }
+
+    /// Runs one pending signal for Linux task `i`, about to return to user
+    /// mode with frame `f`: its handler (a signal frame on the user stack)
+    /// or its default action. Returns false if the process ended.
+    fn linux_deliver(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> bool {
+        if !self.is_linux(i) {
+            return true;
+        }
+        let Some(sig) = self.next_deliverable(i) else {
+            return true;
+        };
+        let bit = 1u64 << (sig - 1);
+        let to_thread = self.task(i).sig_pending & bit != 0;
+        if to_thread {
+            self.task(i).sig_pending &= !bit;
+        } else {
+            self.proc(i).linux_pending &= !bit;
+        }
+        let handler = if sig == SIGKILL {
+            0
+        } else {
+            self.proc(i).sig_handler(sig)
+        };
+        if handler > 1 {
+            // siginfo: signo, errno, code (SI_TKILL or SI_USER), pid, uid.
+            let mut info = [0u8; 128];
+            info[0..4].copy_from_slice(&(sig as i32).to_le_bytes());
+            let code: i32 = if to_thread { -6 } else { 0 };
+            info[8..12].copy_from_slice(&code.to_le_bytes());
+            let from = self.proc(i).linux_sigsrc[(sig - 1) as usize];
+            info[16..20].copy_from_slice(&from.to_le_bytes());
+            info[20..24].copy_from_slice(&LINUX_UID.to_le_bytes());
+            if self.linux_handler_frame(i, f, sig, &info, (0, 0, 0), mem) {
+                return true;
+            }
+            // No room for the frame: as Linux, a SIGSEGV that ends it.
+            self.proc(i).linux_term_sig = Some(SIGSEGV as u8);
+        } else {
+            self.proc(i).linux_term_sig = Some(sig as u8);
+        }
+        self.finish(i, ExitStatus::Killed);
+        false
+    }
+
+    /// Ends task `i`'s blocked Linux call because a signal will be handled
+    /// (or end the program): the call returns EINTR, or, for a handler
+    /// with SA_RESTART, runs again after it. Calls waiting for
+    /// BadgerHandler or a vfork child are not interrupted.
+    fn linux_interrupt(&mut self, i: usize, f: &mut TrapFrame) -> bool {
+        if !self.is_linux(i) || f.vector != trap::VEC_LINUX {
+            return false;
+        }
+        {
+            let t = self.task(i);
+            if t.fs_pending || t.fs_hold || t.vfork_child.is_some() {
+                return false;
+            }
+        }
+        let Some(sig) = self.next_deliverable(i) else {
+            return false;
+        };
+        let handler = if sig == SIGKILL {
+            0
+        } else {
+            self.proc(i).sig_handler(sig)
+        };
+        if handler > 1 {
+            let restart = self.proc(i).sig_flags(sig) & SA_RESTART != 0;
+            // pause and the sleeps never restart, as on Linux.
+            if restart && !matches!(f.rax, 34 | 35 | 230) {
+                // Back to the `syscall` instruction; RAX still holds the
+                // call number.
+                f.rip -= 2;
+            } else {
+                f.rax = (-EINTR) as u64;
+            }
+        }
+        let t = self.task(i);
+        t.restart = false;
+        t.sleep_until = None;
+        t.futex = None;
+        t.futex_woken = false;
+        t.fs_results.clear();
+        t.fs_cursor = 0;
+        true
+    }
+
+    /// Writes a Linux x86-64 signal frame (return address, `ucontext` with
+    /// the registers, mask and alternate stack, `siginfo`, and the x87/SSE
+    /// state) below the interrupted stack or on the alternate stack, and
+    /// starts the handler there. `fault` is (trap number, error code, CR2).
+    /// False if the frame cannot be written.
+    fn linux_handler_frame(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        sig: u64,
+        info: &[u8; 128],
+        fault: (u64, u64, u64),
+        mem: &mut Memory,
+    ) -> bool {
+        let Some([handler, flags, restorer, mask]) = self
+            .proc(i)
+            .linux_sigactions
+            .iter()
+            .find(|a| u64::from(a.0) == sig)
+            .map(|a| a.1)
+        else {
+            return false;
+        };
+        if flags & SA_RESTORER == 0 {
+            return false;
+        }
+        let Some(p4) = self.task(i).p4 else {
+            return false;
+        };
+        let (ss_sp, ss_size, ss_on) = self.task(i).altstack;
+        let on_alt = ss_on && f.rsp.wrapping_sub(ss_sp) < ss_size;
+        let sp = if flags & SA_ONSTACK != 0 && ss_on && !on_alt {
+            ss_sp.wrapping_add(ss_size)
+        } else {
+            f.rsp.wrapping_sub(128) // below the red zone
+        };
+        let fp = sp.wrapping_sub(512) & !63;
+        // At the handler's entry, rsp + 8 is 16-byte aligned (SysV).
+        let frame = (fp.wrapping_sub(SIGFRAME) & !15).wrapping_sub(8);
+        if sp > USER_HALF_END
+            || frame > sp
+            || !self.linux_commit(i, mem, frame, fp + 512 - frame, true)
+        {
+            return false;
+        }
+        let _ = p4;
+        let old_mask = self.task(i).sigmask;
+        let mut fx = fpu::new_state();
+        fpu::save(&mut fx);
+        let mut buf = [0u8; SIGFRAME as usize];
+        {
+            let mut put = |at: usize, v: u64| buf[at..at + 8].copy_from_slice(&v.to_le_bytes());
+            put(0, restorer);
+            // ucontext at 8: flags, link, stack (sp, flags, size) at 24.
+            put(24, ss_sp);
+            put(
+                32,
+                if on_alt {
+                    SS_ONSTACK
+                } else if ss_on {
+                    0
+                } else {
+                    SS_DISABLE
+                },
+            );
+            put(40, ss_size);
+            // mcontext at 48: the registers in Linux's `sigcontext` order.
+            let csgsfs = (f.cs & 0xFFFF) | ((f.ss & 0xFFFF) << 48);
+            let g = [
+                f.r8, f.r9, f.r10, f.r11, f.r12, f.r13, f.r14, f.r15, f.rdi, f.rsi, f.rbp, f.rbx,
+                f.rdx, f.rax, f.rcx, f.rsp, f.rip, f.rflags, csgsfs, fault.1, fault.0, old_mask,
+                fault.2, fp,
+            ];
+            for (k, v) in g.iter().enumerate() {
+                put(48 + 8 * k, *v);
+            }
+            // The mask to restore, after the 256-byte mcontext.
+            put(304, old_mask);
+        }
+        buf[312..440].copy_from_slice(info);
+        // SAFETY: `[frame, fp + 512)` was checked as writable user memory of
+        // the running thread's address space; `buf` and the FXSAVE image
+        // fit inside it (`frame + SIGFRAME <= fp`).
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), frame as *mut u8, buf.len());
+            core::ptr::copy_nonoverlapping(fpu::bytes(&fx).as_ptr(), fp as *mut u8, 512);
+        }
+        f.rdi = sig;
+        f.rsi = frame + 312;
+        f.rdx = frame + 8;
+        f.rax = 0;
+        f.rip = handler;
+        f.rsp = frame;
+        f.rflags = RFLAGS_IF | RFLAGS_RESERVED;
+        let bit = 1u64 << (sig - 1);
+        let defer = if flags & SA_NODEFER == 0 { bit } else { 0 };
+        let t = self.task(i);
+        t.sigmask = (t.sigmask | mask | defer) & !UNBLOCKABLE;
+        if flags & SA_RESETHAND != 0 {
+            self.proc(i)
+                .linux_sigactions
+                .retain(|a| u64::from(a.0) != sig);
+        }
+        true
+    }
+
+    /// A CPU fault in a Linux thread: runs the program's handler for the
+    /// matching signal if it has one and does not block it (true), or
+    /// records the signal that ends the program (false; the caller then
+    /// crashes it).
+    fn linux_fault(&mut self, i: usize, f: &mut TrapFrame, addr: u64, mem: &mut Memory) -> bool {
+        if !self.is_linux(i) {
+            return false;
+        }
+        // First touch of lazily mapped memory: commit the page and retry.
+        if f.vector == 14
+            && f.error & 1 == 0
+            && addr < USER_HALF_END
+            && self.linux_commit(i, mem, addr & !0xFFF, 1, f.error & 2 != 0)
+        {
+            return true;
+        }
+        // (signal, si_code, si_addr) per vector, as Linux reports them.
+        let (sig, code, at) = match f.vector {
+            14 => (SIGSEGV, if f.error & 1 == 0 { 1i32 } else { 2 }, addr),
+            0 => (SIGFPE, 1, f.rip),
+            16 | 19 => (SIGFPE, 0, f.rip),
+            6 => (SIGILL, 2, f.rip),
+            1 | 3 => (SIGTRAP, 0x80, f.rip),
+            17 => (SIGBUS, 1, addr),
+            _ => (SIGSEGV, 0x80, 0),
+        };
+        let handler = self.proc(i).sig_handler(sig);
+        let blocked = self.task(i).sigmask & (1 << (sig - 1)) != 0;
+        if handler > 1 && !blocked {
+            let mut info = [0u8; 128];
+            info[0..4].copy_from_slice(&(sig as i32).to_le_bytes());
+            info[8..12].copy_from_slice(&code.to_le_bytes());
+            info[16..24].copy_from_slice(&at.to_le_bytes());
+            let cr2 = if f.vector == 14 { addr } else { 0 };
+            if self.linux_handler_frame(i, f, sig, &info, (f.vector, f.error, cr2), mem) {
+                return true;
+            }
+        }
+        self.proc(i).linux_term_sig = Some(sig as u8);
+        false
+    }
+
+    /// Wakes up to `n` Linux futex waiters on `addr` in task `i`'s process
+    /// and (`requeue`) moves up to that many more to wait on another
+    /// address. Returns how many were woken or moved.
+    fn linux_futex_wake(
+        &mut self,
+        i: usize,
+        addr: u64,
+        n: usize,
+        requeue: Option<(u64, usize)>,
+    ) -> i64 {
+        let pidx = self.task(i).proc;
+        let (mut woken, mut moved) = (0usize, 0usize);
+        for t in self.tasks.iter_mut().flatten() {
+            if t.proc != pidx || t.futex != Some(addr) || t.futex_woken || t.state == State::Exited
+            {
+                continue;
+            }
+            if woken < n {
+                t.futex_woken = true;
+                t.state = State::Ready;
+                woken += 1;
+            } else if let Some((to, max)) = requeue
+                && moved < max
+            {
+                t.futex = Some(to);
+                moved += 1;
+            } else {
+                break;
+            }
+        }
+        (woken + moved) as i64
+    }
+
+    /// `clone` for a thread of task `i`'s process (musl's `pthread_create`
+    /// flags): same memory, descriptors and handlers; its own stack, TLS
+    /// and signal mask; it resumes from this call with 0.
+    #[allow(clippy::too_many_arguments)]
+    fn linux_thread(
+        &mut self,
+        i: usize,
+        f: &TrapFrame,
+        mem: &mut Memory,
+        flags: u64,
+        stack: u64,
+        ptid: u64,
+        ctid: u64,
+        tls: u64,
+    ) -> Outcome {
+        let p4 = self.task(i).p4.expect("Linux call from a user task");
+        if stack == 0
+            || stack >= USER_HALF_END
+            || (flags & CLONE_SETTLS != 0 && tls >= USER_HALF_END)
+        {
+            return Outcome::Ret(-EINVAL);
+        }
+        let ids = [(CLONE_PARENT_SETTID, ptid), (CLONE_CHILD_SETTID, ctid)];
+        for (flag, at) in ids {
+            if flags & flag != 0 && (at % 4 != 0 || !self.linux_commit(i, mem, at, 4, true)) {
+                return Outcome::Ret(-EFAULT);
+            }
+        }
+        let Ok((index, slot)) = self.free_task_slots() else {
+            return Outcome::Ret(-EAGAIN);
+        };
+        let Ok(top) = mem.map_kernel_stack(slot) else {
+            return Outcome::Ret(-ENOMEM);
+        };
+        self.kstack_used[slot] = true;
+        let tid = self.next_tid;
+        self.next_tid += 1;
+        let mut frame = *f;
+        frame.rax = 0;
+        frame.rsp = stack;
+        let frame_addr = top - core::mem::size_of::<TrapFrame>() as u64;
+        // SAFETY: the kernel stack `[top - KSTACK_SIZE, top)` was just mapped
+        // writable and belongs to the new thread alone; the frame fits.
+        unsafe { (frame_addr as *mut TrapFrame).write(frame) };
+        let mut area = Box::new(fpu::new_state());
+        fpu::save(&mut area);
+        let (pid, pidx, name, fs_base, sigmask) = {
+            let t = self.task(i);
+            (t.pid, t.proc, t.name.clone(), t.fs_base, t.sigmask)
+        };
+        let mut task = Task::new(pid, tid, &name);
+        task.frame = frame_addr;
+        task.fpu = Some(area);
+        task.p4 = Some(p4);
+        task.proc = pidx;
+        task.kstack = Some((slot, top));
+        task.fs_base = if flags & CLONE_SETTLS != 0 {
+            tls
+        } else {
+            fs_base
+        };
+        task.sigmask = sigmask;
+        task.clear_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
+            ctid
+        } else {
+            0
+        };
+        self.tasks[index] = Some(task);
+        let p = self.proc(i);
+        p.live += 1;
+        p.members += 1;
+        for (flag, at) in ids {
+            if flags & flag != 0 {
+                // SAFETY: checked above as writable, aligned user memory
+                // of this (shared) address space.
+                unsafe { (at as *mut u32).write_volatile(tid as u32) };
+            }
+        }
+        Outcome::Ret(tid as i64)
     }
 
     /// The folder handle BadgerHandler sends after an `Open` reply on task
@@ -1312,7 +1824,9 @@ impl Scheduler {
             if s < 0 {
                 return Outcome::Ret(-zoo_errno(s));
             }
-            match self.home_handle(i) {
+            let got = self.home_handle(i);
+            self.task(i).fs_hold = got.is_none();
+            match got {
                 None => return Outcome::Block,
                 Some(None) => return Outcome::Ret(-EIO),
                 Some(Some(e)) => Some(e),
@@ -1366,8 +1880,8 @@ impl Scheduler {
         child.linux_cwd = parent.linux_cwd.clone();
         child.linux_parent = parent.pid;
         child.linux_borrowed = share;
-        child.linux_sigmask = parent.linux_sigmask;
         child.linux_sigactions = parent.linux_sigactions.clone();
+        child.linux_lazy = parent.linux_lazy.clone();
         if let Some(e) = home {
             let h = child.insert(e).expect("new process has free handle slots");
             child.linux_home = Some(h);
@@ -1389,8 +1903,13 @@ impl Scheduler {
         // parent's state.
         let mut area = Box::new(fpu::new_state());
         fpu::save(&mut area);
-        let fs_base = self.task(i).fs_base;
+        let (fs_base, sigmask, altstack) = {
+            let t = self.task(i);
+            (t.fs_base, t.sigmask, t.altstack)
+        };
         let mut task = Task::new(pid, pid, &name);
+        task.sigmask = sigmask;
+        task.altstack = altstack;
         task.frame = frame_addr;
         task.fpu = Some(area);
         task.p4 = Some(p4);
@@ -1459,6 +1978,7 @@ impl Scheduler {
         p.name = String::from(name);
         p.cmdline = args.join("\0");
         p.vmas.clear();
+        p.linux_lazy.clear();
         p.linux_brk = None;
         p.committed = 0;
         p.heap_next = HEAP_BASE;
@@ -1476,6 +1996,8 @@ impl Scheduler {
         t.p4 = Some(p4);
         t.name = String::from(name);
         t.fs_base = 0;
+        t.altstack = (0, 0, false);
+        t.clear_tid = 0;
         let area = Box::new(fpu::new_state());
         fpu::restore(&area);
         t.fpu = Some(area);
@@ -1518,9 +2040,25 @@ impl Scheduler {
     /// A Linux x86-64 system call (docs/linux1-design.md): number in RAX,
     /// arguments in RDI, RSI, RDX, R10, R8, R9; errors as negative errno.
     fn linux_syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
-        // A re-run replays the replies this call already has (`fs`).
-        self.task(i).fs_cursor = 0;
-        let outcome = self.linux_call(i, f, mem);
+        let mut outcome;
+        let mut tries = 0;
+        loop {
+            // A re-run replays the replies this call already has (`fs`).
+            self.task(i).fs_cursor = 0;
+            // The first user range the call found inaccessible: if it is
+            // lazily mapped memory, commit it and run the call again
+            // (docs/linux6-design.md).
+            let want = core::cell::Cell::new(None);
+            outcome = self.linux_call(i, f, mem, &want);
+            match (&outcome, want.get()) {
+                (Outcome::Ret(v), Some((addr, len, write)))
+                    if *v < 0 && tries < 8 && self.linux_commit(i, mem, addr, len, write) =>
+                {
+                    tries += 1;
+                }
+                _ => break,
+            }
+        }
         if !matches!(outcome, Outcome::Block) {
             let t = self.task(i);
             t.fs_results.clear();
@@ -1538,6 +2076,17 @@ impl Scheduler {
         self.task(i).fs_cursor += 1;
         if let Some((s, b)) = self.task(i).fs_results.get(k) {
             return FsStep::Done(*s, b.clone());
+        }
+        // Threads of a process share its channel: one request at a time,
+        // so each reply goes to the thread that asked.
+        if !self.task(i).fs_pending {
+            let pidx = self.task(i).proc;
+            let busy = self.tasks.iter().enumerate().any(|(k, t)| {
+                k != i && matches!(t, Some(t) if t.proc == pidx && (t.fs_pending || t.fs_hold))
+            });
+            if busy {
+                return FsStep::Wait;
+            }
         }
         let Some(h) = self.proc(i).linux_home else {
             return FsStep::Fail(ENOENT);
@@ -1589,6 +2138,8 @@ impl Scheduler {
             }
         };
         self.task(i).fs_pending = false;
+        // Another thread may be waiting for the channel.
+        self.wake_all();
         let Some(b) = reply.filter(|b| b.len() >= 8) else {
             return FsStep::Fail(EIO);
         };
@@ -1658,10 +2209,22 @@ impl Scheduler {
         Outcome::Ret(n as i64)
     }
 
-    fn linux_call(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
+    fn linux_call(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        mem: &mut Memory,
+        want: &core::cell::Cell<Option<(u64, u64, bool)>>,
+    ) -> Outcome {
         let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
         let p4 = self.task(i).p4.expect("system call from a user task");
-        let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+        let ok = |addr: u64, len: u64, write: bool| {
+            let good = mem.user_range_ok(p4, addr, len, write);
+            if !good && want.get().is_none() {
+                want.set(Some((addr, len, write)));
+            }
+            good
+        };
         let fail = |e: i64| Outcome::Ret(-e);
         match number {
             // write(fd, buf, len)
@@ -1710,7 +2273,18 @@ impl Scheduler {
             39 => Outcome::Ret(self.task(i).pid as i64),
             186 => Outcome::Ret(self.task(i).tid as i64),
             // exit, exit_group
-            60 | 231 => Outcome::Exit(a1 as u8),
+            // exit: this thread (the last one ends the process), clearing
+            // and waking its clear-tid word; exit_group: the whole process.
+            60 => {
+                let ctid = self.task(i).clear_tid;
+                if ctid != 0 && ctid.is_multiple_of(4) && ok(ctid, 4, true) {
+                    // SAFETY: checked as writable, aligned user memory.
+                    unsafe { (ctid as *mut u32).write_volatile(0) };
+                    self.linux_futex_wake(i, ctid, 1, None);
+                }
+                Outcome::ThreadExit(a1 as u8)
+            }
+            231 => Outcome::Exit(a1 as u8),
             // arch_prctl(code, addr)
             158 => match a1 {
                 // ARCH_SET_FS
@@ -1782,14 +2356,9 @@ impl Scheduler {
                     _ => return fail(ENOMEM),
                 };
                 if a3 & LINUX_RW != 0 {
-                    let prot = a3 | zoo_abi::prot::READ;
-                    if !matches!(
-                        self.vm_call(i, sys::VM_COMMIT, base, len, prot, p4, mem),
-                        Outcome::Ret(0)
-                    ) {
-                        let _ = self.vm_call(i, sys::VM_RELEASE, base, 0, 0, p4, mem);
-                        return fail(ENOMEM);
-                    }
+                    // Committed page by page when first touched.
+                    let prot = (a3 & 7) | zoo_abi::prot::READ;
+                    self.proc(i).linux_lazy.push((base, len, prot));
                 }
                 Outcome::Ret(base as i64)
             }
@@ -1800,6 +2369,7 @@ impl Scheduler {
                     return fail(EINVAL);
                 }
                 let len = page_up(a2);
+                lazy_cut(&mut self.proc(i).linux_lazy, a1, len);
                 let whole = self.proc(i).vmas.iter().any(|&(s, l)| s == a1 && l == len);
                 if whole {
                     let _ = self.vm_call(i, sys::VM_RELEASE, a1, 0, 0, p4, mem);
@@ -1808,23 +2378,48 @@ impl Scheduler {
                 }
                 Outcome::Ret(0)
             }
-            // mprotect: readable protections only (PROT_NONE is not kept).
+            // mprotect(addr, len, prot): committed pages change now; inside a
+            // reservation, the others get the new access when first touched
+            // (`mmap` with PROT_NONE and then mprotect, as musl does for
+            // thread stacks, costs nothing until used). PROT_NONE makes
+            // untouched pages inaccessible; committed pages stay readable.
             10 => {
-                if a3 == 0 {
-                    return Outcome::Ret(0);
+                if !a1.is_multiple_of(4096) {
+                    return fail(EINVAL);
                 }
-                match self.vm_call(
-                    i,
-                    sys::VM_PROTECT,
-                    a1,
-                    page_up(a2),
-                    a3 | zoo_abi::prot::READ,
-                    p4,
-                    mem,
-                ) {
-                    Outcome::Ret(0) => Outcome::Ret(0),
-                    _ => fail(ENOMEM),
+                let len = page_up(a2);
+                let Some(end) = a1.checked_add(len) else {
+                    return fail(ENOMEM);
+                };
+                let reserved = self
+                    .proc(i)
+                    .vmas
+                    .iter()
+                    .any(|&(s, l)| a1 >= s && end <= s + l);
+                if reserved {
+                    let lazy = &mut self.proc(i).linux_lazy;
+                    lazy_cut(lazy, a1, len);
+                    if a3 != 0 {
+                        lazy.push((a1, len, (a3 & 7) | zoo_abi::prot::READ));
+                    }
                 }
+                if a3 != 0 {
+                    let (w, x) = (a3 & 2 != 0, a3 & 4 != 0);
+                    let mut pages = 0;
+                    let mut va = a1;
+                    while let Some(m) = mem.next_mapped(p4, va, end) {
+                        if mem.protect_user_page(p4, m, w, x).is_err() {
+                            return fail(ENOMEM);
+                        }
+                        pages += 1;
+                        va = m + 4096;
+                    }
+                    // Outside a reservation every page must be committed.
+                    if !reserved && pages != len / 4096 {
+                        return fail(ENOMEM);
+                    }
+                }
+                Outcome::Ret(0)
             }
             // madvise: advice only.
             28 => Outcome::Ret(0),
@@ -2417,6 +3012,10 @@ impl Scheduler {
             56 => match a1 & !0xff {
                 0 => self.linux_fork(i, f, mem, false, a2),
                 x if x == CLONE_VM | CLONE_VFORK => self.linux_fork(i, f, mem, true, a2),
+                x if x & THREAD_NEEDS == THREAD_NEEDS && x & !(THREAD_NEEDS | THREAD_MAY) == 0 => {
+                    let (ctid, tls) = (f.r10, f.r8);
+                    self.linux_thread(i, f, mem, x, a2, a3, ctid, tls)
+                }
                 _ => {
                     kprintln!("ZOO_OS INFO linux clone flags={:#x} unsupported", a1);
                     fail(ENOSYS)
@@ -2560,18 +3159,26 @@ impl Scheduler {
             // kill(pid, sig), tkill(tid, sig), tgkill(tgid, tid, sig): to
             // Linux programs only; pid 0 is the caller (one process group).
             62 | 200 | 234 => {
-                let (pid, sig) = if number == 234 { (a1, a3) } else { (a1, a2) };
-                let (pid, sig) = (pid as i64, sig);
+                let (id, sig) = if number == 234 { (a2, a3) } else { (a1, a2) };
                 if sig > 64 {
                     return fail(EINVAL);
                 }
                 let me = self.task(i).pid;
-                let target = match pid {
-                    0 => me,
-                    p if p > 0 => p as u64,
-                    _ => return fail(ESRCH),
+                let k = if number == 62 {
+                    let target = match id as i64 {
+                        0 => me,
+                        p if p > 0 => p as u64,
+                        _ => return fail(ESRCH),
+                    };
+                    self.task_of_pid(target)
+                } else {
+                    // A thread: tkill(tid), tgkill(tgid, tid).
+                    self.tasks.iter().position(|t| {
+                        matches!(t, Some(t) if t.tid == id && t.proc.is_some()
+                            && t.state != State::Exited && (number != 234 || t.pid == a1))
+                    })
                 };
-                let Some(k) = self.task_of_pid(target) else {
+                let Some(k) = k else {
                     return fail(ESRCH);
                 };
                 if !self.proc(k).linux {
@@ -2580,15 +3187,14 @@ impl Scheduler {
                 if sig == 0 {
                     return Outcome::Ret(0);
                 }
-                self.linux_signal(k, sig);
+                self.linux_send(k, sig, me, number != 62);
                 if self.proc(i).ended {
                     Outcome::Exit(0)
                 } else {
                     Outcome::Ret(0)
                 }
             }
-            // rt_sigaction(sig, act, oldact, size): recorded; the default
-            // actions apply (docs/linux5-design.md).
+            // rt_sigaction(sig, act, oldact, size) (docs/linux6-design.md).
             13 => {
                 let (sig, act, old) = (a1, a2, a3);
                 if !(1..=64).contains(&sig) || (act != 0 && (sig == SIGKILL || sig == SIGSTOP)) {
@@ -2629,7 +3235,7 @@ impl Scheduler {
                 if (set != 0 && !ok(set, 8, false)) || (old != 0 && !ok(old, 8, true)) {
                     return fail(EFAULT);
                 }
-                let cur = self.proc(i).linux_sigmask;
+                let cur = self.task(i).sigmask;
                 let new = if set == 0 {
                     cur
                 } else {
@@ -2647,8 +3253,219 @@ impl Scheduler {
                     unsafe { (old as *mut u64).write_unaligned(cur) };
                 }
                 // SIGKILL and SIGSTOP cannot be blocked.
-                self.proc(i).linux_sigmask = new & !(1 << (SIGKILL - 1) | 1 << (SIGSTOP - 1));
+                self.task(i).sigmask = new & !UNBLOCKABLE;
                 Outcome::Ret(0)
+            }
+            // rt_sigreturn: back from a handler, restoring what its frame
+            // saved (possibly edited by the handler). A bad frame ends the
+            // program with SIGSEGV.
+            15 => {
+                let uc = f.rsp; // the handler's `ret` popped the return address
+                let bad = |s: &mut Self| {
+                    s.proc(i).linux_term_sig = Some(SIGSEGV as u8);
+                    Outcome::Crash
+                };
+                if !ok(uc, 304, false) {
+                    return bad(self);
+                }
+                let mut g = [0u64; 24];
+                for (k, v) in g.iter_mut().enumerate() {
+                    // SAFETY: inside the checked readable `ucontext`.
+                    *v = unsafe { ((uc + 40) as *const u64).add(k).read_unaligned() };
+                }
+                // SAFETY: inside the checked readable `ucontext`.
+                let mask = unsafe { ((uc + 296) as *const u64).read_unaligned() };
+                if g[16] >= USER_HALF_END || g[15] >= USER_HALF_END {
+                    return bad(self);
+                }
+                let fx = if g[23] != 0 {
+                    if !ok(g[23], 512, false) {
+                        return bad(self);
+                    }
+                    // SAFETY: checked as 512 readable user bytes.
+                    let bytes = unsafe { (g[23] as *const [u8; 512]).read_unaligned() };
+                    match fpu::from_user(&bytes) {
+                        Some(fx) => Some(fx),
+                        None => return bad(self),
+                    }
+                } else {
+                    None
+                };
+                f.r8 = g[0];
+                f.r9 = g[1];
+                f.r10 = g[2];
+                f.r11 = g[3];
+                f.r12 = g[4];
+                f.r13 = g[5];
+                f.r14 = g[6];
+                f.r15 = g[7];
+                f.rdi = g[8];
+                f.rsi = g[9];
+                f.rbp = g[10];
+                f.rbx = g[11];
+                f.rdx = g[12];
+                f.rax = g[13];
+                f.rcx = g[14];
+                f.rsp = g[15];
+                f.rip = g[16];
+                // Only arithmetic and direction flags come from the program.
+                f.rflags = (g[17] & LINUX_USER_FLAGS) | RFLAGS_IF | RFLAGS_RESERVED;
+                if let Some(fx) = fx {
+                    fpu::restore(&fx);
+                }
+                self.task(i).sigmask = mask & !UNBLOCKABLE;
+                Outcome::Resume
+            }
+            // rt_sigpending(set, size): pending signals this thread blocks.
+            127 => {
+                if !ok(a1, 8, true) {
+                    return fail(EFAULT);
+                }
+                let t = self.task(i);
+                let (pending, mask) = (t.sig_pending, t.sigmask);
+                let set = (pending | self.proc(i).linux_pending) & mask;
+                // SAFETY: checked as writable user memory.
+                unsafe { (a1 as *mut u64).write_unaligned(set) };
+                Outcome::Ret(0)
+            }
+            // sigaltstack(ss, old_ss)
+            131 => {
+                let (ss, old) = (a1, a2);
+                if (ss != 0 && !ok(ss, 24, false)) || (old != 0 && !ok(old, 24, true)) {
+                    return fail(EFAULT);
+                }
+                let (sp, size, on) = self.task(i).altstack;
+                let on_alt = on && f.rsp.wrapping_sub(sp) < size;
+                if old != 0 {
+                    let flags = if on_alt {
+                        SS_ONSTACK
+                    } else if on {
+                        0
+                    } else {
+                        SS_DISABLE
+                    };
+                    // SAFETY: checked as writable user memory (24 bytes).
+                    unsafe {
+                        let p = old as *mut u64;
+                        p.write_unaligned(sp);
+                        p.add(1).write_unaligned(flags);
+                        p.add(2).write_unaligned(size);
+                    }
+                }
+                if ss != 0 {
+                    // SAFETY: checked as readable user memory (24 bytes).
+                    let (new_sp, new_flags, new_size) = unsafe {
+                        let p = ss as *const u64;
+                        (
+                            p.read_unaligned(),
+                            p.add(1).read_unaligned() & 0xFFFF_FFFF,
+                            p.add(2).read_unaligned(),
+                        )
+                    };
+                    if on_alt {
+                        return fail(EPERM);
+                    }
+                    if new_flags & SS_DISABLE != 0 {
+                        self.task(i).altstack = (0, 0, false);
+                    } else if new_flags & !SS_AUTODISARM != 0 {
+                        return fail(EINVAL);
+                    } else if new_size < 2048 {
+                        return fail(ENOMEM);
+                    } else {
+                        self.task(i).altstack = (new_sp, new_size, true);
+                    }
+                }
+                Outcome::Ret(0)
+            }
+            // pause(): until a signal is handled (EINTR).
+            34 => Outcome::Block,
+            // sched_yield
+            24 => Outcome::Yield,
+            // set_robust_list: accepted (robust mutexes are not cleaned up).
+            273 => Outcome::Ret(0),
+            // futex(addr, op, val, timeout, addr2, val3): private futexes in
+            // this process; WAIT (relative), WAIT_BITSET (absolute, all
+            // bits), WAKE, WAKE_BITSET, REQUEUE, CMP_REQUEUE.
+            202 => {
+                let (uaddr, op, val) = (a1, a2 & 127, a3 & 0xFFFF_FFFF);
+                if uaddr % 4 != 0 || !ok(uaddr, 4, false) {
+                    return fail(EFAULT);
+                }
+                // SAFETY (reads of `uaddr` below): four readable, aligned user
+                // bytes (checked above); other threads may write them.
+                let current =
+                    || u64::from(unsafe { core::ptr::read_volatile(uaddr as *const u32) });
+                match op {
+                    0 | 9 => {
+                        let tmo = f.r10;
+                        let first = tmo != 0 && self.task(i).sleep_until.is_none();
+                        let wait_ticks = if first {
+                            if !ok(tmo, 16, false) {
+                                return fail(EFAULT);
+                            }
+                            // SAFETY: checked as readable user memory.
+                            let (sec, nsec) = unsafe {
+                                let p = tmo as *const u64;
+                                (p.read_unaligned(), p.add(1).read_unaligned())
+                            };
+                            if nsec >= 1_000_000_000 {
+                                return fail(EINVAL);
+                            }
+                            let mut ns = sec.saturating_mul(1_000_000_000).saturating_add(nsec);
+                            if op == 9 {
+                                let now = if a2 & 256 != 0 {
+                                    rtc::realtime_ns().unwrap_or(0)
+                                } else {
+                                    rtc::monotonic_ns()
+                                };
+                                ns = ns.saturating_sub(now);
+                            }
+                            let tick_ns = 1_000_000_000 / u64::from(interrupts::TIMER_HZ);
+                            Some(ns.div_ceil(tick_ns))
+                        } else {
+                            None
+                        };
+                        let now = interrupts::ticks();
+                        let value = current();
+                        let t = self.task(i);
+                        if t.futex_woken {
+                            t.futex_woken = false;
+                            t.futex = None;
+                            t.sleep_until = None;
+                            return Outcome::Ret(0);
+                        }
+                        if value != val {
+                            t.futex = None;
+                            t.sleep_until = None;
+                            return fail(EAGAIN);
+                        }
+                        if let Some(d) = wait_ticks {
+                            t.sleep_until = Some(now.saturating_add(d));
+                        }
+                        if let Some(d) = t.sleep_until
+                            && now >= d
+                        {
+                            t.futex = None;
+                            t.sleep_until = None;
+                            return fail(ETIMEDOUT);
+                        }
+                        t.futex = Some(uaddr);
+                        Outcome::Block
+                    }
+                    1 | 10 => Outcome::Ret(self.linux_futex_wake(i, uaddr, val as usize, None)),
+                    3 | 4 => {
+                        if op == 4 && current() != f.r9 & 0xFFFF_FFFF {
+                            return fail(EAGAIN);
+                        }
+                        let to = f.r8;
+                        if !to.is_multiple_of(4) {
+                            return fail(EINVAL);
+                        }
+                        let more = Some((to, f.r10 as usize));
+                        Outcome::Ret(self.linux_futex_wake(i, uaddr, val as usize, more))
+                    }
+                    _ => fail(ENOSYS),
+                }
             }
             // ---- time ----
             // clock_gettime(clock, ts)
@@ -4196,10 +5013,80 @@ const AT_REMOVEDIR: u64 = 0x200;
 const O_CLOEXEC: u64 = 0o2_000_000;
 const CLONE_VM: u64 = 0x100;
 const CLONE_VFORK: u64 = 0x4000;
+const SIGILL: u64 = 4;
+const SIGTRAP: u64 = 5;
+const SIGBUS: u64 = 7;
+const SIGFPE: u64 = 8;
 const SIGKILL: u64 = 9;
 const SIGSEGV: u64 = 11;
 const SIGPIPE: u64 = 13;
 const SIGSTOP: u64 = 19;
+/// SIGKILL and SIGSTOP can be neither blocked nor caught.
+const UNBLOCKABLE: u64 = 1 << (SIGKILL - 1) | 1 << (SIGSTOP - 1);
+const SA_RESTORER: u64 = 0x0400_0000;
+const SA_ONSTACK: u64 = 0x0800_0000;
+const SA_RESTART: u64 = 0x1000_0000;
+const SA_NODEFER: u64 = 0x4000_0000;
+const SA_RESETHAND: u64 = 0x8000_0000;
+const SS_ONSTACK: u64 = 1;
+const SS_DISABLE: u64 = 2;
+const SS_AUTODISARM: u64 = 1 << 31;
+/// A signal frame: return address (8), `ucontext` (304), `siginfo` (128).
+const SIGFRAME: u64 = 440;
+/// Flags a signal handler's return may set: CF PF AF ZF SF DF OF.
+const LINUX_USER_FLAGS: u64 = 0xCD5;
+const CLONE_FS: u64 = 0x200;
+const CLONE_FILES: u64 = 0x400;
+const CLONE_SIGHAND: u64 = 0x800;
+const CLONE_THREAD: u64 = 0x1_0000;
+const CLONE_SYSVSEM: u64 = 0x4_0000;
+const CLONE_SETTLS: u64 = 0x8_0000;
+const CLONE_PARENT_SETTID: u64 = 0x10_0000;
+const CLONE_CHILD_CLEARTID: u64 = 0x20_0000;
+const CLONE_DETACHED: u64 = 0x40_0000;
+const CLONE_CHILD_SETTID: u64 = 0x100_0000;
+/// A thread: `clone` must share all of these and may add the next ones.
+const THREAD_NEEDS: u64 = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD;
+const THREAD_MAY: u64 = CLONE_SYSVSEM
+    | CLONE_SETTLS
+    | CLONE_PARENT_SETTID
+    | CLONE_CHILD_CLEARTID
+    | CLONE_DETACHED
+    | CLONE_CHILD_SETTID;
+
+/// Removes `[start, start + len)` from a list of lazy ranges, splitting
+/// those it cuts.
+fn lazy_cut(list: &mut Vec<(u64, u64, u64)>, start: u64, len: u64) {
+    let end = start.saturating_add(len);
+    let mut out = Vec::with_capacity(list.len() + 1);
+    for &(s, l, p) in list.iter() {
+        let e = s + l;
+        if e <= start || s >= end {
+            out.push((s, l, p));
+            continue;
+        }
+        if s < start {
+            out.push((s, start - s, p));
+        }
+        if e > end {
+            out.push((end, e - end, p));
+        }
+    }
+    *list = out;
+}
+
+/// The recorded access of the lazy range holding `va`, if any.
+fn lazy_prot(list: &[(u64, u64, u64)], va: u64) -> Option<u64> {
+    list.iter()
+        .find(|&&(s, l, _)| va >= s && va - s < l)
+        .map(|&(_, _, p)| p)
+}
+
+/// Signals whose default action is to do nothing here: SIGCHLD, SIGCONT,
+/// the stop signals (no job control yet), SIGURG and SIGWINCH.
+fn default_ignored(sig: u64) -> bool {
+    matches!(sig, 17..=23 | 28)
+}
 /// Most arguments (and, separately, environment strings) at start-up, and
 /// the longest single one `execve` takes.
 const LINUX_ARGS_MAX: usize = 64;
@@ -4568,6 +5455,8 @@ fn initrd_children(dir: &str) -> alloc::vec::Vec<(String, bool)> {
 const EPERM: i64 = 1;
 const ENOENT: i64 = 2;
 const ESRCH: i64 = 3;
+const EINTR: i64 = 4;
+const ETIMEDOUT: i64 = 110;
 const E2BIG: i64 = 7;
 const ENOEXEC: i64 = 8;
 const ECHILD: i64 = 10;
@@ -4675,7 +5564,11 @@ fn syscall_with(frame: *mut TrapFrame, linux: bool) -> *mut TrapFrame {
         match outcome {
             Outcome::Ret(v) => {
                 f.rax = v as u64;
-                frame
+                if s.linux_deliver(cur, f, m) {
+                    frame
+                } else {
+                    s.switch_away(frame, m)
+                }
             }
             Outcome::Yield => {
                 f.rax = 0;
@@ -4695,7 +5588,13 @@ fn syscall_with(frame: *mut TrapFrame, linux: bool) -> *mut TrapFrame {
                 s.finish_thread(cur, code);
                 s.switch_away(frame, m)
             }
-            Outcome::Resume => frame,
+            Outcome::Resume => {
+                if s.linux_deliver(cur, f, m) {
+                    frame
+                } else {
+                    s.switch_away(frame, m)
+                }
+            }
             Outcome::Crash => {
                 s.finish(cur, ExitStatus::Crashed);
                 s.switch_away(frame, m)
@@ -4738,7 +5637,7 @@ pub fn on_user_fault(frame: *mut TrapFrame) -> *mut TrapFrame {
         } else {
             0
         };
-        if s.deliver_exception(cur, f, addr, m) {
+        if s.linux_fault(cur, f, addr, m) || s.deliver_exception(cur, f, addr, m) {
             return frame;
         }
         let t = s.task(cur);

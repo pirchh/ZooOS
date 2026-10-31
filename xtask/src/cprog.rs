@@ -14,12 +14,13 @@ pub const ZIG_DIR: &str = "zig-x86_64-windows-0.16.0";
 pub const C_PROGRAMS: [&str; 2] = ["puffin-test", "tern-test"];
 /// Ordinary Linux programs (`c/linux/`), built for x86_64-linux-musl and
 /// packed as `linux/<name>` (docs/linux1-design.md).
-pub const LINUX_PROGRAMS: [&str; 5] = [
+pub const LINUX_PROGRAMS: [&str; 6] = [
     "hello",
     "eider-test",
     "skua-test",
     "fulmar-test",
     "guillemot-test",
+    "kittiwake-test",
 ];
 
 /// Where user programs must lie (the kernel's load window).
