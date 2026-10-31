@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D5 section
-(version 0.27.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D6 section
+(version 0.28.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,28 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 6 results: start in the desktop (version 0.28.0)
+
+Design: docs/d6-design.md (§3 as implemented).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 24 s, every case as
+expected (`assistant-live` `SKIP`). The `fast-boot` case (7.5 s) now
+shows `ZOO_OS SHELL autostart desktop`, the session's processes (pids
+5–9) and the display, a desktop screenshot passing `check_desktop_started`;
+after Escape, `run tern-test fast` (pid 10) exits with code 0.
+
+Then `--accel whpx --case assistant-live`: pass in 57.1 s.
+
+**Negative control** (temporary edit to the kernel shell, reverted):
+
+| Change | Result |
+| --- | --- |
+| No autostart | `FAIL fast-boot` (timeout): `no ZOO_OS SHELL autostart desktop within 30s` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: a
+clean-copy verify; real hardware.
 
 ## Desktop step 5 results: date and time in the menu bar (version 0.27.0)
 
