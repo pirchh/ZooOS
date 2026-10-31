@@ -20,6 +20,9 @@ pub const VEC_X87: u64 = 16;
 pub const VEC_SIMD: u64 = 19;
 pub const VEC_TIMER: u64 = 32;
 pub const VEC_SYSCALL: u64 = 0x80;
+/// Not an IDT vector: the tag the `syscall` entry gives Linux system calls
+/// (docs/linux1-design.md).
+pub const VEC_LINUX: u64 = 0x1_0000;
 
 /// Registers as saved on the kernel stack by `trap_common` and the CPU.
 /// Field order is the reverse of the push order (last pushed = lowest
@@ -144,6 +147,77 @@ macro_rules! stub {
     };
 }
 
+// ---- the `syscall` instruction (Linux programs, docs/linux1-design.md) ----
+
+/// Read by `syscall_entry` (single CPU; written with interrupts disabled).
+/// The current task's kernel stack top, the user RSP while switching, and
+/// the user CS/SS selectors for the frame.
+static mut SYSCALL_STACK: u64 = 0;
+static mut SYSCALL_USER_RSP: u64 = 0;
+static mut USER_CS: u64 = 0;
+static mut USER_SS: u64 = 0;
+
+/// Keeps `syscall_entry`'s stack in step with the TSS (`set_kernel_stack`).
+pub fn set_syscall_stack(top: u64) {
+    // SAFETY: called with interrupts disabled on the only CPU; the entry
+    // stub, its only reader, cannot run meanwhile.
+    unsafe { SYSCALL_STACK = top };
+}
+
+/// Enables `syscall` and points it at `syscall_entry`. Call once, after the
+/// GDT is loaded, with interrupts disabled.
+pub fn init_syscall() {
+    use x86_64::registers::model_specific::Msr;
+    let sel = crate::gdt::selectors();
+    // SAFETY: interrupts are disabled and nothing has run `syscall` yet.
+    // EFER.SCE enables the instruction; LSTAR is the entry; STAR's kernel
+    // selector gives CS and SS (kernel data follows kernel code in the
+    // GDT). The user half of STAR is unused: returns go through `iretq`.
+    // SFMASK clears TF, IF, DF, NT and AC on entry, so no interrupt can
+    // arrive before the stack switch.
+    unsafe {
+        USER_CS = u64::from(sel.user_code.0);
+        USER_SS = u64::from(sel.user_data.0);
+        let mut efer = Msr::new(0xC000_0080);
+        efer.write(efer.read() | 1);
+        Msr::new(0xC000_0081).write(u64::from(sel.kernel_code.0) << 32);
+        Msr::new(0xC000_0082).write(syscall_entry as *const () as u64);
+        Msr::new(0xC000_0084).write(0x4_7700);
+    }
+}
+
+/// The `syscall` instruction lands here with the user RSP still loaded,
+/// RCX = user RIP, R11 = user RFLAGS and interrupts off (SFMASK).
+///
+/// Safety conditions for the assembly:
+/// - Single CPU: the scratch static cannot be used by two entries at once,
+///   and interrupts stay off until `iretq`.
+/// - `SYSCALL_STACK` is the 16-byte-aligned top of the current task's
+///   kernel stack (kept equal to the TSS RSP0), so the frame built here has
+///   the same layout and alignment as an interrupt from user mode, and
+///   `trap_common` resumes it with `iretq`.
+#[unsafe(naked)]
+pub unsafe extern "C" fn syscall_entry() {
+    naked_asm!(
+        "mov [rip + {user_rsp}], rsp",
+        "mov rsp, [rip + {stack}]",
+        "push qword ptr [rip + {ss}]",
+        "push qword ptr [rip + {user_rsp}]",
+        "push r11",
+        "push qword ptr [rip + {cs}]",
+        "push rcx",
+        "push 0",
+        "push {vector}",
+        "jmp {common}",
+        user_rsp = sym SYSCALL_USER_RSP,
+        stack = sym SYSCALL_STACK,
+        ss = sym USER_SS,
+        cs = sym USER_CS,
+        vector = const VEC_LINUX,
+        common = sym trap_common,
+    );
+}
+
 stub!(stub_divide, VEC_DIVIDE);
 stub!(stub_invalid_opcode, VEC_INVALID_OPCODE);
 stub!(stub_stack_segment, VEC_STACK_SEGMENT, error_code);
@@ -167,6 +241,7 @@ extern "C" fn trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
             process::on_timer(frame)
         }
         VEC_SYSCALL if f.is_user_mode() => process::on_syscall(frame),
+        VEC_LINUX if f.is_user_mode() => process::on_linux_syscall(frame),
         _ if f.is_user_mode() => process::on_user_fault(frame),
         _ => interrupts::kernel_trap_fault(f),
     }

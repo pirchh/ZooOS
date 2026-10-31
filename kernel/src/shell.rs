@@ -240,6 +240,15 @@ fn execute(line: &str) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
         },
+        "linux" => match process::spawn_linux_from_kernel(
+            &rest
+                .split_whitespace()
+                .collect::<alloc::vec::Vec<_>>()
+                .join("\0"),
+        ) {
+            Ok(pid) => kprintln!("started pid {}", pid),
+            Err(e) => kprintln!("linux {}: {}", rest.trim(), e.name()),
+        },
         "desktop" => {
             TASKS_BEFORE_SESSION
                 .store(process::user_tasks(), core::sync::atomic::Ordering::Relaxed);

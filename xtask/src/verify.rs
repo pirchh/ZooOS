@@ -706,6 +706,37 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-desktop", check_big_screen)],
         },
         Case {
+            name: "linux-hello",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux hello alpha",
+                    "ZOO_OS PROC start pid=26 name=hello",
+                    "ZOO_OS PROC exit pid=26 name=hello code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "an unmodified static Linux musl program runs through Linux system calls",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux hello alpha")),
+                    Action::WaitFor(
+                        "[26:hello] Hello from Linux musl: argc=2 argv[0]=hello argv[1]=alpha"
+                            .into(),
+                    ),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=hello code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
