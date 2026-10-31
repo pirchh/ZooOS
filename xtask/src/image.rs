@@ -77,6 +77,8 @@ pub enum Mode {
     /// The normal system without the boot-check programs
     /// (docs/b1-design.md): what `cargo xtask run` boots by default.
     FastBoot,
+    /// The normal system on a screen wider than 1920 (test mode).
+    BigScreen,
     Panic,
     FaultWriteProtect,
     FaultHeapGuard,
@@ -85,9 +87,10 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub const ALL: [Mode; 7] = [
+    pub const ALL: [Mode; 8] = [
         Mode::Normal,
         Mode::FastBoot,
+        Mode::BigScreen,
         Mode::Panic,
         Mode::FaultWriteProtect,
         Mode::FaultHeapGuard,
@@ -100,6 +103,7 @@ impl Mode {
         match self {
             Mode::Normal => "normal",
             Mode::FastBoot => "fast-boot",
+            Mode::BigScreen => "big-screen",
             Mode::Panic => "panic",
             Mode::FaultWriteProtect => "fault-write-protect",
             Mode::FaultHeapGuard => "fault-heap-guard",
@@ -299,9 +303,16 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let img = out_dir.join(format!("zoo-os-{}-uefi.img", mode.name()));
-    bootloader::UefiBoot::new(&elf)
-        .set_ramdisk(&initrd)
-        .create_disk_image(&img)
+    let mut boot = bootloader::UefiBoot::new(&elf);
+    boot.set_ramdisk(&initrd);
+    if matches!(mode, Mode::BigScreen) {
+        // Ask the firmware for a screen wider than the desktop's back
+        // buffer, as on large monitors (docs/usb-boot.md).
+        let mut config = bootloader::BootConfig::default();
+        config.frame_buffer.minimum_framebuffer_width = Some(2000);
+        boot.set_boot_config(&config);
+    }
+    boot.create_disk_image(&img)
         .map_err(|e| format!("failed to create UEFI disk image {}: {e:#}", img.display()))?;
     println!("[build] image ({}) -> {}", mode.name(), img.display());
     Ok(img)

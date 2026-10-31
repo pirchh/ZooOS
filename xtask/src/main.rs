@@ -22,9 +22,12 @@ usage: cargo xtask <command> [options]
 commands:
   doctor                    check prerequisites (installs nothing)
   build [--mode M]          build kernel(s) and UEFI disk image(s)
-                            M = all (default) | normal | fast-boot | panic
+                            M = all (default) | normal | fast-boot | big-screen | panic
                                 | fault-write-protect | fault-heap-guard
                                 | fault-stack-overflow | triple-fault
+  usb-image                 build the everyday (fast-boot) image as
+                            build/usb/zoo-os-usb.img for a USB stick; writes
+                            no device (docs/usb-boot.md)
   run [--mode M | --panic] [--timeout-secs N]
                             build one mode (default fast-boot: no boot-check
                             programs), then boot it in QEMU
@@ -71,6 +74,34 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "doctor" => {
             opts.reject_all()?;
             Ok(doctor::run(&root))
+        }
+        "usb-image" => {
+            // Builds a file only; writing it to a USB stick is the owner's
+            // step, on a device they choose (docs/usb-boot.md).
+            opts.reject_all()?;
+            let tools = config::Tools::resolve_build_only();
+            let img = image::build(&root, &tools, image::Mode::FastBoot)?;
+            let dir = root.join("build").join("usb");
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            let out = dir.join("zoo-os-usb.img");
+            std::fs::copy(&img, &out)
+                .map_err(|e| format!("cannot copy to {}: {e}", out.display()))?;
+            let bytes =
+                std::fs::read(&out).map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+            use sha2::{Digest, Sha256};
+            let hex: String = Sha256::digest(&bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("[usb-image] {} ({} bytes)", out.display(), bytes.len());
+            println!("[usb-image] sha256 {hex}");
+            println!(
+                "[usb-image] Write it to a USB stick you choose (Rufus in DD mode, or balenaEtcher),\n\
+                 [usb-image] checking the target is the stick. Boot it only on another PC, never this one.\n\
+                 [usb-image] See docs/usb-boot.md."
+            );
+            Ok(ExitCode::SUCCESS)
         }
         "build" => {
             let modes = opts.modes()?;

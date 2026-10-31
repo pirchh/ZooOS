@@ -50,6 +50,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Mode features enabled; at most one is allowed.
 const MODE_FEATURES: usize = cfg!(feature = "fast-boot") as usize
+    + cfg!(feature = "big-screen") as usize
     + cfg!(feature = "panic-test") as usize
     + cfg!(feature = "fault-write-protect") as usize
     + cfg!(feature = "fault-heap-guard") as usize
@@ -65,6 +66,8 @@ const _: () = assert!(
 
 const MODE: &str = if cfg!(feature = "fast-boot") {
     "fast-boot"
+} else if cfg!(feature = "big-screen") {
+    "big-screen"
 } else if cfg!(feature = "panic-test") {
     "panic-test"
 } else if cfg!(feature = "fault-write-protect") {

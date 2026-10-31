@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H1b section
-(version 0.31.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H2a section
+(version 0.32.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,34 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 2a results: ready for a USB stick (version 0.32.0)
+
+Plan and risks: docs/usb-boot.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 31 s, every case as
+expected (`assistant-live` `SKIP`). New case `big-screen` (9.0 s, test-only
+mode whose boot configuration asks for a screen at least 2000 pixels
+wide): QEMU gave 2560×1600; `PeacockHandler: display 2560x1600: using
+1920x1200`; the desktop checks pass and the area right of x=1920 is black.
+
+`cargo xtask usb-image`: `build/usb/zoo-os-usb.img (3211264 bytes)` with
+its SHA-256 printed; no device written.
+
+Then `--accel whpx --case assistant-live`: pass in 63.0 s.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Large screens refused, as before | `FAIL big-screen`: `got ZOO_OS PROC exit pid=27 name=peacock-handler code=3 while expecting ... files` |
+
+Other checks: `cargo clippy` (kernel normal, `fast-boot`, `big-screen`;
+`zoo-user`; `xtask`): 0 warnings. A first version set the screen request
+in the kernel's bootloader configuration, which is deprecated in
+bootloader 0.11; it moved to the disk image's boot configuration. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## Hardware step 1b results: USB keyboard and mouse input (version 0.31.0)
 
