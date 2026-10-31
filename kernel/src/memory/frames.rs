@@ -4,6 +4,11 @@
 //! frame) and `free` (it is currently available). Managed frames are those
 //! wholly inside `Usable` regions, at or above 1 MiB, minus the frames holding
 //! the bitmaps themselves.
+//!
+//! Recently freed frames are handed out first, newest first
+//! (docs/f2-design.md): they are still in the CPU caches, and under a
+//! hypervisor already backed by host memory. A frame the guest has never
+//! touched cost about 23,000 cycles on first write under WHPX.
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use x86_64::PhysAddr;
@@ -21,9 +26,16 @@ pub enum FrameError {
     DoubleFree,
 }
 
+/// Most recently freed frames remembered for reuse.
+const RECENT: usize = 4096;
+
 pub struct BitmapFrameAllocator {
     managed: &'static mut [u64],
     free: &'static mut [u64],
+    /// Indices of recently freed frames (a stack; may hold frames since
+    /// taken by `allocate_contiguous`, which `allocate` skips).
+    recent: &'static mut [u32],
+    recent_len: usize,
     frame_count: usize,
     total: usize,
     available: usize,
@@ -55,7 +67,7 @@ impl BitmapFrameAllocator {
             .max()
             .ok_or("no usable memory above 1 MiB")? as usize;
         let words = frame_count.div_ceil(64);
-        let bitmap_bytes = (words * 8 * 2) as u64;
+        let bitmap_bytes = (words * 8 * 2 + RECENT * 4) as u64;
         let bitmap_frames = bitmap_bytes.div_ceil(FRAME_SIZE);
 
         let (store_start, _) = regions
@@ -67,19 +79,23 @@ impl BitmapFrameAllocator {
         let base = (phys_offset + store_start * FRAME_SIZE) as *mut u64;
         // SAFETY: per the caller's contract the frames at `store_start` are
         // unused, usable and mapped writable at `phys_offset`; they are large
-        // enough for `2 * words` u64s (checked above) and suitably aligned
-        // (frame aligned). Both slices are disjoint and exclusively ours.
-        let (managed, free) = unsafe {
+        // enough for `2 * words` u64s and `RECENT` u32s (checked above) and
+        // suitably aligned (frame aligned). The three slices are disjoint and
+        // exclusively ours.
+        let (managed, free, recent) = unsafe {
             core::ptr::write_bytes(base, 0, 2 * words);
             (
                 core::slice::from_raw_parts_mut(base, words),
                 core::slice::from_raw_parts_mut(base.add(words), words),
+                core::slice::from_raw_parts_mut(base.add(2 * words) as *mut u32, RECENT),
             )
         };
 
         let mut this = BitmapFrameAllocator {
             managed,
             free,
+            recent,
+            recent_len: 0,
             frame_count,
             total: 0,
             available: 0,
@@ -118,6 +134,17 @@ impl BitmapFrameAllocator {
     }
 
     pub fn allocate(&mut self) -> Option<PhysFrame> {
+        while self.recent_len > 0 {
+            self.recent_len -= 1;
+            let index = self.recent[self.recent_len] as usize;
+            let (w, b) = (index / 64, index % 64);
+            if self.free[w] & (1 << b) != 0 {
+                self.free[w] &= !(1 << b);
+                self.available -= 1;
+                let addr = (index as u64) * FRAME_SIZE;
+                return Some(PhysFrame::containing_address(PhysAddr::new(addr)));
+            }
+        }
         let words = self.free.len();
         for i in 0..words {
             let w = (self.hint + i) % words;
@@ -172,6 +199,12 @@ impl BitmapFrameAllocator {
         }
         self.free[w] |= 1 << b;
         self.available += 1;
+        if self.recent_len < RECENT
+            && let Ok(i) = u32::try_from(index)
+        {
+            self.recent[self.recent_len] = i;
+            self.recent_len += 1;
+        }
         Ok(())
     }
 }

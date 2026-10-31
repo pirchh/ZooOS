@@ -48,6 +48,7 @@ fn recurse(depth: u64) -> u64 {
 pub fn triple_fault() -> ! {
     static EMPTY: spin::LazyLock<x86_64::structures::idt::InterruptDescriptorTable> =
         spin::LazyLock::new(x86_64::structures::idt::InterruptDescriptorTable::new);
+    crate::serial::flush();
     EMPTY.load();
     x86_64::instructions::interrupts::int3();
     panic!("triple-fault: CPU continued after int3 with an empty IDT");

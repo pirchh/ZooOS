@@ -23,7 +23,21 @@ pub struct Console {
     rows: usize,
     col: usize,
     row: usize,
+    /// The text on screen, row by row (docs/f2-design.md).
+    cells: &'static mut [char],
+    /// The screen no longer shows `cells` (it scrolled); `render` redraws
+    /// it, at most once per timer tick or idle moment, so a burst of lines
+    /// costs one redraw instead of a framebuffer copy per line.
+    stale: bool,
 }
+
+/// The largest text grid kept (columns × rows); bigger screens use this much.
+const MAX_COLS: usize = 256;
+const MAX_ROWS: usize = 128;
+
+/// Storage for `Console::cells`, handed out once by `init`.
+static mut CELLS: [char; MAX_COLS * MAX_ROWS] = [' '; MAX_COLS * MAX_ROWS];
+static CELLS_TAKEN: AtomicBool = AtomicBool::new(false);
 
 static CONSOLE: Mutex<Option<Console>> = Mutex::new(None);
 
@@ -59,13 +73,19 @@ pub fn init(fb: Option<FrameBuffer>) -> Result<FrameBufferInfo, &'static str> {
         PixelFormat::Rgb | PixelFormat::Bgr | PixelFormat::U8 => {}
         _ => return Err("unsupported framebuffer pixel format"),
     }
-    let cols = info.width.saturating_sub(2 * MARGIN) / CHAR_WIDTH;
-    let rows = info.height.saturating_sub(2 * MARGIN) / LINE_HEIGHT;
+    let cols = (info.width.saturating_sub(2 * MARGIN) / CHAR_WIDTH).min(MAX_COLS);
+    let rows = (info.height.saturating_sub(2 * MARGIN) / LINE_HEIGHT).min(MAX_ROWS);
     if cols == 0 || rows == 0 {
         return Err("framebuffer too small for text");
     }
     let buf = fb.into_buffer();
     REGION.call_once(|| (buf.as_ptr() as u64, buf.len(), info));
+    if CELLS_TAKEN.swap(true, Ordering::Relaxed) {
+        return Err("console initialised twice");
+    }
+    // SAFETY: `CELLS_TAKEN` lets only the first call get here, so this is
+    // the only reference ever made to `CELLS`.
+    let cells = unsafe { &mut (&mut *core::ptr::addr_of_mut!(CELLS))[..cols * rows] };
     let mut console = Console {
         buf,
         info,
@@ -73,6 +93,8 @@ pub fn init(fb: Option<FrameBuffer>) -> Result<FrameBufferInfo, &'static str> {
         rows,
         col: 0,
         row: 0,
+        cells,
+        stale: false,
     };
     console.clear();
     *CONSOLE.lock() = Some(console);
@@ -95,11 +117,40 @@ pub fn with<R>(f: impl FnOnce(&mut Console) -> R) -> Option<R> {
     guard.as_mut().map(f)
 }
 
+/// Redraws the screen if it is behind its text. Called on timer ticks,
+/// when idle, and before halting.
+pub fn render() {
+    with(|c| c.render());
+}
+
 impl Console {
     pub fn clear(&mut self) {
         self.buf.fill(0);
+        self.cells.fill(' ');
+        self.stale = false;
         self.col = 0;
         self.row = 0;
+    }
+
+    /// Clears the text rows and draws every non-blank cell (writes only:
+    /// reading video memory is slow on real hardware).
+    fn render(&mut self) {
+        if !self.stale {
+            return;
+        }
+        self.stale = false;
+        let line_bytes = LINE_HEIGHT * self.info.stride * self.info.bytes_per_pixel;
+        let top = MARGIN * self.info.stride * self.info.bytes_per_pixel;
+        let end = (top + self.rows * line_bytes).min(self.buf.len());
+        self.buf[top..end].fill(0);
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let c = self.cells[row * self.cols + col];
+                if c != ' ' {
+                    self.draw_char(c, col, row);
+                }
+            }
+        }
     }
 
     fn put_pixel(&mut self, x: usize, y: usize, intensity: u8) {
@@ -142,13 +193,21 @@ impl Console {
         }
     }
 
-    /// Moves every text row up one line and clears the last one.
+    /// Moves every text row up one line and clears the last one; the
+    /// screen catches up in `render`.
     fn scroll(&mut self) {
-        let line_bytes = LINE_HEIGHT * self.info.stride * self.info.bytes_per_pixel;
-        let top = MARGIN * self.info.stride * self.info.bytes_per_pixel;
-        let end = top + self.rows * line_bytes;
-        self.buf.copy_within(top + line_bytes..end, top);
-        self.buf[end - line_bytes..end].fill(0);
+        self.cells.copy_within(self.cols.., 0);
+        let n = self.cells.len();
+        self.cells[n - self.cols..].fill(' ');
+        self.stale = true;
+    }
+
+    /// Sets one cell, drawing it now unless the screen is behind anyway.
+    fn put(&mut self, c: char, col: usize, row: usize) {
+        self.cells[row * self.cols + col] = c;
+        if !self.stale {
+            self.draw_char(c, col, row);
+        }
     }
 
     pub fn write_char(&mut self, c: char) {
@@ -159,7 +218,7 @@ impl Console {
                 if self.col >= self.cols {
                     self.newline();
                 }
-                self.draw_char(c, self.col, self.row);
+                self.put(c, self.col, self.row);
                 self.col += 1;
             }
         }
@@ -169,7 +228,7 @@ impl Console {
     pub fn backspace(&mut self) {
         if self.col > 0 {
             self.col -= 1;
-            self.draw_char(' ', self.col, self.row);
+            self.put(' ', self.col, self.row);
         }
     }
 }

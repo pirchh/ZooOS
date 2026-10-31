@@ -7,6 +7,10 @@ use x86_64::instructions::{hlt, interrupts};
 /// fatal exception handlers, so nothing runs after a fatal report.
 pub fn halt_forever() -> ! {
     interrupts::disable();
+    // The report must reach the screen and the serial port before the CPU
+    // stops.
+    crate::console::render();
+    crate::serial::flush();
     loop {
         // With interrupts off only an NMI can wake the CPU; halt again.
         hlt();

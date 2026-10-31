@@ -474,6 +474,8 @@ pub fn init() {
 /// Halts until the next interrupt, allowing a switch to a user task. Call
 /// with interrupts disabled; returns with interrupts disabled.
 pub fn idle_hlt() {
+    crate::serial::pump();
+    crate::console::render();
     KERNEL_IDLE.store(true, Ordering::Relaxed);
     cpu_interrupts::enable_and_hlt();
     cpu_interrupts::disable();
@@ -4002,6 +4004,9 @@ impl Scheduler {
 
     /// Saves the current frame and switches to the next ready task.
     fn switch_away(&mut self, frame: *mut TrapFrame, mem: &mut Memory) -> *mut TrapFrame {
+        // Free what ended programs held now, not at the next tick, so the
+        // next program reuses warm frames (docs/f2-design.md).
+        self.reap(mem);
         let cur = self.current;
         let t = self.task(cur);
         t.frame = frame as u64;

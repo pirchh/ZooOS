@@ -150,13 +150,26 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Fast step 2: kernel output and memory reuse (2026-10-31)
+
+Design and measurements: docs/f2-design.md.
+
+- Serial output is buffered and sent 16 bytes per `rep outsb` without
+  waiting; fatal paths flush. A PC without a COM port gets no serial I/O.
+- The text console scrolls its text grid and redraws once per tick or
+  idle moment instead of copying the framebuffer per line.
+- The frame allocator reuses the most recently freed frames first, and
+  ended programs are reaped at every switch.
+- fork + wait under WHPX: 9.4–12.5 → 1.5–2.5 Mcycles. Version 0.45.0.
+
 ## Linux step 5: processes and pipes (2026-10-31)
 
 Design and measurements: docs/linux5-design.md.
 
 - `fork` copies the address space; copy-on-write is deferred until a
-  measurement shows it matters (a fork with 4 MiB touched costs the same
-  as one without today).
+  measurement shows it matters. Copying 4 MiB adds about 1–3 Mcycles, per
+  the F2 measurement. L5's first claim that 4 MiB cost nothing was wrong:
+  the compiler had removed the buffer.
 - `vfork` / `clone(CLONE_VM|CLONE_VFORK)` (musl's `posix_spawn`) copy
   nothing: the child borrows the parent's space until `execve` or exit.
 - Each child gets its own BadgerHandler session (an `Open` on the

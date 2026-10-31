@@ -188,11 +188,15 @@ int main(void) {
     char *mem4 = malloc(4 << 20);
     if (!mem4) return fail(100, "malloc");
     memset(mem4, 1, 4 << 20);
+    /* The compiler must assume the bytes are used: keep the 4 MiB real. */
+    __asm__ volatile("" : : "r"(mem4) : "memory");
     unsigned long long t2 = cycles();
     for (int k = 0; k < 10; k++) {
         c = fork();
-        if (c == 0) _exit(0);
+        /* The child reads the copy, so the buffer cannot be optimised away. */
+        if (c == 0) _exit(((volatile char *)mem4)[(4 << 20) - 1] == 1 ? 0 : 1);
         waitpid(c, &status, 0);
+        if (WEXITSTATUS(status) != 0) return fail(103, "4 MiB in the child");
     }
     unsigned long long t3 = cycles();
     if (pipe(p)) return fail(101, "pipe");
