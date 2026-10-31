@@ -108,7 +108,7 @@ and verification:
 | L3 | Folders, working directory, uname, environment (docs/linux3-design.md) | done 2026-10-31 |
 | L4 | Writable files in the home folder, on the F1 fast path (docs/linux4-design.md) | done 2026-10-31 |
 | L5 | Processes (`fork`/`vfork`/`execve`/`wait4`), pipes, `dup`, signals with default actions (docs/linux5-design.md) | done 2026-10-31 |
-| F2 | Kernel log output off the hot path (buffered serial, batched console drawing); measured on L5's fork timings | proposed |
+| F2 | Kernel output and memory reuse off the hot path: buffered serial, batched console drawing, warm frame reuse (docs/f2-design.md) | done 2026-10-31 |
 | L6 | Signal handlers (delivery, `rt_sigreturn`, blocked signals) and threads (`clone` with `CLONE_THREAD`) | proposed |
 
 ## Services (owner direction 2026-10-30)

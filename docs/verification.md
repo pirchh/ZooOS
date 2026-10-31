@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L5 section
-(version 0.44.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The F2 section
+(version 0.45.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,41 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Fast step 2 results: kernel output and memory reuse (version 0.45.0)
+
+Design and the full table: docs/f2-design.md.
+
+**Measured** (`--skip-model --accel whpx`, `linux-guillemot`, kcycles
+per child):
+- fork + exit + wait: 9430–12476 before, 1535–2530 after (nine runs).
+- `posix_spawn` + wait: 8201–8746 before, 1978–3156 after.
+- Kernel's first line → `SHELL ready` (`fast-boot`): 166–174 ms before;
+  after, mostly 109–112 ms, with some runs near 170.
+
+The probes that found the causes were temporary and are removed:
+- One log line cost 2.2–4.3 Mcycles.
+- The first write to never-used frames cost 2.6–3.3 Mcycles per fork,
+  against 0.1 for the copy itself.
+
+`guillemot-test` now forces its 4 MiB buffer to be real. The compiler had
+removed it, which made L5's 4 MiB timing invalid.
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 44 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+36.7 s.
+
+**Negative controls** (temporary edits, restored and compared):
+
+| Change | Result |
+| --- | --- |
+| The console is never redrawn after scrolling | `FAIL scroll`: row 40 does not show `zoo> echo end` |
+| Buffered serial output never sent | `FAIL normal` (timeout): no `ZOO_OS BOOT` within 30 s |
+| A reused frame is not marked taken | `FAIL normal`: `PANIC self-test frames: free count not restored` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. Not run: real hardware, which has no emulator exits but has
+real UART timing and video memory.
 
 ## Linux step 5 results: processes and pipes (version 0.44.0)
 

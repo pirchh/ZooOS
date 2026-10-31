@@ -175,6 +175,8 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
 pub fn on_timer_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::xhci::poll();
+    crate::serial::pump();
+    crate::console::render();
     if crate::apic::active() {
         crate::apic::eoi();
         return;

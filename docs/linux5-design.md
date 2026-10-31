@@ -19,9 +19,8 @@ through a 64 KiB pipe, a child writing in the home folder, and timings.
 
 - **`fork`** copies every user page into a new address space
   (`copy_address_space`). Copy-on-write sharing would make large programs
-  fork faster. It is deferred until a measurement shows it matters: with
-  the current programs, a fork with 4 MiB touched costs the same as one
-  without (§3).
+  fork faster. It is deferred until a measurement shows it matters: 4 MiB
+  adds about 1–3 Mcycles (docs/f2-design.md §3).
 - **`vfork` and `clone(CLONE_VM | CLONE_VFORK)`** (musl's `posix_spawn`)
   copy nothing. The child runs in the parent's address space on its own
   stack, and the parent's call blocks until the child calls `execve` or
@@ -81,8 +80,11 @@ argc=2 argv[0]=hello argv[1]=from-guillemot` is also checked.
 | | kcycles |
 | --- | --- |
 | fork + exit + wait | 9430–12476 |
-| fork with 4 MiB touched + exit + wait | 9199–9710 |
+| fork with 4 MiB touched + exit + wait | 9199–9710 (invalid, see below) |
 | posix_spawn of `hello` + wait | 8201–8746 |
+
+The 4 MiB row is invalid: the compiler removed the unread buffer, so
+nothing extra was copied. F2 fixed the test and measured it properly.
 
 These numbers are dominated by kernel log output, not by process
 creation. Measured inside one run:
