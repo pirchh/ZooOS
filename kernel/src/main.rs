@@ -129,6 +129,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     gdt::init();
     fpu::init();
     interrupts::init_idt(boot_info.kernel_stack_bottom);
+    trap::init_syscall();
     apic::set_rsdp(boot_info.rsdp_addr.into_option().unwrap_or(0));
     let mem = memory::init(boot_info);
     kprintln!(

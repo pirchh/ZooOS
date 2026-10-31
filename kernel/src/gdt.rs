@@ -82,6 +82,8 @@ pub unsafe fn set_kernel_stack(top: u64) {
     // SAFETY: per the contract, nothing else is accessing the TSS now; the
     // write goes through the raw pointer without forming a reference.
     unsafe { (*TSS.0.get()).privilege_stack_table[0] = VirtAddr::new(top) };
+    // The `syscall` entry has no TSS switch; it reads this copy.
+    crate::trap::set_syscall_stack(top);
 }
 
 /// Loads the kernel GDT and TSS. Call once, with interrupts disabled.

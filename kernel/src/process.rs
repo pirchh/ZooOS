@@ -400,6 +400,14 @@ pub fn spawn_from_kernel(name: &str) -> Result<u64, Error> {
     })
 }
 
+/// Starts a Linux program from `linux/` in the initrd (shell `linux`).
+pub fn spawn_linux_from_kernel(cmdline: &str) -> Result<u64, Error> {
+    with_sched(|s, m| {
+        let (_, pid) = s.spawn_as(m, cmdline, [None, None], true)?;
+        Ok(pid)
+    })
+}
+
 /// One line per task, for the shell's `ps`.
 pub fn for_each_task(mut f: impl FnMut(u64, &str, &str)) {
     with_sched(|s, _| {
@@ -645,11 +653,23 @@ impl Scheduler {
         cmdline: &str,
         give: [Option<HandleEntry>; 2],
     ) -> Result<(usize, u64), Error> {
+        self.spawn_as(mem, cmdline, give, false)
+    }
+
+    /// `spawn`, or (`linux`) a Linux program from `linux/` in the initrd,
+    /// started with the System V process stack (docs/linux1-design.md).
+    fn spawn_as(
+        &mut self,
+        mem: &mut Memory,
+        cmdline: &str,
+        give: [Option<HandleEntry>; 2],
+        linux: bool,
+    ) -> Result<(usize, u64), Error> {
         let name = cmdline.split('\0').next().unwrap_or("");
         if cmdline.len() > MAX_CMDLINE || !valid_name(name) || name.len() > MAX_PATH {
             return Err(Error::Inval);
         }
-        let mut path = String::from("bin/");
+        let mut path = String::from(if linux { "linux/" } else { "bin/" });
         path.push_str(name);
         let file = initrd::find(&path).ok_or(Error::NotFound)?;
         let image = elf::parse(file, USER_IMAGE_START, USER_IMAGE_END).map_err(|e| {
@@ -658,10 +678,15 @@ impl Scheduler {
         })?;
         let (index, slot) = self.free_task_slots()?;
         let p4 = mem.new_address_space().map_err(|_| Error::NoMem)?;
-        if load_image(mem, p4, file, &image).is_err() {
+        let Ok(stack_page) = load_image(mem, p4, file, &image) else {
             mem.free_address_space(p4);
             return Err(Error::NoMem);
-        }
+        };
+        let rsp = if linux {
+            linux_stack(mem, stack_page, cmdline, file, &image)
+        } else {
+            USER_STACK_TOP - 8
+        };
         let Ok(top) = mem.map_kernel_stack(slot) else {
             mem.free_address_space(p4);
             return Err(Error::NoMem);
@@ -688,7 +713,7 @@ impl Scheduler {
         self.procs[pidx] = Some(proc);
         let mut task = Task::new(pid, pid, name);
         // SysV: at function entry, rsp + 8 is 16-byte aligned.
-        task.frame = Self::first_frame(top, image.entry, USER_STACK_TOP - 8, arg, arg2);
+        task.frame = Self::first_frame(top, image.entry, rsp, arg, arg2);
         task.fpu = Some(Box::new(fpu::new_state()));
         task.p4 = Some(p4);
         task.proc = Some(pidx);
@@ -871,6 +896,106 @@ impl Scheduler {
     }
 
     /// Runs system call `f.rax` for task `i`, whose address space is active.
+    /// A Linux x86-64 system call (docs/linux1-design.md): number in RAX,
+    /// arguments in RDI, RSI, RDX, R10, R8, R9; errors as negative errno.
+    fn linux_syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
+        let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
+        let p4 = self.task(i).p4.expect("system call from a user task");
+        let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+        let fail = |e: i64| Outcome::Ret(-e);
+        // Standard output and error go to the program's log, line by line.
+        let out = |s: &mut Self, bytes: &[u8]| {
+            let t = s.task(i);
+            let text = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+            log_user(t.pid, &t.name, text);
+        };
+        match number {
+            // write(fd, buf, len)
+            1 => {
+                if a1 != 1 && a1 != 2 {
+                    return fail(EBADF);
+                }
+                if a3 > 0 && !ok(a2, a3, false) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: just checked as readable user memory of the
+                // running process.
+                let bytes = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
+                out(self, bytes);
+                Outcome::Ret(a3 as i64)
+            }
+            // writev(fd, iov, count)
+            20 => {
+                if a1 != 1 && a1 != 2 {
+                    return fail(EBADF);
+                }
+                if a3 > 1024 || !ok(a2, a3 * 16, false) {
+                    return fail(EINVAL);
+                }
+                // One writev is one write: musl sends a line's text and its
+                // newline as separate pieces.
+                let mut all = alloc::vec::Vec::new();
+                for k in 0..a3 {
+                    // SAFETY: inside the iovec array checked above.
+                    let (base, len) = unsafe {
+                        let p = (a2 + 16 * k) as *const u64;
+                        (p.read_unaligned(), p.add(1).read_unaligned())
+                    };
+                    if len == 0 {
+                        continue;
+                    }
+                    if len > LINUX_WRITE_MAX || !ok(base, len, false) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as readable user memory.
+                    let bytes =
+                        unsafe { core::slice::from_raw_parts(base as *const u8, len as usize) };
+                    all.extend_from_slice(bytes);
+                    if all.len() as u64 > LINUX_WRITE_MAX {
+                        return fail(EINVAL);
+                    }
+                }
+                out(self, &all);
+                Outcome::Ret(all.len() as i64)
+            }
+            // ioctl: no terminals yet.
+            16 => fail(ENOTTY),
+            // getpid, gettid
+            39 => Outcome::Ret(self.task(i).pid as i64),
+            186 => Outcome::Ret(self.task(i).tid as i64),
+            // exit, exit_group
+            60 | 231 => Outcome::Exit(a1 as u8),
+            // arch_prctl(code, addr)
+            158 => match a1 {
+                // ARCH_SET_FS
+                0x1002 if a2 < USER_HALF_END => {
+                    self.task(i).fs_base = a2;
+                    FsBase::write(VirtAddr::new_truncate(a2));
+                    Outcome::Ret(0)
+                }
+                // ARCH_GET_FS
+                0x1003 if ok(a2, 8, true) => {
+                    let fs = self.task(i).fs_base;
+                    // SAFETY: checked as writable user memory.
+                    unsafe { (a2 as *mut u64).write_unaligned(fs) };
+                    Outcome::Ret(0)
+                }
+                _ => fail(EINVAL),
+            },
+            // set_tid_address
+            218 => Outcome::Ret(self.task(i).tid as i64),
+            n => {
+                let (word, bit) = ((n / 64) as usize, n % 64);
+                if word < LINUX_REPORTED.len()
+                    && LINUX_REPORTED[word].fetch_or(1 << bit, Ordering::Relaxed) & (1 << bit) == 0
+                {
+                    kprintln!("ZOO_OS INFO linux unsupported syscall nr={}", n);
+                }
+                fail(ENOSYS)
+            }
+        }
+    }
+
     fn syscall(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Outcome {
         let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
         let p4 = self.task(i).p4.expect("system call from a user task");
@@ -2108,7 +2233,14 @@ impl Scheduler {
 }
 
 /// Copies each segment's file bytes into freshly mapped user pages.
-fn load_image(mem: &mut Memory, p4: PhysFrame, file: &[u8], image: &elf::Image) -> Result<(), ()> {
+/// Maps and fills the program's segments and its stack; returns the frame
+/// of the stack's top page.
+fn load_image(
+    mem: &mut Memory,
+    p4: PhysFrame,
+    file: &[u8],
+    image: &elf::Image,
+) -> Result<PhysFrame, ()> {
     for seg in image.loadable() {
         let (start, end) = seg.page_range();
         let mut page = start;
@@ -2139,12 +2271,112 @@ fn load_image(mem: &mut Memory, p4: PhysFrame, file: &[u8], image: &elf::Image) 
     }
     let stack_bottom = USER_STACK_TOP - USER_STACK_SIZE;
     let mut page = stack_bottom;
+    let mut top = None;
     while page < USER_STACK_TOP {
-        mem.map_user_page(p4, page, true, false).map_err(|_| ())?;
+        top = Some(mem.map_user_page(p4, page, true, false).map_err(|_| ())?);
         page += 4096;
     }
-    Ok(())
+    top.ok_or(())
 }
+
+// ---- Linux programs (docs/linux1-design.md) -----------------------------
+
+/// Auxiliary-vector keys musl reads at start-up.
+const AT_NULL: u64 = 0;
+const AT_PHDR: u64 = 3;
+const AT_PHENT: u64 = 4;
+const AT_PHNUM: u64 = 5;
+const AT_PAGESZ: u64 = 6;
+const AT_ENTRY: u64 = 9;
+const AT_RANDOM: u64 = 25;
+
+/// Writes the System V process stack into the stack's top page (`page`,
+/// mapped at `USER_STACK_TOP - 4096`): argument strings and 16 random
+/// bytes at the top, then (16-byte aligned) argc, argv, an empty
+/// environment and the auxiliary vector. Returns the initial RSP.
+fn linux_stack(
+    mem: &Memory,
+    page: PhysFrame,
+    cmdline: &str,
+    file: &[u8],
+    image: &elf::Image,
+) -> u64 {
+    let base = USER_STACK_TOP - 4096;
+    let kva = mem.phys_to_virt(page.start_address());
+    let mut top = 4096usize;
+    // SAFETY (all writes below): `kva` is the freshly mapped, zeroed top
+    // stack page of the new process, reached through the physical-memory
+    // window; every offset stays inside it (`cmdline` is at most
+    // MAX_CMDLINE bytes and at most 64 arguments are kept).
+    let put_bytes = |top: &mut usize, bytes: &[u8]| -> u64 {
+        *top -= bytes.len();
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), kva.add(*top), bytes.len()) };
+        base + *top as u64
+    };
+    // AT_RANDOM: stack-protector seed for musl; not cryptographic.
+    // SAFETY: `rdtsc` only reads the time-stamp counter.
+    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let random: [u8; 16] =
+        (u128::from(tsc).wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).to_le_bytes();
+    let random_at = put_bytes(&mut top, &random);
+    let mut argv = [0u64; 64];
+    let mut argc = 0;
+    for arg in cmdline.split('\0').take(argv.len()) {
+        put_bytes(&mut top, &[0]);
+        argv[argc] = put_bytes(&mut top, arg.as_bytes());
+        argc += 1;
+    }
+    // Program headers: the ELF header's table, found in a loaded segment.
+    let phoff = u64::from_le_bytes(file[32..40].try_into().unwrap_or([0; 8]));
+    let phnum = u64::from(u16::from_le_bytes([file[56], file[57]]));
+    let phdr = image
+        .loadable()
+        .find(|s| phoff >= s.file_offset && phoff < s.file_offset + s.file_size)
+        .map_or(0, |s| s.vaddr + (phoff - s.file_offset));
+    let aux = [
+        (AT_PHDR, phdr),
+        (AT_PHENT, 56),
+        (AT_PHNUM, phnum),
+        (AT_PAGESZ, 4096),
+        (AT_ENTRY, image.entry),
+        (AT_RANDOM, random_at),
+        (AT_NULL, 0),
+    ];
+    // argc, argv[], NULL, envp NULL, auxv pairs.
+    let words = 1 + argc + 1 + 1 + 2 * aux.len();
+    let mut at = (top - words * 8) & !15;
+    let rsp = base + at as u64;
+    let mut word = |v: u64| {
+        unsafe { (kva.add(at) as *mut u64).write_unaligned(v) };
+        at += 8;
+    };
+    word(argc as u64);
+    for &a in &argv[..argc] {
+        word(a);
+    }
+    word(0);
+    word(0);
+    for (k, v) in aux {
+        word(k);
+        word(v);
+    }
+    rsp
+}
+
+/// Largest single write or writev accepted (bytes), so the kernel heap
+/// copy stays small.
+const LINUX_WRITE_MAX: u64 = 64 * 1024;
+
+/// Linux error numbers used here.
+const EBADF: i64 = 9;
+const EFAULT: i64 = 14;
+const EINVAL: i64 = 22;
+const ENOTTY: i64 = 25;
+const ENOSYS: i64 = 38;
+
+/// Linux system calls already reported as unsupported (numbers below 512).
+static LINUX_REPORTED: [core::sync::atomic::AtomicU64; 8] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 8];
 
 /// Prints user log text as `[pid:name] text`, so it can never be mistaken
 /// for a kernel marker: `ZOO_OS` becomes `ZOO-OS`, and control or
@@ -2199,13 +2431,27 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
 }
 
 pub fn on_syscall(frame: *mut TrapFrame) -> *mut TrapFrame {
+    syscall_with(frame, false)
+}
+
+/// A Linux system call from the `syscall` instruction.
+pub fn on_linux_syscall(frame: *mut TrapFrame) -> *mut TrapFrame {
+    syscall_with(frame, true)
+}
+
+fn syscall_with(frame: *mut TrapFrame, linux: bool) -> *mut TrapFrame {
     dispatch_locked(|s, m| {
         let cur = s.current;
         s.task(cur).frame = frame as u64;
         // SAFETY: the frame was just pushed for this trap on this task's
         // kernel stack.
         let f = unsafe { &mut *frame };
-        match s.syscall(cur, f, m) {
+        let outcome = if linux {
+            s.linux_syscall(cur, f, m)
+        } else {
+            s.syscall(cur, f, m)
+        };
+        match outcome {
             Outcome::Ret(v) => {
                 f.rax = v as u64;
                 frame

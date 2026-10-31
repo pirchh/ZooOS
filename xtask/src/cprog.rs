@@ -12,6 +12,9 @@ pub const ZIG_DIR: &str = "zig-x86_64-windows-0.16.0";
 
 /// C programs packed into the initrd as `bin/<name>`.
 pub const C_PROGRAMS: [&str; 2] = ["puffin-test", "tern-test"];
+/// Ordinary Linux programs (`c/linux/`), built for x86_64-linux-musl and
+/// packed as `linux/<name>` (docs/linux1-design.md).
+pub const LINUX_PROGRAMS: [&str; 1] = ["hello"];
 
 /// Where user programs must lie (the kernel's load window).
 const IMAGE_START: u64 = 0x20_0000;
@@ -182,7 +185,33 @@ pub fn build(root: &Path, zig: &Path) -> Result<Vec<(String, Vec<u8>)>, String> 
         // The kernel's own ELF checks must accept it.
         zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END)
             .map_err(|e| format!("{name}: the kernel would reject this ELF: {e:?}"))?;
-        built.push((name.to_string(), data));
+        built.push((format!("bin/{name}"), data));
+    }
+    // Linux programs: nothing ZooOS-specific, the standard musl target.
+    for name in LINUX_PROGRAMS {
+        let out = out_dir.join(format!("linux-{name}"));
+        let mut cmd = Command::new(zig);
+        cmd.current_dir(root)
+            .args(["cc", "-target", "x86_64-linux-musl", "-O2", "-std=c11"])
+            .args(["-Wall", "-Wextra", "-Werror"])
+            .args(["-static", "-fno-pie", "-no-pie", "-s"])
+            .arg("-o")
+            .arg(&out)
+            .arg(c.join("linux").join(format!("{name}.c")));
+        println!("[build] Linux program {name} (zig {ZIG_VERSION}, x86_64-linux-musl)");
+        let output =
+            crate::process::output_bounded(cmd, std::time::Duration::from_secs(300), "zig cc")?;
+        if !output.status.success() {
+            return Err(format!(
+                "zig cc failed for linux/{name}:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let data =
+            std::fs::read(&out).map_err(|e| format!("cannot read {}: {e}", out.display()))?;
+        zoo_abi::elf::parse(&data, IMAGE_START, IMAGE_END)
+            .map_err(|e| format!("linux/{name}: the kernel would reject this ELF: {e:?}"))?;
+        built.push((format!("linux/{name}"), data));
     }
     Ok(built)
 }

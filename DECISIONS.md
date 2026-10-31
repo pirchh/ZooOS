@@ -150,6 +150,13 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Owner decision: C library through Linux system calls (2026-10-31)
+
+Of the routes in docs/feasibility/libc-route.md the owner chose route 3:
+the kernel gains a Linux x86-64 system-call personality, so stock musl
+and static Linux programs run unmodified, grown one tested step at a
+time. ZooOS's own calls (`int 0x80`) stay for native programs.
+
 ## Desktop step 9: double-click to zoom (2026-10-31)
 
 Design: docs/d9-design.md.

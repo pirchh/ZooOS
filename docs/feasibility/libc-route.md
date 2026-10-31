@@ -1,7 +1,7 @@
 # Decision needed: which C library route (POSIX step 5b-3)
 
-Status: **proposal for the owner to decide** (2026-10-31). Nothing here is
-implemented. POSIX steps 5b-1 (arguments, clock) are done; file
+Status: **decided 2026-10-31: route 3** (owner's choice), a Linux
+system-call personality. Its first step is docs/linux1-design.md. POSIX steps 5b-1 (arguments, clock) are done; file
 descriptors (5b-2) and the C library itself (5b-3) depend on this choice,
 so they were not started.
 
