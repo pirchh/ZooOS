@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D9 section
-(version 0.37.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D10 section
+(version 0.38.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,45 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 10 results: a cursor in Notes, and a start-up race fixed (version 0.38.0)
+
+Design: docs/d10-design.md.
+
+**A race found on the way.** The first two full runs of this step each
+failed one case that the step does not touch: `persist-3` (timeout) and
+then `keyboard` (screen check). Same cause: BadgerHandler loads the disk
+after it starts, and Zookeeper reported `ready` before that, so the shell
+prompt could appear first and the service's messages printed after it
+(`zoo> [23:badger-handler] …`; the typed line then had no prompt).
+Fixes, in this step:
+
+1. Zookeeper sends `ready` only after the home-folder root arrives (at
+   most 300 ticks). Its first version checked at the top of its loop and
+   so waited for the next 1 s health ping: fast boot measured 1,130 /
+   1,127 / 1,124 ms kernel-to-shell. Checking after each round's
+   messages restored 107 / 111 / 107 ms (WHPX, three runs each).
+2. The harness gained `WaitSeen` (a line anywhere in the log) for the
+   load lines in `persist-2`, `persist-3` and `notes-2`, which no longer
+   assume an order against `SHELL ready`. A check that it still fails
+   when the line never comes (a temporary wait for "generation 9"):
+   `FAIL persist-2` (timeout).
+
+**Full `cargo xtask verify`** (TCG, with both fixes): exit 0 in 12 min 13 s, every case
+as expected (`assistant-live` `SKIP`). New case
+`notes-cursor`: `a b c`, Left, Left, `X`, `Y`, Backspace → `Notes: saved
+70 bytes`; the screen shows `aX|bc`.
+
+Then `--accel whpx --case assistant-live`: pass in 48.0 s.
+
+**Negative control** (temporary edit to Notes, reverted):
+
+| Change | Result |
+| --- | --- |
+| Left ignored | `FAIL notes-cursor`: `aX|bc not on screen` |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: real hardware.
 
 ## Desktop step 9 results: double-click to zoom (version 0.37.0)
 
