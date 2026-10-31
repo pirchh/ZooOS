@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S4a section
-(version 0.18.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S4b section
+(version 0.19.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,48 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 4b results: the filesystem as a service (version 0.19.0)
+
+Design: docs/s4-design.md (§6 as implemented). BadgerHandler holds the file
+tree; folder handles are channels to it (`user/src/fsproto.rs`); the
+kernel's filesystem and calls 19–25, 41–45 are gone (ABI version 13);
+handle and `wait_any` limits 64; `restart <service>`.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 679 s, every case as expected
+(`assistant-live` `SKIP`; `services` OK in 26.1 s). Then `--accel whpx
+--case assistant-live`: pass in 59.6 s. Every earlier file test passed
+unchanged on BadgerHandler:
+
+    ZOO_OS PROC start pid=8 name=badger-handler
+    [9:arcticfox-test] ArcticFoxTest: all file checks passed
+    [1:zookeeper] OtterHandler answered 19 scripted requests exactly
+    ZOO_OS PROC exit pid=8 name=badger-handler code=0
+    ...
+    ZOO_OS PROC start pid=23 name=badger-handler        (resident, supervised)
+
+and the `desktop`, `assistant` and `assistant-model` cases (Files, the
+Assistant's broker) passed with the desktop's home folder now coming from
+the supervisor. Zookeeper also checks that the old `fs_root` call returns
+`NOSYS`. From the `services` case:
+
+    ZOO_OS PROC killed pid=23 name=badger-handler by=22
+    [22:zookeeper] Zookeeper: badger-handler killed; restarting (1 of 3)
+    ZOO_OS PROC start pid=30 name=badger-handler
+    [22:zookeeper] Zookeeper: filesystem root from badger-handler (pid 30)
+    badger-handler pid=30 running restarts=1 last=killed
+
+**Negative controls** (normal case; each temporary edit to BadgerHandler
+reverted):
+
+| Change | Result |
+| --- | --- |
+| Rights not checked | `FAIL normal`: `zookeeper code=26`, `create via read-only handle: expected RIGHTS, got Ok(())` |
+| `..` accepted as a path component | `FAIL normal`: `zookeeper code=26`, `dir_open ../bin: expected INVAL, got Err(NotFound)` |
+
+Not automated: a client holding a folder handle while BadgerHandler dies.
+Other checks: `cargo clippy`: 0 warnings. `cargo test -p zoo-infer -p
+zoo-abi -p xtask --locked`: all passed. Not run: a clean-copy verify.
 
 ## Services step 4a results: wait_any and faster hand-offs (version 0.18.0)
 

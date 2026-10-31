@@ -43,14 +43,6 @@ pub fn for_each(mut f: impl FnMut(&str, usize)) {
     }
 }
 
-/// Every file as (name, contents).
-pub fn files() -> impl Iterator<Item = (&'static str, &'static [u8])> {
-    INITRD
-        .get()
-        .into_iter()
-        .flat_map(|d| tar::read(d).flatten().map(|e| (e.name, e.data)))
-}
-
 /// The `index`-th file as (name, size, byte offset of its data in the
 /// archive), if it exists.
 pub fn entry(index: usize) -> Option<(&'static str, usize, usize)> {

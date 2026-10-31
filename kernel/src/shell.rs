@@ -152,6 +152,29 @@ fn supervisor_request(req: &str) {
     kprintln!("supervisor did not answer within 3 s");
 }
 
+/// Asks the resident supervisor for a home-folder handle for the desktop
+/// session (bounded, 3 s). Without one the desktop still starts, without
+/// file access.
+fn ask_for_home() {
+    while process::supervisor_try_recv().is_some() {}
+    if process::supervisor_send(b"home").is_err() {
+        return;
+    }
+    let limit = interrupts::ticks() + 3 * u64::from(interrupts::TIMER_HZ);
+    while interrupts::ticks() < limit {
+        match process::supervisor_try_recv() {
+            Some(m) if m == b"<handle>" => return,
+            Some(_) => {}
+            None => {
+                cpu_interrupts::disable();
+                process::idle_hlt();
+                cpu_interrupts::enable();
+            }
+        }
+    }
+    kprintln!("no home folder from the supervisor; the desktop will have no files");
+}
+
 fn execute(line: &str) {
     let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
     match cmd {
@@ -169,6 +192,7 @@ fn execute(line: &str) {
             kprintln!("services        system services and their state");
             kprintln!("logs [text]     recent log lines, optionally only those containing text");
             kprintln!("poke <svc> <x>  send a test request to a service");
+            kprintln!("restart <svc>   stop a service; its restart policy starts it again");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");
@@ -200,15 +224,21 @@ fn execute(line: &str) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
         },
-        "desktop" => match {
+        "desktop" => {
             TASKS_BEFORE_SESSION
                 .store(process::user_tasks(), core::sync::atomic::Ordering::Relaxed);
-            process::start_session()
-        } {
-            Ok(pid) => kprintln!("starting the desktop (zookeeper pid {})", pid),
-            Err(e) => kprintln!("desktop: {}", e.name()),
-        },
+            ask_for_home();
+            match process::start_session() {
+                Ok(pid) => kprintln!("starting the desktop (zookeeper pid {})", pid),
+                Err(e) => kprintln!("desktop: {}", e.name()),
+            }
+        }
         "services" => supervisor_request("status"),
+        "restart" => {
+            let mut req = String::from("restart ");
+            req.push_str(rest.trim());
+            supervisor_request(&req);
+        }
         "logs" => {
             let mut req = String::from("logs ");
             req.push_str(rest.trim());

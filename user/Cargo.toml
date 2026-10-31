@@ -22,6 +22,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "badger-handler"
+path = "src/bin/badger-handler.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "ptarmigan-test"
 path = "src/bin/ptarmigan-test.rs"
 test = false

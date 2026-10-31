@@ -8,7 +8,6 @@
 
 use crate::console;
 use crate::fpu::{self, FxArea};
-use crate::fs;
 use crate::gdt;
 use crate::initrd;
 use crate::interrupts;
@@ -34,12 +33,11 @@ use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
-    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, EXC_RESUME, EXC_UNHANDLED,
-    Error, ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT,
-    HandleMsg, KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME, MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES,
-    MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, RECV_NONBLOCK, VM_COMMIT_LIMIT, VM_COMMITTED,
-    VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED, VM_START, VmInfo, dir_rights,
-    elf, prot, sys,
+    ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, EXC_RESUME, EXC_UNHANDLED, Error,
+    ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsEntry, HEAP_BASE, HEAP_LIMIT, HandleMsg, MAP_BASE,
+    MAX_FS_NAME, MAX_HANDLES, MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, RECV_NONBLOCK,
+    VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED,
+    VM_START, VmInfo, elf, prot, sys,
 };
 use zoo_abi::{WAIT_ANY_MAX, WAIT_FOREVER};
 
@@ -84,10 +82,6 @@ enum Object {
     },
     Process {
         pid: u64,
-    },
-    /// A directory in the in-memory filesystem; rights are `dir_rights`.
-    Dir {
-        node: usize,
     },
     /// A thread of the same process (docs/posix1-design.md).
     Thread {
@@ -147,8 +141,6 @@ struct Proc {
     /// Read-only file mappings of ramdisk pages: (address, pages). Never
     /// freed through the frame allocator; unmapped before the space is freed.
     file_maps: Vec<(u64, u64)>,
-    /// May still call `fs_root` (started by the kernel, not yet called).
-    root_ok: bool,
     /// May call `log_attach` (the resident supervisor).
     log_ok: bool,
     /// Threads that have not exited.
@@ -235,7 +227,6 @@ impl Proc {
             heap_next: HEAP_BASE,
             map_next: MAP_BASE,
             file_maps: Vec::new(),
-            root_ok: false,
             log_ok: false,
             live: 1,
             members: 1,
@@ -325,6 +316,9 @@ struct Scheduler {
     /// Prefer a ready user task over the idling kernel task (true except
     /// while handling a timer tick).
     prefer_user: bool,
+    /// A home-folder handle the supervisor sent for the next desktop
+    /// session (docs/s4-design.md §3).
+    pending_home: Option<HandleEntry>,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -369,6 +363,7 @@ pub fn init() {
             control: None,
             supervisor: None,
             prefer_user: true,
+            pending_home: None,
         });
     });
 }
@@ -390,8 +385,7 @@ pub fn user_tasks() -> usize {
 /// Starts `name` from the kernel task (no parent handle). Returns its pid.
 pub fn spawn_from_kernel(name: &str) -> Result<u64, Error> {
     with_sched(|s, m| {
-        let (i, pid) = s.spawn(m, name, [None, None])?;
-        s.proc(i).root_ok = true;
+        let (_, pid) = s.spawn(m, name, [None, None])?;
         Ok(pid)
     })
 }
@@ -510,10 +504,13 @@ pub fn supervisor_try_recv() -> Option<Vec<u8>> {
         }
         match m {
             Some(Msg::Bytes(b)) => Some(b),
-            // The kernel takes no handles here; release any sent to it.
+            // A handle is kept for the next desktop session (the only
+            // handle the supervisor sends the kernel); reported as `<handle>`.
             Some(Msg::Handle(e, _)) => {
-                release(e);
-                Some(alloc::vec::Vec::new())
+                if let Some(old) = s.pending_home.replace(e) {
+                    release(old);
+                }
+                Some(b"<handle>".to_vec())
             }
             None => None,
         }
@@ -533,8 +530,8 @@ pub fn start_session() -> Result<u64, Error> {
             return Err(Error::Busy);
         }
         let (kernel_end, zookeeper_end) = control_channel(b"session");
-        let (i, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), None])?;
-        s.proc(i).root_ok = true;
+        let home = s.pending_home.take();
+        let (_, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), home])?;
         if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
             release(old);
         }
@@ -1567,33 +1564,6 @@ impl Scheduler {
                 Outcome::Ret(0)
             }
             sys::EXCEPTION_RETURN => self.exception_return(i, f, a1, a2, p4, mem),
-            sys::FS_ROOT => {
-                let t = self.proc(i);
-                if !t.root_ok {
-                    return err(Error::Rights);
-                }
-                match t.insert(HandleEntry {
-                    object: Object::Dir { node: fs::ROOT },
-                    rights: dir_rights::ALL as u8,
-                }) {
-                    Some(h) => {
-                        t.root_ok = false;
-                        Outcome::Ret(h as i64)
-                    }
-                    None => err(Error::NoMem),
-                }
-            }
-            sys::DIR_OPEN
-            | sys::DIR_LIST
-            | sys::DIR_STAT
-            | sys::FILE_READ
-            | sys::DIR_CREATE
-            | sys::DIR_REMOVE
-            | sys::FILE_CREATE
-            | sys::FILE_WRITE
-            | sys::FILE_TRUNCATE
-            | sys::FILE_REMOVE
-            | sys::RENAME => self.dir_call(i, number, a1, a2, mem),
             sys::SPAWN_WITH => {
                 if a2 == 0 || a2 > MAX_PATH as u64 {
                     return err(Error::Inval);
@@ -2010,193 +1980,6 @@ impl Scheduler {
                 unsafe { (a2 as *mut VmInfo).write_unaligned(info) };
                 Outcome::Ret(0)
             }
-        }
-    }
-
-    /// System calls 20-25: `a1` is a directory handle, `a2` points at an
-    /// `FsArgs` (docs/m5c1-design.md §3).
-    fn dir_call(&mut self, i: usize, number: u64, a1: u64, a2: u64, mem: &mut Memory) -> Outcome {
-        let p4 = self.task(i).p4.expect("system call from a user task");
-        let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
-        let (node, rights) = match self.proc(i).get(a1) {
-            Some(HandleEntry {
-                object: Object::Dir { node },
-                rights,
-            }) => (*node, *rights as u64),
-            Some(_) | None => return err(Error::BadHandle),
-        };
-        if !ok(a2, core::mem::size_of::<FsArgs>() as u64, false) {
-            return err(Error::Fault);
-        }
-        // SAFETY: checked readable user range of the struct's size.
-        let args = unsafe { (a2 as *const FsArgs).read_unaligned() };
-        if args.path_len > MAX_FS_PATH as u64 {
-            return err(Error::Inval);
-        }
-        if !ok(args.path, args.path_len, false) {
-            return err(Error::Fault);
-        }
-        // SAFETY: checked readable user range. Copied into kernel memory
-        // before it is checked, so later user writes cannot change it.
-        let raw =
-            unsafe { core::slice::from_raw_parts(args.path as *const u8, args.path_len as usize) };
-        let Ok(path) = core::str::from_utf8(raw) else {
-            return err(Error::Inval);
-        };
-        let path = String::from(path);
-        let need = match number {
-            sys::DIR_OPEN => 0, // checked below: the new rights must be a subset
-            sys::DIR_CREATE | sys::FILE_CREATE => dir_rights::CREATE,
-            sys::DIR_REMOVE | sys::FILE_REMOVE => dir_rights::REMOVE,
-            sys::FILE_WRITE | sys::FILE_TRUNCATE => dir_rights::WRITE,
-            sys::RENAME => dir_rights::CREATE | dir_rights::REMOVE,
-            _ => dir_rights::READ,
-        };
-        if rights & need != need {
-            return err(Error::Rights);
-        }
-        let entry_size = core::mem::size_of::<DirEntry>() as u64;
-        match number {
-            sys::DIR_OPEN => {
-                if args.arg & !dir_rights::ALL != 0 || args.arg & !rights != 0 {
-                    return err(Error::Rights);
-                }
-                let target = match fs::with(|f| f.resolve(node, &path)) {
-                    Ok(t) => t,
-                    Err(e) => return err(e),
-                };
-                if fs::with(|f| f.kind(target)) != Some(fs::Kind::Dir) {
-                    return err(Error::NotDir);
-                }
-                match self.proc(i).insert(HandleEntry {
-                    object: Object::Dir { node: target },
-                    rights: args.arg as u8,
-                }) {
-                    Some(h) => Outcome::Ret(h as i64),
-                    None => err(Error::NoMem),
-                }
-            }
-            sys::DIR_LIST | sys::DIR_STAT => {
-                if args.buf_len < entry_size {
-                    return err(Error::TooSmall);
-                }
-                if !ok(args.buf, entry_size, true) {
-                    return err(Error::Fault);
-                }
-                let found = fs::with(|f| {
-                    let target = f.resolve(node, &path)?;
-                    let (name, kind, size) = if number == sys::DIR_LIST {
-                        f.entry(target, args.arg as usize)?
-                    } else {
-                        let kind = f.kind(target).ok_or(Error::NotFound)?;
-                        ("", kind, f.size(target))
-                    };
-                    let mut e = DirEntry {
-                        kind: if kind == fs::Kind::Dir {
-                            KIND_DIR
-                        } else {
-                            KIND_FILE
-                        },
-                        size: size as u64,
-                        ..DirEntry::default()
-                    };
-                    let n = name.len().min(MAX_DIR_NAME);
-                    e.name[..n].copy_from_slice(&name.as_bytes()[..n]);
-                    e.name_len = n as u64;
-                    Ok(e)
-                });
-                match found {
-                    Ok(e) => {
-                        // SAFETY: checked writable user range of the size.
-                        unsafe { (args.buf as *mut DirEntry).write_unaligned(e) };
-                        Outcome::Ret(0)
-                    }
-                    Err(e) => err(e),
-                }
-            }
-            sys::FILE_READ => {
-                if !ok(args.buf, args.buf_len, true) {
-                    return err(Error::Fault);
-                }
-                let (buf, len, offset) = (
-                    args.buf as *mut u8,
-                    args.buf_len as usize,
-                    args.arg as usize,
-                );
-                // SAFETY: `buf` is a checked writable user range of `len`
-                // bytes in the active address space.
-                match fs::with(|f| {
-                    let t = f.resolve(node, &path)?;
-                    unsafe { f.read(mem, t, offset, buf, len) }
-                }) {
-                    Ok(n) => Outcome::Ret(n as i64),
-                    Err(e) => err(e),
-                }
-            }
-            sys::FILE_WRITE => {
-                if !ok(args.buf, args.buf_len, false) {
-                    return err(Error::Fault);
-                }
-                let (buf, len, offset) = (
-                    args.buf as *const u8,
-                    args.buf_len as usize,
-                    args.arg as usize,
-                );
-                // SAFETY: `buf` is a checked readable user range of `len`
-                // bytes in the active address space.
-                match fs::with(|f| {
-                    let t = f.resolve(node, &path)?;
-                    unsafe { f.write(mem, t, offset, buf, len) }
-                }) {
-                    Ok(n) => Outcome::Ret(n as i64),
-                    Err(e) => err(e),
-                }
-            }
-            sys::FILE_TRUNCATE => {
-                match fs::with(|f| {
-                    let t = f.resolve(node, &path)?;
-                    f.truncate(mem, t, args.arg as usize)
-                }) {
-                    Ok(()) => Outcome::Ret(0),
-                    Err(e) => err(e),
-                }
-            }
-            sys::FILE_CREATE => match fs::with(|f| f.create_file(node, &path)) {
-                Ok(_) => Outcome::Ret(0),
-                Err(e) => err(e),
-            },
-            sys::FILE_REMOVE => match fs::with(|f| f.remove_file(mem, node, &path)) {
-                Ok(()) => Outcome::Ret(0),
-                Err(e) => err(e),
-            },
-            sys::RENAME => {
-                if args.buf_len > MAX_FS_PATH as u64 {
-                    return err(Error::Inval);
-                }
-                if !ok(args.buf, args.buf_len, false) {
-                    return err(Error::Fault);
-                }
-                // SAFETY: checked readable user range; copied before use.
-                let raw = unsafe {
-                    core::slice::from_raw_parts(args.buf as *const u8, args.buf_len as usize)
-                };
-                let Ok(to) = core::str::from_utf8(raw) else {
-                    return err(Error::Inval);
-                };
-                let to = String::from(to);
-                match fs::with(|f| f.rename(node, &path, &to)) {
-                    Ok(()) => Outcome::Ret(0),
-                    Err(e) => err(e),
-                }
-            }
-            sys::DIR_CREATE => match fs::with(|f| f.create_dir(node, &path)) {
-                Ok(_) => Outcome::Ret(0),
-                Err(e) => err(e),
-            },
-            _ => match fs::with(|f| f.remove_dir(node, &path)) {
-                Ok(()) => Outcome::Ret(0),
-                Err(e) => err(e),
-            },
         }
     }
 

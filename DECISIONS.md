@@ -143,6 +143,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 4b: the filesystem as a service (2026-10-30)
+
+Design: docs/s4-design.md.
+
+- The file tree moved from the kernel into BadgerHandler (a user-space
+  service); a folder handle is a channel to it. Programs kept the same
+  `zoo_rt` functions. Supersedes the in-kernel filesystem decisions of
+  M5c-1 and POSIX step 4 (their behaviour is unchanged).
+- Calls 19–25 and 41–45 return `NOSYS` (numbers reserved); ABI version 13.
+  Handle and `wait_any` limits raised to 64.
+- Boot checks use a private BadgerHandler; the resident supervisor runs one
+  as a service and hands out home-folder handles (the desktop gets one via
+  the kernel at session start).
+- Shell command `restart <service>`. Version 0.19.0.
+
 ## Services step 4a: wait_any and faster hand-offs (2026-10-30)
 
 Design: docs/s4a-design.md.

@@ -14,7 +14,7 @@ extern crate alloc;
 
 use zoo_rt::{Error, Handle, channel_create, close, kill, log, recv, send, spawn, wait};
 
-zoo_rt::entry!(main);
+zoo_rt::entry2!(main);
 
 /// LemmingTest runs once, then is restarted at most this many times.
 const LEMMING_RESTARTS: u32 = 1;
@@ -22,12 +22,12 @@ const LEMMING_RESTARTS: u32 = 1;
 /// PeacockHandler may be restarted this many times in one session.
 const DESKTOP_RESTARTS: u32 = 3;
 
-fn main(start_handle: u64) -> u8 {
+fn main(start_handle: u64, second: u64) -> u8 {
     // Started with a control channel: its first message says what to do.
     if start_handle != zoo_rt::NO_HANDLE {
         let mut mode = [0u8; 32];
         return match recv(start_handle, &mut mode) {
-            Ok(n) if &mode[..n] == b"session" => session(),
+            Ok(n) if &mode[..n] == b"session" => session(second),
             Ok(n) if &mode[..n] == b"supervise" => supervise(start_handle),
             _ => 30,
         };
@@ -37,19 +37,13 @@ fn main(start_handle: u64) -> u8 {
 
 /// Desktop session (docs/m4-design.md §3): run the window server, restart it
 /// if it ends abnormally, finish when it exits cleanly.
-fn session() -> u8 {
+fn session(home: Handle) -> u8 {
     use zoo_rt::dir_rights as r;
     let _ = log("Zookeeper: starting the desktop session");
     // The desktop gets the user's home folder, nothing above it
-    // (docs/m5c2-design.md §2).
-    let home = match zoo_rt::fs_root() {
-        Ok(root) => {
-            let home = zoo_rt::dir_open(root, "home/user", r::ALL).ok();
-            let _ = close(root);
-            home
-        }
-        Err(_) => None,
-    };
+    // (docs/m5c2-design.md §2): the kernel passes a folder handle the
+    // resident supervisor obtained from BadgerHandler (docs/s4-design.md).
+    let home = (home != zoo_rt::NO_HANDLE).then_some(home);
     let mut restarts = 0;
     loop {
         let copy = home.and_then(|h| zoo_rt::dir_open(h, "", r::ALL).ok());
@@ -311,9 +305,15 @@ fn expect_err<T: core::fmt::Debug>(
 /// Directory capabilities enforced by the kernel, then OtterHandler driven
 /// through a fixed script with exact replies (docs/m5c1-design.md §5).
 fn check_directories() -> Result<(), u8> {
-    use zoo_rt::{dir_create, dir_open, dir_remove, dir_rights as r, dir_stat, file_read, fs_root};
-    let root = fs_root().map_err(|_| 26)?;
-    expect_err("second fs_root", fs_root(), Error::Rights, 26)?;
+    use zoo_rt::{dir_create, dir_open, dir_remove, dir_rights as r, dir_stat, file_read};
+    // The filesystem is a service now (docs/s4-design.md): the kernel's old
+    // file calls are gone, and the checks use a private BadgerHandler.
+    let removed = zoo_rt::syscall(zoo_abi::sys::FS_ROOT, 0, 0, 0);
+    if removed != Error::NoSys.as_return() {
+        zoo_rt::log!("old fs_root call returned {}, expected NOSYS", removed);
+        return Err(26);
+    }
+    let (badger, badger_control, root) = zoo_rt::start_badger().map_err(|_| 26)?;
     let home = dir_open(root, "home/user", r::ALL).map_err(|_| 26)?;
     expect_err(
         "dir_open ../bin",
@@ -500,6 +500,13 @@ fn check_directories() -> Result<(), u8> {
         "OtterHandler answered {} scripted requests exactly",
         script.len() + 1
     );
+    // Stop the private BadgerHandler: it exits when its control channel
+    // closes.
+    let _ = close(badger_control);
+    if wait(badger) != Ok(0) {
+        return Err(26);
+    }
+    let _ = close(badger);
     Ok(())
 }
 
@@ -565,6 +572,8 @@ struct Svc {
 struct Supervisor {
     control: Handle,
     svcs: alloc::vec::Vec<Svc>,
+    /// Root folder handle from the resident BadgerHandler, when running.
+    root: Option<Handle>,
 }
 
 /// Reads `etc/services`: `name max_restarts [logs]` per line, `#` comments.
@@ -624,6 +633,10 @@ impl Supervisor {
                 s.pid = zoo_rt::process_id(process).unwrap_or(0);
                 s.state = SvcState::Running;
                 s.ping_sent = None;
+                if s.name == "badger-handler" {
+                    // Ask the new filesystem service for its root folder.
+                    let _ = send(s.chan, b"root");
+                }
                 let (name, pid) = (s.name.clone(), s.pid);
                 self.event(format_args!("started {} (pid {})", name, pid));
             }
@@ -638,6 +651,11 @@ impl Supervisor {
 
     /// Service `k` ended (`reason`); restart it later or give up.
     fn ended(&mut self, k: usize, reason: &'static str, now: u64) {
+        if self.svcs[k].name == "badger-handler"
+            && let Some(old) = self.root.take()
+        {
+            let _ = close(old);
+        }
         let s = &mut self.svcs[k];
         let _ = close(s.chan);
         let _ = close(s.process);
@@ -714,6 +732,32 @@ impl Supervisor {
                 );
                 self.reply(l.as_str());
             }
+        } else if let Some(name) = req.strip_prefix("restart ") {
+            // Kill a running service; its restart policy brings it back.
+            match self
+                .svcs
+                .iter()
+                .find(|s| s.name == name && s.state == SvcState::Running)
+            {
+                Some(s) => {
+                    let _ = kill(s.process);
+                    self.reply("killed; the restart policy applies");
+                }
+                None => self.reply("no such running service"),
+            }
+        } else if req == "home" {
+            // A home-folder handle for the next desktop session.
+            match self
+                .root
+                .and_then(|r| zoo_rt::dir_open(r, "home/user", zoo_rt::dir_rights::ALL).ok())
+            {
+                Some(h) => {
+                    if zoo_rt::send_handle(self.control, h, 0).is_err() {
+                        let _ = close(h);
+                    }
+                }
+                None => self.reply("no filesystem service"),
+            }
         } else if let Some(filter) = req.strip_prefix("logs") {
             let filter = alloc::string::String::from(filter.trim());
             self.relay_logs(&filter);
@@ -776,6 +820,7 @@ fn supervise(control: Handle) -> u8 {
     let mut sup = Supervisor {
         control,
         svcs: alloc::vec::Vec::new(),
+        root: None,
     };
     for (name, max, logs) in read_service_list() {
         sup.svcs.push(Svc {
@@ -824,8 +869,21 @@ fn supervise(control: Handle) -> u8 {
                         }
                         // Services send Zookeeper no handles; drop any.
                         Err(Error::WrongKind) => {
-                            if let Ok((h, _)) = zoo_rt::try_recv_handle(chan) {
-                                let _ = close(h);
+                            if let Ok((h, tag)) = zoo_rt::try_recv_handle(chan) {
+                                if sup.svcs[k].name == "badger-handler"
+                                    && tag == zoo_rt::fsproto::TAG_ROOT
+                                {
+                                    if let Some(old) = sup.root.replace(h) {
+                                        let _ = close(old);
+                                    }
+                                    let pid = sup.svcs[k].pid;
+                                    sup.event(format_args!(
+                                        "filesystem root from badger-handler (pid {})",
+                                        pid
+                                    ));
+                                } else {
+                                    let _ = close(h);
+                                }
                             }
                         }
                         Ok(_) | Err(Error::Again) => {}
