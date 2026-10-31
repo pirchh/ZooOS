@@ -30,11 +30,28 @@ pub struct Settings {
 /// Inspects a screenshot; `Ok` carries a summary, `Err` why it failed.
 type ScreenCheck = fn(&screen::Image) -> Result<String, String>;
 
+/// Which data disk a case boots with.
+#[derive(Clone, Copy)]
+enum Disk {
+    /// An empty disk made for this case.
+    Fresh,
+    /// `build/disks/<name>.img`, shared by consecutive cases (two boots of
+    /// one machine). `reset` empties it first; `corrupt` damages the newest
+    /// snapshot's payload before booting.
+    Shared {
+        name: &'static str,
+        reset: bool,
+        corrupt: bool,
+    },
+}
+
 struct Case {
     name: &'static str,
     mode: Mode,
     /// Boot this image instead of the mode's own (the model image).
     custom_image: Option<std::path::PathBuf>,
+    /// The data disk for this run (docs/s5-design.md).
+    disk: Disk,
     expectation: Expectation,
     timeout: Duration,
     /// The outcome kind this case must produce for verification to succeed.
@@ -227,6 +244,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "normal",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "pass",
@@ -238,6 +256,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "panic",
             mode: Mode::Panic,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: expect(Mode::Panic, &with_tests("ZOO_OS PANIC intentional-test")),
             timeout: s.timeout,
             want: "pass",
@@ -249,6 +268,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "fault-write-protect",
             mode: Mode::FaultWriteProtect,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: expect(
                 Mode::FaultWriteProtect,
                 &[
@@ -265,6 +285,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "fault-heap-guard",
             mode: Mode::FaultHeapGuard,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: expect(
                 Mode::FaultHeapGuard,
                 &[
@@ -281,6 +302,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "fault-stack-overflow",
             mode: Mode::FaultStackOverflow,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: expect(
                 Mode::FaultStackOverflow,
                 &["ZOO_OS EXCEPTION double-fault stack-guard-hit"],
@@ -295,6 +317,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "keyboard",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: keyboard,
             timeout: s.timeout,
             want: "pass",
@@ -330,6 +353,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "scroll",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: scroll,
             timeout: s.timeout,
             want: "pass",
@@ -349,6 +373,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "desktop",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: desktop,
             // Boot, five interaction phases, two restarts: allow longer.
             timeout: s.timeout * 3,
@@ -367,6 +392,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "assistant",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: assistant_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
@@ -381,6 +407,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "services",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: services_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
@@ -388,10 +415,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(services_steps()),
             screen_checks: vec![],
         },
+        persist_case(&normal, "persist-1", 1, s.timeout * 3),
+        persist_case(&normal, "persist-2", 2, s.timeout * 3),
+        persist_case(&normal, "persist-3", 3, s.timeout * 3),
         Case {
             name: "c-program",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
@@ -417,6 +448,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "assistant-model",
             mode: Mode::Normal,
             custom_image: model_image.clone(),
+            disk: Disk::Fresh,
             expectation: assistant_model_expectation(&normal, false),
             timeout: s.timeout * 10,
             want: "pass",
@@ -431,6 +463,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "assistant-live",
             mode: Mode::Normal,
             custom_image: model_image.clone(),
+            disk: Disk::Fresh,
             expectation: assistant_model_expectation(&normal, true),
             timeout: s.timeout * 10,
             want: "pass",
@@ -442,6 +475,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "inference",
             mode: Mode::Normal,
             custom_image: model_image.clone(),
+            disk: Disk::Fresh,
             expectation: inference,
             // Software emulation runs the 0.5B model at a fraction of a token
             // per second; allow for loading, tokenizer setup and 33 passes.
@@ -470,6 +504,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "negative-wrong-marker",
             mode: Mode::Panic,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "unexpected-marker",
@@ -481,6 +516,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "negative-timeout",
             mode: Mode::Normal,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: never,
             timeout: s.negative_timeout,
             want: "timeout",
@@ -492,6 +528,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             name: "negative-triple-fault",
             mode: Mode::TripleFault,
             custom_image: None,
+            disk: Disk::Fresh,
             expectation: expect(Mode::TripleFault, &["ZOO_OS READY"]),
             timeout: s.timeout,
             want: "early-exit",
@@ -551,6 +588,29 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             "[verify] case {} ({}; timeout {:?})",
             c.name, c.purpose, c.timeout
         );
+        let data = match c.disk {
+            Disk::Fresh => {
+                let p = root
+                    .join("build")
+                    .join("disks")
+                    .join(format!("{}.img", c.name));
+                qemu::ensure_data_disk(&p, true)?;
+                p
+            }
+            Disk::Shared {
+                name,
+                reset,
+                corrupt,
+            } => {
+                let p = root.join("build").join("disks").join(format!("{name}.img"));
+                qemu::ensure_data_disk(&p, reset)?;
+                if corrupt {
+                    let what = corrupt_newest_snapshot(&p)?;
+                    println!("[verify] {what}");
+                }
+                p
+            }
+        };
         let r = qemu::run_case(
             root,
             tools,
@@ -562,6 +622,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 settle: s.settle,
             },
             c.interaction.as_ref(),
+            &data,
         )?;
         let mut kind = r.outcome.kind().to_string();
         let mut detail = r.outcome.detail().to_string();
@@ -1111,6 +1172,114 @@ fn crash_line_last() -> String {
     "ZOO_OS PROC crash pid=28 name=seal-test fault=page-fault access=read cause=protection addr=0xffffc00000001000".into()
 }
 
+/// docs/s5-design.md §4: three boots of one machine (one shared data disk).
+fn persist_case(normal: &Expectation, name: &'static str, step: u8, timeout: Duration) -> Case {
+    let mut e = normal.clone();
+    let say = |cmd: &str| Action::Keys(typed(cmd));
+    let wait = |line: &str| Action::WaitFor(line.into());
+    let contains = |part: &str| Action::WaitContains(part.into());
+    // Loading happens while the supervisor starts, before the shell is
+    // ready, so those lines are awaited first.
+    let mut steps = match step {
+        1 => vec![],
+        2 => vec![contains("BadgerHandler: loaded generation 2 from slot B")],
+        _ => vec![
+            contains("BadgerHandler: slot B: generation 2 failed its check, ignored"),
+            contains("BadgerHandler: loaded generation 1 from slot A"),
+        ],
+    };
+    steps.push(wait("ZOO_OS SHELL ready"));
+    let (disk, purpose) = match step {
+        1 => {
+            e.then(&[
+                "ZOO_OS SHELL line=put Documents/kept.txt first version",
+                "ZOO_OS SHELL line=put Documents/kept.txt second version",
+                "ZOO_OS SHELL line=cat Documents/kept.txt",
+            ]);
+            steps.extend([
+                say("put Documents/kept.txt first version"),
+                contains("BadgerHandler: saved generation 1 to slot A"),
+                say("put Documents/kept.txt second version"),
+                contains("BadgerHandler: saved generation 2 to slot B"),
+                say("cat Documents/kept.txt"),
+                wait("second version"),
+            ]);
+            (
+                Disk::Shared {
+                    name: "persist",
+                    reset: true,
+                    corrupt: false,
+                },
+                "fresh disk: a file is written twice; generations 1 and 2 are saved to slots A and B",
+            )
+        }
+        2 => {
+            e.then(&[
+                "ZOO_OS SHELL line=cat Documents/kept.txt",
+                "ZOO_OS SHELL line=dir Documents",
+            ]);
+            steps.extend([
+                say("cat Documents/kept.txt"),
+                wait("second version"),
+                say("dir Documents"),
+                wait("  kept.txt (15 bytes)"),
+            ]);
+            (
+                Disk::Shared {
+                    name: "persist",
+                    reset: false,
+                    corrupt: false,
+                },
+                "reboot: the newest generation is loaded and the file reads back",
+            )
+        }
+        _ => {
+            e.then(&[
+                "ZOO_OS SHELL line=cat Documents/kept.txt",
+                "ZOO_OS SHELL line=poke badger-handler half-save",
+                "ZOO_OS SHELL line=put Documents/kept.txt third version",
+                "ZOO_OS PROC exit pid=23 name=badger-handler code=41",
+                "ZOO_OS PROC start pid=26 name=badger-handler",
+                "ZOO_OS SHELL line=cat Documents/kept.txt",
+            ]);
+            steps.extend([
+                say("cat Documents/kept.txt"),
+                wait("first version"),
+                say("poke badger-handler half-save"),
+                Action::Settle(QUIET),
+                say("put Documents/kept.txt third version"),
+                contains("stopping after the payload of generation 2 (simulated power loss)"),
+                wait("ZOO_OS PROC start pid=26 name=badger-handler"),
+                contains("BadgerHandler: loaded generation 1 from slot A"),
+                Action::Settle(QUIET),
+                say("cat Documents/kept.txt"),
+                wait("first version"),
+            ]);
+            (
+                Disk::Shared {
+                    name: "persist",
+                    reset: false,
+                    corrupt: true,
+                },
+                "damaged newest snapshot is rejected; a save cut short by a simulated power loss leaves the previous one",
+            )
+        }
+    };
+    steps.push(Action::Settle(QUIET));
+    Case {
+        name,
+        mode: Mode::Normal,
+        custom_image: None,
+        disk,
+        expectation: e,
+        timeout,
+        want: "pass",
+        purpose,
+        interaction: Some(Interaction { steps }),
+        screen_checks: vec![],
+    }
+}
+
 fn desktop_steps() -> Interaction {
     Interaction {
         steps: vec![
@@ -1255,3 +1424,39 @@ const KEYS: [&str; 26] = [
     "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
     "t", "u", "v", "w", "x", "y", "z",
 ];
+
+/// Flips one byte inside the payload of the newest valid-looking snapshot
+/// slot on a data disk (docs/s5-design.md §4). Returns what it did.
+fn corrupt_newest_snapshot(path: &std::path::Path) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    const MAGIC: &[u8; 8] = b"ZOOFS001";
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let half = qemu::DATA_DISK_BYTES / 2;
+    let mut best: Option<(u64, u64)> = None; // (generation, slot offset)
+    for slot in [0, half] {
+        let mut h = [0u8; 16];
+        f.seek(SeekFrom::Start(slot)).map_err(|e| e.to_string())?;
+        f.read_exact(&mut h).map_err(|e| e.to_string())?;
+        if &h[..8] == MAGIC {
+            let generation = u64::from_le_bytes(h[8..16].try_into().expect("8 bytes"));
+            if best.is_none_or(|(g, _)| generation > g) {
+                best = Some((generation, slot));
+            }
+        }
+    }
+    let (generation, slot) = best.ok_or("no snapshot on the disk to corrupt")?;
+    let at = slot + 4096 + 20;
+    let mut b = [0u8; 1];
+    f.seek(SeekFrom::Start(at)).map_err(|e| e.to_string())?;
+    f.read_exact(&mut b).map_err(|e| e.to_string())?;
+    b[0] ^= 0xFF;
+    f.seek(SeekFrom::Start(at)).map_err(|e| e.to_string())?;
+    f.write_all(&b).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "corrupted generation {generation} (slot at byte {slot}): flipped byte {at}"
+    ))
+}

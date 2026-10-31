@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S4b section
-(version 0.19.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S5 section
+(version 0.20.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,39 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 5 results: files survive a reboot (version 0.20.0)
+
+Design: docs/s5-design.md (§5 as implemented). Kernel virtio block driver
+(`kernel/src/virtio_blk.rs`, legacy interface, polled) and calls 52–55 (ABI
+version 14); a 16 MiB data disk on every QEMU run; BadgerHandler A/B
+snapshots with generation and CRC-32; shell `dir`/`cat`/`put`.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 805 s, every case as
+expected (`assistant-live` `SKIP`), with the three new boots of one disk:
+
+| Case | Disk | Time | What it shows |
+| --- | --- | --- | --- |
+| persist-1 | fresh | 14.2 s | `put` twice → `saved generation 1 to slot A`, `saved generation 2 to slot B`; `cat` shows `second version` |
+| persist-2 | same (reboot) | 10.8 s | `loaded generation 2 from slot B (457 bytes)`; `cat` shows `second version`; `dir Documents` lists `kept.txt (15 bytes)` |
+| persist-3 | same, generation 2 damaged by xtask (`flipped byte 8392724`) | 17.0 s | `slot B: generation 2 failed its check, ignored`, `loaded generation 1 from slot A`; then a save cut short (`stopping after the payload of generation 2 (simulated power loss)`, exit 41), the supervisor restarts BadgerHandler and generation 1 loads again |
+
+Then `--accel whpx --case assistant-live`: pass in 58.3 s. Every boot
+reports `ZOO_OS INFO disk virtio-blk bytes=16777216`.
+
+**Negative controls** (each temporary edit to BadgerHandler reverted):
+
+| Change | Result |
+| --- | --- |
+| CRC not checked on load | `persist-1`, `persist-2` OK; `FAIL persist-3`: the damaged generation 2 was loaded (`loaded generation 2 from slot B`, then `snapshot did not parse; using the seed`) |
+| First valid slot taken instead of the newest | `FAIL persist-2`: `loaded generation 1 from slot A` |
+
+The planned control "header before payload" was not run: with the CRC it
+cannot fail (docs/s5-design.md §5 explains why).
+
+Other checks: `cargo clippy`: 0 warnings (one `too_many_arguments` allowed
+on `run_case`). `cargo test -p zoo-infer -p zoo-abi -p xtask --locked`: all
+passed. Not run: a clean-copy verify.
 
 ## Services step 4b results: the filesystem as a service (version 0.19.0)
 

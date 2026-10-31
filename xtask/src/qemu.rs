@@ -39,11 +39,29 @@ fn opt_path(p: &Path) -> Result<String, String> {
 /// Software emulation (TCG) only, so no host hypervisor is required.
 /// `headless` hides the display window; the emulated screen still exists
 /// (verify takes screenshots of it).
+/// Size of the data disk created for a run (docs/s5-design.md).
+pub const DATA_DISK_BYTES: u64 = 16 << 20;
+
+/// Creates (or, with `reset`, recreates) a zero-filled data disk at `path`.
+pub fn ensure_data_disk(path: &Path, reset: bool) -> Result<(), String> {
+    if reset || !path.is_file() {
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        }
+        let f =
+            fs::File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        f.set_len(DATA_DISK_BYTES)
+            .map_err(|e| format!("cannot size {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn machine_args(
     tools: &Tools,
     image: &Path,
     vars: &Path,
     headless: bool,
+    data: &Path,
 ) -> Result<Vec<OsString>, String> {
     let accel = accel();
     let code = tools
@@ -68,6 +86,12 @@ fn machine_args(
         format!("if=pflash,format=raw,unit=1,file={}", opt_path(vars)?),
         "-drive".into(),
         format!("format=raw,media=disk,file={}", opt_path(image)?),
+        // The data disk: legacy virtio (I/O-port interface), which is
+        // what the kernel's driver speaks.
+        "-drive".into(),
+        format!("if=none,id=data,format=raw,file={}", opt_path(data)?),
+        "-device".into(),
+        "virtio-blk-pci,drive=data,disable-modern=on".into(),
         "-nic".into(),
         "none".into(),
         "-monitor".into(),
@@ -126,7 +150,14 @@ pub fn run_interactive(
 ) -> Result<ExitCode, String> {
     let qemu = tools.qemu.as_deref().expect("resolved by resolve_for_qemu");
     let (dir, vars) = prepare_run_dir(root, &format!("run-{}", mode.name()), tools)?;
-    let mut args = machine_args(tools, image, &vars, false)?;
+    // Kept between runs, so files saved in one session are there next time.
+    let data = root.join("build").join("data.img");
+    ensure_data_disk(&data, false)?;
+    println!(
+        "[run] data disk {} (delete it to start empty)",
+        data.display()
+    );
+    let mut args = machine_args(tools, image, &vars, false, &data)?;
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);
     println!(
@@ -243,6 +274,7 @@ pub struct Limits {
 /// and evaluates that log until pass, failure, early exit or the timeout.
 /// After a pass, keeps watching for the settle time to catch trailing markers
 /// (e.g. READY after PANIC). QEMU is always terminated and reaped.
+#[allow(clippy::too_many_arguments)]
 pub fn run_case(
     root: &Path,
     tools: &Tools,
@@ -251,12 +283,13 @@ pub fn run_case(
     exp: &Expectation,
     limits: Limits,
     interaction: Option<&Interaction>,
+    data: &Path,
 ) -> Result<CaseRun, String> {
     let Limits { timeout, settle } = limits;
     let qemu = tools.qemu.as_deref().expect("resolved by resolve_for_qemu");
     let (dir, vars) = prepare_run_dir(root, case, tools)?;
     let log = dir.join("serial.log");
-    let mut args = machine_args(tools, image, &vars, true)?;
+    let mut args = machine_args(tools, image, &vars, true, data)?;
     args.extend(
         [
             "-chardev".to_string(),

@@ -18,6 +18,7 @@ use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
 };
 use crate::trap::{self, TrapFrame};
+use crate::virtio_blk;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -32,6 +33,7 @@ use x86_64::instructions::interrupts as cpu_interrupts;
 use x86_64::registers::control::{Cr2, Cr3};
 use x86_64::registers::model_specific::FsBase;
 use x86_64::structures::paging::{PhysFrame, Translate};
+use zoo_abi::BLOCK_BYTES;
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DisplayInfo, EXC_RESUME, EXC_UNHANDLED, Error,
     ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsEntry, HEAP_BASE, HEAP_LIMIT, HandleMsg, MAP_BASE,
@@ -89,6 +91,8 @@ enum Object {
     },
     /// Reads the kernel log buffer (docs/s2-design.md).
     LogReader,
+    /// The data disk (docs/s5-design.md).
+    Block,
 }
 
 #[derive(Clone)]
@@ -141,7 +145,7 @@ struct Proc {
     /// Read-only file mappings of ramdisk pages: (address, pages). Never
     /// freed through the frame allocator; unmapped before the space is freed.
     file_maps: Vec<(u64, u64)>,
-    /// May call `log_attach` (the resident supervisor).
+    /// May call `log_attach` and `block_attach` (the resident supervisor).
     log_ok: bool,
     /// Threads that have not exited.
     live: usize,
@@ -1513,6 +1517,50 @@ impl Scheduler {
                 }
                 // Woken by any send, close or exit (wake_all) or the timer.
                 Outcome::Block
+            }
+            sys::BLOCK_ATTACH => {
+                let p = self.proc(i);
+                if !p.log_ok {
+                    return err(Error::Rights);
+                }
+                if virtio_blk::capacity().is_none() {
+                    return err(Error::NotFound);
+                }
+                match p.insert(HandleEntry {
+                    object: Object::Block,
+                    rights: RIGHT_SEND | RIGHT_RECV,
+                }) {
+                    Some(h) => Outcome::Ret(h as i64),
+                    None => err(Error::NoMem),
+                }
+            }
+            sys::BLOCK_READ | sys::BLOCK_WRITE | sys::BLOCK_SIZE => {
+                // a1 = block handle, a2 = block number, a3 = 4 KiB buffer.
+                match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Block,
+                        ..
+                    }) => {}
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                }
+                if number == sys::BLOCK_SIZE {
+                    return Outcome::Ret(virtio_blk::capacity().unwrap_or(0) as i64);
+                }
+                let write = number == sys::BLOCK_WRITE;
+                if !ok(a3, BLOCK_BYTES as u64, !write) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped user range of exactly one block
+                // in the active address space (writable when reading into
+                // it); `[u8; N]` has alignment 1.
+                let buf = unsafe { &mut *(a3 as *mut [u8; BLOCK_BYTES]) };
+                match virtio_blk::transfer(mem, a2, buf, write) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(virtio_blk::BlockError::OutOfRange) => err(Error::Inval),
+                    Err(virtio_blk::BlockError::NoDevice) => err(Error::NotFound),
+                    Err(_) => err(Error::Fault),
+                }
             }
             sys::LOG_ATTACH => {
                 let p = self.proc(i);

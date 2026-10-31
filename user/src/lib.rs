@@ -392,6 +392,40 @@ pub fn wait_any(handles: &[Handle], timeout: u64) -> Result<usize, Error> {
     .map(|k| k as usize)
 }
 
+/// A block-device handle for the data disk (the resident supervisor only).
+pub fn block_attach() -> Result<Handle, Error> {
+    result(syscall(sys::BLOCK_ATTACH, 0, 0, 0))
+}
+
+/// Reads 4 KiB block `block` into `buf`.
+pub fn block_read(
+    disk: Handle,
+    block: u64,
+    buf: &mut [u8; zoo_abi::BLOCK_BYTES],
+) -> Result<(), Error> {
+    result(syscall(
+        sys::BLOCK_READ,
+        disk,
+        block,
+        buf.as_mut_ptr() as u64,
+    ))
+    .map(|_| ())
+}
+
+/// Writes `buf` to 4 KiB block `block`.
+pub fn block_write(
+    disk: Handle,
+    block: u64,
+    buf: &[u8; zoo_abi::BLOCK_BYTES],
+) -> Result<(), Error> {
+    result(syscall(sys::BLOCK_WRITE, disk, block, buf.as_ptr() as u64)).map(|_| ())
+}
+
+/// Size of the data disk in bytes.
+pub fn block_size(disk: Handle) -> Result<u64, Error> {
+    result(syscall(sys::BLOCK_SIZE, disk, 0, 0))
+}
+
 /// A log-reader handle (the resident supervisor only).
 pub fn log_attach() -> Result<Handle, Error> {
     result(syscall(sys::LOG_ATTACH, 0, 0, 0))

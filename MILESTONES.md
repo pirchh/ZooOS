@@ -114,7 +114,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | S3 | Handles passed in channel messages; services find each other by name through Zookeeper (docs/s3-design.md) | done 2026-10-30 |
 | S4a | `wait_any`; services stop polling; scheduler prefers ready programs over idling (docs/s4a-design.md) | done 2026-10-30 |
 | S4b | Filesystem moved out of the kernel into a service, BadgerHandler (docs/s4-design.md) | done 2026-10-30 |
-| S5 | Disk driver (virtio) so files survive a reboot | proposed |
+| S5 | Disk driver (virtio) and crash-safe A/B snapshots: files survive a reboot (docs/s5-design.md) | done 2026-10-31 |
 
 ## M6 — Windows application stages
 

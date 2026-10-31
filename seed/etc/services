@@ -1,5 +1,5 @@
 # Services Zookeeper starts and supervises (docs/s1-design.md).
 # name max_restarts [logs: also gets the kernel log reader]
-badger-handler 3
+badger-handler 3 disk
 beaver-handler 3 logs
 seal-test 3

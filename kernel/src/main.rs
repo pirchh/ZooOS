@@ -36,6 +36,7 @@ mod selftest;
 mod serial;
 mod shell;
 mod trap;
+mod virtio_blk;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::info::MemoryRegionKind;
@@ -186,6 +187,11 @@ fn run(mut mem: memory::Memory) -> ! {
         panic!("intentional-test");
     }
     memory::install(mem);
+    // The data disk, if QEMU attached one (docs/s5-design.md).
+    match memory::with(virtio_blk::init) {
+        Some(bytes) => kprintln!("ZOO_OS INFO disk virtio-blk bytes={}", bytes),
+        None => kprintln!("ZOO_OS INFO disk none"),
+    }
     process::init();
     run_boot_processes();
     start_supervisor();

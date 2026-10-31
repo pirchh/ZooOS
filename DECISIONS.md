@@ -143,6 +143,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 5: persistent files (2026-10-31)
+
+Design: docs/s5-design.md.
+
+- A virtio block driver in the kernel (legacy interface, polled) for a
+  second QEMU drive; only the resident supervisor can attach it, and it
+  passes the handle to BadgerHandler (`disk` flag).
+- BadgerHandler keeps `/home/user` in two A/B snapshot slots with
+  generation and CRC-32; it loads the newest valid one, saves 50 ticks
+  after the last change, payload before header. Recovery behaviour is
+  documented in docs/s5-design.md §3, as DECISIONS.md required before
+  trusting personal data to disk.
+- Shell `dir`/`cat`/`put` for the home folder. Calls 52–55; ABI version 14.
+  Version 0.20.0.
+
 ## Services step 4b: the filesystem as a service (2026-10-30)
 
 Design: docs/s4-design.md.
