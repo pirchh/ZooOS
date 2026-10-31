@@ -12,3 +12,7 @@
 
 # Python reference environment (tools/reference/README.md)
 /tools/reference/.venv/
+
+# C toolchain (downloaded; see tools/zig/README.md)
+/tools/zig/*/
+/tools/zig/*.zip

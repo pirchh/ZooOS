@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX step 4
-section (version 0.13.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The POSIX step 5a
+section (version 0.14.0) is the current state.
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +39,48 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 5a results: C toolchain (version 0.14.0)
+
+Design: docs/posix5-design.md. Zig 0.16.0 downloaded into `tools/zig/`
+with the owner's approval: `zig-x86_64-windows-0.16.0.zip`, 97,217,739
+bytes, SHA-256 `68659eb5…a75a7e`, identical to ziglang.org's index
+(tools/zig/README.md); `zig version` 0.16.0, `zig cc --version` clang
+21.1.0. The initrd now holds 16 programs, one of them in C (610,816 bytes).
+
+**Full `cargo xtask verify`** (TCG) in the main checkout: exit 0 in 812 s,
+`ZOO_OS BOOT version=0.14.0`, every case as expected (`assistant-live`
+`SKIP`). This run shared the CPU with an interactive demo session, so its
+times are longer than usual (normal 6.7 s, desktop 16.5 s, inference
+624.9 s). New case `c-program`: OK in 7.7 s. Then `--accel whpx --case
+assistant-live`: pass in 53.5 s.
+
+From the `c-program` case's serial log:
+
+    ZOO_OS SHELL line=run capybara-handler
+    ZOO_OS PROC start pid=20 name=capybara-handler
+    [20:capybara-handler] CapybaraHandler: hello from C
+    [20:capybara-handler] CapybaraHandler: crc32 0x414fa339, sqrt(2) ok, 64 KiB heap crc32 0x85400450
+    [20:capybara-handler] CapybaraHandler: all C checks passed
+    ZOO_OS PROC exit pid=20 name=capybara-handler code=0
+
+**Negative and absence checks** (each reverted):
+
+| Change | Result |
+| --- | --- |
+| CapybaraHandler expects a wrong CRC-32 value | `FAIL c-program`: `capybara-handler code=11` |
+| Toolchain folder moved aside | `[build] no C toolchain in tools/zig/ …; C programs skipped`, initrd with 15 programs, `SKIP c-program not run: no C toolchain` |
+
+**Interactive demo** (not a verify case, recorded as an observation): the
+model image under `--accel whpx` in a visible window, driven by keystrokes
+over QMP: boot checks, shell commands, the C program, the desktop, and the
+Assistant answering "Find my pancake recipe" (`search pancake recipe`) and
+"Make a folder called Projects/2026" (`create Projects/2026`, created after
+`y`, then `undo`).
+
+Other checks: `cargo clippy -p xtask --all-targets`: 0 warnings. `cargo
+test -p zoo-infer -p zoo-abi -p xtask --locked`: all passed. Not run: a
+clean-copy verify.
 
 ## POSIX step 4 results: writable files (version 0.13.0)
 
