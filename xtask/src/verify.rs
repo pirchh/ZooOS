@@ -35,6 +35,10 @@ thread_local! {
     /// for checks that compare two pictures (`check_full_repaint`).
     static PREVIOUS: std::cell::RefCell<Option<screen::Image>> =
         const { std::cell::RefCell::new(None) };
+    /// When the screenshot being checked was written (its file time), for
+    /// checks of the guest's clock (`check_menu_clock`).
+    static SHOT_TIME: std::cell::Cell<Option<std::time::SystemTime>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Which data disk a case boots with.
@@ -225,6 +229,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let frames = mouse_expectation(&normal);
     let dock = dock_expectation(&normal);
     let notes = notes_expectation(&normal);
+    let mut menu_clock = normal.clone();
+    menu_clock.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+    ]);
     let mut args_clock = normal.clone();
     args_clock.then(&[
         "ZOO_OS SHELL line=run tern-test alpha beta",
@@ -500,6 +514,24 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }),
             screen_checks: vec![],
         },
+        Case {
+            name: "menu-clock",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: menu_clock,
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "the menu bar shows the UTC date and time of the moment of the screenshot",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.push(Action::Screenshot("1-menu"));
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-menu", check_menu_clock)],
+        },
         notes_case(notes.clone(), "notes-1", s.timeout * 2),
         notes_case(notes, "notes-2", s.timeout * 2),
         Case {
@@ -765,6 +797,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     detail = format!("screenshot `{name}` was not taken");
                     break;
                 };
+                SHOT_TIME.with(|t| t.set(std::fs::metadata(ppm).and_then(|m| m.modified()).ok()));
                 let checked = screen::read_ppm(ppm).and_then(|img| {
                     let result = check(&img);
                     PREVIOUS.with(|p| *p.borrow_mut() = Some(img));
@@ -1638,6 +1671,69 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
 }
 
 const MENU_BAR_H: usize = 24;
+
+// ---- D5 menu-bar clock (docs/d5-design.md §2) ---------------------------
+
+/// How the menu bar shows Unix time `secs` (UTC), computed on the host
+/// with the standard days-to-date algorithm.
+fn menu_clock_text(secs: u64) -> String {
+    const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!(
+        "{} {} {} {:02}:{:02} UTC",
+        WEEKDAYS[days.rem_euclid(7) as usize],
+        day,
+        MONTHS[month as usize - 1],
+        rem / 3600,
+        rem % 3600 / 60
+    )
+}
+
+fn check_menu_clock(img: &screen::Image) -> Result<String, String> {
+    let shot = SHOT_TIME
+        .with(|t| t.get())
+        .ok_or("the screenshot's file time is unknown")?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    // The minute of the screenshot, or the one before it (the frame may
+    // have been drawn just before the minute changed).
+    for secs in [shot, shot.saturating_sub(60)] {
+        let want = menu_clock_text(secs);
+        if let Some(at) = screen::find_text(img, &want, BAR_TEXT, BAR) {
+            absent(img, &menu_clock_text(secs + 86_400), BAR_TEXT, BAR)?;
+            return Ok(format!(
+                "menu bar shows `{want}` at {at:?}, the host's UTC time of the screenshot"
+            ));
+        }
+    }
+    Err(format!(
+        "menu bar does not show `{}` or `{}`",
+        menu_clock_text(shot),
+        menu_clock_text(shot.saturating_sub(60))
+    ))
+}
+
+#[test]
+fn menu_clock_text_known_dates() {
+    // 1970-01-01 00:00 was a Thursday; 2026-10-31 06:31 is a Saturday;
+    // 2000-02-29 is a leap day (Tuesday).
+    assert_eq!(menu_clock_text(0), "Thu 1 Jan 00:00 UTC");
+    assert_eq!(menu_clock_text(1_793_428_260), "Sat 31 Oct 06:31 UTC");
+    assert_eq!(menu_clock_text(951_782_400), "Tue 29 Feb 00:00 UTC");
+}
 
 // ---- D4 Notes cases (docs/d4-design.md §3) -----------------------------
 
