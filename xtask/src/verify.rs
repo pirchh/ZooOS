@@ -3,7 +3,7 @@
 use crate::config::Tools;
 use crate::image::{self, Mode};
 use crate::markers::Expectation;
-use crate::qemu::{self, Action, Interaction, Outcome};
+use crate::qemu::{self, Action, Interaction, Outcome, Usb};
 use crate::screen;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -66,7 +66,7 @@ struct Case {
     /// Attach a USB controller with a keyboard and a mouse
     /// (docs/h1-design.md). Off by default: QEMU could then route typed
     /// keys to the USB keyboard instead of the PS/2 one.
-    usb: bool,
+    usb: Usb,
     expectation: Expectation,
     timeout: Duration,
     /// The outcome kind this case must produce for verification to succeed.
@@ -327,7 +327,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "pass",
@@ -340,7 +340,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::FastBoot,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: fast_boot,
             timeout: s.timeout,
             want: "pass",
@@ -365,7 +365,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Panic,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: expect(Mode::Panic, &with_tests("ZOO_OS PANIC intentional-test")),
             timeout: s.timeout,
             want: "pass",
@@ -378,7 +378,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::FaultWriteProtect,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: expect(
                 Mode::FaultWriteProtect,
                 &[
@@ -396,7 +396,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::FaultHeapGuard,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: expect(
                 Mode::FaultHeapGuard,
                 &[
@@ -414,7 +414,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::FaultStackOverflow,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: expect(
                 Mode::FaultStackOverflow,
                 &["ZOO_OS EXCEPTION double-fault stack-guard-hit"],
@@ -430,7 +430,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: keyboard,
             timeout: s.timeout,
             want: "pass",
@@ -467,7 +467,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: scroll,
             timeout: s.timeout,
             want: "pass",
@@ -488,7 +488,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: desktop,
             // Boot, five interaction phases, two restarts: allow longer.
             timeout: s.timeout * 3,
@@ -508,7 +508,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: mouse,
             timeout: s.timeout * 2,
             want: "pass",
@@ -525,7 +525,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: redraw,
             timeout: s.timeout * 2,
             want: "pass",
@@ -538,7 +538,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: frames,
             timeout: s.timeout * 2,
             want: "pass",
@@ -551,7 +551,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: args_clock,
             timeout: s.timeout,
             want: "pass",
@@ -573,7 +573,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: true,
+            usb: Usb::Direct,
             expectation: {
                 let mut e = normal.clone();
                 e.then(&["ZOO_OS SHELL line=echo usb"]);
@@ -599,11 +599,41 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "usb-hub",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Hub,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&["ZOO_OS SHELL line=echo hub"]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "USB hub: the keyboard and mouse behind a hub are found and the shell is typed into through the keyboard",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitContains("class=9".into()),
+                    Action::WaitContains("hid=keyboard".into()),
+                    Action::WaitContains(".1 input ready".into()),
+                    Action::WaitContains("hid=mouse".into()),
+                    Action::WaitContains(".2 input ready".into()),
+                    Action::WaitContains("ZOO_OS INFO usb devices=3".into()),
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("echo hub")),
+                    Action::WaitContains("ZOO_OS INFO usb keyboard input".into()),
+                    Action::WaitFor("ZOO_OS SHELL line=echo hub".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "usb-desktop",
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: true,
+            usb: Usb::Direct,
             expectation: menu_clock.clone(),
             timeout: s.timeout * 2,
             want: "pass",
@@ -631,7 +661,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::BigScreen,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: big_screen,
             timeout: s.timeout,
             want: "pass",
@@ -651,7 +681,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
@@ -680,7 +710,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: menu_clock.clone(),
             timeout: s.timeout,
             want: "pass",
@@ -714,7 +744,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: menu_clock,
             timeout: s.timeout,
             want: "pass",
@@ -735,7 +765,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: dock,
             timeout: s.timeout * 2,
             want: "pass",
@@ -753,7 +783,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: assistant_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
@@ -769,7 +799,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: services_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
@@ -785,7 +815,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
@@ -812,7 +842,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: model_image.clone(),
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: assistant_model_expectation(&normal, false),
             timeout: s.timeout * 10,
             want: "pass",
@@ -828,7 +858,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: model_image.clone(),
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: assistant_model_expectation(&normal, true),
             timeout: s.timeout * 10,
             want: "pass",
@@ -841,7 +871,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: model_image.clone(),
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: inference,
             // Software emulation runs the 0.5B model at a fraction of a token
             // per second; allow for loading, tokenizer setup and 33 passes.
@@ -871,7 +901,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Panic,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: normal.clone(),
             timeout: s.timeout,
             want: "unexpected-marker",
@@ -884,7 +914,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: never,
             timeout: s.negative_timeout,
             want: "timeout",
@@ -897,7 +927,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             mode: Mode::TripleFault,
             custom_image: None,
             disk: Disk::Fresh,
-            usb: false,
+            usb: Usb::None,
             expectation: expect(Mode::TripleFault, &["ZOO_OS READY"]),
             timeout: s.timeout,
             want: "early-exit",
@@ -1650,7 +1680,7 @@ fn persist_case(normal: &Expectation, name: &'static str, step: u8, timeout: Dur
         mode: Mode::Normal,
         custom_image: None,
         disk,
-        usb: false,
+        usb: Usb::None,
         expectation: e,
         timeout,
         want: "pass",
@@ -2065,7 +2095,7 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
             reset: first,
             corrupt: false,
         },
-        usb: false,
+        usb: Usb::None,
         expectation,
         timeout,
         want: "pass",

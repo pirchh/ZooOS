@@ -143,6 +143,14 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 4: USB hubs (2026-10-31)
+
+Design: docs/h4-design.md.
+
+- The xHCI driver sets up hubs on root ports (one tier) and the devices
+  behind them, with route strings and transaction-translator fields.
+  The test option `usb` became none / direct / hub. Version 0.34.0.
+
 ## Hardware step 3: the local APIC timer (2026-10-31)
 
 Design: docs/h3-design.md.

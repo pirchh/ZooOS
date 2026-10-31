@@ -24,12 +24,22 @@ pub fn set_accel(name: &str) {
     let _ = ACCEL.set(name.to_string());
 }
 
-static USB: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// USB devices on the test machine (docs/h1-design.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Usb {
+    /// No USB controller.
+    None,
+    /// A keyboard and a mouse on the controller's own ports.
+    Direct,
+    /// A hub on a root port, with the keyboard and mouse behind it.
+    Hub,
+}
 
-/// Whether the next machine gets a USB controller with a keyboard and a
-/// mouse (docs/h1-design.md).
-pub fn set_usb(on: bool) {
-    USB.store(on, std::sync::atomic::Ordering::Relaxed);
+static USB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The USB devices the next machine gets.
+pub fn set_usb(usb: Usb) {
+    USB.store(usb as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn accel() -> String {
@@ -115,7 +125,8 @@ fn machine_args(
     if headless {
         args.extend(["-display".into(), "none".into()]);
     }
-    if USB.load(std::sync::atomic::Ordering::Relaxed) {
+    let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
+    if usb == Usb::Direct as u8 {
         args.extend([
             "-device".into(),
             "qemu-xhci,id=xhci".into(),
@@ -123,6 +134,17 @@ fn machine_args(
             "usb-kbd,bus=xhci.0".into(),
             "-device".into(),
             "usb-mouse,bus=xhci.0".into(),
+        ]);
+    } else if usb == Usb::Hub as u8 {
+        args.extend([
+            "-device".into(),
+            "qemu-xhci,id=xhci".into(),
+            "-device".into(),
+            "usb-hub,bus=xhci.0,port=1".into(),
+            "-device".into(),
+            "usb-kbd,bus=xhci.0,port=1.1".into(),
+            "-device".into(),
+            "usb-mouse,bus=xhci.0,port=1.2".into(),
         ]);
     }
     Ok(args.into_iter().map(OsString::from).collect())

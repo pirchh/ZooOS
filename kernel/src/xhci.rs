@@ -538,16 +538,7 @@ fn start(mem: &mut Memory, cap: Regs) -> Result<usize, &'static str> {
             continue;
         }
         match enumerate(mem, &mut hc, port, portsc) {
-            Ok(d) => {
-                count += 1;
-                kprintln!(
-                    "ZOO_OS INFO usb port={} vendor={:#06x} product={:#06x} class={}",
-                    port,
-                    d.vendor,
-                    d.product,
-                    d.class
-                );
-            }
+            Ok(n) => count += n,
             Err(why) => kprintln!("ZOO_OS INFO usb port={} error={}", port, why),
         }
     }
@@ -589,13 +580,37 @@ fn take_from_firmware(cap: Regs, hcc1: u32) {
     }
 }
 
-/// Resets a port, gives its device an address and reads its descriptors.
+/// Where a device is: its root port, the hub port it hangs off (if any),
+/// and what the slot context needs for it.
+#[derive(Clone, Copy)]
+struct Location {
+    root: usize,
+    hub_port: Option<usize>,
+    /// Route string: hub port numbers below the root port, 4 bits a tier.
+    route: u32,
+    speed: u32,
+    /// (hub slot, hub port) when a full/low-speed device sits behind a
+    /// high-speed hub's transaction translator.
+    tt: Option<(u32, u32)>,
+}
+
+impl core::fmt::Display for Location {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.hub_port {
+            Some(p) => write!(f, "{}.{}", self.root, p),
+            None => write!(f, "{}", self.root),
+        }
+    }
+}
+
+/// Resets a root port and sets up the device on it (and, for a hub, the
+/// devices behind it). Returns how many devices were set up.
 fn enumerate(
     mem: &mut Memory,
     hc: &mut Xhci,
     port: usize,
     portsc: u64,
-) -> Result<Device, &'static str> {
+) -> Result<usize, &'static str> {
     let v = hc.op.r32(portsc);
     // USB 3 ports enable themselves; USB 2 ports need a reset.
     if v & PORT_PED == 0 {
@@ -609,7 +624,20 @@ fn enumerate(
             return Err("port-not-enabled");
         }
     }
-    let speed = (hc.op.r32(portsc) >> 10) & 0xF;
+    let at = Location {
+        root: port,
+        hub_port: None,
+        route: 0,
+        speed: (hc.op.r32(portsc) >> 10) & 0xF,
+        tt: None,
+    };
+    attach(mem, hc, at)
+}
+
+/// Addresses the device at `at`, reads its descriptors, logs it, and sets
+/// up a HID interface or, for a hub on a root port, the hub's devices.
+fn attach(mem: &mut Memory, hc: &mut Xhci, at: Location) -> Result<usize, &'static str> {
+    let speed = at.speed;
     let max_packet: u32 = match speed {
         3 => 64,      // high speed
         4 | 5 => 512, // super speed
@@ -633,8 +661,11 @@ fn enumerate(
         unsafe { (input.add(off) as *mut u32).write_volatile(v) }
     };
     put(4, 0b11); // add the slot and endpoint 0 contexts
-    put(cs, speed << 20 | 1 << 27);
-    put(cs + 4, (port as u32) << 16);
+    put(cs, at.route | speed << 20 | 1 << 27);
+    put(cs + 4, (at.root as u32) << 16);
+    if let Some((hub_slot, hub_port)) = at.tt {
+        put(cs + 8, hub_slot | hub_port << 8);
+    }
     put(2 * cs + 4, 3 << 1 | 4 << 3 | max_packet << 16);
     put(2 * cs + 8, ep0.phys as u32 | 1);
     put(2 * cs + 12, (ep0.phys >> 32) as u32);
@@ -653,6 +684,7 @@ fn enumerate(
         product: u16::from_le_bytes([d[10], d[11]]),
         class: d[4],
     };
+    let port = at;
     // The configuration: report HID interfaces (keyboard 1, mouse 2) and
     // find the first boot-protocol one with an interrupt IN endpoint.
     control_in(hc, &mut ep0, slot, 0x0200, buf_phys, 255)?;
@@ -694,11 +726,17 @@ fn enumerate(
         }
         at += usize::from(c[at]);
     }
+    kprintln!(
+        "ZOO_OS INFO usb port={} vendor={:#06x} product={:#06x} class={}",
+        port,
+        device.vendor,
+        device.product,
+        device.class
+    );
     if let (Some((iface, kind)), Some(ep)) = (hid, endpoint) {
         let setup = HidSetup {
             slot,
-            speed,
-            port,
+            at: port,
             config,
             iface,
             ep,
@@ -708,14 +746,162 @@ fn enumerate(
             Err(why) => kprintln!("ZOO_OS INFO usb port={} input error={}", port, why),
         }
     }
-    Ok(device)
+    // A hub on a root port: its own ports (one tier of hubs).
+    if device.class == 9 && port.hub_port.is_none() {
+        return match hub(mem, hc, &mut ep0, slot, port, config, buf_phys, buf) {
+            Ok(n) => Ok(1 + n),
+            Err(why) => {
+                kprintln!("ZOO_OS INFO usb port={} hub error={}", port, why);
+                Ok(1)
+            }
+        };
+    }
+    Ok(1)
+}
+
+/// Hub class requests (USB 2.0 chapter 11).
+const HUB_PORT_RESET: u64 = 4;
+const HUB_PORT_POWER: u64 = 8;
+const HUB_C_PORT_CONNECTION: u64 = 16;
+const HUB_C_PORT_RESET: u64 = 20;
+
+/// Sets up a hub: marks its slot as a hub, powers and resets its ports,
+/// and attaches the device on each connected port. Returns how many.
+#[allow(clippy::too_many_arguments)]
+fn hub(
+    mem: &mut Memory,
+    hc: &mut Xhci,
+    ep0: &mut Ring,
+    slot: u32,
+    at: Location,
+    config: u8,
+    buf_phys: u64,
+    buf: *mut u8,
+) -> Result<usize, &'static str> {
+    // The hub descriptor: number of ports, power-on time.
+    control_get(hc, ep0, slot, 0xA0 | 6 << 8 | 0x29 << 24, buf_phys, 9)?;
+    // SAFETY: the buffer page the descriptor was read into.
+    let (ports, power_2ms) = unsafe { (buf.add(2).read_volatile(), buf.add(5).read_volatile()) };
+    let ports = u32::from(ports).min(15);
+    control_nodata(hc, ep0, slot, 9 << 8 | u64::from(config) << 16)?;
+
+    // Tell the controller this slot is a hub (Configure Endpoint, slot
+    // context only): Hub flag and number of ports.
+    let (in_phys, input) = page(mem).ok_or("out-of-memory")?;
+    let cs = hc.ctx_size;
+    let put = |off: usize, v: u32| {
+        // SAFETY: inside the zeroed input-context page.
+        unsafe { (input.add(off) as *mut u32).write_volatile(v) }
+    };
+    put(4, 1);
+    put(cs, at.route | at.speed << 20 | 1 << 26 | 1 << 27);
+    put(cs + 4, (at.root as u32) << 16 | ports << 24);
+    hc.command(in_phys, TRB_CONFIGURE_ENDPOINT << 10 | slot << 24)?;
+
+    for p in 1..=u64::from(ports) {
+        control_nodata(
+            hc,
+            ep0,
+            slot,
+            0x23 | 3 << 8 | HUB_PORT_POWER << 16 | p << 32,
+        )?;
+    }
+    // Power-good time (in 2 ms units) as spins; ticks do not run here.
+    spin(u64::from(power_2ms.max(10)) * 200_000);
+
+    let mut count = 0;
+    for p in 1..=ports {
+        let (status, _) = port_status(hc, ep0, slot, p, buf_phys, buf)?;
+        if status & 1 == 0 {
+            continue;
+        }
+        let w = u64::from(p) << 32;
+        control_nodata(
+            hc,
+            ep0,
+            slot,
+            0x23 | 1 << 8 | HUB_C_PORT_CONNECTION << 16 | w,
+        )?;
+        control_nodata(hc, ep0, slot, 0x23 | 3 << 8 | HUB_PORT_RESET << 16 | w)?;
+        let mut reset = false;
+        for _ in 0..1000 {
+            let (_, change) = port_status(hc, ep0, slot, p, buf_phys, buf)?;
+            if change & (1 << 4) != 0 {
+                reset = true;
+                break;
+            }
+            spin(100_000);
+        }
+        if !reset {
+            kprintln!(
+                "ZOO_OS INFO usb port={}.{} error=hub-port-reset-timeout",
+                at,
+                p
+            );
+            continue;
+        }
+        control_nodata(hc, ep0, slot, 0x23 | 1 << 8 | HUB_C_PORT_RESET << 16 | w)?;
+        let (status, _) = port_status(hc, ep0, slot, p, buf_phys, buf)?;
+        if status & (1 << 1) == 0 {
+            kprintln!(
+                "ZOO_OS INFO usb port={}.{} error=hub-port-not-enabled",
+                at,
+                p
+            );
+            continue;
+        }
+        // Hub port status speed bits → xHCI speed ids.
+        let speed = if status & (1 << 9) != 0 {
+            2 // low
+        } else if status & (1 << 10) != 0 {
+            3 // high
+        } else {
+            1 // full
+        };
+        let child = Location {
+            root: at.root,
+            hub_port: Some(p as usize),
+            route: at.route | p,
+            speed,
+            // Full/low speed behind a high-speed hub: its translator.
+            tt: (at.speed == 3 && speed != 3).then_some((slot, p)),
+        };
+        match attach(mem, hc, child) {
+            Ok(n) => count += n,
+            Err(why) => kprintln!("ZOO_OS INFO usb port={} error={}", child, why),
+        }
+    }
+    Ok(count)
+}
+
+/// A hub port's (wPortStatus, wPortChange).
+fn port_status(
+    hc: &mut Xhci,
+    ep0: &mut Ring,
+    slot: u32,
+    port: u32,
+    buf_phys: u64,
+    buf: *mut u8,
+) -> Result<(u16, u16), &'static str> {
+    control_get(hc, ep0, slot, 0xA3 | u64::from(port) << 32, buf_phys, 4)?;
+    // SAFETY: the 4 bytes just read into the buffer page.
+    let b = unsafe { [0, 1, 2, 3].map(|k| buf.add(k).read_volatile()) };
+    Ok((
+        u16::from_le_bytes([b[0], b[1]]),
+        u16::from_le_bytes([b[2], b[3]]),
+    ))
+}
+
+fn spin(n: u64) {
+    for _ in 0..n {
+        core::hint::spin_loop();
+    }
 }
 
 /// Where a HID interface is and what its endpoint looks like.
 struct HidSetup {
     slot: u32,
-    speed: u32,
-    port: usize,
+    at: Location,
     config: u8,
     iface: u8,
     /// (endpoint address, max packet size, interval)
@@ -749,7 +935,7 @@ fn start_hid(
     let mps = u32::from(mps & 0x7FF).max(1);
     // xHCI interval: 2^n x 125 us. Full/low speed give milliseconds,
     // high and super speed give 2^(bInterval-1) x 125 us.
-    let n = if s.speed >= 3 {
+    let n = if s.at.speed >= 3 {
         u32::from(interval.clamp(1, 16)) - 1
     } else {
         (u32::from(interval.max(1)) * 8).ilog2().clamp(3, 10)
@@ -762,8 +948,11 @@ fn start_hid(
         unsafe { (input.add(off) as *mut u32).write_volatile(v) }
     };
     put(4, 1 | 1 << dci); // slot context and the new endpoint
-    put(cs, s.speed << 20 | dci << 27);
-    put(cs + 4, (s.port as u32) << 16);
+    put(cs, s.at.route | s.at.speed << 20 | dci << 27);
+    put(cs + 4, (s.at.root as u32) << 16);
+    if let Some((hub_slot, hub_port)) = s.at.tt {
+        put(cs + 8, hub_slot | hub_port << 8);
+    }
     let ep = (dci as usize + 1) * cs;
     put(ep, n << 16);
     put(ep + 4, 3 << 1 | 7 << 3 | mps << 16); // interrupt IN
@@ -915,7 +1104,27 @@ fn control_in(
     buf: u64,
     len: u16,
 ) -> Result<(), &'static str> {
-    let setup = 0x80u64 | 6 << 8 | u64::from(value) << 16 | u64::from(len) << 48;
+    control_get(
+        hc,
+        ep0,
+        slot,
+        0x80 | 6 << 8 | u64::from(value) << 16,
+        buf,
+        len,
+    )
+}
+
+/// A control request with an IN data stage: `setup` without its length
+/// field, which `len` fills in.
+fn control_get(
+    hc: &mut Xhci,
+    ep0: &mut Ring,
+    slot: u32,
+    setup: u64,
+    buf: u64,
+    len: u16,
+) -> Result<(), &'static str> {
+    let setup = setup | u64::from(len) << 48;
     ep0.push(setup, 8, TRB_SETUP << 10 | 1 << 6 | 3 << 16);
     ep0.push(buf, u32::from(len), TRB_DATA << 10 | 1 << 16);
     let status = ep0.push(0, 0, TRB_STATUS << 10 | 1 << 5);
