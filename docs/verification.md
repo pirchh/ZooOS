@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The B1 section
-(version 0.26.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D5 section
+(version 0.27.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,28 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 5 results: date and time in the menu bar (version 0.27.0)
+
+Design: docs/d5-design.md (§3 as implemented).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 18 s, every case as
+expected (`assistant-live` `SKIP`). New case `menu-clock`: the menu bar
+showed `Sat 31 Oct 06:33 UTC`, the host's UTC time of the screenshot. New
+unit test `menu_clock_text_known_dates` (1970-01-01 Thursday, 2000-02-29
+Tuesday, 2026-10-31 Saturday): passed.
+
+Then `--accel whpx --case assistant-live`: pass in 60.4 s.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Date one day ahead | `FAIL menu-clock`: `menu bar does not show Sat 31 Oct 06:29 UTC or Sat 31 Oct 06:28 UTC` |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## Boot step 1 results: fast boot (version 0.26.0)
 
