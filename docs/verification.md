@@ -42,6 +42,25 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Clean-copy verification of version 0.35.0 (2026-10-31)
+
+Every step's record so far said "Not run: a clean-copy verify". This run
+closes that for the current state: a fresh `git clone` of `main` at
+`d6d93d3` (merge of hardware step 5) into an empty directory, with only
+the two Git-ignored downloads copied in from the development tree (the
+pinned Zig 0.16.0 toolchain, `tools/zig/zig-x86_64-windows-0.16.0`, and
+the checksum-pinned model file in `tools/models/`), then:
+
+| Command | Result |
+| --- | --- |
+| `cargo xtask doctor` | `ready: all prerequisites found` |
+| `cargo xtask verify` (TCG, everything built from nothing) | exit 0 in 15 min 56 s; 35 cases as expected, `assistant-live` `SKIP`; `PASS` |
+| `cargo xtask verify --accel whpx --case assistant-live` | pass in 50.6 s |
+
+The clone's working tree stayed clean (no tracked file changed by the
+build). So the merged state builds and verifies from Git plus the
+documented downloads alone.
+
 ## Hardware step 5 results: key repeat for USB keyboards (version 0.35.0)
 
 Design: docs/h5-design.md.
