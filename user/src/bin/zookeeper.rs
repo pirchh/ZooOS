@@ -896,6 +896,9 @@ impl Supervisor {
     }
 }
 
+/// Longest wait for the filesystem root before reporting ready (ticks).
+const READY_WAIT: u64 = 300;
+
 fn supervise(control: Handle) -> u8 {
     let mut sup = Supervisor {
         control,
@@ -920,11 +923,23 @@ fn supervise(control: Handle) -> u8 {
     for k in 0..sup.svcs.len() {
         sup.start(k);
     }
-    let _ = send(control, b"ready");
+    // `ready` waits for the filesystem service's home folder, so the shell
+    // prompt comes after its start-up (it loads the disk first); bounded,
+    // so a failing service cannot hold up the boot.
+    let wants_root = sup.svcs.iter().any(|s| s.name == "badger-handler");
+    let ready_by = zoo_rt::ticks() + READY_WAIT;
+    let mut ready_sent = false;
     let mut next_ping = zoo_rt::ticks() + PING_EVERY;
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let now = zoo_rt::ticks();
+        if !ready_sent && (!wants_root || sup.root.is_some() || now >= ready_by) {
+            if sup.root.is_none() && wants_root {
+                sup.event(format_args!("ready without a filesystem root"));
+            }
+            let _ = send(control, b"ready");
+            ready_sent = true;
+        }
         // Requests from the kernel shell.
         match zoo_rt::try_recv(control, &mut buf) {
             Ok(n) => {
