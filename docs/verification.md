@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H1a section
-(version 0.30.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H1b section
+(version 0.31.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,31 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 1b results: USB keyboard and mouse input (version 0.31.0)
+
+Design: docs/h1b-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 17 min 24 s, every case as
+expected (`assistant-live` `SKIP`).
+
+| Case | Time | What it shows |
+| --- | --- | --- |
+| usb | 8.9 s | both devices `input ready`; `echo usb` typed → `usb keyboard input`, `SHELL line=echo usb` |
+| usb-desktop | 11.7 s | `desktop` typed through the USB keyboard; a USB mouse move and click → `usb mouse input`, `click focuses Crash Test`; screenshot: Crash Test focused, Files not |
+
+Then `--accel whpx --case assistant-live`: pass in 58.1 s.
+
+**Negative controls** (temporary edits to `kernel/src/xhci.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| USB key presses not queued | `FAIL usb` (timeout): `no ZOO_OS SHELL line=echo usb within 30s`; so the keys did not reach the PS/2 keyboard either |
+| USB mouse y not negated | `FAIL usb-desktop` (timeout): the click landed on the Assistant (`click focuses Assistant`) |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: a
+clean-copy verify; real hardware.
 
 ## Hardware step 1a results: USB host controller, enumeration (version 0.30.0)
 
