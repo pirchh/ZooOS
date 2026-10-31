@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 6: signal handlers, threads and lazy memory (2026-10-31)
+
+Design and measurements: docs/linux6-design.md.
+
+- Signal frames follow Linux's x86-64 layout exactly, so handlers can read
+  and edit `ucontext_t` (Wine's fault handling). Delivery happens on the
+  way back to user mode; blocked calls end with EINTR or restart under
+  SA_RESTART; calls waiting on BadgerHandler or a vfork child are not
+  interrupted.
+- CPU faults in Linux threads become SIGSEGV/SIGILL/SIGFPE/SIGTRAP/SIGBUS
+  for the program's handler, or end it with that signal.
+- Linux threads reuse the native thread machinery; futexes reuse its wait
+  fields; one BadgerHandler request at a time per process.
+- Anonymous memory is committed on first touch; a system call that meets
+  such a range commits it and runs again. pthread_create + join: 2.6M →
+  20 thousand cycles. Version 0.46.0.
+
 ## Fast step 2: kernel output and memory reuse (2026-10-31)
 
 Design and measurements: docs/f2-design.md.

@@ -905,6 +905,48 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-kittiwake",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux kittiwake-test",
+                    "ZOO_OS PROC start pid=26 name=kittiwake-test",
+                    // EINTR / SA_RESTART sender; threaded child (SIGTERM).
+                    "ZOO_OS PROC start pid=27 name=kittiwake-test",
+                    "ZOO_OS PROC exit pid=27 name=kittiwake-test code=0",
+                    "ZOO_OS PROC start pid=28 name=kittiwake-test",
+                    "ZOO_OS PROC exit pid=28 name=kittiwake-test signal=15",
+                    // `ud2` without a handler.
+                    "ZOO_OS PROC start pid=29 name=kittiwake-test",
+                ]);
+                e.then_prefix("ZOO_OS PROC crash pid=29 name=kittiwake-test fault=");
+                e.then(&[
+                    "ZOO_OS PROC exit pid=29 name=kittiwake-test signal=4",
+                    // pause() and a handler.
+                    "ZOO_OS PROC start pid=30 name=kittiwake-test",
+                    "ZOO_OS PROC exit pid=30 name=kittiwake-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=kittiwake-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "a Linux musl program uses signal handlers, signal frames and pthreads",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux kittiwake-test")),
+                    Action::WaitContains("KittiwakeTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=kittiwake-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
