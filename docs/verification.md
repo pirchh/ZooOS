@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D3 section
-(version 0.23.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The POSIX 5b-1 section
+(version 0.24.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,34 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## POSIX step 5b-1 results: process arguments and the clock (version 0.24.0)
+
+Design: docs/posix5b1-design.md (§4 as implemented). Command lines in
+`spawn`, calls 57 `args_get` and 58 `clock` (ABI version 16), CMOS RTC at
+boot (`ZOO_OS INFO clock unix=…`), C program `tern-test`, harness action
+`WaitClock`.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 13 min 0 s, every case as
+expected (`assistant-live` `SKIP`). New case `args-clock` (7.4 s): `run
+tern-test alpha beta` → `TernTest: argc=3 argv=tern-test,alpha,beta`;
+`TernTest: unix=…` 0 s from the host clock (allowed 120 s); `TernTest:
+monotonic +500 ms` across a 50-tick sleep; exit code 0.
+
+Then `--accel whpx --case assistant-live`: pass in 61.2 s.
+
+**Negative controls** (each temporary kernel edit reverted):
+
+| Change | Result |
+| --- | --- |
+| RTC values not BCD-decoded | `FAIL args-clock`: the date read as impossible, the clock stayed unset and TernTest exited with code 12 (`unexpected-marker`) |
+| Year read as 1999 + YY (a plausible wrong time) | `FAIL args-clock` (`harness-error`): `guest clock 1761888157 is 31536001 s from the host's 1793424158 (allowed 120 s)` |
+| Command line not stored (arguments dropped) | `FAIL args-clock` (timeout): the program printed `argc=1 argv=tern-test` |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`):
+0 warnings (one unnecessary cast fixed). `cargo test -p zoo-infer -p
+zoo-abi -p xtask --locked`: all passed. Not run: a clean-copy verify;
+real hardware (the RTC is QEMU's).
 
 ## Desktop step 3 results: a dock and close buttons (version 0.23.0)
 
