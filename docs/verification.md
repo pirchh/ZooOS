@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D2 section
-(version 0.22.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D3 section
+(version 0.23.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 3 results: a dock and close buttons (version 0.23.0)
+
+Design: docs/d3-design.md (§4 as implemented).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 15 min 6 s, every case as
+expected (`assistant-live` `SKIP`); existing desktop, mouse, redraw and
+assistant checks unchanged. New case `dock` (13.4 s):
+
+| Screenshot | Check |
+| --- | --- |
+| 1-dock | pointer at the bottom: tiles `Files`, `Crash Test`, `Assistant` at y 736, three running dots |
+| 2-closed | after Crash Test's close button: its window and text gone, `Files` still focused, dock hidden; serial `PROC exit pid=29 name=crash-test code=0` (no restart) |
+| 3-dock-closed | no running dot under Crash Test; dots under Files and the Assistant |
+| 4-reopened | after its tile: `PROC start pid=31 name=crash-test`, window back and focused, dock hidden |
+
+Then `--accel whpx --case assistant-live`: pass in 61.9 s.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Close restarts the app instead of closing it | `FAIL dock` (timeout, 60 s): the app never closed, so its dock tile raised it instead of opening it and `opened Crash Test` never appeared |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## Desktop step 2 results: redraw only what changed (version 0.22.0)
 
