@@ -360,6 +360,31 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "c-program",
+            mode: Mode::Normal,
+            custom_image: None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run capybara-handler",
+                    "ZOO_OS PROC start pid=20 name=capybara-handler",
+                    "ZOO_OS PROC exit pid=20 name=capybara-handler code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a C program built with the pinned zig toolchain runs from the shell and passes its checks",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run capybara-handler")),
+                    Action::WaitFor("ZOO_OS PROC exit pid=20 name=capybara-handler code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "assistant-model",
             mode: Mode::Normal,
             custom_image: model_image.clone(),
@@ -462,6 +487,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
+        if c.name == "c-program" && crate::cprog::zig(root).is_none() {
+            let line = format!(
+                "SKIP  {:<22} not run: no C toolchain in tools/zig/ (see tools/zig/README.md)
+",
                 c.name
             );
             print!("{line}");

@@ -164,6 +164,27 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
             0,
         );
     }
+    // C programs, when the pinned toolchain is present (docs/posix5-design.md).
+    let c_programs = match crate::cprog::zig(root) {
+        Some(zig) => crate::cprog::build(root, &zig)?,
+        None => {
+            println!(
+                "[build] no C toolchain in tools/zig/ (see tools/zig/README.md); C programs skipped"
+            );
+            Vec::new()
+        }
+    };
+    for (name, data) in &c_programs {
+        let entry = format!("bin/{name}");
+        let header = zoo_abi::tar::header(&entry, data.len())
+            .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(data);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+    }
     let seeds = seed_files(&root.join(SEED_DIR))?;
     for (rel, path) in &seeds {
         let data =
@@ -184,7 +205,7 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
         .map(|e| e.map_err(|e| format!("initrd self-check failed: {e:?}")))
         .collect::<Result<Vec<_>, _>>()?
         .len();
-    if count != USER_PROGRAMS.len() + seeds.len() {
+    if count != USER_PROGRAMS.len() + c_programs.len() + seeds.len() {
         return Err(format!("initrd self-check found {count} files"));
     }
     let out_dir = root.join("build");
@@ -193,8 +214,9 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
     let out = out_dir.join("initrd.tar");
     std::fs::write(&out, &archive).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     println!(
-        "[build] initrd ({} programs, {} home files, {} bytes) -> {}",
-        USER_PROGRAMS.len(),
+        "[build] initrd ({} programs, {} in C, {} home files, {} bytes) -> {}",
+        USER_PROGRAMS.len() + c_programs.len(),
+        c_programs.len(),
         seeds.len(),
         archive.len(),
         out.display()

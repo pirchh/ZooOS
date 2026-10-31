@@ -136,6 +136,21 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## POSIX layer step 5a: C toolchain (2026-10-30)
+
+Design: docs/posix5-design.md. The owner approved downloading a C
+toolchain into the project folder on 2026-10-30.
+
+- Zig 0.16.0 (`zig cc`: clang 21.1.0, lld) in `tools/zig/`, pinned by
+  version and SHA-256 (tools/zig/README.md); 0.16.0 rather than the
+  four-week-old 0.17.0. One archive gives compiler, linker and musl sources.
+- C programs are freestanding for now (no libc), linked like the Rust user
+  programs; `zoo_abi.h` is generated from the `zoo-abi` crate.
+- The toolchain is optional for building: without it C programs are left
+  out and their verify case reports `SKIP`.
+- Step 5 is split: 5a toolchain + freestanding C (done), 5b libc port.
+- Version 0.14.0; ABI unchanged (8).
+
 ## POSIX layer step 4: writable files (2026-10-30)
 
 Design: docs/posix4-design.md.

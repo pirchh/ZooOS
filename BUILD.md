@@ -26,6 +26,8 @@ builds do not accidentally inherit the kernel target or linker flags.
 - abi/: shared system call ABI and ELF/initrd parsers (no dependencies).
 - user/: user runtime and programs, built with `-C relocation-model=static`
   and packed by `cargo xtask build` into `build/initrd.tar` (the ramdisk).
+- c/: C programs (`c/programs/`), their start-up code and headers; built
+  with the pinned Zig toolchain when `tools/zig/` has it (tools/zig/README.md).
 - xtask/: host build, image, run and verification utility.
 - .cargo/: aliases and target-specific configuration.
 - tools/firmware/README.md: firmware setup and provenance.

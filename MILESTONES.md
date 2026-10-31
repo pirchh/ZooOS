@@ -99,7 +99,8 @@ and verification:
 | 2 | Address space: reserve/commit/protect/decommit/release/query (docs/posix2-design.md) | done 2026-10-30 |
 | 3 | User exception delivery to a handler, resume with edited registers (docs/posix3-design.md) | done 2026-10-30 |
 | 4 | Writable files: create, write, truncate, remove, rename (docs/posix4-design.md) | done 2026-10-30 |
-| 5 | C toolchain and libc port (needs a toolchain download: owner approval) | proposed |
+| 5a | C toolchain (Zig 0.16.0, approved download) and freestanding C programs (docs/posix5-design.md) | done 2026-10-30 |
+| 5b | libc port onto ZooOS calls (needs file descriptors, process arguments, time) | proposed |
 
 ## M6 — Windows application stages
 
