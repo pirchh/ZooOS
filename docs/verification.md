@@ -2,8 +2,10 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The POSIX step 5a
-section (version 0.14.0) is the current state.
+(ignored by Git); rerun the commands to reproduce them. The "Program
+names" section (version 0.14.0) is the current state. Sections before it
+quote the program names in use at the time (for example LionHandler,
+OwlHandler).
 
 **The 0.3.0, M2 and M1 sections were recorded before the rename and quote the
 output exactly as it was then**, so they show `ORIGINS_OS` markers,
@@ -39,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Program names (version 0.14.0)
+
+Naming convention set by the owner (DECISIONS.md, "Program names"): only
+system services keep `…Handler`; apps get plain names; boot-time tests are
+Arctic animals with a `-test` suffix. Behaviour is unchanged.
+
+| Old | New |
+| --- | --- |
+| lion-handler | beluga-test |
+| monkey-handler | lemming-test |
+| hamster-handler | muskox-test |
+| beaver-handler | narwhal-test |
+| squirrel-handler | arcticfox-test |
+| ant-handler | caribou-test |
+| mole-handler | walrus-test |
+| gecko-handler | wolverine-test |
+| capybara-handler | puffin-test |
+| owl-handler | files |
+| parrot-handler | assistant |
+| chimp-handler | crash-test (window title "Crash Test") |
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 717 s, every case as
+expected (`assistant-live` `SKIP`), with the new names in every marker and
+screen check, e.g.:
+
+    screen 1-desktop: … selected `bin/zookeeper` at (32, 80), Crash Test window shown; wrong text rejected
+    screen 2-details: details of the 3rd file: `Name: bin/lemming-test` at (32, 80), …
+    screen 3-app-restart: status `Crash Test crashed; restarted (1 of 3)` at (8, 780), focused `Crash Test` at (660, 52), …
+
+Then `--accel whpx --case assistant-live`: pass in 61.7 s.
 
 ## POSIX step 5a results: C toolchain (version 0.14.0)
 

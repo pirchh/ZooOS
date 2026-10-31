@@ -33,9 +33,9 @@ without a libc; **5b** (proposed) ports a libc onto the ZooOS calls.
 
 ## 3. Verification
 
-`c-program` case: boot the normal image, type `run capybara-handler` in
-the shell, require `PROC exit pid=20 name=capybara-handler code=0`.
-CapybaraHandler (`c/programs/capybara-handler.c`) checks:
+`c-program` case: boot the normal image, type `run puffin-test` in
+the shell, require `PROC exit pid=20 name=puffin-test code=0`.
+PuffinTest (`c/programs/puffin-test.c`) checks:
 
 - the ABI version;
 - CRC-32 of "The quick brown fox jumps over the lazy dog" equals the

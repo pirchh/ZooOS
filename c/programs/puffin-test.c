@@ -1,4 +1,4 @@
-/* CapybaraHandler: the first C program on ZooOS (docs/posix5-design.md).
+/* PuffinTest: the first C program on ZooOS (docs/posix5-design.md).
  * Built by `zig cc` for a freestanding target, linked like the Rust
  * programs, packed into the initrd. Exits 0 only if every check passes;
  * the exit code names the first failure. */
@@ -45,7 +45,7 @@ int main(zoo_handle first, zoo_handle second) {
     (void)first;
     (void)second;
     if (zoo_abi_version() != ZOO_ABI_VERSION) return 10;
-    say("CapybaraHandler: hello from C");
+    say("PuffinTest: hello from C");
 
     /* A known CRC-32 check value. */
     static const char fox[] = "The quick brown fox jumps over the lazy dog";
@@ -71,11 +71,11 @@ int main(zoo_handle first, zoo_handle second) {
 
     char line[160];
     size_t at = 0;
-    put_str(line, &at, "CapybaraHandler: crc32 0x");
+    put_str(line, &at, "PuffinTest: crc32 0x");
     put_u64(line, &at, crc, 1);
     put_str(line, &at, ", sqrt(2) ok, 64 KiB heap crc32 0x");
     put_u64(line, &at, mixed, 1);
     zoo_log(line, at);
-    say("CapybaraHandler: all C checks passed");
+    say("PuffinTest: all C checks passed");
     return 0;
 }

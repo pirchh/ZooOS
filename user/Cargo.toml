@@ -22,14 +22,14 @@ test = false
 bench = false
 
 [[bin]]
-name = "lion-handler"
-path = "src/bin/lion-handler.rs"
+name = "beluga-test"
+path = "src/bin/beluga-test.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "hamster-handler"
-path = "src/bin/hamster-handler.rs"
+name = "muskox-test"
+path = "src/bin/muskox-test.rs"
 test = false
 bench = false
 
@@ -40,44 +40,44 @@ test = false
 bench = false
 
 [[bin]]
-name = "owl-handler"
-path = "src/bin/owl-handler.rs"
+name = "files"
+path = "src/bin/files.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "chimp-handler"
-path = "src/bin/chimp-handler.rs"
+name = "crash-test"
+path = "src/bin/crash-test.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "parrot-handler"
-path = "src/bin/parrot-handler.rs"
+name = "assistant"
+path = "src/bin/assistant.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "squirrel-handler"
-path = "src/bin/squirrel-handler.rs"
+name = "arcticfox-test"
+path = "src/bin/arcticfox-test.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "gecko-handler"
-path = "src/bin/gecko-handler.rs"
+name = "wolverine-test"
+path = "src/bin/wolverine-test.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "mole-handler"
-path = "src/bin/mole-handler.rs"
+name = "walrus-test"
+path = "src/bin/walrus-test.rs"
 test = false
 bench = false
 
 [[bin]]
-name = "ant-handler"
-path = "src/bin/ant-handler.rs"
+name = "caribou-test"
+path = "src/bin/caribou-test.rs"
 test = false
 bench = false
 
@@ -88,8 +88,8 @@ test = false
 bench = false
 
 [[bin]]
-name = "beaver-handler"
-path = "src/bin/beaver-handler.rs"
+name = "narwhal-test"
+path = "src/bin/narwhal-test.rs"
 test = false
 bench = false
 
@@ -100,8 +100,8 @@ test = false
 bench = false
 
 [[bin]]
-name = "monkey-handler"
-path = "src/bin/monkey-handler.rs"
+name = "lemming-test"
+path = "src/bin/lemming-test.rs"
 test = false
 bench = false
 

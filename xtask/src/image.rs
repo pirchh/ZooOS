@@ -13,20 +13,20 @@ const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
 pub const USER_PROGRAMS: [&str; 15] = [
     "zookeeper",
-    "lion-handler",
-    "monkey-handler",
-    "hamster-handler",
+    "beluga-test",
+    "lemming-test",
+    "muskox-test",
     "peacock-handler",
-    "owl-handler",
-    "chimp-handler",
-    "beaver-handler",
+    "files",
+    "crash-test",
+    "narwhal-test",
     "elephant-handler",
     "otter-handler",
-    "parrot-handler",
-    "ant-handler",
-    "mole-handler",
-    "gecko-handler",
-    "squirrel-handler",
+    "assistant",
+    "caribou-test",
+    "walrus-test",
+    "wolverine-test",
+    "arcticfox-test",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).

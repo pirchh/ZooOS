@@ -1,4 +1,4 @@
-//! AntHandler: the thread test (docs/posix1-design.md §5). Four worker
+//! CaribouTest: the thread test (docs/posix1-design.md §5). Four worker
 //! threads share a counter behind a futex mutex while each keeps its own
 //! thread-local value (FS base); the main thread joins them, checks the
 //! results, and finally exits while one more thread is still running, which
@@ -78,7 +78,7 @@ fn main(_start_handle: u64) -> u8 {
         match thread::spawn(move || worker(id)) {
             Ok(h) => handles.push((id, h)),
             Err(e) => {
-                zoo_rt::log!("AntHandler: thread_create failed: {}", e.name());
+                zoo_rt::log!("CaribouTest: thread_create failed: {}", e.name());
                 return 3;
             }
         }
@@ -87,7 +87,7 @@ fn main(_start_handle: u64) -> u8 {
         match wait(h) {
             Ok(code) if code as u64 == 10 + id => {}
             other => {
-                zoo_rt::log!("AntHandler: worker {} ended with {:?}", id, other);
+                zoo_rt::log!("CaribouTest: worker {} ended with {:?}", id, other);
                 return 4;
             }
         }
@@ -97,7 +97,7 @@ fn main(_start_handle: u64) -> u8 {
     let tls_errors = TLS_ERRORS.load(Ordering::Relaxed);
     let main_tls = thread::fs_read_u64::<8>();
     zoo_rt::log!(
-        "AntHandler: {} threads x {} rounds: counter {}, lock waited {} times, {} handovers, TLS errors {}, main TLS {}, {} ticks",
+        "CaribouTest: {} threads x {} rounds: counter {}, lock waited {} times, {} handovers, TLS errors {}, main TLS {}, {} ticks",
         WORKERS,
         ROUNDS,
         total,
@@ -122,7 +122,7 @@ fn main(_start_handle: u64) -> u8 {
     match thread::futex_wait(&word, 7, 5) {
         Err(Error::TimedOut) => {}
         other => {
-            zoo_rt::log!("AntHandler: futex timeout gave {:?}", other);
+            zoo_rt::log!("CaribouTest: futex timeout gave {:?}", other);
             return 8;
         }
     }
@@ -138,7 +138,7 @@ fn main(_start_handle: u64) -> u8 {
     zoo_rt::sleep(20);
     let woken = thread::futex_wake(&GATE, 1);
     if woken != 1 || wait(waiter) != Ok(0) {
-        zoo_rt::log!("AntHandler: futex_wake woke {} (expected 1)", woken);
+        zoo_rt::log!("CaribouTest: futex_wake woke {} (expected 1)", woken);
         return 10;
     }
     let _ = close(waiter);
@@ -153,6 +153,6 @@ fn main(_start_handle: u64) -> u8 {
         return 9;
     }
     let _ =
-        zoo_rt::log("AntHandler: all thread checks passed; exiting with a thread still running");
+        zoo_rt::log("CaribouTest: all thread checks passed; exiting with a thread still running");
     0
 }

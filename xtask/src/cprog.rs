@@ -11,7 +11,7 @@ pub const ZIG_VERSION: &str = "0.16.0";
 pub const ZIG_DIR: &str = "zig-x86_64-windows-0.16.0";
 
 /// C programs packed into the initrd as `bin/<name>`.
-pub const C_PROGRAMS: [&str; 1] = ["capybara-handler"];
+pub const C_PROGRAMS: [&str; 1] = ["puffin-test"];
 
 /// Where user programs must lie (the kernel's load window).
 const IMAGE_START: u64 = 0x20_0000;

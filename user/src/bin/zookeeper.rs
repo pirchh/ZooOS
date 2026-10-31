@@ -1,6 +1,6 @@
 //! Zookeeper: the ZooOS supervisor (docs/m3-design.md §9). In M3 it runs a
-//! fixed start-up plan: start LionHandler and talk to it, supervise
-//! MonkeyHandler with a one-restart policy, confirm LionHandler survived,
+//! fixed start-up plan: start BelugaTest and talk to it, supervise
+//! LemmingTest with a one-restart policy, confirm BelugaTest survived,
 //! then stop everything. Each failed expectation exits with its own code.
 
 #![no_std]
@@ -12,8 +12,8 @@ use zoo_rt::{Error, Handle, channel_create, close, kill, log, recv, send, spawn,
 
 zoo_rt::entry!(main);
 
-/// Monkey runs once, then is restarted at most this many times.
-const MONKEY_RESTARTS: u32 = 1;
+/// LemmingTest runs once, then is restarted at most this many times.
+const LEMMING_RESTARTS: u32 = 1;
 
 /// PeacockHandler may be restarted this many times in one session.
 const DESKTOP_RESTARTS: u32 = 3;
@@ -82,69 +82,69 @@ fn startup_checks() -> u8 {
         return 10;
     }
 
-    let Ok((mine, lions)) = channel_create() else {
+    let Ok((mine, belugas)) = channel_create() else {
         return 11;
     };
-    let Ok(lion) = spawn("lion-handler", Some(lions)) else {
+    let Ok(beluga) = spawn("beluga-test", Some(belugas)) else {
         return 12;
     };
     if !ping(mine, "ping 1") {
         return 13;
     }
 
-    for run in 1..=MONKEY_RESTARTS + 1 {
-        let Ok(monkey) = spawn("monkey-handler", None) else {
+    for run in 1..=LEMMING_RESTARTS + 1 {
+        let Ok(lemming) = spawn("lemming-test", None) else {
             return 14;
         };
-        match wait(monkey) {
+        match wait(lemming) {
             Err(Error::Crashed) => {
                 zoo_rt::log!(
-                    "MonkeyHandler crashed (run {} of {})",
+                    "LemmingTest crashed (run {} of {})",
                     run,
-                    MONKEY_RESTARTS + 1
+                    LEMMING_RESTARTS + 1
                 )
             }
             other => {
-                zoo_rt::log!("MonkeyHandler did not crash: {:?}", other);
+                zoo_rt::log!("LemmingTest did not crash: {:?}", other);
                 return 15;
             }
         }
-        let _ = close(monkey);
-        if run <= MONKEY_RESTARTS {
-            let _ = log("restart policy allows it: restarting MonkeyHandler");
+        let _ = close(lemming);
+        if run <= LEMMING_RESTARTS {
+            let _ = log("restart policy allows it: restarting LemmingTest");
         } else {
-            let _ = log("restart limit reached: giving up on MonkeyHandler");
+            let _ = log("restart limit reached: giving up on LemmingTest");
         }
     }
 
-    // HamsterHandler never yields. Talking to LionHandler while it runs is
+    // MuskoxTest never yields. Talking to BelugaTest while it runs is
     // only possible if the kernel preempts it.
-    let Ok(hamster) = spawn("hamster-handler", None) else {
+    let Ok(muskox) = spawn("muskox-test", None) else {
         return 19;
     };
-    // LionHandler must have survived MonkeyHandler's crashes.
+    // BelugaTest must have survived LemmingTest's crashes.
     if !ping(mine, "ping 2") {
         return 16;
     }
-    if kill(hamster).is_err() {
+    if kill(muskox).is_err() {
         return 20;
     }
-    match wait(hamster) {
+    match wait(muskox) {
         Err(Error::Killed) => {
-            let _ = log("HamsterHandler stopped by the supervisor");
+            let _ = log("MuskoxTest stopped by the supervisor");
         }
         other => {
-            zoo_rt::log!("HamsterHandler did not end as killed: {:?}", other);
+            zoo_rt::log!("MuskoxTest did not end as killed: {:?}", other);
             return 21;
         }
     }
-    let _ = close(hamster);
+    let _ = close(muskox);
 
     // M5a: file mapping, and per-process floating-point state.
     if let Err(code) = check_file_mapping() {
         return code;
     }
-    if let Err(code) = check_beavers() {
+    if let Err(code) = check_narwhals() {
         return code;
     }
     // M5c-1: directory capabilities and the action broker.
@@ -152,34 +152,34 @@ fn startup_checks() -> u8 {
         return code;
     }
     // POSIX step 1: threads, futexes, thread-local storage.
-    match spawn("ant-handler", None).map(|h| (wait(h), h)) {
+    match spawn("caribou-test", None).map(|h| (wait(h), h)) {
         Ok((Ok(0), h)) => {
             let _ = close(h);
         }
         Ok((other, _)) => {
-            zoo_rt::log!("AntHandler did not pass: {:?}", other);
+            zoo_rt::log!("CaribouTest did not pass: {:?}", other);
             return 29;
         }
         Err(_) => return 29,
     }
     // POSIX step 2: address-space reservations and protection.
-    match spawn("mole-handler", None).map(|h| (wait(h), h)) {
+    match spawn("walrus-test", None).map(|h| (wait(h), h)) {
         Ok((Ok(0), h)) => {
             let _ = close(h);
         }
         Ok((other, _)) => {
-            zoo_rt::log!("MoleHandler did not pass: {:?}", other);
+            zoo_rt::log!("WalrusTest did not pass: {:?}", other);
             return 31;
         }
         Err(_) => return 31,
     }
     // POSIX step 3: exception delivery to the program's handler.
-    match spawn("gecko-handler", None).map(|h| (wait(h), h)) {
+    match spawn("wolverine-test", None).map(|h| (wait(h), h)) {
         Ok((Ok(0), h)) => {
             let _ = close(h);
         }
         Ok((other, _)) => {
-            zoo_rt::log!("GeckoHandler did not pass: {:?}", other);
+            zoo_rt::log!("WolverineTest did not pass: {:?}", other);
             return 32;
         }
         Err(_) => return 32,
@@ -187,10 +187,10 @@ fn startup_checks() -> u8 {
     if send(mine, b"stop").is_err() {
         return 17;
     }
-    match wait(lion) {
+    match wait(beluga) {
         Ok(0) => {}
         other => {
-            zoo_rt::log!("LionHandler did not exit cleanly: {:?}", other);
+            zoo_rt::log!("BelugaTest did not exit cleanly: {:?}", other);
             return 18;
         }
     }
@@ -231,21 +231,21 @@ fn check_file_mapping() -> Result<(), u8> {
     Ok(())
 }
 
-/// Two BeaverHandlers compute floating-point series at the same time; each
+/// Two NarwhalTests compute floating-point series at the same time; each
 /// result must equal the reference computed here first, bit for bit
 /// (docs/m5a-design.md §5).
-fn check_beavers() -> Result<(), u8> {
+fn check_narwhals() -> Result<(), u8> {
     const PARAMS: [f64; 2] = [3.25, 7.5];
     const ITERATIONS: u64 = 3_000_000;
     let mut expected = [0u64; 2];
     for (e, p) in expected.iter_mut().zip(PARAMS) {
         let mut trace = alloc::vec::Vec::new();
-        *e = zoo_rt::beaver_series(p, ITERATIONS, &mut trace).to_bits();
+        *e = zoo_rt::narwhal_series(p, ITERATIONS, &mut trace).to_bits();
     }
     let mut workers = [(0u64, 0u64); 2];
     for (w, p) in workers.iter_mut().zip(PARAMS) {
         let (mine, theirs) = channel_create().map_err(|_| 23)?;
-        let process = spawn("beaver-handler", Some(theirs)).map_err(|_| 23)?;
+        let process = spawn("narwhal-test", Some(theirs)).map_err(|_| 23)?;
         send(mine, &p.to_bits().to_le_bytes()).map_err(|_| 23)?;
         *w = (mine, process);
     }
@@ -255,7 +255,7 @@ fn check_beavers() -> Result<(), u8> {
         let got = u64::from_le_bytes(buf[..8].try_into().map_err(|_| 24)?);
         if n != 8 || got != expected[i] {
             zoo_rt::log!(
-                "BeaverHandler {} result {:#x}, expected {:#x}",
+                "NarwhalTest {} result {:#x}, expected {:#x}",
                 i,
                 got,
                 expected[i]
@@ -269,7 +269,7 @@ fn check_beavers() -> Result<(), u8> {
         let _ = close(process);
     }
     zoo_rt::log!(
-        "both BeaverHandlers matched the reference bits ({:#x}, {:#x})",
+        "both NarwhalTests matched the reference bits ({:#x}, {:#x})",
         expected[0],
         expected[1]
     );
@@ -364,20 +364,20 @@ fn check_directories() -> Result<(), u8> {
     let scratch = dir_open(home, "Scratch", r::READ).map_err(|_| 26)?;
     dir_remove(home, "Scratch").map_err(|_| 26)?;
     expect_err("stale handle", dir_stat(scratch, ""), Error::NotFound, 26)?;
-    // POSIX step 4: writable files (SquirrelHandler gets home and root).
-    let squirrel_home = dir_open(home, "", r::ALL).map_err(|_| 33)?;
-    let squirrel_root = dir_open(root, "", r::ALL).map_err(|_| 33)?;
-    let squirrel = zoo_rt::spawn_with(
-        "squirrel-handler",
-        [Some(squirrel_home), Some(squirrel_root)],
+    // POSIX step 4: writable files (ArcticFoxTest gets home and root).
+    let arcticfox_home = dir_open(home, "", r::ALL).map_err(|_| 33)?;
+    let arcticfox_root = dir_open(root, "", r::ALL).map_err(|_| 33)?;
+    let arcticfox = zoo_rt::spawn_with(
+        "arcticfox-test",
+        [Some(arcticfox_home), Some(arcticfox_root)],
     )
     .map_err(|_| 33)?;
-    match wait(squirrel) {
+    match wait(arcticfox) {
         Ok(0) => {
-            let _ = close(squirrel);
+            let _ = close(arcticfox);
         }
         other => {
-            zoo_rt::log!("SquirrelHandler did not pass: {:?}", other);
+            zoo_rt::log!("ArcticFoxTest did not pass: {:?}", other);
             return Err(33);
         }
     }

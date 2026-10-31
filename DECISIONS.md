@@ -126,6 +126,13 @@ or a user-space shell.
 
 ## Owner decisions (2026-10-30)
 
+- **Never test on the development machine** (absolute): ZooOS is never
+  booted, installed or tested on the Windows PC this repository lives on,
+  not even from USB, and its Windows installation, disks and boot settings
+  are never touched. Only QEMU runs there (AGENTS.md).
+- Real-hardware testing is viable on the owner's other machines, booted
+  from USB.
+
 - M5 uses a real instruct model, Qwen2.5-0.5B-Instruct (GGUF `q4_0`,
   Apache-2.0); the download was approved (tools/models/README.md).
   Software emulation is too slow for it; WHPX acceleration is available on
@@ -135,6 +142,18 @@ or a user-space shell.
   milestone by milestone. GPU reference hardware and test bed undecided.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
+
+## Program names (2026-10-30)
+
+Owner decision. `…Handler` is reserved for system services (daemons):
+PeacockHandler (window server), OtterHandler (file broker), ElephantHandler
+(model service). Apps have plain names: Files, Assistant, Crash Test
+(`files`, `assistant`, `crash-test`). Boot-time tests use Arctic animals
+with a `-test` suffix: beluga (messaging), lemming (crash/restart), muskox
+(preemption), narwhal (floating point), arcticfox (files), caribou
+(threads), walrus (address space), wolverine (exceptions), puffin (C).
+Zookeeper remains the supervisor. Earlier entries and verification sections
+keep the names used at the time.
 
 ## POSIX layer step 5a: C toolchain (2026-10-30)
 

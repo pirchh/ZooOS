@@ -1,6 +1,6 @@
-//! BeaverHandler: a floating-point worker (docs/m5a-design.md §5). Receives
-//! a parameter on its channel, runs `beaver_series` (long enough to be
-//! preempted many times, alongside another BeaverHandler), and sends back the
+//! NarwhalTest: a floating-point worker (docs/m5a-design.md §5). Receives
+//! a parameter on its channel, runs `narwhal_series` (long enough to be
+//! preempted many times, alongside another NarwhalTest), and sends back the
 //! result's exact bits. Also uses a few MiB of heap.
 
 #![no_std]
@@ -31,7 +31,7 @@ fn main(channel: u64) -> u8 {
     }
 
     let mut trace = Vec::new();
-    let result = zoo_rt::beaver_series(param, ITERATIONS, &mut trace);
+    let result = zoo_rt::narwhal_series(param, ITERATIONS, &mut trace);
     if send(channel, &result.to_bits().to_le_bytes()).is_err() {
         return 4;
     }

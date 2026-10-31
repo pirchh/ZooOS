@@ -194,8 +194,8 @@ unit-tested on the host, including malformed inputs.
 ## 8. Initial filesystem
 
 A read-only **ustar archive** passed as the bootloader's ramdisk, built by
-`xtask` from the user programs (`bin/zookeeper`, `bin/lion-handler`,
-`bin/monkey-handler`). The kernel validates every header (magic, checksum,
+`xtask` from the user programs (`bin/zookeeper`, `bin/beluga-test`,
+`bin/lemming-test`). The kernel validates every header (magic, checksum,
 octal size, bounds) before trusting it, and looks programs up by name. The
 shell gets `ls` to list it. A writable filesystem and a filesystem service
 are deferred.
@@ -207,12 +207,12 @@ Three user programs, in a new `user/` crate with a small runtime (`zoo-rt`:
 
 - **Zookeeper** (supervisor, pid 1, started by the kernel after self-tests):
   1. checks `abi_version() == 1`;
-  2. creates a channel and spawns **LionHandler** with one end;
+  2. creates a channel and spawns **BelugaTest** with one end;
   3. sends `ping 1`, expects `pong: ping 1`;
-  4. spawns **MonkeyHandler**, waits for it, expects `CRASHED`; restart policy
+  4. spawns **LemmingTest**, waits for it, expects `CRASHED`; restart policy
      is **one restart**, so it spawns it again, expects `CRASHED` again, then
      logs that it is giving up;
-  5. spawns **HamsterHandler**, which spins forever without yielding, then
+  5. spawns **MuskoxTest**, which spins forever without yielding, then
      sends `ping 2` to Lion and expects `pong: ping 2`. This proves Lion
      survived Monkey's crashes, and is only possible if the kernel preempts
      the hamster. Then it `kill`s the hamster and expects `wait` to report
@@ -220,9 +220,9 @@ Three user programs, in a new `user/` crate with a small runtime (`zoo-rt`:
   6. sends `stop`, waits for Lion, expects exit code 0;
   7. exits with code 0. Any failed expectation exits with a distinct non-zero
      code instead.
-- **LionHandler** answers each message with `pong: <message>` and exits 0 on
+- **BelugaTest** answers each message with `pong: <message>` and exits 0 on
   `stop` (2 if its peer disappears).
-- **MonkeyHandler** makes malformed requests and checks each is rejected:
+- **LemmingTest** makes malformed requests and checks each is rejected:
   unknown syscall → `NOSYS`; bogus handle → `BADHANDLE`; kernel-address
   pointer → `FAULT`; huge length → `INVAL`; `recv`/`wait` on bad handles →
   `BADHANDLE`; a log line containing a forged `ZOO_OS PANIC` marker (must be
@@ -238,14 +238,14 @@ Expected markers after the self-tests (kernel-generated, so their order is
 fixed by Zookeeper's sequential plan):
 
     ZOO_OS PROC start pid=1 name=zookeeper
-    ZOO_OS PROC start pid=2 name=lion-handler
-    ZOO_OS PROC start pid=3 name=monkey-handler
-    ZOO_OS PROC crash pid=3 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000
-    ZOO_OS PROC start pid=4 name=monkey-handler
-    ZOO_OS PROC crash pid=4 name=monkey-handler fault=page-fault access=read cause=protection addr=0xffffc00000001000
-    ZOO_OS PROC start pid=5 name=hamster-handler
-    ZOO_OS PROC killed pid=5 name=hamster-handler by=1
-    ZOO_OS PROC exit pid=2 name=lion-handler code=0
+    ZOO_OS PROC start pid=2 name=beluga-test
+    ZOO_OS PROC start pid=3 name=lemming-test
+    ZOO_OS PROC crash pid=3 name=lemming-test fault=page-fault access=read cause=protection addr=0xffffc00000001000
+    ZOO_OS PROC start pid=4 name=lemming-test
+    ZOO_OS PROC crash pid=4 name=lemming-test fault=page-fault access=read cause=protection addr=0xffffc00000001000
+    ZOO_OS PROC start pid=5 name=muskox-test
+    ZOO_OS PROC killed pid=5 name=muskox-test by=1
+    ZOO_OS PROC exit pid=2 name=beluga-test code=0
     ZOO_OS PROC exit pid=1 name=zookeeper code=0
     ZOO_OS TEST process-cleanup ok
 
@@ -268,14 +268,14 @@ service, process arguments beyond one start-up handle, `SMAP`/`SMEP`.
 
 ## 12. Changes made during implementation
 
-- **`kill` system call and HamsterHandler.** The first implementation
+- **`kill` system call and MuskoxTest.** The first implementation
   passed every case, but nothing exercised preemption: every program
-  eventually blocked by itself. HamsterHandler never yields, so the scenario
+  eventually blocked by itself. MuskoxTest never yields, so the scenario
   now depends on preemption, and Zookeeper needs `kill` (syscall 10, error
   `KILLED` 12, process-handle right `KILL`) to end it. Killing yourself is an
   exit with code 0; killing a process that already ended does nothing. As a
   negative control, disabling preemption of user tasks made the boot hang
-  right after HamsterHandler started (recorded in docs/verification.md).
+  right after MuskoxTest started (recorded in docs/verification.md).
 - **Keyboard screen check.** The boot log is now longer than one screen, so
   the `keyboard` verify case no longer expects the BOOT line on row 0; it
   anchors on `READY`, the typed command, its output and the final prompt,
