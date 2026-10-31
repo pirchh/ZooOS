@@ -102,7 +102,7 @@ and verification:
 | 5a | C toolchain (Zig 0.16.0, approved download) and freestanding C programs (docs/posix5-design.md) | done 2026-10-30 |
 | 5b-1 | Process arguments and wall-clock/monotonic time (docs/posix5b1-design.md) | done 2026-10-31 |
 | 5b-2 | File descriptors (stdin/stdout/stderr, open/read/write/close/seek over files) | proposed |
-| 5b-3 | libc port onto ZooOS calls | proposed |
+| 5b-3 | C library: route awaiting the owner's choice (docs/feasibility/libc-route.md) | decision needed |
 
 ## Services (owner direction 2026-10-30)
 
