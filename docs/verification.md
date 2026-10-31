@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D6 section
-(version 0.28.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D7 section
+(version 0.29.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,32 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 7 results: Files browses the home folder (version 0.29.0)
+
+Design: docs/d7-design.md (§4 as implemented).
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 49 s, every case as
+expected (`assistant-live` `SKIP`). Changed checks: `desktop` (`Home` with
+`Documents/` selected; Down, Down, Enter opens `Home/Photos` with
+`README.txt (34 bytes)` selected; kept through Crash Test's restart; reset
+after the window server's restart), `fast-boot`, and `assistant-model`'s
+busy-desktop check (`Photos/` selected while the model works). New case
+`files-browse`: the preview of `Home/Documents/notes.txt` shows its lines
+(no stray `?`); after going into `Photos` and back up, `Photos/` is
+selected.
+
+Then `--accel whpx --case assistant-live`: pass in 57.7 s.
+
+**Negative control** (temporary edit to Files, reverted):
+
+| Change | Result |
+| --- | --- |
+| Going up forgets the folder you came from | `FAIL files-browse`: `Photos/ not on screen` (as the selection) |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: a clean-copy verify; real
+hardware.
 
 ## Desktop step 6 results: start in the desktop (version 0.28.0)
 
