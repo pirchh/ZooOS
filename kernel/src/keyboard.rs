@@ -1,8 +1,9 @@
 //! PS/2 keyboard input queue (docs/console-design.md §2).
 //!
-//! The IRQ1 handler is the only producer and the shell loop the only
-//! consumer, so a ring of atomics is enough: no lock, no allocation, safe to
-//! call from interrupt context.
+//! Interrupt handlers (IRQ1, and the timer tick for USB keyboards) are the
+//! producers, one at a time, and the shell loop the only consumer, so a
+//! ring of atomics is enough: no lock, no allocation, safe to call from
+//! interrupt context.
 
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use x86_64::instructions::port::Port;
@@ -37,6 +38,13 @@ pub fn on_interrupt() {
         crate::mouse::on_byte(byte);
         return;
     }
+    push(byte);
+}
+
+/// Queues one set-1 scancode byte. Called from interrupt handlers only
+/// (IRQ1, and the timer tick for USB keyboards, docs/h1b-design.md); they
+/// never nest, so there is still one producer at a time.
+pub fn push(byte: u8) {
     RECEIVED.fetch_add(1, Ordering::Relaxed);
     let head = HEAD.load(Ordering::Relaxed);
     let tail = TAIL.load(Ordering::Acquire);

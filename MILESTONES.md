@@ -135,7 +135,8 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | Step | Content | Status |
 | --- | --- | --- |
 | H1a | USB host controller (xHCI): find, start, enumerate devices (docs/h1-design.md) | done 2026-10-31 |
-| H1b | USB keyboard and mouse input (HID boot protocol) | proposed |
+| H1b | USB keyboard and mouse input (HID boot protocol) (docs/h1b-design.md) | done 2026-10-31 |
+| H2 | Boot a USB stick on one of the owner's other PCs (needs the owner: hardware details, a named USB device) | proposed |
 
 ## Boot speed
 

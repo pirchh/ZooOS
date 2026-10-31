@@ -150,6 +150,7 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
 /// Counts a tick and acknowledges IRQ0. Called from `trap_dispatch`.
 pub fn on_timer_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
+    crate::xhci::poll();
     // SAFETY: TIMER_VECTOR is the vector the PIC raised. Main code only
     // holds PICS with interrupts disabled, so this lock cannot deadlock.
     unsafe { PICS.lock().notify_end_of_interrupt(TIMER_VECTOR) };
