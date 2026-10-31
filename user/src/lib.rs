@@ -329,6 +329,35 @@ pub fn spawn_with(name: &str, give: [Option<Handle>; 2]) -> Result<Handle, Error
     ))
 }
 
+/// Moves handle `h` into channel `chan` with `tag` (docs/s3-design.md);
+/// `h` is gone from this process afterwards.
+pub fn send_handle(chan: Handle, h: Handle, tag: u64) -> Result<(), Error> {
+    result(syscall(sys::SEND_HANDLE, chan, h, tag)).map(|_| ())
+}
+
+fn recv_handle_flags(chan: Handle, flags: u64) -> Result<(Handle, u64), Error> {
+    let mut m = zoo_abi::HandleMsg::default();
+    result(syscall(
+        sys::RECV_HANDLE,
+        chan,
+        &mut m as *mut zoo_abi::HandleMsg as u64,
+        flags,
+    ))?;
+    Ok((m.handle, m.tag))
+}
+
+/// Takes the next message from `chan` if it is a handle: (handle, tag).
+/// Blocks while the channel is empty; `WRONGKIND` if the next message is
+/// bytes (it stays queued).
+pub fn recv_handle(chan: Handle) -> Result<(Handle, u64), Error> {
+    recv_handle_flags(chan, 0)
+}
+
+/// Like `recv_handle`, but `AGAIN` instead of blocking.
+pub fn try_recv_handle(chan: Handle) -> Result<(Handle, u64), Error> {
+    recv_handle_flags(chan, zoo_abi::RECV_NONBLOCK)
+}
+
 /// A log-reader handle (the resident supervisor only).
 pub fn log_attach() -> Result<Handle, Error> {
     result(syscall(sys::LOG_ATTACH, 0, 0, 0))

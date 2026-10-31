@@ -14,8 +14,9 @@ pub mod tar;
 /// (POSIX step 2) added calls 32-37; version 7 (POSIX step 3) added calls
 /// 38-40; version 8 (POSIX step 4) added calls 41-45 and the WRITE right;
 /// version 9 (services step 1) added call 46; version 10 (services step 2)
-/// added calls 47-48.
-pub const ABI_VERSION: u64 = 10;
+/// added calls 47-48; version 11 (services step 3) added calls 49-50 and
+/// error 19.
+pub const ABI_VERSION: u64 = 11;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -71,6 +72,10 @@ pub mod sys {
     pub const LOG_ATTACH: u64 = 47;
     /// Next line from the kernel log buffer.
     pub const LOG_READ: u64 = 48;
+    /// Moves a handle into a channel, with a tag.
+    pub const SEND_HANDLE: u64 = 49;
+    /// Takes a handle message from a channel.
+    pub const RECV_HANDLE: u64 = 50;
 }
 
 /// Error codes; system calls return `-(code as i64)`.
@@ -95,6 +100,9 @@ pub enum Error {
     NotEmpty = 16,
     NotDir = 17,
     TimedOut = 18,
+    /// The next message is of the other kind (bytes vs handle); it stays
+    /// queued.
+    WrongKind = 19,
 }
 
 impl Error {
@@ -123,6 +131,7 @@ impl Error {
             -16 => Error::NotEmpty,
             -17 => Error::NotDir,
             -18 => Error::TimedOut,
+            -19 => Error::WrongKind,
             _ => return None,
         })
     }
@@ -147,6 +156,7 @@ impl Error {
             Error::NotEmpty => "NOTEMPTY",
             Error::NotDir => "NOTDIR",
             Error::TimedOut => "TIMEDOUT",
+            Error::WrongKind => "WRONGKIND",
         }
     }
 }
@@ -223,6 +233,17 @@ impl FsEntry {
         core::str::from_utf8(&self.name[..n]).unwrap_or("?")
     }
 }
+
+/// Filled in by `recv_handle`: the received handle and its tag.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HandleMsg {
+    pub handle: u64,
+    pub tag: u64,
+}
+
+/// `recv_handle` flag: return `AGAIN` instead of blocking.
+pub const RECV_NONBLOCK: u64 = 1;
 
 /// Address-space window for `vm_*` calls (docs/posix2-design.md §2):
 /// between the program image and the heap.
@@ -395,6 +416,7 @@ mod tests {
             Error::NotEmpty,
             Error::NotDir,
             Error::TimedOut,
+            Error::WrongKind,
         ] {
             assert!(e.as_return() < 0);
             assert_eq!(Error::from_return(e.as_return()), Some(e));

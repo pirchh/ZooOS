@@ -36,9 +36,10 @@ use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::{
     ABI_VERSION, CHANNEL_DEPTH, DISPLAY_BASE, DirEntry, DisplayInfo, EXC_RESUME, EXC_UNHANDLED,
     Error, ExceptionContext, FORMAT_BGR, FORMAT_RGB, FsArgs, FsEntry, HEAP_BASE, HEAP_LIMIT,
-    KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME, MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES,
-    MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, VM_COMMIT_LIMIT, VM_COMMITTED, VM_END, VM_FREE,
-    VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED, VM_START, VmInfo, dir_rights, elf, prot, sys,
+    HandleMsg, KIND_DIR, KIND_FILE, MAP_BASE, MAX_DIR_NAME, MAX_FS_NAME, MAX_FS_PATH, MAX_HANDLES,
+    MAX_MESSAGE, MAX_PATH, MapInfo, NO_HANDLE, RECV_NONBLOCK, VM_COMMIT_LIMIT, VM_COMMITTED,
+    VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED, VM_START, VmInfo, dir_rights,
+    elf, prot, sys,
 };
 
 /// Kernel task plus one task per kernel-stack slot.
@@ -70,7 +71,7 @@ pub enum ExitStatus {
 
 struct Channel {
     /// `queues[s]` holds messages waiting to be received on side `s`.
-    queues: [VecDeque<Vec<u8>>; 2],
+    queues: [VecDeque<Msg>; 2],
     open: [bool; 2],
 }
 
@@ -101,13 +102,30 @@ struct HandleEntry {
     rights: u8,
 }
 
+/// A channel message: bytes, or one handle in transit with a tag
+/// (docs/s3-design.md).
+enum Msg {
+    Bytes(Vec<u8>),
+    Handle(HandleEntry, u64),
+}
+
 /// Releases what a handle held. Channel ends close (the peer sees
-/// `PEERCLOSED`); process and directory handles hold nothing.
+/// `PEERCLOSED`), and handles still queued towards the closed end are
+/// released in turn; process and directory handles hold nothing.
 fn release(entry: HandleEntry) {
     if let Object::Endpoint { chan, side } = entry.object {
-        let mut c = chan.lock();
-        c.open[side] = false;
-        c.queues[side].clear();
+        // Take the queue out under the lock, release its handles after, so
+        // a queued end of this same channel cannot deadlock.
+        let queued: VecDeque<Msg> = {
+            let mut c = chan.lock();
+            c.open[side] = false;
+            core::mem::take(&mut c.queues[side])
+        };
+        for m in queued {
+            if let Msg::Handle(e, _) = m {
+                release(e);
+            }
+        }
     }
 }
 
@@ -407,7 +425,7 @@ fn control_channel(mode: &[u8]) -> (HandleEntry, HandleEntry) {
         open: [true, true],
     }));
     // Side 1 is Zookeeper's: its receive queue holds the mode.
-    chan.lock().queues[1].push_back(mode.to_vec());
+    chan.lock().queues[1].push_back(Msg::Bytes(mode.to_vec()));
     let rights = RIGHT_SEND | RIGHT_RECV;
     let kernel_end = HandleEntry {
         object: Object::Endpoint {
@@ -459,7 +477,7 @@ pub fn supervisor_send(msg: &[u8]) -> Result<(), Error> {
             } else if c.queues[1].len() >= CHANNEL_DEPTH {
                 Err(Error::Full)
             } else {
-                c.queues[1].push_back(msg.to_vec());
+                c.queues[1].push_back(Msg::Bytes(msg.to_vec()));
                 Ok(())
             }
         };
@@ -485,7 +503,15 @@ pub fn supervisor_try_recv() -> Option<Vec<u8>> {
         if m.is_some() {
             s.wake_all();
         }
-        m
+        match m {
+            Some(Msg::Bytes(b)) => Some(b),
+            // The kernel takes no handles here; release any sent to it.
+            Some(Msg::Handle(e, _)) => {
+                release(e);
+                Some(alloc::vec::Vec::new())
+            }
+            None => None,
+        }
     })
 }
 
@@ -942,7 +968,7 @@ impl Scheduler {
                     }
                     // SAFETY: checked readable user range in the active space.
                     let msg = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
-                    c.queues[peer].push_back(msg.to_vec());
+                    c.queues[peer].push_back(Msg::Bytes(msg.to_vec()));
                 }
                 self.wake_all();
                 Outcome::Ret(0)
@@ -960,19 +986,25 @@ impl Scheduler {
                     return err(Error::Fault);
                 }
                 let mut c = chan.lock();
-                let Some(len) = c.queues[side].front().map(Vec::len) else {
-                    return if !c.open[1 - side] {
-                        err(Error::PeerClosed)
-                    } else if number == sys::TRY_RECV {
-                        err(Error::Again)
-                    } else {
-                        Outcome::Block
-                    };
+                let len = match c.queues[side].front() {
+                    None => {
+                        return if !c.open[1 - side] {
+                            err(Error::PeerClosed)
+                        } else if number == sys::TRY_RECV {
+                            err(Error::Again)
+                        } else {
+                            Outcome::Block
+                        };
+                    }
+                    Some(Msg::Handle(..)) => return err(Error::WrongKind),
+                    Some(Msg::Bytes(b)) => b.len(),
                 };
                 if len as u64 > a3 {
                     return err(Error::TooSmall);
                 }
-                let msg = c.queues[side].pop_front().expect("front exists");
+                let Some(Msg::Bytes(msg)) = c.queues[side].pop_front() else {
+                    unreachable!("front is a bytes message");
+                };
                 // SAFETY: checked writable user range of `a3 >= len` bytes in
                 // the active space.
                 unsafe { core::ptr::copy_nonoverlapping(msg.as_ptr(), a2 as *mut u8, len) };
@@ -1329,6 +1361,83 @@ impl Scheduler {
                     Some(_) => err(Error::Inval),
                     None => err(Error::BadHandle),
                 }
+            }
+            sys::SEND_HANDLE => {
+                // a1 = channel, a2 = handle to move, a3 = tag.
+                if a1 == a2 {
+                    return err(Error::Inval); // an end cannot carry itself
+                }
+                let (chan, side) = match self.proc(i).get(a1) {
+                    None => return err(Error::BadHandle),
+                    Some(HandleEntry {
+                        object: Object::Endpoint { chan, side },
+                        rights,
+                    }) if rights & RIGHT_SEND != 0 => (chan.clone(), *side),
+                    Some(_) => return err(Error::Rights),
+                };
+                if self.proc(i).get(a2).is_none() {
+                    return err(Error::BadHandle);
+                }
+                {
+                    let c = chan.lock();
+                    let peer = 1 - side;
+                    if !c.open[peer] {
+                        return err(Error::PeerClosed);
+                    }
+                    if c.queues[peer].len() >= CHANNEL_DEPTH {
+                        return err(Error::Full);
+                    }
+                }
+                // Moved: it leaves the sender's table (its old value goes
+                // stale) and travels in the queue.
+                let entry = self.proc(i).take(a2).expect("checked above");
+                chan.lock().queues[1 - side].push_back(Msg::Handle(entry, a3));
+                self.wake_all();
+                Outcome::Ret(0)
+            }
+            sys::RECV_HANDLE => {
+                // a1 = channel, a2 = out `HandleMsg`, a3 = flags.
+                let (chan, side) = match self.proc(i).get(a1) {
+                    None => return err(Error::BadHandle),
+                    Some(HandleEntry {
+                        object: Object::Endpoint { chan, side },
+                        rights,
+                    }) if rights & RIGHT_RECV != 0 => (chan.clone(), *side),
+                    Some(_) => return err(Error::Rights),
+                };
+                let size = core::mem::size_of::<HandleMsg>() as u64;
+                if !ok(a2, size, true) {
+                    return err(Error::Fault);
+                }
+                if self.proc(i).free_slots() == 0 {
+                    return err(Error::NoMem);
+                }
+                let taken = {
+                    let mut c = chan.lock();
+                    match c.queues[side].front() {
+                        None => Err(if !c.open[1 - side] {
+                            err(Error::PeerClosed)
+                        } else if a3 & RECV_NONBLOCK != 0 {
+                            err(Error::Again)
+                        } else {
+                            Outcome::Block
+                        }),
+                        Some(Msg::Bytes(_)) => Err(err(Error::WrongKind)),
+                        Some(Msg::Handle(..)) => match c.queues[side].pop_front() {
+                            Some(Msg::Handle(e, tag)) => Ok((e, tag)),
+                            _ => unreachable!("front is a handle message"),
+                        },
+                    }
+                };
+                let (entry, tag) = match taken {
+                    Ok(t) => t,
+                    Err(outcome) => return outcome,
+                };
+                let h = self.proc(i).insert(entry).expect("checked a free slot");
+                // SAFETY: checked writable user range of the struct's size.
+                unsafe { (a2 as *mut HandleMsg).write_unaligned(HandleMsg { handle: h, tag }) };
+                self.wake_all();
+                Outcome::Ret(0)
             }
             sys::LOG_ATTACH => {
                 let p = self.proc(i);

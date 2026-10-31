@@ -111,7 +111,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | --- | --- | --- |
 | S1 | Resident supervisor (Zookeeper): service list, health pings, restart policy; BeaverHandler (logs); shell `services`/`logs` (docs/s1-design.md) | done 2026-10-30 |
 | S2 | Every program's log output routed through BeaverHandler; `logs [text]` (docs/s2-design.md) | done 2026-10-30 |
-| S3 | Handles passed in channel messages; services find each other by name through Zookeeper | proposed |
+| S3 | Handles passed in channel messages; services find each other by name through Zookeeper (docs/s3-design.md) | done 2026-10-30 |
 | S4 | Filesystem moved out of the kernel into a service | proposed |
 | S5 | Disk driver (virtio) so files survive a reboot | proposed |
 
