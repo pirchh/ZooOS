@@ -143,6 +143,20 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Boot step 1: fast boot without the check programs (2026-10-31)
+
+Design and measurements: docs/b1-design.md.
+
+- The boot-check programs (20 test processes, about 1 s) are tests, not
+  part of starting the system. Kernel feature `fast-boot` skips them; the
+  kernel's own self-tests (about 0.1 s) stay. `cargo xtask run` boots the
+  fast-boot build; `verify` keeps running every check on the normal build
+  and adds a `fast-boot` case.
+- The harness records when each serial line arrives
+  (`build/runs/<case>/serial-times.log`), for boot timing.
+- Mode features are checked with a count (at most one) instead of a list
+  of pairs. Version 0.26.0.
+
 ## Desktop step 4: Notes (2026-10-31)
 
 Design: docs/d4-design.md.

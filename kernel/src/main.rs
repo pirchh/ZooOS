@@ -47,33 +47,24 @@ use core::panic::PanicInfo;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[cfg(any(
-    all(
-        feature = "panic-test",
-        any(
-            feature = "fault-write-protect",
-            feature = "fault-heap-guard",
-            feature = "fault-stack-overflow",
-            feature = "triple-fault"
-        )
-    ),
-    all(
-        feature = "fault-write-protect",
-        any(
-            feature = "fault-heap-guard",
-            feature = "fault-stack-overflow",
-            feature = "triple-fault"
-        )
-    ),
-    all(
-        feature = "fault-heap-guard",
-        any(feature = "fault-stack-overflow", feature = "triple-fault")
-    ),
-    all(feature = "fault-stack-overflow", feature = "triple-fault"),
-))]
-compile_error!("at most one test-mode feature may be enabled");
+/// Mode features enabled; at most one is allowed.
+const MODE_FEATURES: usize = cfg!(feature = "fast-boot") as usize
+    + cfg!(feature = "panic-test") as usize
+    + cfg!(feature = "fault-write-protect") as usize
+    + cfg!(feature = "fault-heap-guard") as usize
+    + cfg!(feature = "fault-stack-overflow") as usize
+    + cfg!(feature = "triple-fault") as usize;
+// Always true in any single build that compiles; it fails the build when
+// two mode features are enabled together.
+#[allow(clippy::absurd_extreme_comparisons)]
+const _: () = assert!(
+    MODE_FEATURES <= 1,
+    "at most one mode feature may be enabled"
+);
 
-const MODE: &str = if cfg!(feature = "panic-test") {
+const MODE: &str = if cfg!(feature = "fast-boot") {
+    "fast-boot"
+} else if cfg!(feature = "panic-test") {
     "panic-test"
 } else if cfg!(feature = "fault-write-protect") {
     "fault-write-protect"
@@ -199,7 +190,13 @@ fn run(mut mem: memory::Memory) -> ! {
         None => kprintln!("ZOO_OS INFO clock none"),
     }
     process::init();
-    run_boot_processes();
+    if cfg!(feature = "fast-boot") {
+        // The check programs are tests; verify runs them on the normal
+        // kernel (docs/b1-design.md).
+        kprintln!("ZOO_OS INFO boot checks skipped (fast-boot)");
+    } else {
+        run_boot_processes();
+    }
     start_supervisor();
     kprintln!("ZOO_OS READY");
     shell::run()

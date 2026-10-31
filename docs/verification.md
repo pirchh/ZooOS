@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D4 section
-(version 0.25.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The B1 section
+(version 0.26.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Boot step 1 results: fast boot (version 0.26.0)
+
+Design and measurements: docs/b1-design.md. Kernel feature and image mode
+`fast-boot` (no boot-check programs); `serial-times.log` per run.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 12 min 31 s, every case as
+expected (`assistant-live` `SKIP`); all existing cases still use the normal
+build with every check. New case `fast-boot` (4.5 s): self-tests, then
+`PROC start pid=1 name=zookeeper` (supervise mode) with BadgerHandler,
+BeaverHandler and SealTest as pids 2–4, `READY`, `SHELL ready`, and `run
+tern-test fast` → `argc=2 argv=tern-test,fast`, exit code 0.
+
+Then `--accel whpx --case assistant-live`: pass in 62.2 s.
+
+**Measurement** (`--skip-model --accel whpx`, three runs each), kernel's
+first line → `SHELL ready`: normal 1,072 / 1,058 / 1,075 ms; fast-boot 108
+/ 108 / 110 ms. QEMU start → `SHELL ready`: normal 2,090 / 1,973 / 2,099
+ms; fast-boot 1,136 / 1,284 / 1,238 ms (the rest is UEFI firmware).
+
+**Negative controls:**
+
+| Change | Result |
+| --- | --- |
+| `fast-boot` condition forced false (checks run anyway) | `FAIL fast-boot`: `got ZOO_OS PROC start pid=2 name=beluga-test while expecting ... badger-handler` |
+| Two mode features enabled together (`fast-boot,panic-test`) | the kernel does not compile: `at most one mode feature may be enabled` |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings (one lint allowed on the mode-count assertion, which is always
+true in a build that compiles). `cargo test -p xtask --locked`: all
+passed. Not run: a clean-copy verify; real hardware.
 
 ## Desktop step 4 results: Notes (version 0.25.0)
 
