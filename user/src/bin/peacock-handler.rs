@@ -5,6 +5,8 @@
 //! restarts applications that crash. The mouse (docs/d1-design.md) moves a
 //! pointer; a click focuses a window and a title-bar drag moves it. Only
 //! the parts of the screen that changed are redrawn (docs/d2-design.md).
+//! Windows have close buttons and an auto-hiding dock reopens closed
+//! applications (docs/d3-design.md).
 //!
 //! Its second start-up handle is the home directory (from Zookeeper); each
 //! start of the Assistant gets a fresh copy, which it passes on to the file
@@ -20,8 +22,8 @@ use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1}
 use zoo_abi::{FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
 use zoo_rt::{
-    Error, Line, channel_create, close, dir_open, dir_rights, display_acquire, input_read, log,
-    spawn, spawn_with, try_recv, wait,
+    Error, Line, channel_create, close, dir_open, dir_rights, display_acquire, input_read, kill,
+    log, spawn, spawn_with, try_recv, wait, wait_any,
 };
 
 zoo_rt::entry2!(main);
@@ -38,6 +40,12 @@ const CONTENT: u32 = 0xFFFFFF;
 const CONTENT_TEXT: u32 = 0x202020;
 const SELECTED: u32 = 0xCFE3F7;
 const BORDER: u32 = 0x5A6670;
+const CLOSE_BUTTON: u32 = 0xE0443E;
+const DOCK_BG: u32 = 0xDDE3E8;
+const DOCK_TEXT: u32 = 0x202020;
+const TILE_TEXT: u32 = 0xFFFFFF;
+/// Dock tile colours, indexed like the applications.
+const TILE: [u32; 3] = [0x3D7EBF, 0xD9822B, 0x3E9E6B];
 const POINTER: u32 = 0xFFFFFF;
 const POINTER_EDGE: u32 = 0x000000;
 
@@ -63,6 +71,17 @@ const MAX_DAMAGE: usize = 8;
 /// Pointer arrow size.
 const POINTER_W: usize = 12;
 const POINTER_H: usize = 17;
+/// Close button: size, and gap from the title bar's right end.
+const CLOSE_SIZE: usize = 12;
+const CLOSE_GAP: usize = 8;
+/// Dock geometry: one slot per application, a square tile in each, the
+/// name under it, then the running dot.
+const DOCK_SLOT_W: usize = 96;
+const DOCK_PAD: usize = 8;
+const DOCK_TILE: usize = 48;
+const DOCK_H: usize = 92;
+/// Ticks an application gets to end after its window is closed.
+const CLOSE_WAIT: u64 = 100;
 /// Frames kept for the timing report (F11).
 const FRAME_SAMPLES: usize = 64;
 
@@ -100,6 +119,8 @@ struct App {
     chan: u64,
     process: u64,
     running: bool,
+    /// Closed by the user: window hidden, not restarted.
+    closed: bool,
     restarts: u32,
     title: Text,
     lines: [Text; MAX_LINES],
@@ -116,6 +137,7 @@ impl App {
             chan: 0,
             process: 0,
             running: false,
+            closed: false,
             restarts: 0,
             title: Text::new(),
             lines: [const { Text::new() }; MAX_LINES],
@@ -326,6 +348,8 @@ struct Desktop {
     /// Recent frames: (cycles, pixels drawn).
     frames: [(u64, u64); FRAME_SAMPLES],
     frame_count: usize,
+    /// The dock is shown (pointer near the bottom).
+    dock_visible: bool,
 }
 
 impl Desktop {
@@ -403,8 +427,146 @@ impl Desktop {
     fn window_at(&self, x: usize, y: usize) -> Option<usize> {
         self.order.iter().rev().copied().find(|&i| {
             let (wx, wy, ww, wh) = self.wins[i];
-            x >= wx && x < wx + ww && y >= wy && y < wy + wh
+            !self.apps[i].closed && x >= wx && x < wx + ww && y >= wy && y < wy + wh
         })
+    }
+
+    /// Top-left corner of window `i`'s close button.
+    fn close_button(&self, i: usize) -> (usize, usize) {
+        let (x, y, w, _) = self.wins[i];
+        (
+            x + w - CLOSE_GAP - CLOSE_SIZE,
+            y + (TITLE_H - CLOSE_SIZE) / 2,
+        )
+    }
+
+    fn on_close_button(&self, i: usize) -> bool {
+        let (bx, by) = self.close_button(i);
+        self.px >= bx && self.px < bx + CLOSE_SIZE && self.py >= by && self.py < by + CLOSE_SIZE
+    }
+
+    /// The dock panel (x, y, w, h), centred above the status line.
+    fn dock_rect(&self) -> (usize, usize, usize, usize) {
+        let w = self.apps.len() * DOCK_SLOT_W + 2 * DOCK_PAD;
+        let x = (self.screen.w - w) / 2;
+        let y = self.screen.h - BAR_H - DOCK_PAD - DOCK_H;
+        (x, y, w, DOCK_H)
+    }
+
+    fn damage_dock(&mut self) {
+        let (x, y, w, h) = self.dock_rect();
+        self.damage(x - 1, y - 1, w + 2, h + 2);
+    }
+
+    /// The dock slot under the pointer.
+    fn dock_slot(&self) -> Option<usize> {
+        let (x, y, w, h) = self.dock_rect();
+        let inside = self.px >= x + DOCK_PAD
+            && self.px < x + w - DOCK_PAD
+            && self.py >= y
+            && self.py < y + h;
+        inside.then(|| (self.px - x - DOCK_PAD) / DOCK_SLOT_W)
+    }
+
+    /// A dock tile: opens a closed application, or raises a running one.
+    fn dock_click(&mut self, i: usize) {
+        self.damage_dock();
+        if self.apps[i].closed {
+            let app = &mut self.apps[i];
+            app.restarts = 0;
+            if !app.start(self.home) {
+                zoo_rt::log!("PeacockHandler: cannot start {}", app.program);
+                return;
+            }
+            app.closed = false;
+            zoo_rt::log!("PeacockHandler: opened {}", app.label);
+            self.damage_window(i);
+        }
+        self.set_focus(i);
+    }
+
+    /// The close button: ends the application without restarting it and
+    /// hides its window.
+    fn close_app(&mut self, i: usize) {
+        self.damage_window(i);
+        self.damage_menu_bar();
+        self.damage_dock();
+        let app = &mut self.apps[i];
+        if app.running {
+            // The application sees its channel close and ends; one that
+            // does not end in time is killed.
+            let _ = close(app.chan);
+            if wait_any(&[app.process], CLOSE_WAIT) == Err(Error::TimedOut) {
+                zoo_rt::log!("PeacockHandler: {} did not end; killing it", app.label);
+                let _ = kill(app.process);
+            }
+            let _ = wait(app.process);
+            let _ = close(app.process);
+        }
+        app.running = false;
+        app.closed = true;
+        zoo_rt::log!("PeacockHandler: closed {}", app.label);
+        if self.focus == i
+            && let Some(j) = self
+                .order
+                .iter()
+                .rev()
+                .copied()
+                .find(|&j| j != i && !self.apps[j].closed)
+        {
+            self.set_focus(j);
+        }
+    }
+
+    /// Tab: the next open window.
+    fn focus_next(&mut self) {
+        let n = self.apps.len();
+        if let Some(j) = (1..n)
+            .map(|k| (self.focus + k) % n)
+            .find(|&j| !self.apps[j].closed)
+        {
+            self.set_focus(j);
+        }
+    }
+
+    fn draw_dock(&mut self) {
+        let (dx, dy, dw, dh) = self.dock_rect();
+        let s = &mut self.screen;
+        s.fill(dx - 1, dy - 1, dw + 2, dh + 2, BORDER);
+        s.fill(dx, dy, dw, dh, DOCK_BG);
+        for (i, app) in self.apps.iter().enumerate() {
+            let slot = dx + DOCK_PAD + i * DOCK_SLOT_W;
+            let tx = slot + (DOCK_SLOT_W - DOCK_TILE) / 2;
+            let ty = dy + DOCK_PAD;
+            s.fill(tx, ty, DOCK_TILE, DOCK_TILE, TILE[i]);
+            let initial = &app.label[..1];
+            s.text(
+                tx + (DOCK_TILE - CHAR_W) / 2,
+                ty + (DOCK_TILE - 16) / 2,
+                initial,
+                TILE_TEXT,
+                TILE[i],
+                CHAR_W,
+            );
+            let name_w = app.label.len() * CHAR_W;
+            s.text(
+                slot + (DOCK_SLOT_W - name_w) / 2,
+                ty + DOCK_TILE + 4,
+                app.label,
+                DOCK_TEXT,
+                DOCK_BG,
+                DOCK_SLOT_W,
+            );
+            if app.running {
+                s.fill(
+                    slot + DOCK_SLOT_W / 2 - 2,
+                    ty + DOCK_TILE + 24,
+                    4,
+                    4,
+                    DOCK_TEXT,
+                );
+            }
+        }
     }
 
     /// Applies one mouse event; true if the screen changed.
@@ -416,7 +578,15 @@ impl Desktop {
         self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
         let down = e.buttons & 1 != 0;
         if down && !self.held {
-            if let Some(i) = self.window_at(self.px, self.py) {
+            if self.dock_visible
+                && let Some(i) = self.dock_slot()
+            {
+                self.dock_click(i);
+            } else if let Some(i) = self.window_at(self.px, self.py)
+                && self.on_close_button(i)
+            {
+                self.close_app(i);
+            } else if let Some(i) = self.window_at(self.px, self.py) {
                 if i != self.focus {
                     zoo_rt::log!("PeacockHandler: click focuses {}", self.apps[i].label);
                 }
@@ -450,6 +620,12 @@ impl Desktop {
         }
         self.held = down;
         self.damage_pointer();
+        // Like an auto-hiding dock: shown while the pointer is near it.
+        let show = self.py + DOCK_PAD >= self.dock_rect().1;
+        if show != self.dock_visible {
+            self.dock_visible = show;
+            self.damage_dock();
+        }
         true
     }
 
@@ -536,7 +712,11 @@ impl Desktop {
         // Menu bar: product name, focused window, uptime.
         s.fill(0, 0, w, BAR_H, BAR);
         s.text(8, 4, "ZooOS", BAR_TEXT, BAR, 80);
-        let focused = self.apps[self.focus].title.as_str();
+        let focused = if self.apps[self.focus].closed {
+            ""
+        } else {
+            self.apps[self.focus].title.as_str()
+        };
         s.text(8 + 8 * CHAR_W, 4, focused, BAR_TEXT, BAR, w / 2);
         let mut up = Line::new();
         let _ = write!(up, "up {}s", zoo_rt::ticks() / 100);
@@ -552,6 +732,9 @@ impl Desktop {
         // Windows, back to front.
         for i in self.order {
             let app = &self.apps[i];
+            if app.closed {
+                continue;
+            }
             let (x, win_y, win_w, win_h) = self.wins[i];
             let (tbg, tfg) = if i == self.focus {
                 (TITLE_FOCUSED, TITLE_FOCUSED_TEXT)
@@ -560,7 +743,28 @@ impl Desktop {
             };
             s.fill(x - 1, win_y - 1, win_w + 2, win_h + 2, BORDER);
             s.fill(x, win_y, win_w, TITLE_H, tbg);
-            s.text(x + 8, win_y + 4, app.title.as_str(), tfg, tbg, win_w - 16);
+            // Title text stops short of the close button.
+            s.text(
+                x + 8,
+                win_y + 4,
+                app.title.as_str(),
+                tfg,
+                tbg,
+                win_w - 16 - CLOSE_SIZE - CLOSE_GAP,
+            );
+            let (bx, by) = (
+                x + win_w - CLOSE_GAP - CLOSE_SIZE,
+                win_y + (TITLE_H - CLOSE_SIZE) / 2,
+            );
+            for cy in 0..CLOSE_SIZE {
+                for cx in 0..CLOSE_SIZE {
+                    // A disc: (2c - 11)^2 summed within 12^2.
+                    let (ex, ey) = (2 * cx as isize - 11, 2 * cy as isize - 11);
+                    if ex * ex + ey * ey <= 144 {
+                        s.plot(bx + cx, by + cy, CLOSE_BUTTON);
+                    }
+                }
+            }
             s.fill(x, win_y + TITLE_H, win_w, win_h - TITLE_H, CONTENT);
             let top = win_y + TITLE_H + 6;
             if !app.running {
@@ -601,6 +805,9 @@ impl Desktop {
             BAR,
             w - 16,
         );
+        if self.dock_visible {
+            self.draw_dock();
+        }
         self.draw_pointer();
     }
 
@@ -617,6 +824,7 @@ impl Desktop {
     /// Handles an application whose channel closed: it has ended.
     fn app_ended(&mut self, i: usize) {
         self.damage_window(i);
+        self.damage_dock();
         self.damage_status();
         if i == self.focus {
             self.damage_menu_bar();
@@ -702,6 +910,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         always_full: false,
         frames: [(0, 0); FRAME_SAMPLES],
         frame_count: 0,
+        dock_visible: false,
     };
     let _ = write!(
         desk.status,
@@ -729,7 +938,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             };
             match decoder.process_keyevent(event) {
                 Some(DecodedKey::Unicode('\t')) => {
-                    desk.set_focus((desk.focus + 1) % desk.apps.len());
+                    desk.focus_next();
                     dirty = true;
                 }
                 Some(DecodedKey::Unicode('\u{1b}')) => {
