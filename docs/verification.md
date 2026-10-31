@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L1 section
-(version 0.39.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L2 section
+(version 0.40.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 2 results: memory, read-only files and time (version 0.40.0)
+
+Design: docs/linux2-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 15 min 59 s, every case as
+expected (`assistant-live` `SKIP`). New case `linux-eider` (7.2 s):
+`EiderTest: memory ok`, `/etc/services 180 bytes, 5 lines`, `slept 200
+ms`, `unix=…` 0 s from the host clock, `all checks passed`, exit 0; no
+`unsupported syscall` line (a first run showed `nr=204`,
+`sched_getaffinity`, which was then added). `linux-hello` unchanged.
+
+Then, under WHPX: `assistant-live` pass in 58.1 s; `linux-eider` pass in
+4.3 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`, each
+restored and checked byte for byte):
+
+| Change | Result |
+| --- | --- |
+| `mmap` always fails | `FAIL linux-eider`: `FAILED small malloc (errno 12)`, exit 10 |
+| `fstat` size one byte too big | `FAIL linux-eider`: `FAILED read size`, exit 24 |
+| `nanosleep` returns at once | `FAIL linux-eider`: `FAILED slept too little`, exit 32 |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: real
+hardware.
 
 ## Linux step 1 results: a static musl program runs unmodified (version 0.39.0)
 
