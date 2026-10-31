@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D7 section
-(version 0.29.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H1a section
+(version 0.30.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,35 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 1a results: USB host controller, enumeration (version 0.30.0)
+
+Design and details: docs/h1-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 15 min 18 s, every case as
+expected (`assistant-live` `SKIP`); boots without a USB controller log
+`ZOO_OS INFO usb none`. New case `usb` (6.2 s, with `qemu-xhci`,
+`usb-kbd`, `usb-mouse`): `usb xhci ports=8 slots=32 context=32`; port 5
+`hid=keyboard`, `vendor=0x0627 product=0x0001 class=3`; port 6
+`hid=mouse`, same ids; `usb devices=2`; then `SHELL ready`.
+
+Then `--accel whpx --case assistant-live`: pass in 68.0 s.
+
+Boot time (fast-boot, WHPX, kernel's first line → `SHELL ready`, seven
+runs): 110, 168, 160, 110, 117, 109, 112 ms (before: 108–110 ms). A first
+version that scanned all 256 PCI buses measured 226, 216, 282 ms and was
+replaced by a bridge walk.
+
+**Negative controls** (temporary edits to `kernel/src/xhci.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| Event ring read with the wrong cycle bit | `FAIL usb` (timeout): `port=5 error=command timed out`, `port=6 error=command timed out`, `devices=0` |
+| USB 2 port reset skipped | passed: QEMU enables USB 2 ports without a reset, so this path is not tested |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: all passed. Not run: a
+clean-copy verify; real hardware.
 
 ## Desktop step 7 results: Files browses the home folder (version 0.29.0)
 
