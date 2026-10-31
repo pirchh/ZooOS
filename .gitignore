@@ -16,3 +16,8 @@
 # C toolchain (downloaded; see tools/zig/README.md)
 /tools/zig/*/
 /tools/zig/*.zip
+
+# musl source for the dynamic loader (downloaded; see tools/musl/README.md)
+/tools/musl/*/
+/tools/musl/*.tar.gz
+/tools/musl/*.asc

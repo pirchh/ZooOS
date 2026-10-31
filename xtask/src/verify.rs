@@ -980,6 +980,39 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-dovekie",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux dovekie-test",
+                    "ZOO_OS PROC start pid=26 name=dovekie-test",
+                ]);
+                e.then(&dovekie_children()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>());
+                e.then(&["ZOO_OS PROC exit pid=26 name=dovekie-test code=0"]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "a dynamically linked Linux program runs under musl's loader, with a shared library and dlopen",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux dovekie-test")),
+                    Action::WaitContains("DovekieTest: libdovekie says: hello from libdovekie".into()),
+                    Action::WaitContains("DovekieTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=dovekie-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
@@ -2962,6 +2995,19 @@ fn guillemot_children() -> Vec<String> {
     }
     for pid in 97..147 {
         child(pid, true, "code=0");
+    }
+    lines
+}
+
+/// The process lines of `dovekie-test`'s children: 10 static then 10
+/// dynamic `hello` starts (c/linux/dovekie-test.c).
+fn dovekie_children() -> Vec<String> {
+    let g = "dovekie-test";
+    let mut lines = Vec::new();
+    for (k, name) in (27..47).map(|pid| (pid, if pid < 37 { "hello" } else { "hello-dyn" })) {
+        lines.push(format!("ZOO_OS PROC start pid={k} name={g}"));
+        lines.push(format!("ZOO_OS PROC exec pid={k} name={name}"));
+        lines.push(format!("ZOO_OS PROC exit pid={k} name={name} code=0"));
     }
     lines
 }
