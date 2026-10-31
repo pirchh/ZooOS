@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L6 section
-(version 0.46.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L7 section
+(version 0.47.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,44 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 7 results: Unix sockets and event waits (version 0.47.0)
+
+Design and details: docs/linux7-design.md. New case `linux-ermine`:
+`ermine-test` (static musl C) covers:
+- `socketpair`, and `SCM_RIGHTS` across it;
+- bind (with `EADDRINUSE`), listen, accept4, a forked client passing a
+  pipe, `SO_PEERCRED`, end of data, `ECONNREFUSED` after close;
+- `poll` (timeout, `POLLIN`, `POLLHUP`), `select`;
+- `epoll` (data, `EEXIST`, `EPOLLONESHOT`, `MOD`, a cross-thread
+  wake-up);
+- `eventfd` (sum, semaphore, `EAGAIN`), `O_NONBLOCK` and `F_SETFL`;
+- a timed ping-pong.
+
+The program was first named `muskox-test`. That name already belongs to a
+native boot-check program, so it was renamed before commit.
+
+**Measured** (`--skip-model --accel whpx --case linux-ermine`): socket
+round trip between two processes 8933 / 8956 / 9037 cycles (averages of
+1000).
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 46 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+32.9 s.
+
+**Negative controls** (temporary edits to `kernel/src/process.rs`,
+restored and compared):
+
+| Change | Result |
+| --- | --- |
+| Descriptors sent with `SCM_RIGHTS` are dropped | `FAIL`: exit 15 (`recvmsg SCM_RIGHTS`) |
+| Poll-style timeouts end at once | `FAIL`: exit 23 (`poll on listener`) |
+| `EPOLLONESHOT` not honoured | `FAIL`: exit 87 |
+| Non-blocking descriptors block anyway | `FAIL` (timeout): no `start pid=28` within 60 s |
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`): 0
+warnings. `cargo test -p xtask --locked`: 23 passed. Not run: real
+hardware.
 
 ## Linux step 6 results: signal handlers, threads and lazy memory (version 0.46.0)
 
