@@ -117,8 +117,14 @@ pub fn on_byte(byte: u8) {
     // 9-bit two's complement deltas: sign bits in the first byte.
     let dx = i16::from(bytes[1]) - if flags & 0x10 != 0 { 256 } else { 0 };
     let dy = i16::from(bytes[2]) - if flags & 0x20 != 0 { 256 } else { 0 };
-    let buttons = u64::from(flags & 0x07);
-    let event = (buttons << 32) | (u64::from(dy as u16) << 16) | u64::from(dx as u16);
+    push_event(dx, dy, flags & 0x07);
+}
+
+/// Queues one event (`dy` positive upwards). Interrupt context only: the
+/// PS/2 handlers and the timer tick for USB mice (docs/h1b-design.md),
+/// which never nest.
+pub fn push_event(dx: i16, dy: i16, buttons: u8) {
+    let event = (u64::from(buttons) << 32) | (u64::from(dy as u16) << 16) | u64::from(dx as u16);
     let head = HEAD.load(Ordering::Relaxed);
     if head.wrapping_sub(TAIL.load(Ordering::Acquire)) >= CAPACITY {
         DROPPED.fetch_add(1, Ordering::Relaxed);

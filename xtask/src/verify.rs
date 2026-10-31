@@ -561,20 +561,57 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: true,
-            expectation: normal.clone(),
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&["ZOO_OS SHELL line=echo usb"]);
+                e
+            },
             timeout: s.timeout,
             want: "pass",
-            purpose: "USB: the xHCI controller starts and enumerates a keyboard and a mouse",
+            purpose: "USB: the xHCI controller enumerates a keyboard and a mouse; the shell is typed into through the USB keyboard",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitContains("ZOO_OS INFO usb xhci ports=".into()),
                     Action::WaitContains("hid=keyboard".into()),
+                    Action::WaitContains("input ready".into()),
                     Action::WaitContains("hid=mouse".into()),
+                    Action::WaitContains("input ready".into()),
                     Action::WaitContains("ZOO_OS INFO usb devices=2".into()),
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("echo usb")),
+                    Action::WaitContains("ZOO_OS INFO usb keyboard input".into()),
+                    Action::WaitFor("ZOO_OS SHELL line=echo usb".into()),
                 ],
             }),
             screen_checks: vec![],
+        },
+        Case {
+            name: "usb-desktop",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: true,
+            expectation: menu_clock.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "USB: the desktop is used through the USB mouse (a click focuses a window)",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        // From the centre into Crash Test (840, 200), click.
+                        Action::Mouse(200, -200),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::WaitContains("ZOO_OS INFO usb mouse input".into()),
+                        Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-click"),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-click", check_click_focus)],
         },
         Case {
             name: "files-browse",

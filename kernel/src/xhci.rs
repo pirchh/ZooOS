@@ -2,11 +2,13 @@
 //! controller, take it from the firmware, start it, and enumerate the
 //! devices on its root ports (address each one, read its device and
 //! configuration descriptors, log what it is). Polled, no interrupts, one
-//! command ring, one event ring, control endpoint 0 only. Keyboard and
-//! mouse input from USB HID devices is the next step.
+//! command ring, one event ring. HID keyboards and mice in boot protocol
+//! (docs/h1b-design.md) are polled on every timer tick; their reports feed
+//! the same keyboard and mouse queues as the PS/2 devices.
 
 use crate::kprintln;
 use crate::memory::Memory;
+use spin::Mutex;
 use x86_64::PhysAddr;
 use x86_64::instructions::port::Port;
 use x86_64::structures::paging::PhysFrame;
@@ -24,12 +26,14 @@ const RING_TRBS: usize = 256;
 const MAX_PORTS: usize = 16;
 
 // TRB types.
+const TRB_NORMAL: u32 = 1;
 const TRB_SETUP: u32 = 2;
 const TRB_DATA: u32 = 3;
 const TRB_STATUS: u32 = 4;
 const TRB_LINK: u32 = 6;
 const TRB_ENABLE_SLOT: u32 = 9;
 const TRB_ADDRESS_DEVICE: u32 = 11;
+const TRB_CONFIGURE_ENDPOINT: u32 = 12;
 const TRB_TRANSFER_EVENT: u32 = 32;
 const TRB_COMMAND_COMPLETION: u32 = 33;
 
@@ -193,6 +197,32 @@ struct Events {
     cycle: u32,
 }
 
+/// HID devices polled after start-up.
+const MAX_HIDS: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HidKind {
+    Keyboard,
+    Mouse,
+}
+
+/// A HID boot-protocol device's interrupt IN endpoint.
+struct Hid {
+    kind: HidKind,
+    slot: u32,
+    /// Device context index of the endpoint (its doorbell target).
+    dci: u32,
+    ring: Ring,
+    buf_phys: u64,
+    buf: *mut u8,
+    /// Bytes asked for per report.
+    len: u32,
+    /// The previous keyboard report (to find presses and releases).
+    last: [u8; 8],
+    /// Reports received.
+    reports: u64,
+}
+
 struct Xhci {
     op: Regs,
     rt: Regs,
@@ -201,7 +231,16 @@ struct Xhci {
     dcbaa: *mut u64,
     cmd: Ring,
     events: Events,
+    hids: [Option<Hid>; MAX_HIDS],
 }
+
+// SAFETY: the raw pointers point into pages owned by this driver (DMA
+// memory and the mapped registers); the controller is only ever used
+// through `HC`'s lock, from one CPU.
+unsafe impl Send for Xhci {}
+
+/// The controller after start-up, polled from the timer tick.
+static HC: Mutex<Option<Xhci>> = Mutex::new(None);
 
 impl Xhci {
     /// The next event, if the controller has written one.
@@ -230,6 +269,65 @@ impl Xhci {
         let erdp = self.events.phys + (self.events.index * 16) as u64;
         self.rt.w64(0x20 + 0x18, erdp | 1 << 3);
         Some(t)
+    }
+
+    /// Queues the next report transfer on a HID endpoint.
+    fn queue_report(&mut self, i: usize) {
+        if let Some(h) = self.hids[i].as_mut() {
+            // Normal TRB: interrupt on completion and on a short packet.
+            h.ring
+                .push(h.buf_phys, h.len, TRB_NORMAL << 10 | 1 << 5 | 1 << 2);
+            let (slot, dci) = (h.slot, h.dci);
+            self.db.w32(4 * u64::from(slot), dci);
+        }
+    }
+
+    /// Handles finished HID transfers (timer tick).
+    fn poll(&mut self) {
+        while let Some(e) = self.next_event() {
+            if (e[3] >> 10) & 0x3F != TRB_TRANSFER_EVENT {
+                continue;
+            }
+            let (slot, dci) = (e[3] >> 24, (e[3] >> 16) & 0x1F);
+            let Some(i) = self
+                .hids
+                .iter()
+                .position(|h| h.as_ref().is_some_and(|h| h.slot == slot && h.dci == dci))
+            else {
+                continue;
+            };
+            if matches!(e[2] >> 24, CC_SUCCESS | CC_SHORT_PACKET)
+                && let Some(h) = self.hids[i].as_mut()
+            {
+                let got = h.len.saturating_sub(e[2] & 0xFF_FFFF) as usize;
+                let mut report = [0u8; 8];
+                // SAFETY: the endpoint's own buffer page, `got <= len <= 8`.
+                for (k, b) in report.iter_mut().enumerate().take(got.min(8)) {
+                    *b = unsafe { h.buf.add(k).read_volatile() };
+                }
+                if h.reports == 0 {
+                    crate::serial_println!(
+                        "ZOO_OS INFO usb {} input",
+                        if h.kind == HidKind::Keyboard {
+                            "keyboard"
+                        } else {
+                            "mouse"
+                        }
+                    );
+                }
+                h.reports += 1;
+                match h.kind {
+                    HidKind::Keyboard => keyboard_report(&mut h.last, &report),
+                    HidKind::Mouse => crate::mouse::push_event(
+                        i16::from(report[1] as i8),
+                        // USB reports y downwards; the queue holds y upwards.
+                        -i16::from(report[2] as i8),
+                        report[0] & 7,
+                    ),
+                }
+            }
+            self.queue_report(i);
+        }
     }
 
     /// Waits for an event of `kind`, skipping others (port changes).
@@ -431,6 +529,7 @@ fn start(mem: &mut Memory, cap: Regs) -> Result<usize, &'static str> {
             index: 0,
             cycle: 1,
         },
+        hids: [const { None }; MAX_HIDS],
     };
     let mut count = 0;
     for port in 1..=ports {
@@ -453,7 +552,21 @@ fn start(mem: &mut Memory, cap: Regs) -> Result<usize, &'static str> {
         }
     }
     kprintln!("ZOO_OS INFO usb devices={}", count);
+    // Start the HID endpoints, then hand the controller to the timer.
+    for i in 0..MAX_HIDS {
+        hc.queue_report(i);
+    }
+    *HC.lock() = Some(hc);
     Ok(count)
+}
+
+/// Timer tick: HID reports that have arrived (docs/h1b-design.md).
+pub fn poll() {
+    if let Some(mut hc) = HC.try_lock()
+        && let Some(hc) = hc.as_mut()
+    {
+        hc.poll();
+    }
 }
 
 /// The USB legacy-support capability: ask the firmware to let go.
@@ -540,11 +653,17 @@ fn enumerate(
         product: u16::from_le_bytes([d[10], d[11]]),
         class: d[4],
     };
-    // The configuration: report HID interfaces (keyboard 1, mouse 2).
+    // The configuration: report HID interfaces (keyboard 1, mouse 2) and
+    // find the first boot-protocol one with an interrupt IN endpoint.
     control_in(hc, &mut ep0, slot, 0x0200, buf_phys, 255)?;
     // SAFETY: as above, up to the 255 bytes requested.
     let c = unsafe { core::slice::from_raw_parts(buf, 255) };
     let total = usize::from(u16::from_le_bytes([c[2], c[3]])).min(255);
+    let config = c[5];
+    // (interface, kind) of the boot HID interface being read, then its
+    // endpoint (address, max packet, interval).
+    let mut hid: Option<(u8, HidKind)> = None;
+    let mut endpoint: Option<(u8, u16, u8)> = None;
     let mut at = 0;
     while at + 2 <= total && c[at] >= 2 {
         if c[at + 1] == 4 && at + 8 <= total {
@@ -559,11 +678,232 @@ fn enumerate(
                     _ => "other",
                 };
                 kprintln!("ZOO_OS INFO usb port={} hid={}", port, kind);
+                if hid.is_none() && endpoint.is_none() {
+                    hid = match (sub, proto) {
+                        (1, 1) => Some((c[at + 2], HidKind::Keyboard)),
+                        (1, 2) => Some((c[at + 2], HidKind::Mouse)),
+                        _ => None,
+                    };
+                }
+            }
+        } else if c[at + 1] == 5 && at + 7 <= total && hid.is_some() && endpoint.is_none() {
+            let (addr, attrs) = (c[at + 2], c[at + 3]);
+            if addr & 0x80 != 0 && attrs & 3 == 3 {
+                endpoint = Some((addr, u16::from_le_bytes([c[at + 4], c[at + 5]]), c[at + 6]));
             }
         }
         at += usize::from(c[at]);
     }
+    if let (Some((iface, kind)), Some(ep)) = (hid, endpoint) {
+        let setup = HidSetup {
+            slot,
+            speed,
+            port,
+            config,
+            iface,
+            ep,
+        };
+        match start_hid(mem, hc, &mut ep0, &setup, kind) {
+            Ok(()) => kprintln!("ZOO_OS INFO usb port={} input ready", port),
+            Err(why) => kprintln!("ZOO_OS INFO usb port={} input error={}", port, why),
+        }
+    }
     Ok(device)
+}
+
+/// Where a HID interface is and what its endpoint looks like.
+struct HidSetup {
+    slot: u32,
+    speed: u32,
+    port: usize,
+    config: u8,
+    iface: u8,
+    /// (endpoint address, max packet size, interval)
+    ep: (u8, u16, u8),
+}
+
+/// Configures the device, selects the boot protocol, and adds the
+/// interrupt IN endpoint (Configure Endpoint); polling starts after
+/// enumeration.
+fn start_hid(
+    mem: &mut Memory,
+    hc: &mut Xhci,
+    ep0: &mut Ring,
+    s: &HidSetup,
+    kind: HidKind,
+) -> Result<(), &'static str> {
+    let free = hc
+        .hids
+        .iter()
+        .position(Option::is_none)
+        .ok_or("too-many-hid-devices")?;
+    let iface = u64::from(s.iface);
+    // SET_CONFIGURATION, SET_PROTOCOL(boot), SET_IDLE(0: only changes).
+    control_nodata(hc, ep0, s.slot, 9 << 8 | u64::from(s.config) << 16)?;
+    control_nodata(hc, ep0, s.slot, 0x21 | 0x0B << 8 | iface << 32)?;
+    // Some devices refuse SET_IDLE; that is allowed.
+    let _ = control_nodata(hc, ep0, s.slot, 0x21 | 0x0A << 8 | iface << 32);
+
+    let (addr, mps, interval) = s.ep;
+    let dci = u32::from(addr & 0xF) * 2 + 1;
+    let mps = u32::from(mps & 0x7FF).max(1);
+    // xHCI interval: 2^n x 125 us. Full/low speed give milliseconds,
+    // high and super speed give 2^(bInterval-1) x 125 us.
+    let n = if s.speed >= 3 {
+        u32::from(interval.clamp(1, 16)) - 1
+    } else {
+        (u32::from(interval.max(1)) * 8).ilog2().clamp(3, 10)
+    };
+    let ring = Ring::new(mem).ok_or("out-of-memory")?;
+    let (in_phys, input) = page(mem).ok_or("out-of-memory")?;
+    let cs = hc.ctx_size;
+    let put = |off: usize, v: u32| {
+        // SAFETY: inside the zeroed input-context page.
+        unsafe { (input.add(off) as *mut u32).write_volatile(v) }
+    };
+    put(4, 1 | 1 << dci); // slot context and the new endpoint
+    put(cs, s.speed << 20 | dci << 27);
+    put(cs + 4, (s.port as u32) << 16);
+    let ep = (dci as usize + 1) * cs;
+    put(ep, n << 16);
+    put(ep + 4, 3 << 1 | 7 << 3 | mps << 16); // interrupt IN
+    put(ep + 8, ring.phys as u32 | 1);
+    put(ep + 12, (ring.phys >> 32) as u32);
+    put(ep + 16, mps | mps << 16);
+    hc.command(in_phys, TRB_CONFIGURE_ENDPOINT << 10 | s.slot << 24)?;
+
+    let (buf_phys, buf) = page(mem).ok_or("out-of-memory")?;
+    hc.hids[free] = Some(Hid {
+        kind,
+        slot: s.slot,
+        dci,
+        ring,
+        buf_phys,
+        buf,
+        len: mps.min(8),
+        last: [0; 8],
+        reports: 0,
+    });
+    Ok(())
+}
+
+/// A control request without a data stage on endpoint 0.
+fn control_nodata(
+    hc: &mut Xhci,
+    ep0: &mut Ring,
+    slot: u32,
+    setup: u64,
+) -> Result<(), &'static str> {
+    ep0.push(setup, 8, TRB_SETUP << 10 | 1 << 6);
+    // No data: the status stage is IN.
+    let status = ep0.push(0, 0, TRB_STATUS << 10 | 1 << 5 | 1 << 16);
+    hc.db.w32(4 * u64::from(slot), 1);
+    loop {
+        let e = hc
+            .wait_event(TRB_TRANSFER_EVENT)
+            .ok_or("transfer-timeout")?;
+        let at = u64::from(e[0]) | u64::from(e[1]) << 32;
+        match e[2] >> 24 {
+            CC_SUCCESS if at == status => return Ok(()),
+            CC_SUCCESS | CC_SHORT_PACKET => continue,
+            _ => return Err("request-failed"),
+        }
+    }
+}
+
+/// Scancode set 1 for HID keyboard usages 0x04..=0x52; 0 = none, bit 8
+/// set = extended (sent after 0xE0).
+const USAGE_TO_SET1: [u16; 0x53] = {
+    let mut t = [0u16; 0x53];
+    let letters = [
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18,
+        0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+    ];
+    let mut i = 0;
+    while i < 26 {
+        t[0x04 + i] = letters[i];
+        i += 1;
+    }
+    // 1-9, 0
+    let mut d = 0;
+    while d < 10 {
+        t[0x1E + d] = 0x02 + d as u16;
+        d += 1;
+    }
+    t[0x28] = 0x1C; // Enter
+    t[0x29] = 0x01; // Escape
+    t[0x2A] = 0x0E; // Backspace
+    t[0x2B] = 0x0F; // Tab
+    t[0x2C] = 0x39; // Space
+    t[0x2D] = 0x0C; // -
+    t[0x2E] = 0x0D; // =
+    t[0x2F] = 0x1A; // [
+    t[0x30] = 0x1B; // ]
+    t[0x31] = 0x2B; // backslash
+    t[0x33] = 0x27; // ;
+    t[0x34] = 0x28; // '
+    t[0x35] = 0x29; // `
+    t[0x36] = 0x33; // ,
+    t[0x37] = 0x34; // .
+    t[0x38] = 0x35; // /
+    t[0x39] = 0x3A; // Caps Lock
+    let mut f = 0;
+    while f < 10 {
+        t[0x3A + f] = 0x3B + f as u16; // F1-F10
+        f += 1;
+    }
+    t[0x44] = 0x57; // F11
+    t[0x45] = 0x58; // F12
+    t[0x4F] = 0x14D; // Right
+    t[0x50] = 0x14B; // Left
+    t[0x51] = 0x150; // Down
+    t[0x52] = 0x148; // Up
+    t
+};
+
+/// Set-1 codes of the modifier bits: LCtrl, LShift, LAlt, LGUI, RCtrl,
+/// RShift, RAlt, RGUI.
+const MODIFIERS: [u16; 8] = [0x1D, 0x2A, 0x38, 0x15B, 0x11D, 0x36, 0x138, 0x15C];
+
+fn send(code: u16, released: bool) {
+    if code & 0x100 != 0 {
+        crate::keyboard::push(0xE0);
+    }
+    crate::keyboard::push((code & 0x7F) as u8 | if released { 0x80 } else { 0 });
+}
+
+/// Turns a boot-protocol keyboard report (modifiers, reserved, six key
+/// usages) into set-1 press and release codes, like a PS/2 keyboard.
+fn keyboard_report(last: &mut [u8; 8], report: &[u8; 8]) {
+    // 0x01 in the key array: too many keys pressed; nothing reliable.
+    if report[2..].contains(&1) {
+        return;
+    }
+    for (bit, &code) in MODIFIERS.iter().enumerate() {
+        let (was, is) = (last[0] >> bit & 1, report[0] >> bit & 1);
+        if was != is {
+            send(code, is == 0);
+        }
+    }
+    for &u in &last[2..] {
+        if u != 0
+            && !report[2..].contains(&u)
+            && let Some(&code) = USAGE_TO_SET1.get(usize::from(u))
+            && code != 0
+        {
+            send(code, true);
+        }
+    }
+    for &u in &report[2..] {
+        if u != 0
+            && !last[2..].contains(&u)
+            && let Some(&code) = USAGE_TO_SET1.get(usize::from(u))
+            && code != 0
+        {
+            send(code, false);
+        }
+    }
+    *last = *report;
 }
 
 /// GET_DESCRIPTOR(`value`) into `buf` (`len` bytes) on endpoint 0.

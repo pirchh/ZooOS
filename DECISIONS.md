@@ -143,6 +143,15 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Hardware step 1b: USB keyboard and mouse input (2026-10-31)
+
+Design: docs/h1b-design.md.
+
+- HID boot protocol, polled on every timer tick. USB keyboard reports are
+  translated to scancode set 1 and USB mouse reports to mouse events in
+  the existing queues, so nothing above the kernel changes.
+  Version 0.31.0.
+
 ## Hardware step 1a: USB host controller, enumeration (2026-10-31)
 
 Design: docs/h1-design.md.
