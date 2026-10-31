@@ -17,7 +17,7 @@
   <rect width="1400" height="1060" fill="#ffffff"/>
 
   <text x="30" y="44" class="title">ZooOS architecture</text>
-  <text x="30" y="68" class="sub">Version 0.14.0 · names as of the services/apps/tests rename</text>
+  <text x="30" y="68" class="sub">Version 0.35.0 · 31 Oct 2026, after the overnight desktop and hardware steps</text>
 
   <!-- Legend -->
   <g transform="translate(760,30)">
@@ -72,17 +72,17 @@
     <text x="277" y="404" class="desc">processes + threads,</text>
     <text x="277" y="420" class="desc">preemptive, futexes</text>
     <rect x="490" y="360" width="250" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
-    <text x="502" y="384" class="name">System calls (ABI v8)</text>
+    <text x="502" y="384" class="name">System calls (ABI v16)</text>
     <text x="502" y="404" class="desc">channels, spawn, vm memory,</text>
-    <text x="502" y="420" class="desc">exceptions, files, display, input</text>
+    <text x="502" y="420" class="desc">disk, display, mouse, clock</text>
     <rect x="755" y="360" width="225" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
     <text x="767" y="384" class="name">Initrd (read-only)</text>
     <text x="767" y="404" class="desc">programs, seed files, model;</text>
     <text x="767" y="420" class="desc">files live in BadgerHandler</text>
     <rect x="995" y="360" width="175" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
     <text x="1007" y="384" class="name">Drivers</text>
-    <text x="1007" y="404" class="desc">screen, keyboard,</text>
-    <text x="1007" y="420" class="desc">serial, timer</text>
+    <text x="1007" y="404" class="desc">screen, PS/2 + USB,</text>
+    <text x="1007" y="420" class="desc">disk, APIC timer, RTC</text>
     <rect x="1185" y="360" width="175" height="80" rx="8" fill="#e8ecef" stroke="#6b7884"/>
     <text x="1197" y="384" class="name">Kernel shell (zoo&gt;)</text>
     <text x="1197" y="404" class="desc">help, ls, ps,</text>
@@ -92,7 +92,7 @@
 
   <!-- ARCTIC BOOT TESTS -->
   <rect x="20" y="480" width="430" height="560" rx="10" fill="#f3fbfc" stroke="#2b9aa6"/>
-  <text x="34" y="502" class="group">Arctic boot tests (run on every boot)</text>
+  <text x="34" y="502" class="group">Arctic boot tests (normal build)</text>
   <rect x="40" y="514" width="390" height="56" rx="8" fill="#e9defc" stroke="#7c5cc4"/>
   <text x="54" y="538" class="name">Zookeeper</text>
   <text x="54" y="557" class="desc">supervisor: starts the tests, checks every result</text>
@@ -120,18 +120,18 @@
 
   <!-- DESKTOP SESSION -->
   <rect x="470" y="480" width="700" height="560" rx="10" fill="#fbfaff" stroke="#7c5cc4"/>
-  <text x="484" y="502" class="group">Desktop session (shell: desktop)</text>
+  <text x="484" y="502" class="group">Desktop session (starts at boot)</text>
   <rect x="640" y="514" width="360" height="56" rx="8" fill="#e9defc" stroke="#7c5cc4"/>
   <text x="654" y="538" class="name">Zookeeper (session mode)</text>
   <text x="654" y="557" class="desc">hands out the home-folder permission, restarts the window server</text>
   <rect x="640" y="600" width="360" height="56" rx="8" fill="#ffe9d1" stroke="#d9822b"/>
   <text x="654" y="624" class="name">PeacockHandler</text>
-  <text x="654" y="643" class="desc">window server: screen, keyboard, mouse; restarts apps</text>
+  <text x="654" y="643" class="desc">window server: windows, dock, mouse, partial redraws</text>
   <path d="M820 570 L820 598" class="edge"/>
 
   <rect x="490" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>
   <text x="504" y="725" class="name">Files</text>
-  <text x="504" y="745" class="desc">file browser</text>
+  <text x="504" y="745" class="desc">home folder; Notes in dock</text>
   <rect x="720" y="700" width="200" height="66" rx="8" fill="#dcecff" stroke="#3d7ebf"/>
   <text x="734" y="725" class="name">Crash Test</text>
   <text x="734" y="745" class="desc">crashes on purpose to</text>
@@ -166,10 +166,10 @@
   <rect x="1190" y="480" width="190" height="150" rx="10" fill="#f3fbfc" stroke="#2b9aa6"/>
   <text x="1204" y="502" class="group">C programs</text>
   <rect x="1205" y="516" width="160" height="96" rx="8" fill="#dff5f7" stroke="#2b9aa6"/>
-  <text x="1217" y="540" class="name">puffin-test</text>
-  <text x="1217" y="560" class="desc">first C program</text>
-  <text x="1217" y="576" class="desc">(zig cc, no libc yet)</text>
-  <text x="1217" y="596" class="desc">shell: run puffin-test</text>
+  <text x="1217" y="540" class="name">puffin, tern</text>
+  <text x="1217" y="560" class="desc">C programs: checks,</text>
+  <text x="1217" y="576" class="desc">argv + clock (no libc)</text>
+  <text x="1217" y="596" class="desc">shell: run tern-test a b</text>
 
   <!-- shell launches -->
   <path d="M1272 440 L1272 514" class="edge"/>
@@ -189,7 +189,13 @@
   <text x="1214" y="798" class="desc">BadgerHandler (S4b)</text>
   <text x="1204" y="824" class="desc">✓ Disk + snapshots: files</text>
   <text x="1214" y="840" class="desc">survive a reboot (S5)</text>
-  <text x="1204" y="866" class="desc">• libc for C programs</text>
-  <text x="1204" y="892" class="desc">• Later: network, GPU</text>
-  <text x="1214" y="908" class="desc">drivers, Wine for .exe</text>
+  <text x="1204" y="866" class="desc">✓ Mouse, dock, Notes,</text>
+  <text x="1214" y="882" class="desc">home Files (D1–D7)</text>
+  <text x="1204" y="908" class="desc">✓ USB input + hubs, APIC</text>
+  <text x="1214" y="924" class="desc">timer, fast boot (H1–5)</text>
+  <text x="1204" y="950" class="desc">• First boot on a spare</text>
+  <text x="1214" y="966" class="desc">PC from a USB stick</text>
+  <text x="1204" y="992" class="desc">• libc: route to choose</text>
+  <text x="1204" y="1018" class="desc">• Later: network, GPU,</text>
+  <text x="1214" y="1034" class="desc">Wine for .exe</text>
 </svg>

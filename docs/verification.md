@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The H4 section
-(version 0.34.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The H5 section
+(version 0.35.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,27 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hardware step 5 results: key repeat for USB keyboards (version 0.35.0)
+
+Design: docs/h5-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 14 min 35 s, every case as
+expected (`assistant-live` `SKIP`). New case `usb-repeat` (9.3 s): `x`
+held for 1.5 s through QMP → `SHELL line=` with 34 x's (at least ten
+required; the quiet wait after release proves the repeat stopped).
+
+Then `--accel whpx --case assistant-live`: pass in 51.2 s.
+
+**Negative controls** (temporary edits to `kernel/src/xhci.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| No repeat | `FAIL usb-repeat`: `got ZOO_OS SHELL line=x while expecting ZOO_OS SHELL line=xxxxxxxxxx…` |
+| Repeat not stopped on release | `FAIL usb-repeat`: Enter kept repeating, `got ZOO_OS SHELL line= after the final expected marker` |
+
+Other checks: `cargo clippy` (kernel, `xtask`): 0 warnings. `cargo test
+-p xtask --locked`: all passed. Not run: real hardware.
 
 ## Hardware step 4 results: USB hubs (version 0.34.0)
 
