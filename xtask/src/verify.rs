@@ -210,6 +210,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let redraw = mouse_expectation(&normal);
     let frames = mouse_expectation(&normal);
     let dock = dock_expectation(&normal);
+    let mut args_clock = normal.clone();
+    args_clock.then(&[
+        "ZOO_OS SHELL line=run tern-test alpha beta",
+        "ZOO_OS PROC start pid=26 name=tern-test",
+        "ZOO_OS PROC exit pid=26 name=tern-test code=0",
+    ]);
     let mut inference = normal.clone();
     inference.then(&[
         "ZOO_OS SHELL line=run elephant-handler",
@@ -437,6 +443,27 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "frame cost of pointer movement, full repaints vs partial redraws (numbers meaningful with --accel)",
             interaction: Some(frames_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "args-clock",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            expectation: args_clock,
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a C program reads its arguments and the clock: argv, wall time near the host's, monotonic time",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run tern-test alpha beta")),
+                    Action::WaitContains("TernTest: argc=3 argv=tern-test,alpha,beta".into()),
+                    Action::WaitClock("TernTest: unix=".into()),
+                    Action::WaitContains("TernTest: monotonic +".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=tern-test code=0".into()),
+                ],
+            }),
             screen_checks: vec![],
         },
         Case {

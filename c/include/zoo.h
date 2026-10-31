@@ -34,4 +34,23 @@ static inline int64_t zoo_mem_alloc(uint64_t len) {
     return zoo_syscall(ZOO_SYS_MEM_ALLOC, len, 0, 0);
 }
 
+/* Copies up to `len` bytes of the command line (program name, then the
+ * arguments, separated by NUL bytes) and returns its full length. */
+static inline int64_t zoo_args_get(char *buf, size_t len) {
+    return zoo_syscall(ZOO_SYS_ARGS_GET, (uint64_t)buf, len, 0);
+}
+
+#define ZOO_CLOCK_REALTIME 0
+#define ZOO_CLOCK_MONOTONIC 1
+
+/* Nanoseconds since 1970 (UTC) or since boot, or a negative error. */
+static inline int64_t zoo_clock(uint64_t which) {
+    return zoo_syscall(ZOO_SYS_CLOCK, which, 0, 0);
+}
+
+/* Sleeps for `ticks` timer ticks (10 ms each). */
+static inline void zoo_sleep(uint64_t ticks) {
+    zoo_syscall(ZOO_SYS_SLEEP, ticks, 0, 0);
+}
+
 #endif

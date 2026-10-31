@@ -256,6 +256,9 @@ pub enum Action {
     Mouse(i32, i32),
     /// Press (true) or release the left mouse button.
     Button(bool),
+    /// Wait for a line containing this text followed by Unix seconds, and
+    /// require them to be within `CLOCK_TOLERANCE` of the host's clock.
+    WaitClock(String),
 }
 
 /// Steps to perform, in order, while the case runs. All of them must finish
@@ -265,6 +268,8 @@ pub struct Interaction {
 }
 
 const KEY_GAP: Duration = Duration::from_millis(40);
+/// How far the guest's wall clock may be from the host's.
+const CLOCK_TOLERANCE: u64 = 120;
 /// Largest single mouse movement sent; PS/2 packets carry at most 255.
 const MOUSE_STEP: i32 = 100;
 const QMP_CONNECT_BOUND: Duration = Duration::from_secs(10);
@@ -394,6 +399,25 @@ pub fn run_case(
                         break;
                     }
                 },
+                Action::WaitClock(part) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    match find_line_containing(complete, cursor, part) {
+                        Some(end) => {
+                            let line = complete[cursor..end]
+                                .lines()
+                                .rev()
+                                .find(|l| l.contains(part.as_str()))
+                                .unwrap_or("");
+                            cursor = end;
+                            if let Err(e) = check_clock(line, part) {
+                                harness_error = Some(e);
+                                break;
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                }
                 Action::Mouse(dx, dy) => match move_mouse(q, *dx, *dy) {
                     Ok(()) => true,
                     Err(e) => {
@@ -496,6 +520,28 @@ pub fn run_case(
 
 /// Finds a complete line equal to `want` starting at or after byte `from`;
 /// returns the offset just past it.
+/// Reads the Unix seconds after `part` in `line` and compares them with
+/// the host clock.
+fn check_clock(line: &str, part: &str) -> Result<(), String> {
+    let after = &line[line.find(part).map_or(line.len(), |i| i + part.len())..];
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    let guest: u64 = digits
+        .parse()
+        .map_err(|_| format!("no Unix seconds after `{part}` in `{}`", line.trim()))?;
+    let host = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("host clock before 1970: {e}"))?
+        .as_secs();
+    let diff = guest.abs_diff(host);
+    if diff > CLOCK_TOLERANCE {
+        return Err(format!(
+            "guest clock {guest} is {diff} s from the host's {host} (allowed {CLOCK_TOLERANCE} s)"
+        ));
+    }
+    println!("[verify] guest clock {guest}, host {host}: {diff} s apart");
+    Ok(())
+}
+
 fn find_line_containing(text: &str, from: usize, part: &str) -> Option<usize> {
     let mut pos = from.min(text.len());
     for line in text[pos..].split_inclusive('\n') {

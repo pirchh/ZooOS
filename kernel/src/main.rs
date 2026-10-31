@@ -33,6 +33,7 @@ mod klog;
 mod memory;
 mod mouse;
 mod process;
+mod rtc;
 mod selftest;
 mod serial;
 mod shell;
@@ -192,6 +193,10 @@ fn run(mut mem: memory::Memory) -> ! {
     match memory::with(virtio_blk::init) {
         Some(bytes) => kprintln!("ZOO_OS INFO disk virtio-blk bytes={}", bytes),
         None => kprintln!("ZOO_OS INFO disk none"),
+    }
+    match rtc::init() {
+        Some(unix) => kprintln!("ZOO_OS INFO clock unix={}", unix),
+        None => kprintln!("ZOO_OS INFO clock none"),
     }
     process::init();
     run_boot_processes();
