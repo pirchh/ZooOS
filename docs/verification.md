@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S5 section
-(version 0.20.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D1 section
+(version 0.21.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,32 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 1 results: a mouse (version 0.21.0)
+
+Design: docs/d1-design.md (§4 as implemented). PS/2 mouse on IRQ12, call 56
+`mouse_read` (ABI version 15); PeacockHandler pointer, click to focus,
+title-bar drag. Every boot logs `ZOO_OS INFO mouse ps2=true`.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 12 min 49 s, every case as
+expected (`assistant-live` `SKIP`), including the new case:
+
+| Case | Time | Screen checks |
+| --- | --- | --- |
+| mouse | 10.4 s | `1-pointer`: arrow at (640, 400), `Files` focused. `2-click`: after moving to (840, 200) and one click, `Crash Test` focused (title and menu bar), `Files` not. `3-drag`: the Assistant title bar dragged by (-300, -100); its title found at (360, 316) instead of (660, 416), log `moved Assistant to (352, 312)` |
+
+Then `--accel whpx --case assistant-live`: pass in 61.5 s.
+
+**Negative control** (temporary edit to `kernel/src/mouse.rs`, reverted):
+
+| Change | Result |
+| --- | --- |
+| Packet sign bits ignored (negative movement becomes large positive) | `FAIL mouse` (timeout, 60 s): the click never landed on Crash Test, so `click focuses Crash Test` never appeared |
+
+Other checks: `cargo clippy` (kernel, `zoo-user`, `xtask`, `zoo-abi`,
+`zoo-infer`): 0 warnings. `cargo test -p zoo-infer -p zoo-abi -p xtask
+--locked`: all passed. Not run: a clean-copy verify; a real mouse on real
+hardware (QEMU only).
 
 ## Services step 5 results: files survive a reboot (version 0.20.0)
 
