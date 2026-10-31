@@ -131,6 +131,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D7 | Files browses the home folder, previews text files (docs/d7-design.md) | done 2026-10-31 |
 | D8 | Resize windows from the bottom-right corner (docs/d8-design.md) | done 2026-10-31 |
 | D9 | Double-click a title bar to zoom and restore (docs/d9-design.md) | done 2026-10-31 |
+| D10 | A cursor in Notes (arrow keys to apps) (docs/d10-design.md) | done 2026-10-31 |
 
 ## Real hardware (USB boot on the owner's other PCs; never the dev PC)
 

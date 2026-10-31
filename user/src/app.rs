@@ -12,6 +12,8 @@ pub const MAX_LINES: usize = 24;
 pub enum Key {
     Up,
     Down,
+    Left,
+    Right,
     Enter,
     Back,
     Char(char),
@@ -22,6 +24,8 @@ impl Key {
         Some(match msg {
             b"key:up" => Key::Up,
             b"key:down" => Key::Down,
+            b"key:left" => Key::Left,
+            b"key:right" => Key::Right,
             b"key:enter" => Key::Enter,
             b"key:back" => Key::Back,
             _ => {
@@ -42,6 +46,8 @@ impl Key {
         let _ = match self {
             Key::Up => out.write_str("key:up"),
             Key::Down => out.write_str("key:down"),
+            Key::Left => out.write_str("key:left"),
+            Key::Right => out.write_str("key:right"),
             Key::Enter => out.write_str("key:enter"),
             Key::Back => out.write_str("key:back"),
             Key::Char(c) => write!(out, "key:char:{}", c),

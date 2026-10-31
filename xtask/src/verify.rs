@@ -790,6 +790,49 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         notes_case(notes.clone(), "notes-1", s.timeout * 2),
         notes_case(notes, "notes-2", s.timeout * 2),
         Case {
+            name: "notes-cursor",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: notes_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "Notes edits at a cursor moved with the arrow keys",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        // The Notes tile, then up into its window.
+                        Action::Mouse(144, 308),
+                        Action::Button(true),
+                        Action::Button(false),
+                        Action::WaitContains("PeacockHandler: opened Notes".into()),
+                        Action::Mouse(0, -400),
+                        // abc, two left, X and Y, Backspace: aX|bc.
+                        Action::Keys(vec![
+                            "a",
+                            "b",
+                            "c",
+                            "left",
+                            "left",
+                            "shift+x",
+                            "shift+y",
+                            "backspace",
+                        ]),
+                        // 66 seed bytes + 4.
+                        Action::WaitContains("Notes: saved 70 bytes".into()),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-cursor"),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-cursor", check_notes_cursor)],
+        },
+        Case {
             name: "resize",
             mode: Mode::Normal,
             custom_image: None,
@@ -2227,6 +2270,18 @@ fn check_notes(img: &screen::Image) -> Result<String, String> {
     }
     Ok(format!(
         "`Notes` focused {title:?}, `(saved)` {head:?}; original text {old:?}, then `Hello from Notes` {typed:?} and `second line` {second:?}"
+    ))
+}
+
+// ---- D10 Notes cursor (docs/d10-design.md) ------------------------------
+
+fn check_notes_cursor(img: &screen::Image) -> Result<String, String> {
+    let at = need(img, "aX|bc", CONTENT_TEXT, CONTENT)?;
+    absent(img, "aXY", CONTENT_TEXT, CONTENT)?;
+    absent(img, "abcXY", CONTENT_TEXT, CONTENT)?;
+    need(img, "Documents/notes.txt (saved)", CONTENT_TEXT, CONTENT)?;
+    Ok(format!(
+        "`aX|bc` at {at:?}: X inserted two places back, Y deleted at the cursor, saved"
     ))
 }
 
