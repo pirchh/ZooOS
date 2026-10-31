@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The D8 section
-(version 0.36.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The D9 section
+(version 0.37.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,27 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Desktop step 9 results: double-click to zoom (version 0.37.0)
+
+Design: docs/d9-design.md.
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 12 min 8 s, every case as
+expected (`assistant-live` `SKIP`). New case `zoom` (9.9 s): double-click
+on the Assistant's title → `zoomed Assistant`, its title at (32, 52), the
+other titles covered, close button at (1242, 60); double-click again →
+`restored Assistant`, title back at (660, 416), Files visible.
+
+Then `--accel whpx --case assistant-live`: pass in 49.4 s.
+
+**Negative control** (temporary edit to PeacockHandler, reverted):
+
+| Change | Result |
+| --- | --- |
+| Double-clicks never detected | `FAIL zoom` (timeout: no `zoomed` line) |
+
+Other checks: `cargo clippy` (`zoo-user`, `xtask`): 0 warnings. `cargo
+test -p xtask --locked`: all passed. Not run: real hardware.
 
 ## Desktop step 8 results: resize windows (version 0.36.0)
 
