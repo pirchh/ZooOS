@@ -834,6 +834,41 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "linux-fulmar",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux fulmar-test",
+                    "ZOO_OS PROC start pid=26 name=fulmar-test",
+                    "ZOO_OS PROC exit pid=26 name=fulmar-test code=0",
+                    "ZOO_OS SHELL line=cat Fulmar/notes.txt",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a Linux musl program writes in the home folder; ZooOS's shell then reads what it wrote",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux fulmar-test")),
+                    Action::WaitContains("FulmarTest: /home/user/Fulmar: big.bin notes.txt".into()),
+                    Action::WaitContains("FulmarTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=fulmar-test code=0".into()),
+                    Action::Settle(QUIET),
+                    // The same file, through the supervisor and BadgerHandler.
+                    Action::Keys(typed("cat Fulmar/notes.txt")),
+                    Action::WaitFor("line one".into()),
+                    Action::WaitFor("line two".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "timer-rate",
             mode: Mode::Normal,
             custom_image: None,
