@@ -143,6 +143,15 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Desktop step 5: date and time in the menu bar (2026-10-31)
+
+Design: docs/d5-design.md.
+
+- The menu bar shows `Sat 31 Oct 06:31 UTC` instead of the uptime (which
+  remains the fallback without a clock). UTC is labelled: no time zones
+  until zone rules exist, since a fixed offset breaks at daylight-saving
+  changes. Version 0.27.0.
+
 ## Boot step 1: fast boot without the check programs (2026-10-31)
 
 Design and measurements: docs/b1-design.md.

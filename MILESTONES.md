@@ -126,6 +126,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | D2 | Redraw only what changed; measured frame cost (docs/d2-design.md) | done 2026-10-31 |
 | D3 | Close buttons; auto-hiding dock that reopens apps (docs/d3-design.md) | done 2026-10-31 |
 | D4 | Notes: a text editor whose typing survives a reboot (docs/d4-design.md) | done 2026-10-31 |
+| D5 | Date and time (UTC) in the menu bar (docs/d5-design.md) | done 2026-10-31 |
 
 ## Boot speed
 

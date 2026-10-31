@@ -19,7 +19,7 @@ use core::fmt::Write as _;
 use noto_sans_mono_bitmap::{FontWeight, RasterHeight, get_raster, get_raster_width};
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
-use zoo_abi::{FORMAT_BGR, MAX_MESSAGE, MouseEvent};
+use zoo_abi::{CLOCK_REALTIME, FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
 use zoo_rt::{
     Error, Line, channel_create, close, dir_open, dir_rights, display_acquire, input_read, kill,
@@ -305,6 +305,53 @@ impl Screen {
                     unsafe { dst.add(x).write_volatile(rgb) };
                 }
             }
+        }
+    }
+}
+
+/// Columns kept for the menu-bar clock (`Sat 31 Oct 06:31 UTC` and a
+/// margin).
+const CLOCK_COLS: usize = 22;
+const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// (month 1-12, day 1-31) of day `z` since 1970-01-01 (proleptic
+/// Gregorian; the inverse of the kernel's `days_from_civil`).
+fn civil_from_days(z: i64) -> (usize, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (month as usize, day)
+}
+
+/// The menu-bar clock (docs/d5-design.md): the UTC date and time, or the
+/// uptime when there is no clock.
+fn write_clock(out: &mut Line) {
+    match zoo_rt::clock(CLOCK_REALTIME) {
+        Ok(ns) => {
+            let secs = (ns / 1_000_000_000) as i64;
+            let days = secs.div_euclid(86_400);
+            let rem = secs.rem_euclid(86_400);
+            let (month, day) = civil_from_days(days);
+            let _ = write!(
+                out,
+                "{} {} {} {:02}:{:02} UTC",
+                WEEKDAYS[days.rem_euclid(7) as usize],
+                day,
+                MONTHS[month - 1],
+                rem / 3600,
+                rem % 3600 / 60
+            );
+        }
+        Err(_) => {
+            let _ = write!(out, "up {}s", zoo_rt::ticks() / 100);
         }
     }
 }
@@ -724,15 +771,15 @@ impl Desktop {
             self.apps[self.focus].title.as_str()
         };
         s.text(8 + 8 * CHAR_W, 4, focused, BAR_TEXT, BAR, w / 2);
-        let mut up = Line::new();
-        let _ = write!(up, "up {}s", zoo_rt::ticks() / 100);
+        let mut clock = Line::new();
+        write_clock(&mut clock);
         s.text(
-            w.saturating_sub(16 * CHAR_W),
+            w.saturating_sub(CLOCK_COLS * CHAR_W),
             4,
-            up.as_str(),
+            clock.as_str(),
             BAR_TEXT,
             BAR,
-            16 * CHAR_W,
+            CLOCK_COLS * CHAR_W,
         );
 
         // Windows, back to front.
