@@ -100,6 +100,7 @@ fn wait_for_session_to_settle() -> bool {
             return true;
         }
         if !process::session_running() {
+            wait_for_session_processes();
             return false;
         }
         cpu_interrupts::disable();
@@ -107,6 +108,24 @@ fn wait_for_session_to_settle() -> bool {
         cpu_interrupts::enable();
     }
     false
+}
+
+/// User processes alive before the desktop started (the resident
+/// supervisor and its services).
+static TASKS_BEFORE_SESSION: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// After the session's Zookeeper ends, its apps may still be exiting. Wait
+/// (bounded, 2 s) until only the processes from before the session remain,
+/// so their exit lines come before our prompt (docs/s4a-design.md §4).
+fn wait_for_session_processes() {
+    let before = TASKS_BEFORE_SESSION.load(core::sync::atomic::Ordering::Relaxed);
+    let limit = interrupts::ticks() + 2 * u64::from(interrupts::TIMER_HZ);
+    while interrupts::ticks() < limit && process::user_tasks() > before {
+        cpu_interrupts::disable();
+        process::idle_hlt();
+        cpu_interrupts::enable();
+    }
 }
 
 /// Sends `req` to the resident supervisor and prints its reply lines until
@@ -181,7 +200,11 @@ fn execute(line: &str) {
             Ok(pid) => kprintln!("started pid {}", pid),
             Err(e) => kprintln!("run {}: {}", rest.trim(), e.name()),
         },
-        "desktop" => match process::start_session() {
+        "desktop" => match {
+            TASKS_BEFORE_SESSION
+                .store(process::user_tasks(), core::sync::atomic::Ordering::Relaxed);
+            process::start_session()
+        } {
             Ok(pid) => kprintln!("starting the desktop (zookeeper pid {})", pid),
             Err(e) => kprintln!("desktop: {}", e.name()),
         },

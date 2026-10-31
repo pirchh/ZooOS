@@ -143,6 +143,19 @@ or a user-space shell.
 - The owner asked for autonomous progress: implement, verify, merge and
   continue without asking until told to stop.
 
+## Services step 4a: wait_any and faster hand-offs (2026-10-30)
+
+Design: docs/s4a-design.md.
+
+- Call 51 `wait_any` (up to 16 handles, timeout); ABI version 12. Services
+  block in it instead of sleep-polling.
+- Scheduler: voluntary switches prefer a ready user task over the idling
+  kernel task; timer ticks stay plain round-robin.
+- Measured (TCG, 50 ping round trips): 250 ticks before, 50 with
+  `wait_any`, 0 with the scheduler change too.
+- Harness `WaitFor` accepts the wanted line after shell prompts.
+- Version 0.18.0.
+
 ## Services step 3: handles in messages (2026-10-30)
 
 Design: docs/s3-design.md.

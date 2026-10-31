@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The S3 section
-(version 0.17.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The S4a section
+(version 0.18.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,45 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Services step 4a results: wait_any and faster hand-offs (version 0.18.0)
+
+Design: docs/s4a-design.md. Call 51 `wait_any` (ABI version 12); Zookeeper
+and BeaverHandler wait on channels instead of sleeping; the scheduler
+prefers a ready user task over the idling kernel task on voluntary
+switches; harness `WaitFor` accepts lines after shell prompts; the shell
+waits for a desktop session's apps before reprinting its prompt.
+
+**Measured** (seal-test, 50 ping round trips to BeaverHandler over a
+channel it got by name, `services` case, TCG, this host):
+
+| Version | 50 round trips |
+| --- | --- |
+| Before (sleep polling) | 250 ticks |
+| `wait_any` only | 50 ticks |
+| `wait_any` + scheduler preference | 0 ticks (in three runs) |
+
+**Full `cargo xtask verify`** (TCG): exit 0 in 634 s, every case as
+expected (`assistant-live` `SKIP`). Then `--accel whpx --case
+assistant-live`: pass in 53.7 s. The first full run of this step failed one
+check: the `desktop` case's last screenshot had an app's exit line after
+the shell prompt (`zoo> ZOO_OS PROC exit pid=33 name=assistant code=0`),
+because the faster scheduling let the prompt print before the session's
+apps had exited. Fixed in the shell (§4 of the design); the rerun above
+passed.
+
+Also found while doing this step: with the scheduler change the `services`
+case stalled because a kernel line shared a line with the prompt and the
+harness's `WaitFor` needed whole-line equality. Diagnosed with temporary
+scheduler logging (removed) that showed the kernel idle and every service
+blocked, i.e. no starvation.
+
+**Negative control:** `wait_any` not treating a closed peer as ready:
+`FAIL normal`, `ptarmigan-test code=14`, `closed peer is ready`.
+
+Other checks: `cargo clippy`: 0 warnings. `cargo test -p zoo-infer -p
+zoo-abi -p xtask --locked`: all passed (new `find_line` test). Not run: a
+clean-copy verify.
 
 ## Services step 3 results: handles in messages (version 0.17.0)
 

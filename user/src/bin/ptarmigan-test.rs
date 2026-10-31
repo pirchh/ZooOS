@@ -4,8 +4,10 @@
 #![no_std]
 #![no_main]
 
+use zoo_abi::WAIT_FOREVER;
 use zoo_rt::{
     Error, channel_create, close, recv, recv_handle, send, send_handle, try_recv, try_recv_handle,
+    wait_any,
 };
 
 zoo_rt::entry!(main);
@@ -69,6 +71,47 @@ fn checks() -> Result<(), (u8, &'static str)> {
     )?;
 
     for h in [a0, b0, moved, c0] {
+        let _ = close(h);
+    }
+
+    // 5. wait_any (S4a): which handle is ready, timeouts, closed peers, and
+    //    a wake-up from another thread.
+    let (x0, x1) = channel_create().map_err(|_| (14, "channel x"))?;
+    let (y0, y1) = channel_create().map_err(|_| (14, "channel y"))?;
+    check(
+        wait_any(&[x1, y1], 0) == Err(Error::TimedOut),
+        14,
+        "nothing ready",
+    )?;
+    check(send(y0, b"y").is_ok(), 14, "send y")?;
+    check(
+        wait_any(&[x1, y1], WAIT_FOREVER) == Ok(1),
+        14,
+        "second ready",
+    )?;
+    let _ = recv(y1, &mut buf);
+    let t0 = zoo_rt::ticks();
+    check(
+        wait_any(&[x1, y1], 5) == Err(Error::TimedOut),
+        14,
+        "timeout",
+    )?;
+    check(zoo_rt::ticks() - t0 >= 5, 14, "timeout waited")?;
+    let waker = zoo_rt::thread::spawn(move || {
+        zoo_rt::sleep(3);
+        if send(x0, b"wake").is_ok() { 0 } else { 1 }
+    })
+    .map_err(|_| (14, "thread"))?;
+    check(
+        wait_any(&[y1, x1], WAIT_FOREVER) == Ok(1),
+        14,
+        "woken by another thread",
+    )?;
+    check(zoo_rt::wait(waker) == Ok(0), 14, "waker done")?;
+    let _ = recv(x1, &mut buf);
+    check(close(y0).is_ok(), 14, "close y0")?;
+    check(wait_any(&[x1, y1], 0) == Ok(1), 14, "closed peer is ready")?;
+    for h in [x0, x1, y1] {
         let _ = close(h);
     }
     Ok(())

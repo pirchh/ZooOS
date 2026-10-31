@@ -859,6 +859,25 @@ fn supervise(control: Handle) -> u8 {
                 }
             }
         }
-        zoo_rt::sleep(2);
+        // Sleep until a message arrives on any channel we serve, or the
+        // next ping, timeout check or restart is due (docs/s4a-design.md).
+        let mut watch = alloc::vec![control];
+        let mut due = next_ping;
+        for s in &sup.svcs {
+            match s.state {
+                SvcState::Running => {
+                    if watch.len() < zoo_abi::WAIT_ANY_MAX {
+                        watch.push(s.chan);
+                    }
+                    if let Some(sent) = s.ping_sent {
+                        due = due.min(sent + PING_TIMEOUT + 1);
+                    }
+                }
+                SvcState::Restarting(at) => due = due.min(at),
+                SvcState::Failed => {}
+            }
+        }
+        let now = zoo_rt::ticks();
+        let _ = zoo_rt::wait_any(&watch, due.saturating_sub(now).max(1));
     }
 }

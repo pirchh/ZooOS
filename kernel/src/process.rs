@@ -41,6 +41,7 @@ use zoo_abi::{
     VM_END, VM_FREE, VM_GRANULE, VM_MAX_RESERVATIONS, VM_RESERVED, VM_START, VmInfo, dir_rights,
     elf, prot, sys,
 };
+use zoo_abi::{WAIT_ANY_MAX, WAIT_FOREVER};
 
 /// Kernel task plus one task per kernel-stack slot.
 const MAX_TASKS: usize = 1 + KSTACK_SLOTS;
@@ -321,6 +322,9 @@ struct Scheduler {
     /// The kernel's end of the resident supervisor's control channel, with
     /// its pid (docs/s1-design.md).
     supervisor: Option<(u64, HandleEntry)>,
+    /// Prefer a ready user task over the idling kernel task (true except
+    /// while handling a timer tick).
+    prefer_user: bool,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -364,6 +368,7 @@ pub fn init() {
             display_owner: None,
             control: None,
             supervisor: None,
+            prefer_user: true,
         });
     });
 }
@@ -604,12 +609,23 @@ impl Scheduler {
 
     /// Next ready task after the current one (round-robin). The kernel task
     /// is always ready, so this always finds one.
+    ///
+    /// On a voluntary switch (a task blocked, yielded or ended) a ready user
+    /// task is preferred over the kernel task: the kernel task only idles
+    /// (`hlt` until the next interrupt), and picking it would delay the
+    /// woken task by up to a whole tick (docs/s4a-design.md). On timer
+    /// ticks the plain round-robin applies, so the kernel shell still gets
+    /// its turn while user tasks are busy.
     fn pick_next(&self) -> usize {
         let n = self.tasks.len();
-        (1..=n)
-            .map(|k| (self.current + k) % n)
-            .find(|&i| matches!(&self.tasks[i], Some(t) if t.state == State::Ready))
-            .unwrap_or(0)
+        let ready = |i: usize| matches!(&self.tasks[i], Some(t) if t.state == State::Ready);
+        let mut order = (1..=n).map(|k| (self.current + k) % n);
+        if self.prefer_user
+            && let Some(i) = order.clone().find(|&i| i != 0 && ready(i))
+        {
+            return i;
+        }
+        order.find(|&i| ready(i)).unwrap_or(0)
     }
 
     /// Loads, maps and readies program `name`; `give` become its start-up
@@ -1439,6 +1455,68 @@ impl Scheduler {
                 self.wake_all();
                 Outcome::Ret(0)
             }
+            sys::WAIT_ANY => {
+                // a1 = handle array, a2 = count, a3 = timeout in ticks
+                // (`WAIT_FOREVER` for none). Returns the index of the first
+                // ready handle: a channel end with a message waiting or a
+                // closed peer, or an ended process or thread. `TIMEDOUT`
+                // after the timeout (0 polls once).
+                if a2 == 0 || a2 > WAIT_ANY_MAX as u64 {
+                    return err(Error::Inval);
+                }
+                if !ok(a1, a2 * 8, false) {
+                    return err(Error::Fault);
+                }
+                let mut ready = None;
+                for k in 0..a2 {
+                    // SAFETY: inside the checked readable user range.
+                    let h = unsafe { ((a1 + k * 8) as *const u64).read_unaligned() };
+                    let is_ready = match self.proc(i).get(h) {
+                        None => return err(Error::BadHandle),
+                        Some(HandleEntry {
+                            object: Object::Endpoint { chan, side },
+                            ..
+                        }) => {
+                            let c = chan.lock();
+                            !c.queues[*side].is_empty() || !c.open[1 - *side]
+                        }
+                        Some(HandleEntry {
+                            object: Object::Process { pid },
+                            ..
+                        }) => {
+                            let pid = *pid;
+                            self.exits.iter().any(|(p, _)| *p == pid)
+                        }
+                        Some(HandleEntry {
+                            object: Object::Thread { tid },
+                            ..
+                        }) => {
+                            let tid = *tid;
+                            self.thread_exits.iter().any(|e| e.1 == tid)
+                        }
+                        Some(_) => false,
+                    };
+                    if is_ready {
+                        ready = Some(k);
+                        break;
+                    }
+                }
+                let now = interrupts::ticks();
+                let t = self.task(i);
+                if let Some(k) = ready {
+                    t.sleep_until = None;
+                    return Outcome::Ret(k as i64);
+                }
+                if a3 != WAIT_FOREVER {
+                    let deadline = *t.sleep_until.get_or_insert(now.saturating_add(a3));
+                    if now >= deadline {
+                        t.sleep_until = None;
+                        return err(Error::TimedOut);
+                    }
+                }
+                // Woken by any send, close or exit (wake_all) or the timer.
+                Outcome::Block
+            }
             sys::LOG_ATTACH => {
                 let p = self.proc(i);
                 if !p.log_ok {
@@ -2220,7 +2298,11 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
         if s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
             return frame;
         }
-        s.switch_away(frame, m)
+        // Preemption: plain round-robin, including the kernel task.
+        s.prefer_user = false;
+        let next = s.switch_away(frame, m);
+        s.prefer_user = true;
+        next
     })
     .unwrap_or(frame)
 }
