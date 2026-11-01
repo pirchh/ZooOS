@@ -116,7 +116,7 @@ and verification:
 | L10a | Wine 11.0 built for musl (WSL Alpine), packed into a `wine` image; `wine --version` runs; Wine reaches its server (docs/linux10-design.md) | done 2026-10-31 |
 | L10b | tmpfs for `/tmp`, `memfd`, shared and copy-on-write `mmap`, symbolic links, GS base, devices: Wine runs `cmd.exe`, a first Windows program (docs/linux10b-design.md) | done 2026-11-01 |
 | L10c | ZooFS 2: the home folder on disk block by block, crash-safe generations, 4 GiB files, multi-block disk requests (docs/linux10c-design.md) | done 2026-11-01 |
-| L10d | Wine's prefix in the home folder: symbolic links and `mmap` of home files, longer names; a fast second start | proposed |
+| L10d | Wine's prefix in the home folder: Linux names, home symbolic links, `*at` calls, `mmap` of home files, gathered small writes; the second start in seconds (docs/linux10d-design.md) | done 2026-11-01 |
 
 ## Services (owner direction 2026-10-30)
 

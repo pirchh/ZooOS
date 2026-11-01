@@ -206,8 +206,9 @@ impl Error {
     }
 }
 
-/// Largest `log` and channel message, in bytes.
-pub const MAX_MESSAGE: usize = 256;
+/// Largest `log` and channel message, in bytes (1 KiB since L10d, for
+/// long paths; messages are stored at their own length).
+pub const MAX_MESSAGE: usize = 1024;
 /// Messages queued per channel direction.
 pub const CHANNEL_DEPTH: usize = 8;
 /// Handle slots per process.
@@ -400,11 +401,14 @@ pub mod dir_rights {
 }
 
 /// Longest path accepted by the directory calls, and longest name.
-pub const MAX_FS_PATH: usize = 256;
-pub const MAX_DIR_NAME: usize = 64;
+pub const MAX_FS_PATH: usize = 1000;
+pub const MAX_DIR_NAME: usize = 255;
 
 pub const KIND_DIR: u64 = 1;
 pub const KIND_FILE: u64 = 2;
+/// A symbolic link (docs/linux10d-design.md); its size is the target's
+/// length.
+pub const KIND_LINK: u64 = 3;
 
 /// Filled in by `dir_list` and `dir_stat`. `size` is bytes for a file and
 /// the number of entries for a directory.

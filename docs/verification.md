@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L10c section
-(version 0.52.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L10d section
+(version 0.53.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,63 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 10d results: Wine's prefix in the home folder (version 0.53.0)
+
+Design: docs/linux10d-design.md.
+
+**New cases:**
+- `wine-home-1` (`--accel whpx`, fresh shared disk), 66.3 s: `linux
+  /usr/bin/wine cmd /c echo %OS%` with the default prefix
+  `/home/user/.wine`. Wine creates the prefix, `cmd.exe` prints
+  `Windows_NT`, `wine` exits 0 and wineserver exits.
+- `wine-home-2` (same disk), 11.7 s: BadgerHandler loads the saved prefix
+  and `cmd.exe` prints `Windows_NT` again. Other runs: 68.6 s / 11.5 s and
+  76.8 s / 12.1 s. Without an accelerator both report `SKIP`: the first
+  passed every step but did not finish creating the prefix within 480 s
+  (167 MB at about 350 KB/s). The second alone passed in 20.5-22.4 s
+  under TCG.
+- `linux-petrel-1`, `petrel-test write`:
+  - names: a 34-byte name with `:` and brackets, a 200-byte name, a
+    256-byte name refused with `ENAMETOOLONG`;
+  - links: relative, to a folder, out to `/tmp`; `EEXIST`; renaming the
+    folder that holds a link; unlinking a link;
+  - `*at` calls relative to an open home folder;
+  - `mmap` of a home file, whole and at an offset; a private write that
+    stays private; a writable shared mapping refused (`ENODEV`);
+  - `utimensat`.
+- `linux-petrel-2`: the same disk after a reboot. The names and links are
+  there, and so is a file that was written and never closed before exit.
+
+**Failures met during the work:**
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `errno 38` from Wine's installer for every file | `utimensat`/`futimesat` missing | accepted for existing files |
+| `copy error 1812` loading resource strings | no `mmap` of home files | private-copy `mmap` |
+| 15,616 write requests for one registry save | musl's 1 KiB stdio buffer, one request each | gathered writes |
+| `petrel-test` exit 13 (`EFAULT`) for a 275-byte path | Linux paths capped at 256 bytes | 4,096, `ENAMETOOLONG` beyond |
+| `readlink` of a missing home path gave `EINVAL` | existence not checked | `Stat` first |
+| 26.6 GB of the host disk used by test disks | NTFS reserves the whole length of an extended file (53 × 1 GiB) | sparse images (`fsutil sparse setflag`); per-case disks deleted after the case |
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 58 cases `OK`;
+`assistant-live`, `wine-home-1`, `wine-home-2` `SKIP`. Then with `--accel
+whpx`: `assistant-live` 32.4 s, `wine-home-1` 66.3 s, `wine-home-2`
+11.7 s, all pass.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed.
+- `cargo clippy -D warnings`: kernel (both modes), `xtask`, `zoo-user`,
+  `zoo-abi`, 0 warnings.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| Path resolution ignores home-folder links | `FAIL linux-petrel-1`: exit 25, `write through a link to /tmp (errno 20)` |
+| BadgerHandler drops links when loading | `FAIL linux-petrel-2`: exit 42, `readlink (errno 2)` |
+| Exit does not send gathered writes | `FAIL linux-petrel-2`: exit 61, `write before exit kept` |
 
 ## Linux step 10c results: ZooFS 2 (version 0.52.0)
 

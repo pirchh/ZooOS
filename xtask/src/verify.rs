@@ -341,7 +341,60 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     // Then Wine's own processes, in no fixed order (docs/linux10b-design.md).
     wine_cmd.then_rest();
 
+    // Wine with its default prefix, /home/user/.wine, on a disk kept for a
+    // second boot (docs/linux10d-design.md).
+    let wine_home = |first: bool| {
+        let mut e = fast_boot_desktop_exits(Mode::FastBoot);
+        e.then(&[
+            "ZOO_OS SHELL line=linux /usr/bin/wine cmd /c echo %OS%",
+            "ZOO_OS PROC start pid=10 name=wine",
+        ]);
+        e.then_rest();
+        let mut steps = vec![
+            Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+            Action::Settle(QUIET),
+            Action::Keys(vec!["esc"]),
+            Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+            Action::Settle(QUIET),
+            Action::Keys(typed("linux /usr/bin/wine cmd /c echo %OS%")),
+            Action::WaitContains(":wine-preloader] Windows_NT".into()),
+            Action::WaitContains("PROC exit pid=10 name=wine-preloader code=0".into()),
+        ];
+        // wineserver exits a few seconds after its last client, once
+        // Wine's start-up work is done; then BadgerHandler saves.
+        steps.push(Action::WaitContains("name=wineserver code=0".into()));
+        if first {
+            steps.push(Action::WaitContains(
+                "BadgerHandler: saved generation".into(),
+            ));
+            steps.push(Action::Settle(Duration::from_secs(3)));
+        }
+        Case {
+            name: if first { "wine-home-1" } else { "wine-home-2" },
+            mode: Mode::FastBoot,
+            custom_image: wine_image.clone(),
+            disk: Disk::Shared {
+                name: "wine-home",
+                reset: first,
+                corrupt: false,
+            },
+            usb: Usb::None,
+            expectation: e,
+            timeout: s.timeout * 16,
+            want: "pass",
+            purpose: if first {
+                "Wine creates its prefix in the home folder (ZooFS 2) and runs cmd.exe"
+            } else {
+                "after a reboot Wine finds its prefix in the home folder and runs cmd.exe"
+            },
+            interaction: Some(Interaction { steps }),
+            screen_checks: vec![],
+        }
+    };
+
     let cases = [
+        wine_home(true),
+        wine_home(false),
         Case {
             name: "wine-cmd",
             mode: Mode::FastBoot,
@@ -1082,6 +1135,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }),
             screen_checks: vec![],
         },
+        petrel_case(&normal, true, s.timeout * 2),
+        petrel_case(&normal, false, s.timeout * 2),
         murre_case(&normal, "linux-murre-1", s.timeout * 4),
         murre_case(&normal, "linux-murre-2", s.timeout * 4),
         Case {
@@ -1599,7 +1654,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             report.push_str(&line);
             continue;
         }
-        if c.name == "assistant-live" && qemu::accel() == "tcg" {
+        // The live model, and Wine creating its 167 MB prefix in the home
+        // folder (over 8 minutes under TCG, 67-77 s with WHPX; the second
+        // boot needs the first's disk), run with an accelerator only.
+        if matches!(c.name, "assistant-live" | "wine-home-1" | "wine-home-2")
+            && qemu::accel() == "tcg"
+        {
             let line = format!(
                 "SKIP  {:<22} not run: needs a hardware accelerator (--accel whpx or kvm)\n",
                 c.name
@@ -1655,6 +1715,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             c.interaction.as_ref(),
             &data,
         )?;
+        // A case's own disk is not needed after it (shared disks are kept
+        // for the next boot).
+        if matches!(c.disk, Disk::Fresh) {
+            let _ = std::fs::remove_file(&data);
+        }
         let mut kind = r.outcome.kind().to_string();
         let mut detail = r.outcome.detail().to_string();
         if kind == "pass" {
@@ -2732,6 +2797,66 @@ fn notes_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
+}
+
+/// `linux-petrel-1` sets up names, links, `*at` calls and `mmap` in the
+/// home folder on a fresh disk; `linux-petrel-2` boots the same disk and
+/// finds the names and links (docs/linux10d-design.md).
+fn petrel_case(normal: &Expectation, first: bool, timeout: Duration) -> Case {
+    let mode = if first { "write" } else { "check" };
+    let done = if first {
+        "PetrelTest: all checks passed"
+    } else {
+        "PetrelTest: kept across the reboot"
+    };
+    let mut e = normal.clone();
+    let line = format!("ZOO_OS SHELL line=linux petrel-test {mode}");
+    e.then(&[
+        &line,
+        "ZOO_OS PROC start pid=26 name=petrel-test",
+        "ZOO_OS PROC exit pid=26 name=petrel-test code=0",
+    ]);
+    let mut steps = Vec::new();
+    if !first {
+        steps.push(Action::WaitSeen("BadgerHandler: loaded generation".into()));
+    }
+    steps.extend([
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed(&format!("linux petrel-test {mode}"))),
+        Action::WaitContains(done.into()),
+        Action::WaitFor("ZOO_OS PROC exit pid=26 name=petrel-test code=0".into()),
+    ]);
+    if first {
+        steps.push(Action::WaitContains(
+            "BadgerHandler: saved generation".into(),
+        ));
+        steps.push(Action::Settle(Duration::from_secs(3)));
+    }
+    Case {
+        name: if first {
+            "linux-petrel-1"
+        } else {
+            "linux-petrel-2"
+        },
+        mode: Mode::Normal,
+        custom_image: None,
+        disk: Disk::Shared {
+            name: "petrel",
+            reset: first,
+            corrupt: false,
+        },
+        usb: Usb::None,
+        expectation: e,
+        timeout,
+        want: "pass",
+        purpose: if first {
+            "home folder names with marks, 200-byte names, symbolic links, *at calls, mmap and utimensat"
+        } else {
+            "after a reboot of the same disk the names and links are still there"
+        },
+        interaction: Some(Interaction { steps }),
+        screen_checks: vec![],
+    }
 }
 
 /// `linux-murre-1` writes 40 MiB and 300 small files on a fresh disk;
