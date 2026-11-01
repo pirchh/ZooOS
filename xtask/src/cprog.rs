@@ -279,7 +279,8 @@ pub fn build(root: &Path, zig: &Path) -> Result<Vec<(String, Vec<u8>)>, String> 
     // programs (docs/linux8-design.md).
     match crate::musl::source(root) {
         Some(src) => {
-            let so = crate::musl::build_libc_so(zig, &src, &root.join("build"))?;
+            let complex_mul = root.join("c").join("musl").join("complex-mul.c");
+            let so = crate::musl::build_libc_so(zig, &src, &complex_mul, &root.join("build"))?;
             built.push(("lib/ld-musl-x86_64.so.1".to_string(), so));
             let run = |cmd: Command, what: &str| -> Result<(), String> {
                 let o = crate::process::output_bounded(

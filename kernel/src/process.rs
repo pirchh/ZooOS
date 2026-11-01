@@ -23,6 +23,7 @@ use crate::trap::{self, TrapFrame};
 use crate::virtio_blk;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -229,6 +230,8 @@ struct Proc {
     linux_term_sig: Option<u8>,
     /// Linux descriptors in non-blocking mode (bit `fd`, docs/linux7-design.md).
     linux_nonblock: u64,
+    /// The running Linux program's path (`/proc/self/exe`).
+    linux_exe: String,
     /// Anonymous memory committed when first touched (docs/linux6-design.md):
     /// (start, length, Linux protection) ranges inside reservations.
     linux_lazy: Vec<(u64, u64, u64)>,
@@ -359,6 +362,7 @@ impl Proc {
             linux_term_sig: None,
             linux_lazy: Vec::new(),
             linux_nonblock: 0,
+            linux_exe: String::new(),
         }
     }
 
@@ -825,12 +829,20 @@ impl Scheduler {
         give: [Option<HandleEntry>; 2],
         linux: bool,
     ) -> Result<(usize, u64), Error> {
-        let name = cmdline.split('\0').next().unwrap_or("");
-        if cmdline.len() > MAX_CMDLINE || !valid_name(name) || name.len() > MAX_PATH {
+        let arg0 = cmdline.split('\0').next().unwrap_or("");
+        // A Linux program may be named by its absolute initrd path
+        // (`/usr/bin/wine`, docs/linux10-design.md); the process is named
+        // after the file.
+        let (name, path) = match arg0.strip_prefix('/') {
+            Some(rel) if linux => (rel.rsplit('/').next().unwrap_or(""), String::from(rel)),
+            _ => {
+                let dir = if linux { "linux/" } else { "bin/" };
+                (arg0, format!("{dir}{arg0}"))
+            }
+        };
+        if cmdline.len() > MAX_CMDLINE || !valid_name(name) || path.len() > MAX_PATH {
             return Err(Error::Inval);
         }
-        let mut path = String::from(if linux { "linux/" } else { "bin/" });
-        path.push_str(name);
         let file = initrd::find(&path).ok_or(Error::NotFound)?;
         let image = program_image(file, linux).map_err(|e| {
             kprintln!("ZOO_OS INFO spawn {} rejected: {:?}", name, e);
@@ -880,6 +892,7 @@ impl Scheduler {
             None => NO_HANDLE,
         });
         if linux {
+            proc.linux_exe = format!("/{path}");
             let mut images = alloc::vec![&image];
             if let Some((_, loader)) = &interp {
                 images.push(loader);
@@ -2193,6 +2206,7 @@ impl Scheduler {
         child.linux_files = parent.linux_files.clone();
         child.linux_cloexec = parent.linux_cloexec;
         child.linux_nonblock = parent.linux_nonblock;
+        child.linux_exe = parent.linux_exe.clone();
         child.linux_cwd = parent.linux_cwd.clone();
         child.linux_parent = parent.pid;
         child.linux_borrowed = share;
@@ -2253,12 +2267,12 @@ impl Scheduler {
         env: Vec<String>,
     ) -> Outcome {
         let fail = |e: i64| Outcome::Ret(-e);
-        let name = match path.strip_prefix("linux/") {
-            Some(n) if valid_name(n) => n,
-            _ if initrd_kind(path).is_some() || self.home_rel(i, path).is_some() => {
-                return fail(EACCES);
-            }
-            _ => return fail(ENOENT),
+        // Any program file in the initrd (docs/linux10-design.md).
+        let name = match initrd_kind(path) {
+            Some(Kind::File(_)) => path.rsplit('/').next().unwrap_or(path),
+            Some(Kind::Dir) => return fail(EACCES),
+            None if self.home_rel(i, path).is_some() => return fail(EACCES),
+            None => return fail(ENOENT),
         };
         let Some(file) = initrd::find(path) else {
             return fail(ENOENT);
@@ -2305,6 +2319,7 @@ impl Scheduler {
         p.linux_borrowed = false;
         p.name = String::from(name);
         p.cmdline = args.join("\0");
+        p.linux_exe = format!("/{path}");
         let mut images = alloc::vec![&image];
         if let Some((_, loader)) = &interp {
             images.push(loader);
@@ -3905,6 +3920,34 @@ impl Scheduler {
             }
             // pause(): until a signal is handled (EINTR).
             34 => Outcome::Block,
+            // readlink(path, buf, size), readlinkat(dirfd, path, buf, size):
+            // the only link is /proc/self/exe (and /proc/<pid>/exe), the
+            // running program (docs/linux10-design.md).
+            89 | 267 => {
+                let (at, buf, size) = if number == 89 {
+                    (a1, a2, a3)
+                } else {
+                    (a2, a3, f.r10)
+                };
+                let Some(path) = self.linux_path(i, &ok, at) else {
+                    return fail(EFAULT);
+                };
+                let pid = self.task(i).pid;
+                let target = if path == "proc/self/exe" || path == format!("proc/{pid}/exe") {
+                    self.proc(i).linux_exe.clone()
+                } else if initrd_kind(&path).is_some() {
+                    return fail(EINVAL);
+                } else {
+                    return fail(ENOENT);
+                };
+                let n = target.len().min(size as usize);
+                if n > 0 && !ok(buf, n as u64, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::copy_nonoverlapping(target.as_ptr(), buf as *mut u8, n) };
+                Outcome::Ret(n as i64)
+            }
             // ---- sockets, events and waits (docs/linux7-design.md) ----
             // socket(domain, type, protocol): Unix stream sockets.
             41 => {

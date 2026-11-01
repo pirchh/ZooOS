@@ -1,6 +1,10 @@
 //! The initial filesystem: a read-only ustar archive (docs/m3-design.md §8).
 //! The reader validates every header before trusting it; the writer (used by
 //! xtask on the host) produces exactly what the reader accepts.
+//!
+//! Regular files and hard links (docs/linux10-design.md). A hard link names
+//! an earlier regular file and reads as that file's very bytes, so both
+//! names have one identity (Linux programs tell files apart by address).
 
 pub const BLOCK: usize = 512;
 
@@ -12,6 +16,8 @@ pub enum TarError {
     BadSize,
     BadName,
     UnsupportedType,
+    /// A hard link whose target is not an earlier regular file.
+    BadLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +106,23 @@ impl<'a> Reader<'a> {
         if name.is_empty() {
             return Err(TarError::BadName);
         }
+        if header[156] == b'1' {
+            // A hard link: no data of its own; the earlier file's bytes.
+            let target_len = header[157..257].iter().position(|&b| b == 0).unwrap_or(100);
+            let target = core::str::from_utf8(&header[157..157 + target_len])
+                .map_err(|_| TarError::BadLink)?;
+            let earlier = &self.data[..self.pos];
+            let mut found = None;
+            for e in read(earlier) {
+                let e = e.map_err(|_| TarError::BadLink)?;
+                if e.name == target {
+                    found = Some(e.data);
+                }
+            }
+            let data = found.ok_or(TarError::BadLink)?;
+            self.pos += BLOCK;
+            return Ok(Some(Entry { name, data }));
+        }
         if !matches!(header[156], b'0' | 0) {
             return Err(TarError::UnsupportedType);
         }
@@ -120,6 +143,32 @@ pub fn find<'a>(archive: &'a [u8], name: &str) -> Result<Option<&'a [u8]>, TarEr
         }
     }
     Ok(None)
+}
+
+/// Builds the ustar header block of a hard link `name` to the earlier file
+/// `target` (host-side helper).
+pub fn link_header(name: &str, target: &str) -> Option<[u8; BLOCK]> {
+    if target.is_empty() || target.len() >= 100 || !target.is_ascii() {
+        return None;
+    }
+    let mut h = header(name, 0)?;
+    h[156] = b'1';
+    h[157..157 + target.len()].copy_from_slice(target.as_bytes());
+    // The checksum covers the type and target: compute it again.
+    h[148..156].copy_from_slice(b"        ");
+    let sum = checksum(&h);
+    let digits = [
+        b'0' + ((sum >> 15) & 7) as u8,
+        b'0' + ((sum >> 12) & 7) as u8,
+        b'0' + ((sum >> 9) & 7) as u8,
+        b'0' + ((sum >> 6) & 7) as u8,
+        b'0' + ((sum >> 3) & 7) as u8,
+        b'0' + (sum & 7) as u8,
+    ];
+    h[148..154].copy_from_slice(&digits);
+    h[154] = 0;
+    h[155] = b' ';
+    Some(h)
 }
 
 /// Builds one ustar header block for a regular file (host-side helper).
@@ -197,6 +246,27 @@ mod tests {
         bad[148..156].copy_from_slice(digits.as_bytes());
         assert_eq!(read(&bad).next(), Some(Err(TarError::Truncated)));
         assert_eq!(read(&a[..100]).next(), Some(Err(TarError::Truncated)));
+    }
+
+    #[test]
+    fn hard_links_read_as_their_target() {
+        let mut a = Vec::new();
+        a.extend_from_slice(&header("lib/ld.so", 5).unwrap());
+        a.extend_from_slice(b"hello");
+        a.resize(a.len().div_ceil(BLOCK) * BLOCK, 0);
+        a.extend_from_slice(&link_header("lib/libc.so", "lib/ld.so").unwrap());
+        a.extend_from_slice(&[0; 2 * BLOCK]);
+        let entries: Vec<_> = read(&a).map(|e| e.unwrap()).collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].name, "lib/libc.so");
+        // The very same bytes, not a copy.
+        assert_eq!(entries[1].data.as_ptr(), entries[0].data.as_ptr());
+        assert_eq!(find(&a, "lib/libc.so").unwrap(), Some(&b"hello"[..]));
+        // A link to a missing or later file is malformed.
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&link_header("lib/libc.so", "lib/ld.so").unwrap());
+        bad.extend_from_slice(&[0; 2 * BLOCK]);
+        assert_eq!(read(&bad).next(), Some(Err(TarError::BadLink)));
     }
 
     #[test]

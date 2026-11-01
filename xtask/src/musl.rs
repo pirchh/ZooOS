@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const MUSL_VERSION: &str = "1.2.5";
+/// Bumped whenever the build itself changes, so a cached `libc.so` from an
+/// older build is never reused (2: no Zig compiler runtime; see
+/// c/musl/complex-mul.c).
+const BUILD_REVISION: u32 = 2;
 
 /// The unpacked source, if it was downloaded (tools/musl/README.md).
 pub fn source(root: &Path) -> Option<PathBuf> {
@@ -111,8 +115,13 @@ fn sources(src: &Path) -> Result<Vec<(PathBuf, Vec<PathBuf>)>, String> {
 }
 
 /// Builds (or reuses) `libc.so`; returns its bytes.
-pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>, String> {
-    let out = out_root.join(format!("musl-{MUSL_VERSION}"));
+pub fn build_libc_so(
+    zig: &Path,
+    src: &Path,
+    complex_mul: &Path,
+    out_root: &Path,
+) -> Result<Vec<u8>, String> {
+    let out = out_root.join(format!("musl-{MUSL_VERSION}-b{BUILD_REVISION}"));
     let lib = out.join("libc.so");
     if let Ok(data) = std::fs::read(&lib) {
         return Ok(data);
@@ -186,18 +195,30 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
     ])
     .collect();
 
-    // One `zig cc -c` per source directory, several at once.
+    // One `zig cc -c -o <unique>.o` per source file, several at once.
+    // (Given several sources at once, Zig's driver keeps only one object
+    // per invocation, silently losing the rest: docs/linux10-design.md.)
     let groups = sources(src)?;
     let objs_root = out.join("lo");
+    mkdir(&objs_root)?;
     let mut jobs = Vec::new();
-    for (k, (dir, files)) in groups.iter().enumerate() {
-        let odir = objs_root.join(format!("{k:03}"));
-        mkdir(&odir)?;
-        jobs.push((dir.clone(), files.clone(), odir));
+    for (k, (_, files)) in groups.iter().enumerate() {
+        for file in files {
+            let stem = file
+                .file_name()
+                .map(|n| n.to_string_lossy().replace('.', "_"))
+                .unwrap_or_default();
+            jobs.push((file.clone(), objs_root.join(format!("{k:03}-{stem}.o"))));
+        }
     }
+    // The complex-multiplication helpers a compiler runtime would provide.
+    jobs.push((
+        complex_mul.to_path_buf(),
+        objs_root.join("zoo-complex-mul.o"),
+    ));
     let threads = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
-        .min(8);
+        .min(16);
     let next = std::sync::Mutex::new(0usize);
     let errors = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
@@ -210,15 +231,16 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
                         *n += 1;
                         k
                     };
-                    let Some((dir, files, odir)) = jobs.get(k) else {
+                    let Some((file, obj)) = jobs.get(k) else {
                         break;
                     };
                     let mut cmd = Command::new(zig);
-                    cmd.current_dir(odir)
-                        .arg("cc")
+                    cmd.arg("cc")
                         .args(&flags)
                         .arg("-c")
-                        .args(files);
+                        .arg(file)
+                        .arg("-o")
+                        .arg(obj);
                     match crate::process::output_bounded(
                         cmd,
                         std::time::Duration::from_secs(600),
@@ -230,7 +252,7 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
                             .unwrap_or_else(|e| e.into_inner())
                             .push(format!(
                                 "{}: {}",
-                                dir.display(),
+                                file.display(),
                                 String::from_utf8_lossy(&o.stderr)
                             )),
                         Err(e) => errors.lock().unwrap_or_else(|e| e.into_inner()).push(e),
@@ -242,21 +264,22 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
     let errors = errors.into_inner().unwrap_or_else(|e| e.into_inner());
     if let Some(first) = errors.first() {
         return Err(format!(
-            "musl build failed ({} directories):\n{first}",
+            "musl build failed ({} files):\n{first}",
             errors.len()
         ));
     }
     let mut objs = Vec::new();
-    for (_, _, odir) in &jobs {
-        for e in
-            std::fs::read_dir(odir).map_err(|e| format!("cannot list {}: {e}", odir.display()))?
-        {
-            let p = e.map_err(|e| e.to_string())?.path();
-            if p.extension().and_then(|e| e.to_str()) == Some("o") {
-                objs.push(p);
-            }
+    for (_, obj) in &jobs {
+        if !obj.is_file() {
+            return Err(format!("musl build: {} was not produced", obj.display()));
         }
+        objs.push(obj.clone());
     }
+    println!(
+        "[build] musl: {} objects from {} sources",
+        objs.len(),
+        jobs.len()
+    );
     objs.sort();
     // musl's link line, given to LLD directly (`zig ld.lld`; Zig's `cc`
     // driver does not pass these options through): a shared object entered
@@ -268,41 +291,6 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
         .map(|p| format!("\"{}\"", p.display().to_string().replace('\\', "/")))
         .collect();
     write(list.clone(), quoted.join("\n"))?;
-    // The compiler runtime (configure's LIBCC, `-lcompiler_rt`): Zig's,
-    // built from the pinned toolchain's own source.
-    let rt_dir = out.join("rt");
-    mkdir(&rt_dir)?;
-    let rt = rt_dir.join("libcompiler_rt.a");
-    if !rt.is_file() {
-        let zig_lib = zig
-            .parent()
-            .ok_or("zig has no parent directory")?
-            .join("lib")
-            .join("compiler_rt.zig");
-        let mut cmd = Command::new(zig);
-        cmd.current_dir(&rt_dir)
-            .args([
-                "build-lib",
-                "-target",
-                "x86_64-linux-musl",
-                "-fPIC",
-                "-O",
-                "ReleaseFast",
-            ])
-            .args(["--name", "compiler_rt"])
-            .arg(&zig_lib);
-        let o = crate::process::output_bounded(
-            cmd,
-            std::time::Duration::from_secs(900),
-            "zig build-lib compiler_rt",
-        )?;
-        if !o.status.success() || !rt.is_file() {
-            return Err(format!(
-                "compiler_rt build failed:\n{}",
-                String::from_utf8_lossy(&o.stderr)
-            ));
-        }
-    }
     let tmp = out.join("libc.so.tmp");
     let mut cmd = Command::new(zig);
     cmd.current_dir(&out)
@@ -317,15 +305,13 @@ pub fn build_libc_so(zig: &Path, src: &Path, out_root: &Path) -> Result<Vec<u8>,
         ])
         .arg("--hash-style=both")
         .arg("--strip-all")
-        .arg("--exclude-libs=ALL")
         .arg(format!(
             "--dynamic-list={}",
             src.join("dynamic.list").display()
         ))
         .arg("-o")
         .arg(&tmp)
-        .arg(format!("@{}", list.display()))
-        .arg(&rt);
+        .arg(format!("@{}", list.display()));
     let o = crate::process::output_bounded(
         cmd,
         std::time::Duration::from_secs(600),
