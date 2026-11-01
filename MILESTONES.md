@@ -115,7 +115,8 @@ and verification:
 | L9 | The Linux address-space layout Wine needs: whole lower half, image reservations, 8 MiB lazy stack, Linux `munmap`/`MAP_FIXED` carving (docs/linux9-design.md) | done 2026-10-31 |
 | L10a | Wine 11.0 built for musl (WSL Alpine), packed into a `wine` image; `wine --version` runs; Wine reaches its server (docs/linux10-design.md) | done 2026-10-31 |
 | L10b | tmpfs for `/tmp`, `memfd`, shared and copy-on-write `mmap`, symbolic links, GS base, devices: Wine runs `cmd.exe`, a first Windows program (docs/linux10b-design.md) | done 2026-11-01 |
-| L10c | A persistent Wine prefix in the home folder (`mmap` of home files, symbolic links in BadgerHandler); prefix start-up time | proposed |
+| L10c | ZooFS 2: the home folder on disk block by block, crash-safe generations, 4 GiB files, multi-block disk requests (docs/linux10c-design.md) | done 2026-11-01 |
+| L10d | Wine's prefix in the home folder: symbolic links and `mmap` of home files, longer names; a fast second start | proposed |
 
 ## Services (owner direction 2026-10-30)
 
