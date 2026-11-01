@@ -254,6 +254,8 @@ struct Screen {
     stride: usize,
     fb: *mut u32,
     bgr: bool,
+    /// Changes show only after `display_flush` (a virtio GPU).
+    flush: bool,
     back: &'static mut [u32],
     /// Drawing is limited to this rectangle (x0, y0, x1, y1), exclusive.
     clip: (usize, usize, usize, usize),
@@ -576,6 +578,11 @@ struct Banner {
 
 struct Desktop {
     screen: Screen,
+    /// The pointer is a hardware cursor: moving it needs no redraw
+    /// (docs/gpu1-design.md).
+    hw_cursor: bool,
+    /// The hardware cursor has moved since it was last told.
+    cursor_moved: bool,
     atlas: Atlas<'static>,
     dark: bool,
     /// Wallpaper colour per row, for the current appearance.
@@ -670,7 +677,11 @@ impl Desktop {
     }
 
     fn damage_pointer(&mut self) {
-        self.damage(self.px, self.py, POINTER_W, POINTER_H);
+        if self.hw_cursor {
+            self.cursor_moved = true;
+        } else {
+            self.damage(self.px, self.py, POINTER_W, POINTER_H);
+        }
     }
 
     fn damage_menu_bar(&mut self) {
@@ -999,6 +1010,9 @@ impl Desktop {
         }
         for &r in &rects[..n] {
             self.screen.present(r);
+            if self.screen.flush {
+                let _ = zoo_rt::display_flush(r.0, r.1, r.2 - r.0, r.3 - r.1);
+            }
         }
         self.screen.clip = screen;
         let spent = cycles().wrapping_sub(start);
@@ -1060,7 +1074,9 @@ impl Desktop {
         self.draw_menu_bar();
         self.draw_banner();
         self.draw_dock();
-        self.draw_pointer();
+        if !self.hw_cursor {
+            self.draw_pointer();
+        }
     }
 
     fn draw_menu_bar(&mut self) {
@@ -1320,6 +1336,21 @@ impl Desktop {
     }
 
     /// A black arrow with a white edge, its tip at the pointer.
+    /// The pointer arrow as a hardware-cursor image (0xAARRGGBB), the
+    /// same shape `draw_pointer` draws.
+    fn cursor_image() -> [u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE] {
+        let mut img = [0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE];
+        for r in 0..POINTER_H {
+            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
+            for c in from..=to {
+                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
+                img[r * zoo_abi::CURSOR_SIZE + c] =
+                    0xFF00_0000 | if edge { POINTER_EDGE } else { POINTER };
+            }
+        }
+        img
+    }
+
     fn draw_pointer(&mut self) {
         let (px, py) = (self.px, self.py);
         let s = &mut self.screen;
@@ -1457,12 +1488,15 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     // reference to the back buffer is created.
     let back = unsafe { &mut *core::ptr::addr_of_mut!(BACK) };
     let mut desk = Desktop {
+        hw_cursor: false,
+        cursor_moved: false,
         screen: Screen {
             w,
             h,
             stride: info.stride as usize,
             fb: info.base as *mut u32,
             bgr: info.format == FORMAT_BGR,
+            flush: info.flags & zoo_abi::DISPLAY_FLUSH_NEEDED != 0,
             back: &mut back[..w * h],
             clip: (0, 0, w, h),
         },
@@ -1498,6 +1532,13 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         banner: None,
     };
     desk.set_appearance(false);
+    if info.flags & zoo_abi::DISPLAY_HW_CURSOR != 0 {
+        let image = Desktop::cursor_image();
+        if zoo_rt::cursor_set(&image, (0, 0), (desk.px, desk.py)).is_ok() {
+            desk.hw_cursor = true;
+            let _ = log("PeacockHandler: hardware cursor");
+        }
+    }
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
@@ -1575,6 +1616,10 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         let n = zoo_rt::mouse_read(&mut events).unwrap_or(0);
         for &e in &events[..n] {
             dirty |= desk.mouse(e);
+        }
+        if desk.cursor_moved {
+            desk.cursor_moved = false;
+            let _ = zoo_rt::cursor_move(desk.px, desk.py);
         }
 
         // Applications.

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U1c section
-(version 0.55.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The GPU1 section
+(version 0.56.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,46 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## GPU step 1 results: virtio-gpu display and a hardware cursor (version 0.56.0)
+
+Design: docs/gpu1-design.md.
+
+**Boot log** (`virtio-vga`): `ZOO_OS INFO gpu virtio 1920x1080 (shown when
+the display is taken)`, then on `desktop` `ZOO_OS INFO gpu scanout
+1920x1080 hardware-cursor` and `PeacockHandler: hardware cursor`. When the
+display is released: `ZOO_OS INFO gpu released (vga)`.
+
+**New cases** (all on `virtio-vga`):
+
+| Case | What it shows |
+| --- | --- |
+| `gpu-desktop` | The `desktop` case's five screenshots pass on the GPU. The window server's crash releases the GPU and retakes it (log above, twice), and the console comes back in VGA mode (`kernel console back: Desktop session ended. row 6 ...`). |
+| `gpu-tablet` | Tablet click on the 12 px close light closes Crash Test. The 40-move sweep draws 3 frames, the menu-bar clock (49,920 px = 1920×26); input wait mean 380,351 cycles. The screenshot shows the desktop (`Files content Home at (131, 117); Crash Test closed`). |
+| `gpu-frames` | F9 full repaints with flushes, WHPX, three runs: median 10,211,885, 10,045,071 and 9,904,380 cycles for 2,073,600 px. Standard VGA today: 8,537,538–11,018,483. |
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 63 cases `OK`.
+Then with `--accel whpx`: `assistant-live` 31.4 s, `wine-home-1` 63.5 s,
+`wine-home-2` 11.1 s, `gpu-tablet`, `gpu-desktop`, all `OK`, with `ZOO_OS
+BOOT version=0.56.0`.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed.
+- clippy `-D warnings`: kernel (normal and `fast-boot`), `zoo-abi`,
+  `zoo-user` and `xtask`, all clean.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| The window server never calls `display_flush` | ``FAIL gpu-tablet: screen 1-gpu-desktop: `Home` not on screen`` |
+| The pointer drawn in software despite the hardware cursor | ``FAIL gpu-tablet: `frames` 43 outside 0..=5`` (each pointer frame then cost a median 128,692 cycles, flush included) |
+| No device reset when the display is released | ``FAIL gpu-desktop: screen 4-server-restart: `Files` not on screen`` |
+
+**Found during the work:** the first sweep bound allowed no frames at
+all, but the menu-bar clock ticks during the sweep. The bound is now 5,
+against 40–43 frames with a software pointer.
 
 ## Fix: `cargo xtask run` ignored `--accel` (version 0.55.0)
 

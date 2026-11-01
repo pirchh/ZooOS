@@ -543,6 +543,34 @@ pub fn input_wait(ticks: u64) -> Result<(), Error> {
     result(syscall(sys::INPUT_WAIT, ticks, 0, 0)).map(|_| ())
 }
 
+/// Shows rectangle (x, y, w, h) of display memory, on a display that
+/// needs it (`zoo_abi::DISPLAY_FLUSH_NEEDED`).
+pub fn display_flush(x: usize, y: usize, w: usize, h: usize) -> Result<(), Error> {
+    let r = x as u64 | (y as u64) << 16 | (w as u64) << 32 | (h as u64) << 48;
+    result(syscall(sys::DISPLAY_FLUSH, r, 0, 0)).map(|_| ())
+}
+
+/// Sets the hardware cursor (`zoo_abi::DISPLAY_HW_CURSOR`): an image of
+/// `CURSOR_SIZE`² 0xAARRGGBB pixels, its hot spot and its position.
+pub fn cursor_set(image: &[u32], hot: (usize, usize), at: (usize, usize)) -> Result<(), Error> {
+    if image.len() < zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE {
+        return Err(Error::Inval);
+    }
+    let pack = |(x, y): (usize, usize)| x as u64 | (y as u64) << 16;
+    result(syscall(
+        sys::CURSOR_SET,
+        image.as_ptr() as u64,
+        pack(hot),
+        pack(at),
+    ))
+    .map(|_| ())
+}
+
+/// Moves the hardware cursor.
+pub fn cursor_move(x: usize, y: usize) -> Result<(), Error> {
+    result(syscall(sys::CURSOR_MOVE, x as u64, y as u64, 0)).map(|_| ())
+}
+
 /// [events, total wait, longest wait]: TSC cycles from a mouse event's
 /// arrival to `mouse_read`, since the last call (display owner only).
 pub fn input_latency() -> Result<[u64; 3], Error> {

@@ -1135,6 +1135,7 @@ impl Scheduler {
             self.display_owner = None;
             DISPLAY_OWNED.store(false, Ordering::Relaxed);
             mouse::clear();
+            crate::virtio_gpu::deactivate();
             console::resume();
             kprintln!("ZOO_OS DISPLAY released pid={}", pid);
         }
@@ -6954,11 +6955,18 @@ impl Scheduler {
                 {
                     return err(Error::Busy);
                 }
+                // A virtio GPU shows its own memory instead of the
+                // firmware framebuffer (docs/gpu1-design.md).
+                let gpu = crate::virtio_gpu::activate();
+                let len = gpu.map_or(len, |g| g.1);
                 let pages = (len as u64).div_ceil(4096);
                 if self.proc(i).display_pages == 0 {
                     for k in 0..pages {
-                        let Some(phys) = mem.mapper.translate_addr(VirtAddr::new(virt + k * 4096))
-                        else {
+                        let phys = match gpu {
+                            Some((start, ..)) => Some(x86_64::PhysAddr::new(start + k * 4096)),
+                            None => mem.mapper.translate_addr(VirtAddr::new(virt + k * 4096)),
+                        };
+                        let Some(phys) = phys else {
                             mem.unmap_user_keep(p4, DISPLAY_BASE, k);
                             return err(Error::Inval);
                         };
@@ -6980,13 +6988,25 @@ impl Scheduler {
                 console::suspend();
                 let name = self.task(i).name.clone();
                 kprintln!("ZOO_OS DISPLAY acquired pid={} name={}", me, name);
-                let info = DisplayInfo {
-                    base: DISPLAY_BASE,
-                    width: fb.width as u64,
-                    height: fb.height as u64,
-                    stride: fb.stride as u64,
-                    bytes_per_pixel: fb.bytes_per_pixel as u64,
-                    format,
+                let info = match gpu {
+                    Some((_, _, w, h)) => DisplayInfo {
+                        base: DISPLAY_BASE,
+                        width: u64::from(w),
+                        height: u64::from(h),
+                        stride: u64::from(w),
+                        bytes_per_pixel: 4,
+                        format: zoo_abi::FORMAT_BGR,
+                        flags: zoo_abi::DISPLAY_FLUSH_NEEDED | zoo_abi::DISPLAY_HW_CURSOR,
+                    },
+                    None => DisplayInfo {
+                        base: DISPLAY_BASE,
+                        width: fb.width as u64,
+                        height: fb.height as u64,
+                        stride: fb.stride as u64,
+                        bytes_per_pixel: fb.bytes_per_pixel as u64,
+                        format,
+                        flags: 0,
+                    },
                 };
                 // SAFETY: checked writable user range of `size` bytes in the
                 // active space; unaligned because user pointers may be.
@@ -7445,6 +7465,38 @@ impl Scheduler {
                 CLOCK_MONOTONIC => Outcome::Ret(rtc::monotonic_ns() as i64),
                 _ => err(Error::Inval),
             },
+            sys::DISPLAY_FLUSH | sys::CURSOR_SET | sys::CURSOR_MOVE => {
+                let me = self.task(i).pid;
+                if self.display_owner != Some(me) {
+                    return err(Error::Rights);
+                }
+                let xy = |v: u64| ((v & 0xFFFF) as u32, ((v >> 16) & 0xFFFF) as u32);
+                let done = match number {
+                    sys::DISPLAY_FLUSH => {
+                        let ((x, y), (w, h)) = (xy(a1), xy(a1 >> 32));
+                        crate::virtio_gpu::flush(x, y, w, h)
+                    }
+                    sys::CURSOR_SET => {
+                        let n = zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE;
+                        if !ok(a1, (4 * n) as u64, false) {
+                            return err(Error::Fault);
+                        }
+                        let mut image = alloc::vec![0u32; n];
+                        for (k, p) in image.iter_mut().enumerate() {
+                            // SAFETY: inside the readable user range checked
+                            // above; unaligned because user pointers may be.
+                            *p = unsafe { ((a1 + 4 * k as u64) as *const u32).read_unaligned() };
+                        }
+                        let ((hx, hy), (x, y)) = (xy(a2), xy(a3));
+                        crate::virtio_gpu::cursor_set(&image, (hx, hy), x, y)
+                    }
+                    _ => crate::virtio_gpu::cursor_move(a1 as u32, a2 as u32),
+                };
+                match done {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(_) => err(Error::NotFound),
+                }
+            }
             sys::INPUT_WAIT => {
                 let me = self.task(i).pid;
                 if self.display_owner != Some(me) {

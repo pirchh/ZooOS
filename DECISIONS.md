@@ -150,6 +150,28 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## GPU step 1: virtio-gpu display and a hardware cursor (2026-11-01)
+
+Design: docs/gpu1-design.md.
+
+- After U1c the owner still felt lag in QEMU and asked for the
+  engineer's call. The remaining lag was QEMU copying a plain framebuffer
+  to its window on a timer. virtio-gpu replaces that with explicit
+  flushes and a cursor plane the host draws.
+- `virtio-vga` is chosen, not plain `virtio-gpu`: firmware, bootloader and
+  console keep the VGA side unchanged. A device reset on display release
+  returns to it.
+- The screen is one contiguous RAM block mapped into the display owner.
+  Requests are synchronous and polled. Measured: a full repaint with its
+  flush costs the same as on VGA.
+- `xtask run` uses `virtio-vga` with the tablet. Only `gpu-` cases use it
+  in verify; the rest stay on standard VGA, the real-hardware path.
+- ABI: `DisplayInfo::flags`, `DISPLAY_FLUSH` (66), `CURSOR_SET` (67),
+  `CURSOR_MOVE` (68).
+- `xtask run` previously ignored `--accel` (every interactive session ran
+  under TCG). It is fixed, with `run --model` added.
+- Version 0.56.0.
+
 ## UI step 1c: USB input by interrupt, and a tablet for QEMU (2026-11-01)
 
 Design: docs/u1c-design.md.

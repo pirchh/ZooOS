@@ -41,6 +41,7 @@ mod serial;
 mod shell;
 mod trap;
 mod virtio_blk;
+mod virtio_gpu;
 mod xhci;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
@@ -197,6 +198,8 @@ fn run(mut mem: memory::Memory) -> ! {
     if memory::with(xhci::init).is_none() {
         kprintln!("ZOO_OS INFO usb none");
     }
+    // A virtio GPU, if QEMU has one (docs/gpu1-design.md); it logs itself.
+    let _ = memory::with(virtio_gpu::init);
     match rtc::init() {
         Some(unix) => kprintln!("ZOO_OS INFO clock unix={}", unix),
         None => kprintln!("ZOO_OS INFO clock none"),
