@@ -22,6 +22,10 @@
 /tools/musl/*.tar.gz
 /tools/musl/*.asc
 
+# Inter (downloaded; see tools/fonts/README.md)
+/tools/fonts/dl/
+/tools/fonts/inter-*/
+
 # Wine build inputs (downloaded; see tools/alpine/README.md, tools/wine/README.md)
 /tools/alpine/*.tar.gz*
 /tools/wine/*.tar.xz*

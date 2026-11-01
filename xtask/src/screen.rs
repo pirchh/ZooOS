@@ -131,45 +131,80 @@ pub fn find_row(img: &Image, text: &str) -> Option<usize> {
     (0..rows(img)).find(|&r| row_matches(img, text, r))
 }
 
-/// Blends glyph intensity `i` between `bg` and `fg` (0xRRGGBB), exactly as
-/// the window server does (docs/m4-design.md §7).
-pub fn blend(bg: u32, fg: u32, i: u8) -> [u8; 3] {
-    let i = i as u32;
-    let ch = |shift: u32| {
-        let b = (bg >> shift) & 0xFF;
-        let f = (fg >> shift) & 0xFF;
-        ((b * (255 - i) + f * i + 127) / 255) as u8
-    };
-    [ch(16), ch(8), ch(0)]
+/// The UI font atlas the window server uses (docs/u1-design.md), set once
+/// by `verify` from the same build.
+static ATLAS: std::sync::OnceLock<&'static [u8]> = std::sync::OnceLock::new();
+
+pub fn set_atlas(bytes: Vec<u8>) {
+    let _ = ATLAS.set(Box::leak(bytes.into_boxed_slice()));
 }
 
-/// Finds `text` drawn with `fg` on `bg` anywhere on screen: every pixel of
-/// every glyph cell must match exactly. Returns the top-left corner.
-pub fn find_text(img: &Image, text: &str, fg: u32, bg: u32) -> Option<(usize, usize)> {
-    let mut lit = Vec::new();
+fn atlas() -> Option<zoo_abi::font::Atlas<'static>> {
+    zoo_abi::font::Atlas::parse(ATLAS.get()?)
+}
+
+/// The width of `text` in `face`, as the window server measures it.
+pub fn ui_width(face: zoo_abi::font::FaceId, text: &str) -> usize {
+    atlas()
+        .and_then(|a| a.face(face))
+        .map_or(0, |f| f.width(text))
+}
+
+/// Finds `text` drawn by the window server in `face`, colour `fg` on flat
+/// `bg`: every pixel of its glyph area must match exactly. Returns where
+/// the pen started: (x, baseline y).
+pub fn find_ui(
+    img: &Image,
+    face: zoo_abi::font::FaceId,
+    text: &str,
+    fg: u32,
+    bg: u32,
+) -> Option<(usize, usize)> {
+    let face = atlas()?.face(face)?;
+    // Blended in drawing order, as the window server does: neighbouring
+    // glyphs can cover the same pixel.
+    let mut cov: std::collections::HashMap<(i32, i32), u32> = std::collections::HashMap::new();
+    face.draw(text, 0, 0, i32::MAX, |x, y, c| {
+        let p = cov.entry((x, y)).or_insert(bg);
+        *p = zoo_abi::font::blend(*p, fg, c);
+    });
+    let (x0, x1) = (
+        cov.keys().map(|k| k.0).min()?,
+        cov.keys().map(|k| k.0).max()?,
+    );
+    let (y0, y1) = (
+        cov.keys().map(|k| k.1).min()?,
+        cov.keys().map(|k| k.1).max()?,
+    );
+    // Lit pixels first: they rule out almost every position at once.
+    let mut want: Vec<(i32, i32, [u8; 3])> = Vec::new();
     let mut flat = Vec::new();
-    for (col, c) in text.chars().enumerate() {
-        for (dy, row) in glyph(c).raster().iter().enumerate() {
-            for (dx, &i) in row.iter().enumerate() {
-                let p = (col * CHAR_WIDTH + dx, dy, blend(bg, fg, i));
-                if i > 0 { lit.push(p) } else { flat.push(p) }
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let c = cov.get(&(x, y)).copied();
+            let v = c.unwrap_or(bg);
+            let rgb = [(v >> 16) as u8, (v >> 8) as u8, v as u8];
+            if c.is_some() {
+                want.push((x, y, rgb))
+            } else {
+                flat.push((x, y, rgb))
             }
         }
     }
-    // Check glyph pixels first: they rule out almost every position at once.
-    lit.extend(flat);
-    let width = text.chars().count() * CHAR_WIDTH;
-    let height = 16;
-    if width == 0 || img.width < width || img.height < height {
+    want.extend(flat);
+    let (w, h) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+    if img.width < w || img.height < h {
         return None;
     }
-    for y in 0..=img.height - height {
-        for x in 0..=img.width - width {
-            if lit
+    for oy in 0..=(img.height - h) {
+        for ox in 0..=(img.width - w) {
+            // Pen origin: (ox - x0, oy - y0).
+            let (px, py) = (ox as i32 - x0, oy as i32 - y0);
+            if want
                 .iter()
-                .all(|&(dx, dy, c)| img.pixel(x + dx, y + dy) == Some(c))
+                .all(|&(dx, dy, c)| img.pixel((px + dx) as usize, (py + dy) as usize) == Some(c))
             {
-                return Some((x, y));
+                return Some((px.max(0) as usize, py.max(0) as usize));
             }
         }
     }
@@ -204,28 +239,6 @@ mod tests {
         let img = Image::blank(640, 120);
         assert!(!row_matches(&img, "ZOO_OS", 0));
         assert_eq!(lit_pixels(&img), 0);
-    }
-
-    #[test]
-    fn coloured_text_is_found_and_wrong_text_is_not() {
-        let (fg, bg) = (0x202020, 0xCFE3F7);
-        let mut img = Image::blank(300, 60);
-        for p in img.rgb.chunks_mut(3) {
-            p.copy_from_slice(&[0x1E, 0x3A, 0x4C]);
-        }
-        // Paint "Files" at (37, 21) with the window server's blend.
-        for (col, c) in "Files".chars().enumerate() {
-            for (dy, row) in glyph(c).raster().iter().enumerate() {
-                for (dx, &i) in row.iter().enumerate() {
-                    let (x, y) = (37 + col * CHAR_WIDTH + dx, 21 + dy);
-                    let o = (y * img.width + x) * 3;
-                    img.rgb[o..o + 3].copy_from_slice(&blend(bg, fg, i));
-                }
-            }
-        }
-        assert_eq!(find_text(&img, "Files", fg, bg), Some((37, 21)));
-        assert_eq!(find_text(&img, "Filez", fg, bg), None);
-        assert_eq!(find_text(&img, "Files", 0xFFFFFF, bg), None);
     }
 
     #[test]

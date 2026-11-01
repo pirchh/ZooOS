@@ -5,7 +5,9 @@
 #![forbid(unsafe_code)]
 
 pub mod elf;
+pub mod font;
 pub mod tar;
+pub mod ui;
 
 /// Returned by syscall 0. Bumped when calls are added or change meaning.
 /// Version 2 (M4) added calls 11-16 and errors 13-14; version 3 (M5a)

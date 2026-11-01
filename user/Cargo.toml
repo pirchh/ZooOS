@@ -133,8 +133,6 @@ bench = false
 zoo-abi = { path = "../abi" }
 # The inference engine (ElephantHandler).
 zoo-infer = { path = "../infer" }
-# Same font as the kernel console (and the verifier's screenshot checks).
-noto-sans-mono-bitmap = { version = "=0.3.2", default-features = false, features = ["regular", "size_16", "unicode-basic-latin", "unicode-specials"] }
 # Scancode decoding in the window server, as in the kernel shell.
 pc-keyboard = "=0.9.0"
 # The user heap allocator (grown with `mem_alloc`), as in the kernel.

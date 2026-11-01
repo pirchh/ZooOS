@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
+use zoo_abi::font::FaceId;
+use zoo_abi::ui::{self as zui, LIGHT};
 
 /// Wait this long for quiet serial output before a screenshot.
 const QUIET: Duration = Duration::from_millis(1200);
@@ -185,6 +187,8 @@ fn expect(mode: Mode, tail: &[&str]) -> Expectation {
 }
 
 pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String> {
+    // The window server's font, for finding its text in screenshots.
+    screen::set_atlas(crate::font::build_atlas(root)?);
     let mut images = Vec::new();
     for mode in Mode::ALL {
         images.push((mode, image::build(root, tools, mode)?));
@@ -796,8 +800,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 steps: {
                     let mut steps = start_desktop();
                     steps.extend([
-                        // From the centre into Crash Test (840, 200), click.
-                        Action::Mouse(200, -200),
+                        // From the centre into Crash Test, click.
+                        Ptr::start().to(inside(CRASH_WIN)),
                         Action::Button(true),
                         Action::Button(false),
                         Action::WaitContains("ZOO_OS INFO usb mouse input".into()),
@@ -1331,13 +1335,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: {
                     let mut steps = start_desktop();
+                    let mut p = Ptr::start();
                     steps.extend([
-                        // The Notes tile, then up into its window.
-                        Action::Mouse(144, 308),
+                        // The Notes icon, then up into its window.
+                        p.to(dock_centre(3)),
                         Action::Button(true),
                         Action::Button(false),
                         Action::WaitContains("PeacockHandler: opened Notes".into()),
-                        Action::Mouse(0, -400),
+                        p.to(inside(3)),
                         // abc, two left, X and Y, Backspace: aX|bc.
                         Action::Keys(vec![
                             "a",
@@ -1362,6 +1367,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-cursor", check_notes_cursor)],
         },
         Case {
+            name: "appearance",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the dark appearance (F8), and back to light with the menu bar's switch",
+            interaction: Some(appearance_steps()),
+            screen_checks: vec![("1-dark", check_dark), ("2-light", check_light_again)],
+        },
+        Case {
             name: "resize",
             mode: Mode::Normal,
             custom_image: None,
@@ -1374,16 +1392,20 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: {
                     let mut steps = start_desktop();
+                    let c = win(CRASH_WIN);
+                    let mut p = Ptr::start();
                     steps.extend([
-                        // Crash Test is (652, 48) 604x340: grab its corner
-                        // area at (1250, 382) and drag by (-200, -100).
-                        Action::Mouse(610, -18),
+                        // Crash Test's bottom-right corner, dragged by
+                        // (-200, -100).
+                        p.to((c.0 + c.2 - 4, c.1 + c.3 - 4)),
                         Action::Button(true),
-                        Action::Mouse(-200, -100),
+                        p.by(-200, -100),
                         Action::Button(false),
-                        Action::WaitContains(
-                            "PeacockHandler: resized Crash Test to 404x240".into(),
-                        ),
+                        Action::WaitContains(format!(
+                            "PeacockHandler: resized Crash Test to {}x{}",
+                            c.2 - 200,
+                            c.3 - 100
+                        )),
                         Action::Settle(QUIET),
                         Action::Screenshot("1-resized"),
                         Action::Keys(vec!["esc"]),
@@ -1407,9 +1429,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: {
                     let mut steps = start_desktop();
+                    let z = zui::zoomed(SCREEN.0, SCREEN.1);
+                    let mut p = Ptr::start();
                     steps.extend([
-                        // The Assistant's title bar at (900, 424).
-                        Action::Mouse(260, 24),
+                        // The Assistant's title bar.
+                        p.to(title_bar(ASSISTANT_WIN)),
                         Action::Button(true),
                         Action::Button(false),
                         Action::Button(true),
@@ -1417,8 +1441,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         Action::WaitContains("PeacockHandler: zoomed Assistant".into()),
                         Action::Settle(QUIET),
                         Action::Screenshot("1-zoomed"),
-                        // Its title bar is now at the top: (900, 60).
-                        Action::Mouse(0, -364),
+                        // Its title bar is now at the top.
+                        p.to((z.0 + z.2 / 2, z.1 + 10)),
                         Action::Button(true),
                         Action::Button(false),
                         Action::Button(true),
@@ -1860,16 +1884,6 @@ fn check_scrolled(img: &screen::Image) -> Result<String, String> {
 
 // ---- M4 desktop case (docs/m4-design.md §8) ---------------------------
 
-const DESKTOP_BG: u32 = 0x1E3A4C;
-const BAR: u32 = 0xE8E8E8;
-const BAR_TEXT: u32 = 0x202020;
-const TITLE_FOCUSED: u32 = 0x3D7EBF;
-const TITLE_FOCUSED_TEXT: u32 = 0xFFFFFF;
-const TITLE_UNFOCUSED: u32 = 0x9AA5AE;
-const TITLE_UNFOCUSED_TEXT: u32 = 0x202020;
-const CONTENT: u32 = 0xFFFFFF;
-const CONTENT_TEXT: u32 = 0x202020;
-const SELECTED: u32 = 0xCFE3F7;
 const PAGE_FAULT_KERNEL_READ: &str =
     "fault=page-fault access=read cause=protection addr=0xffffc00000001000";
 
@@ -1990,44 +2004,29 @@ fn assistant_steps() -> Interaction {
 }
 
 fn check_assistant_plan(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    need(img, "You: search pancake", CONTENT_TEXT, CONTENT)?;
+    let title = title(img, "Assistant", true)?;
+    content(img, "You: search pancake")?;
     // Two leading spaces: the broker's reply, not the Files window's
     // `home/user/Documents/...` entry.
-    let found = need(
-        img,
-        "  Documents/recipes/pancakes.txt",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    need(img, "  would create Projects", CONTENT_TEXT, CONTENT)?;
-    need(img, "  would create Projects/2026", CONTENT_TEXT, CONTENT)?;
-    let ask = need(
-        img,
-        "Press y to create, n to leave it.",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
+    let found = content(img, "  Documents/recipes/pancakes.txt")?;
+    content(img, "  would create Projects")?;
+    content(img, "  would create Projects/2026")?;
+    let ask = content(img, "Press y to create, n to leave it.")?;
     // Nothing is created before the confirmation.
-    absent(img, "  created Projects", CONTENT_TEXT, CONTENT)?;
+    no_content(img, "  created Projects")?;
     Ok(format!(
         "`Assistant` focused at {title:?}; search result at {found:?}; plan shown and confirmation asked at {ask:?}; nothing created yet"
     ))
 }
 
 fn check_assistant_transcript(img: &screen::Image) -> Result<String, String> {
-    let created = need(img, "  created Projects/2026", CONTENT_TEXT, CONTENT)?;
-    need(img, "  removed Projects/2026", CONTENT_TEXT, CONTENT)?;
-    let removed = need(img, "  removed Projects", CONTENT_TEXT, CONTENT)?;
-    need(img, "Error: not found", CONTENT_TEXT, CONTENT)?;
-    let escape = need(img, "Error: path escapes home", CONTENT_TEXT, CONTENT)?;
-    let model = need(
-        img,
-        "The model is not installed; type a command instead.",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    absent(img, "  created Projects/2027", CONTENT_TEXT, CONTENT)?;
+    let created = content(img, "  created Projects/2026")?;
+    content(img, "  removed Projects/2026")?;
+    let removed = content(img, "  removed Projects")?;
+    content(img, "Error: not found")?;
+    let escape = content(img, "Error: path escapes home")?;
+    let model = content(img, "The model is not installed; type a command instead.")?;
+    no_content(img, "  created Projects/2027")?;
     Ok(format!(
         "created at {created:?}, undone at {removed:?}, then not found; escape refused at {escape:?}; missing model reported at {model:?}; wrong text rejected"
     ))
@@ -2132,45 +2131,30 @@ fn assistant_live_steps() -> Interaction {
 const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo.";
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let sel = need(img, "Photos/", CONTENT_TEXT, SELECTED)?;
-    absent(img, "Documents/", CONTENT_TEXT, SELECTED)?;
-    let busy = need(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
+    let title = title(img, "Files", true)?;
+    let sel = selected(img, "Photos/", true)?;
+    no_selected(img, "Documents/", true)?;
+    let busy = content(img, "Thinking: ")?;
     Ok(format!(
         "while the model works (status `Thinking:` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
     ))
 }
 
 fn check_cancelled(img: &screen::Image) -> Result<String, String> {
-    let done = need(img, "Cancelled.", CONTENT_TEXT, CONTENT)?;
-    let hint = need(img, HINT_TEXT, CONTENT_TEXT, CONTENT)?;
-    absent(img, "Thinking: ", CONTENT_TEXT, CONTENT)?;
+    let done = content(img, "Cancelled.")?;
+    let hint = content(img, HINT_TEXT)?;
+    no_content(img, "Thinking: ")?;
     Ok(format!(
         "`Cancelled.` at {done:?}, ready again at {hint:?}, no longer thinking"
     ))
 }
 
 fn check_live(img: &screen::Image) -> Result<String, String> {
-    let s = need(
-        img,
-        "Assistant: search pancake recipe",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    need(
-        img,
-        "  Documents/recipes/pancakes.txt",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    let c = need(
-        img,
-        "Assistant: create Projects/2026",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    let made = need(img, "  created Projects/2026", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Assistant: list", CONTENT_TEXT, CONTENT)?;
+    let s = content(img, "Assistant: search pancake recipe")?;
+    content(img, "  Documents/recipes/pancakes.txt")?;
+    let c = content(img, "Assistant: create Projects/2026")?;
+    let made = content(img, "  created Projects/2026")?;
+    no_content(img, "Assistant: list")?;
     Ok(format!(
         "model chose `search pancake recipe` at {s:?} (result shown) and `create Projects/2026` at {c:?}, created after `y` at {made:?}"
     ))
@@ -2497,15 +2481,20 @@ fn mouse_expectation(normal: &Expectation) -> Expectation {
     e
 }
 
-/// Screen positions for a 1280x800 display (the QEMU default here): the
-/// pointer starts at the centre; the Assistant's title bar starts at
-/// (652, 412) and its title text at (660, 416).
-const POINTER_START: (usize, usize) = (640, 400);
-const ASSISTANT_TITLE_TEXT: (usize, usize) = (660, 416);
-/// The drag: grab the Assistant title at (900, 424), move by (-300, -100).
-const DRAG: (i32, i32) = (-300, -100);
+/// The drag in the mouse case: the Assistant's title bar, moved by this.
+const DRAG: (i32, i32) = (-400, 60);
+
+fn moved_to(label: &str, k: usize, (dx, dy): (i32, i32)) -> String {
+    let w = win(k);
+    format!(
+        "PeacockHandler: moved {label} to ({}, {})",
+        w.0 as i32 + dx,
+        w.1 as i32 + dy
+    )
+}
 
 fn mouse_steps() -> Interaction {
+    let mut p = Ptr::start();
     Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
@@ -2513,19 +2502,19 @@ fn mouse_steps() -> Interaction {
             Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-pointer"),
-            // Into the Crash Test window (840, 200) and click.
-            Action::Mouse(200, -200),
+            // Into the Crash Test window and click.
+            p.to(inside(CRASH_WIN)),
             Action::Button(true),
             Action::Button(false),
             Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
             Action::Settle(QUIET),
             Action::Screenshot("2-click"),
-            // Onto the Assistant's title bar (900, 424), then drag it.
-            Action::Mouse(60, 224),
+            // Onto the Assistant's title bar, then drag it.
+            p.to(title_bar(ASSISTANT_WIN)),
             Action::Button(true),
-            Action::Mouse(DRAG.0, DRAG.1),
+            p.by(DRAG.0, DRAG.1),
             Action::Button(false),
-            Action::WaitContains("PeacockHandler: moved Assistant to (352, 312)".into()),
+            Action::WaitContains(moved_to("Assistant", ASSISTANT_WIN, DRAG)),
             Action::Settle(QUIET),
             Action::Screenshot("3-drag"),
             Action::Keys(vec!["esc"]),
@@ -2546,27 +2535,40 @@ fn start_desktop() -> Vec<Action> {
 }
 
 fn redraw_steps() -> Interaction {
+    let mut p = Ptr::start();
     let mut steps = start_desktop();
     steps.extend([
-        // From the centre into Crash Test (840, 200) and click: focus
-        // changes.
-        Action::Mouse(200, -200),
+        // From the centre into Crash Test and click: focus changes.
+        p.to(inside(CRASH_WIN)),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
-        // Onto the Files title bar (300, 60) and drag it by (100, 50).
-        Action::Mouse(-540, -140),
+        // Onto the Files title bar and drag it by (100, 50).
+        p.to(title_bar(FILES_WIN)),
         Action::Button(true),
-        Action::Mouse(100, 50),
+        p.by(100, 50),
         Action::Button(false),
-        Action::WaitContains("PeacockHandler: moved Files to (124, 98)".into()),
+        Action::WaitContains(moved_to("Files", FILES_WIN, (100, 50))),
         Action::Keys(vec!["tab"]),
     ]);
     // Focus changes and drags of large windows become full repaints, so
     // the pointer wanders last: each old position must be cleaned up by a
     // partial redraw (over the desktop, the windows and their borders).
     for _ in 0..8 {
-        steps.push(Action::Mouse(45, 40));
+        steps.push(p.by(45, 40));
+    }
+    // Then down across a line of Crash Test's text two pixels at a time:
+    // each redraw clips the glyphs at another height, so text skipped
+    // because it seemed outside the redrawn area would show (U1 draws only
+    // what reaches into it, docs/u1-design.md §4).
+    // It ends with its 17-pixel area over only the top two rows of the
+    // capitals (Inter's reach 10 pixels above the baseline; the area ends 8
+    // above it), where such a mistake would leave them missing.
+    let c = win(CRASH_WIN);
+    let baseline = zui::line_top(c, 0) + zui::BASELINE;
+    steps.push(p.to((c.0 + 60, baseline - 45)));
+    for _ in 0..10 {
+        steps.push(p.by(1, 2));
     }
     steps.extend([
         Action::Settle(QUIET),
@@ -2614,15 +2616,17 @@ fn frames_steps() -> Interaction {
 
 fn check_partial(img: &screen::Image) -> Result<String, String> {
     // Clicking the Files title focused Files; Tab then moved on to Crash Test.
-    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let files = need(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
-    if files != (132, 102) {
+    let t = title(img, "Crash Test", true)?;
+    let f = win(FILES_WIN);
+    let want = title_pen((f.0 + 100, f.1 + 50, f.2, f.3), "Files");
+    let files = title(img, "Files", false)?;
+    if files != want {
         return Err(format!(
-            "`Files` title at {files:?}, expected (132, 102) after the drag"
+            "`Files` title at {files:?}, expected {want:?} after the drag"
         ));
     }
     Ok(format!(
-        "`Crash Test` focused at {title:?}; `Files` dragged to {files:?}"
+        "`Crash Test` focused at {t:?}; `Files` dragged to {files:?}"
     ))
 }
 
@@ -2656,7 +2660,7 @@ fn check_full_repaint(img: &screen::Image) -> Result<String, String> {
     }
 }
 
-const MENU_BAR_H: usize = 24;
+const MENU_BAR_H: usize = zui::MENU_H;
 
 // ---- Large screens (docs/usb-boot.md) -----------------------------------
 
@@ -2685,25 +2689,20 @@ fn check_big_screen(img: &screen::Image) -> Result<String, String> {
 // ---- D7 Files (docs/d7-design.md §3) -------------------------------------
 
 fn check_preview(img: &screen::Image) -> Result<String, String> {
-    let at = need(img, "Home/Documents/notes.txt", CONTENT_TEXT, CONTENT)?;
-    let first = need(img, "Shopping: flour, eggs, milk.", CONTENT_TEXT, CONTENT)?;
-    need(
-        img,
-        "Call the vet about Zara the zebra.",
-        CONTENT_TEXT,
-        CONTENT,
-    )?;
-    need(img, "Backspace: back to the folder", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Shopping: flour, eggs, milk.?", CONTENT_TEXT, CONTENT)?;
+    let at = content(img, "Home/Documents/notes.txt")?;
+    let first = content(img, "Shopping: flour, eggs, milk.")?;
+    content(img, "Call the vet about Zara the zebra.")?;
+    content(img, "Backspace: back to the folder")?;
+    no_content(img, "Shopping: flour, eggs, milk.?")?;
     Ok(format!(
         "preview of `Home/Documents/notes.txt` at {at:?}: its first line at {first:?}"
     ))
 }
 
 fn check_back_up(img: &screen::Image) -> Result<String, String> {
-    let sel = need(img, "Photos/", CONTENT_TEXT, SELECTED)?;
-    absent(img, "Documents/", CONTENT_TEXT, SELECTED)?;
-    absent(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
+    let sel = selected(img, "Photos/", true)?;
+    no_selected(img, "Documents/", true)?;
+    no_content(img, "Home/Photos")?;
     Ok(format!(
         "back in `Home` from `Photos` with `Photos/` selected at {sel:?}"
     ))
@@ -2729,7 +2728,7 @@ fn menu_clock_text(secs: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     format!(
-        "{} {} {} {:02}:{:02} UTC",
+        "{} {} {}  {:02}:{:02} UTC",
         WEEKDAYS[days.rem_euclid(7) as usize],
         day,
         MONTHS[month as usize - 1],
@@ -2749,8 +2748,10 @@ fn check_menu_clock(img: &screen::Image) -> Result<String, String> {
     // have been drawn just before the minute changed).
     for secs in [shot, shot.saturating_sub(60)] {
         let want = menu_clock_text(secs);
-        if let Some(at) = screen::find_text(img, &want, BAR_TEXT, BAR) {
-            absent(img, &menu_clock_text(secs + 86_400), BAR_TEXT, BAR)?;
+        if let Ok(at) = menu_text(img, &want) {
+            if let Ok(wrong) = menu_text(img, &menu_clock_text(secs + 86_400)) {
+                return Err(format!("the next day's clock matched at {wrong:?}"));
+            }
             return Ok(format!(
                 "menu bar shows `{want}` at {at:?}, the host's UTC time of the screenshot"
             ));
@@ -2767,9 +2768,9 @@ fn check_menu_clock(img: &screen::Image) -> Result<String, String> {
 fn menu_clock_text_known_dates() {
     // 1970-01-01 00:00 was a Thursday; 2026-10-31 06:31 is a Saturday;
     // 2000-02-29 is a leap day (Tuesday).
-    assert_eq!(menu_clock_text(0), "Thu 1 Jan 00:00 UTC");
-    assert_eq!(menu_clock_text(1_793_428_260), "Sat 31 Oct 06:31 UTC");
-    assert_eq!(menu_clock_text(951_782_400), "Tue 29 Feb 00:00 UTC");
+    assert_eq!(menu_clock_text(0), "Thu 1 Jan  00:00 UTC");
+    assert_eq!(menu_clock_text(1_793_428_260), "Sat 31 Oct  06:31 UTC");
+    assert_eq!(menu_clock_text(951_782_400), "Tue 29 Feb  00:00 UTC");
 }
 
 // ---- D4 Notes cases (docs/d4-design.md §3) -----------------------------
@@ -2930,14 +2931,15 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
         ));
     }
     steps.extend(start_desktop());
+    let mut p = Ptr::start();
     steps.extend([
-        // The Notes tile: centre (784, 708).
-        Action::Mouse(144, 308),
+        // The Notes icon in the dock.
+        p.to(dock_centre(3)),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: opened Notes".into()),
-        // Up into the window, so the dock hides.
-        Action::Mouse(0, -400),
+        // Up into the window, away from the dock.
+        p.to(inside(3)),
     ]);
     if first {
         steps.extend([
@@ -2977,14 +2979,14 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
 }
 
 fn check_notes(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Notes", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let head = need(img, "Documents/notes.txt (saved)", CONTENT_TEXT, CONTENT)?;
-    let old = need(img, "Shopping: flour, eggs, milk.", CONTENT_TEXT, CONTENT)?;
-    let typed = need(img, "Hello from Notes", CONTENT_TEXT, CONTENT)?;
-    let second = need(img, "second line", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Hello from Notez", CONTENT_TEXT, CONTENT)?;
+    let title = title(img, "Notes", true)?;
+    let head = content(img, "Documents/notes.txt (saved)")?;
+    let old = content(img, "Shopping: flour, eggs, milk.")?;
+    let typed = content(img, "Hello from Notes")?;
+    let second = content(img, "second line")?;
+    no_content(img, "Hello from Notez")?;
     // The seed file has CRLF line ends; a shown carriage return is `?`.
-    absent(img, "Shopping: flour, eggs, milk.?", CONTENT_TEXT, CONTENT)?;
+    no_content(img, "Shopping: flour, eggs, milk.?")?;
     if !(old.1 < typed.1 && typed.1 < second.1) {
         return Err(format!(
             "lines out of order: original {old:?}, typed {typed:?}, second {second:?}"
@@ -2998,70 +3000,159 @@ fn check_notes(img: &screen::Image) -> Result<String, String> {
 // ---- D10 Notes cursor (docs/d10-design.md) ------------------------------
 
 fn check_notes_cursor(img: &screen::Image) -> Result<String, String> {
-    let at = need(img, "aX|bc", CONTENT_TEXT, CONTENT)?;
-    absent(img, "aXY", CONTENT_TEXT, CONTENT)?;
-    absent(img, "abcXY", CONTENT_TEXT, CONTENT)?;
-    need(img, "Documents/notes.txt (saved)", CONTENT_TEXT, CONTENT)?;
+    let at = content(img, "aX|bc")?;
+    no_content(img, "aXY")?;
+    no_content(img, "abcXY")?;
+    content(img, "Documents/notes.txt (saved)")?;
     Ok(format!(
         "`aX|bc` at {at:?}: X inserted two places back, Y deleted at the cursor, saved"
     ))
 }
 
-// ---- D8 resize case (docs/d8-design.md) -----------------------------------
+// ---- U1 appearance case (docs/u1-design.md) -------------------------------
 
-const CLOSE_RED: [u8; 3] = [0xE0, 0x44, 0x3E];
+fn appearance_steps() -> Interaction {
+    // The switch sits left of the clock, whose width depends on the time;
+    // a minute's change moves it by a pixel or two, inside its hit area.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let clock_w = screen::ui_width(FaceId::Regular13, &menu_clock_text(now));
+    let switch = zui::appearance_switch(SCREEN.0, clock_w);
+    let mut steps = start_desktop();
+    let mut p = Ptr::start();
+    steps.extend([
+        Action::Keys(vec!["f8"]),
+        Action::WaitContains("PeacockHandler: appearance dark".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-dark"),
+        p.to(switch),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: appearance light".into()),
+        // Back where nothing changes under the pointer.
+        p.to(inside(FILES_WIN)),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-light"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
 
-fn check_resized(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
-    // The close button follows the right edge: now at x 1036-1047.
-    if img.pixel(1042, 60) != Some(CLOSE_RED) {
-        return Err(format!(
-            "no close button at (1042, 60): {:?}",
-            img.pixel(1042, 60)
-        ));
-    }
-    if img.pixel(1242, 60) == Some(CLOSE_RED) {
-        return Err("the close button is still at the old edge (1242, 60)".into());
-    }
-    // Below the new bottom edge (y 288) is the desktop again.
-    let below = img.pixel(900, 300);
-    if below != Some([0x1E, 0x3A, 0x4C]) {
-        return Err(format!("below the resized window at (900, 300): {below:?}"));
+fn check_dark(img: &screen::Image) -> Result<String, String> {
+    let d = &zui::DARK;
+    let t = ui(img, FaceId::Medium13, "Files", d.title_text, d.title)?;
+    let home = ui(img, FaceId::Regular13, "Home", d.text, d.content)?;
+    let sel = ui(
+        img,
+        FaceId::Regular13,
+        "Documents/",
+        d.select_text,
+        d.select,
+    )?;
+    let menu = ui(
+        img,
+        FaceId::SemiBold13,
+        "Files",
+        d.bar_text,
+        zui::bar_color(d),
+    )?;
+    ui(
+        img,
+        FaceId::Medium13,
+        "Assistant",
+        d.title_text_blurred,
+        d.title_blurred,
+    )?;
+    // Nothing is left in the light appearance.
+    no_content(img, "Home")?;
+    no_title(img, "Files", true)?;
+    if img.pixel(SCREEN.0 / 2, SCREEN.1 - 4)
+        != Some({
+            let c = zoo_abi::font::blend(
+                d.wall_top,
+                d.wall_bottom,
+                ((SCREEN.1 - 4) * 255 / (SCREEN.1 - 1)) as u8,
+            );
+            [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+        })
+    {
+        return Err("the wallpaper is not the dark one".into());
     }
     Ok(format!(
-        "`Crash Test` focused at {title:?}, now 404x240: close button at the new edge, desktop below it"
+        "dark: `Files` title {t:?}, `Home` {home:?}, `Documents/` selected {sel:?}, menu bar {menu:?}, dark wallpaper; no light text left"
+    ))
+}
+
+fn check_light_again(img: &screen::Image) -> Result<String, String> {
+    let report = check_desktop_started(img)?;
+    no_ui(
+        img,
+        FaceId::Regular13,
+        "Home",
+        zui::DARK.text,
+        zui::DARK.content,
+    )?;
+    Ok(format!("light again after the switch: {report}"))
+}
+
+// ---- D8 resize case (docs/d8-design.md) -----------------------------------
+
+fn check_resized(img: &screen::Image) -> Result<String, String> {
+    let c = win(CRASH_WIN);
+    let now = (c.0, c.1, c.2 - 200, c.3 - 100);
+    let want = title_pen(now, "Crash Test");
+    let at = title(img, "Crash Test", true)?;
+    if at != want {
+        return Err(format!(
+            "`Crash Test` title at {at:?}, expected {want:?} (centred in the narrower window)"
+        ));
+    }
+    content(img, "This window is a crash test.")?;
+    // Where the window's right and bottom parts were: wallpaper now (past
+    // its shadow).
+    for (x, y) in [(c.0 + c.2 - 40, c.1 + c.3 / 2), (c.0 + 300, c.1 + c.3 - 10)] {
+        if img.pixel(x, y) != Some(wallpaper(y)) {
+            return Err(format!(
+                "at ({x}, {y}), once inside the window: {:?}, not the wallpaper {:?}",
+                img.pixel(x, y),
+                wallpaper(y)
+            ));
+        }
+    }
+    Ok(format!(
+        "`Crash Test` focused, now {}x{}: title re-centred at {at:?}; wallpaper where it was",
+        now.2, now.3
     ))
 }
 
 // ---- D9 zoom case (docs/d9-design.md) -------------------------------------
 
 fn check_zoomed(img: &screen::Image) -> Result<String, String> {
-    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    if at != (32, 52) {
+    let want = title_pen(zui::zoomed(SCREEN.0, SCREEN.1), "Assistant");
+    let at = title(img, "Assistant", true)?;
+    if at != want {
         return Err(format!(
-            "`Assistant` title at {at:?}, expected (32, 52) when zoomed"
+            "`Assistant` title at {at:?}, expected {want:?} when zoomed"
         ));
     }
-    absent(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
-    absent(img, "Crash Test", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
-    // The close button at the zoomed window's right edge.
-    if img.pixel(1242, 60) != Some(CLOSE_RED) {
-        return Err("no close button at the zoomed right edge (1242, 60)".into());
-    }
+    no_title(img, "Files", false)?;
+    no_title(img, "Crash Test", false)?;
     Ok(format!(
         "`Assistant` zoomed: title at {at:?}, covering Files and Crash Test"
     ))
 }
 
 fn check_restored(img: &screen::Image) -> Result<String, String> {
-    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    if at != (660, 416) {
+    let want = title_pen(win(ASSISTANT_WIN), "Assistant");
+    let at = title(img, "Assistant", true)?;
+    if at != want {
         return Err(format!(
-            "`Assistant` title at {at:?}, expected (660, 416) after restoring"
+            "`Assistant` title at {at:?}, expected {want:?} after restoring"
         ));
     }
-    let files = need(img, "Files", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
+    let files = title(img, "Files", false)?;
     Ok(format!(
         "`Assistant` restored to {at:?}; `Files` visible again at {files:?}"
     ))
@@ -3095,39 +3186,39 @@ fn dock_expectation(normal: &Expectation) -> Expectation {
     e
 }
 
-/// Dock geometry on the 1280x800 screen with four apps: panel at
-/// (440, 676), 400x92; slot `i` starts at x = 448 + 96 i; tiles 48 px at
-/// y = 684; names at y = 736; running dots (4 px) at (slot + 46, 756).
-const DOCK_BG: u32 = 0xDDE3E8;
-const DOCK_TEXT_RGB: [u8; 3] = [0x20, 0x20, 0x20];
-
-fn dock_dot(img: &screen::Image, slot: usize) -> bool {
-    img.pixel(448 + 96 * slot + 47, 757) == Some(DOCK_TEXT_RGB)
+/// A running dot under dock icon `k` (4 px, the menu-bar text colour).
+fn dock_dot(img: &screen::Image, k: usize) -> bool {
+    let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, k);
+    let c = LIGHT.bar_text;
+    img.pixel(x + zui::DOCK_ICON / 2 - 1, y + zui::DOCK_ICON + 3)
+        == Some([(c >> 16) as u8, (c >> 8) as u8, c as u8])
 }
 
 fn dock_steps() -> Interaction {
     let mut steps = start_desktop();
+    let mut p = Ptr::start();
+    let close = zui::light_centre(win(CRASH_WIN), 0);
     steps.extend([
-        // Pointer to (452, 700), inside the dock but clear of the tiles.
-        Action::Mouse(-188, 300),
+        // Onto the Files icon: its name shows above it.
+        p.to(dock_centre(0)),
         Action::Settle(QUIET),
         Action::Screenshot("1-dock"),
-        // Crash Test's close button: centre (1242, 60).
-        Action::Mouse(790, -640),
+        // Crash Test's red light.
+        p.to(close),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: closed Crash Test".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-closed"),
-        // The Crash Test tile: centre (592, 708).
-        Action::Mouse(-650, 648),
+        // The Crash Test icon.
+        p.to(dock_centre(1)),
         Action::Settle(QUIET),
         Action::Screenshot("3-dock-closed"),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: opened Crash Test".into()),
-        // Away from the dock, so it hides.
-        Action::Mouse(0, -308),
+        // Away from the dock.
+        p.to(inside(FILES_WIN)),
         Action::Settle(QUIET),
         Action::Screenshot("4-reopened"),
         Action::Keys(vec!["esc"]),
@@ -3137,44 +3228,50 @@ fn dock_steps() -> Interaction {
 }
 
 fn check_dock_shown(img: &screen::Image) -> Result<String, String> {
-    let files = need(img, "Files", BAR_TEXT, DOCK_BG)?;
-    let crash = need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
-    let assistant = need(img, "Assistant", BAR_TEXT, DOCK_BG)?;
-    let notes = need(img, "Notes", BAR_TEXT, DOCK_BG)?;
+    let name = tooltip(img, "Files")?;
+    no_tooltip(img, "Notes")?;
     if !(0..3).all(|i| dock_dot(img, i)) || dock_dot(img, 3) {
         return Err("running dots should mark the first three apps only".into());
     }
     Ok(format!(
-        "dock tiles `Files` {files:?}, `Crash Test` {crash:?}, `Assistant` {assistant:?}, `Notes` {notes:?}; running dots under the first three, none under Notes"
+        "pointer on the Files icon: its name at {name:?}; running dots under the first three, none under Notes"
     ))
 }
 
 fn check_closed(img: &screen::Image) -> Result<String, String> {
-    absent(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    absent(img, "Crash Test", TITLE_UNFOCUSED_TEXT, TITLE_UNFOCUSED)?;
-    absent(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Files", BAR_TEXT, DOCK_BG)?;
-    let files = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    no_title(img, "Crash Test", true)?;
+    no_title(img, "Crash Test", false)?;
+    no_content(img, "This window is a crash test.")?;
+    let files = title(img, "Files", true)?;
+    if dock_dot(img, 1) {
+        return Err("Crash Test still has a running dot".into());
+    }
     Ok(format!(
-        "Crash Test window gone, `Files` still focused at {files:?}, dock hidden"
+        "Crash Test window gone and its dot cleared; `Files` still focused at {files:?}"
     ))
 }
 
 fn check_dock_closed(img: &screen::Image) -> Result<String, String> {
-    need(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
+    tooltip(img, "Crash Test")?;
     if !dock_dot(img, 0) || dock_dot(img, 1) || !dock_dot(img, 2) || dock_dot(img, 3) {
         return Err("dots should mark Files and the Assistant only".into());
     }
-    Ok("dock: no running dot under Crash Test, dots under Files and Assistant".into())
+    Ok(
+        "dock: Crash Test's name shown, no running dot under it, dots under Files and Assistant"
+            .into(),
+    )
 }
 
 fn check_reopened(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let body = need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    absent(img, "Crash Test", BAR_TEXT, DOCK_BG)?;
+    let t = title(img, "Crash Test", true)?;
+    let body = content(img, "This window is a crash test.")?;
+    no_title(img, "Files", true)?;
+    no_tooltip(img, "Crash Test")?;
+    if !dock_dot(img, 1) {
+        return Err("no running dot under Crash Test".into());
+    }
     Ok(format!(
-        "Crash Test reopened and focused: title {title:?}, text {body:?}; dock hidden"
+        "Crash Test reopened and focused: title {t:?}, text {body:?}, running dot back"
     ))
 }
 
@@ -3182,59 +3279,124 @@ const BLACK: [u8; 3] = [0, 0, 0];
 const WHITE: [u8; 3] = [255, 255, 255];
 
 fn check_pointer(img: &screen::Image) -> Result<String, String> {
-    let (x, y) = POINTER_START;
-    // The arrow's tip and left edge are black, its inside white (row 6,
+    let (x, y) = (SCREEN.0 / 2, SCREEN.1 / 2);
+    // The arrow's tip and left edge are white, its inside black (row 6,
     // columns 1-5), and nothing is drawn left of the tip.
     let edge = img.pixel(x, y + 6);
-    let inside = img.pixel(x + 3, y + 6);
+    let inner = img.pixel(x + 3, y + 6);
     let left = img.pixel(x - 2, y + 6);
-    if edge != Some(BLACK) || inside != Some(WHITE) || left == Some(BLACK) {
+    if edge != Some(WHITE) || inner != Some(BLACK) || left == Some(BLACK) {
         return Err(format!(
-            "no pointer at {:?}: edge {edge:?}, inside {inside:?}, left of it {left:?}",
-            POINTER_START
+            "no pointer at ({x}, {y}): edge {edge:?}, inside {inner:?}, left of it {left:?}"
         ));
     }
-    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let t = title(img, "Files", true)?;
     Ok(format!(
-        "pointer arrow at {:?}; `Files` focused at {title:?}",
-        POINTER_START
+        "pointer arrow at ({x}, {y}); `Files` focused at {t:?}"
     ))
 }
 
 fn check_click_focus(img: &screen::Image) -> Result<String, String> {
-    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let bar = need(img, "Crash Test", BAR_TEXT, BAR)?;
-    absent(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let t = title(img, "Crash Test", true)?;
+    let bar = menu_app(img, "Crash Test")?;
+    no_title(img, "Files", true)?;
     Ok(format!(
-        "after one click: `Crash Test` focused at {title:?} and named in the menu bar at {bar:?}; `Files` no longer focused"
+        "after one click: `Crash Test` focused at {t:?} and named in the menu bar at {bar:?}; `Files` no longer focused"
     ))
 }
 
 fn check_drag(img: &screen::Image) -> Result<String, String> {
-    let want = (
-        (ASSISTANT_TITLE_TEXT.0 as i32 + DRAG.0) as usize,
-        (ASSISTANT_TITLE_TEXT.1 as i32 + DRAG.1) as usize,
+    let w = win(ASSISTANT_WIN);
+    let moved = (
+        (w.0 as i32 + DRAG.0) as usize,
+        (w.1 as i32 + DRAG.1) as usize,
+        w.2,
+        w.3,
     );
-    let at = need(img, "Assistant", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    let want = title_pen(moved, "Assistant");
+    let at = title(img, "Assistant", true)?;
     if at != want {
         return Err(format!(
             "`Assistant` title at {at:?}, expected {want:?} after the drag"
         ));
     }
-    absent(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
+    no_title(img, "Crash Test", true)?;
     Ok(format!(
-        "`Assistant` title moved from {ASSISTANT_TITLE_TEXT:?} to {at:?} and focused"
+        "`Assistant` title moved from {:?} to {at:?} and focused",
+        title_pen(w, "Assistant")
     ))
 }
 
-/// Finds `text` in colours `fg` on `bg`, or explains what is missing.
-fn need(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(usize, usize), String> {
-    screen::find_text(img, text, fg, bg).ok_or_else(|| format!("`{text}` not on screen"))
+// ---- U1 desktop geometry and text (docs/u1-design.md) -------------------
+
+/// The screen the cases run on (QEMU's display, xtask/src/qemu.rs).
+const SCREEN: (usize, usize) = (1920, 1080);
+const FILES_WIN: usize = 0;
+const CRASH_WIN: usize = 1;
+const ASSISTANT_WIN: usize = 2;
+
+/// Window `k`'s starting rectangle.
+fn win(k: usize) -> (usize, usize, usize, usize) {
+    zui::initial_windows(SCREEN.0, SCREEN.1)[k]
 }
 
-/// Asserts `text` is absent, so a check cannot pass by matching anything.
-fn absent(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(), String> {
-    match screen::find_text(img, text, fg, bg) {
+/// The centre of dock icon `k`.
+fn dock_centre(k: usize) -> (usize, usize) {
+    let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, k);
+    (x + zui::DOCK_ICON / 2, y + zui::DOCK_ICON / 2)
+}
+
+/// A point in window `k`'s title bar, right of the traffic lights.
+fn title_bar(k: usize) -> (usize, usize) {
+    let w = win(k);
+    (w.0 + w.2 * 3 / 4, w.1 + 10)
+}
+
+/// A point in window `k`'s content.
+fn inside(k: usize) -> (usize, usize) {
+    let w = win(k);
+    (w.0 + w.2 / 2, w.1 + w.3 / 2)
+}
+
+/// The pointer, for relative moves: it starts at the screen's centre.
+struct Ptr(i32, i32);
+
+impl Ptr {
+    fn start() -> Ptr {
+        Ptr(SCREEN.0 as i32 / 2, SCREEN.1 as i32 / 2)
+    }
+    fn to(&mut self, (x, y): (usize, usize)) -> Action {
+        let a = Action::Mouse(x as i32 - self.0, y as i32 - self.1);
+        (self.0, self.1) = (x as i32, y as i32);
+        a
+    }
+    fn by(&mut self, dx: i32, dy: i32) -> Action {
+        self.0 += dx;
+        self.1 += dy;
+        Action::Mouse(dx, dy)
+    }
+}
+
+/// Where window `w`'s title text starts: (x, baseline), as PeacockHandler
+/// centres it.
+fn title_pen(w: (usize, usize, usize, usize), text: &str) -> (usize, usize) {
+    let tw = screen::ui_width(FaceId::Medium13, text);
+    let lights_end = w.0 + zui::LIGHT_X + 2 * zui::LIGHT_GAP + 16;
+    ((w.0 + w.2.saturating_sub(tw) / 2).max(lights_end), w.1 + 18)
+}
+
+fn ui(
+    img: &screen::Image,
+    face: FaceId,
+    text: &str,
+    fg: u32,
+    bg: u32,
+) -> Result<(usize, usize), String> {
+    screen::find_ui(img, face, text, fg, bg).ok_or_else(|| format!("`{text}` not on screen"))
+}
+
+fn no_ui(img: &screen::Image, face: FaceId, text: &str, fg: u32, bg: u32) -> Result<(), String> {
+    match screen::find_ui(img, face, text, fg, bg) {
         Some(at) => Err(format!(
             "wrong text `{text}` matched at {at:?}; the check is not discriminating"
         )),
@@ -3242,49 +3404,158 @@ fn absent(img: &screen::Image, text: &str, fg: u32, bg: u32) -> Result<(), Strin
     }
 }
 
+fn title_colours(focused: bool) -> (u32, u32) {
+    if focused {
+        (LIGHT.title_text, LIGHT.title)
+    } else {
+        (LIGHT.title_text_blurred, LIGHT.title_blurred)
+    }
+}
+
+/// A window title (light appearance).
+fn title(img: &screen::Image, text: &str, focused: bool) -> Result<(usize, usize), String> {
+    let (fg, bg) = title_colours(focused);
+    ui(img, FaceId::Medium13, text, fg, bg)
+}
+
+fn no_title(img: &screen::Image, text: &str, focused: bool) -> Result<(), String> {
+    let (fg, bg) = title_colours(focused);
+    no_ui(img, FaceId::Medium13, text, fg, bg)
+}
+
+/// A line of window content.
+fn content(img: &screen::Image, text: &str) -> Result<(usize, usize), String> {
+    ui(img, FaceId::Regular13, text, LIGHT.text, LIGHT.content)
+}
+
+fn no_content(img: &screen::Image, text: &str) -> Result<(), String> {
+    no_ui(img, FaceId::Regular13, text, LIGHT.text, LIGHT.content)
+}
+
+fn selected_colours(focused: bool) -> (u32, u32) {
+    if focused {
+        (LIGHT.select_text, LIGHT.select)
+    } else {
+        (LIGHT.text, LIGHT.select_blurred)
+    }
+}
+
+/// A selected line, in a focused window or another.
+fn selected(img: &screen::Image, text: &str, focused: bool) -> Result<(usize, usize), String> {
+    let (fg, bg) = selected_colours(focused);
+    ui(img, FaceId::Regular13, text, fg, bg)
+}
+
+fn no_selected(img: &screen::Image, text: &str, focused: bool) -> Result<(), String> {
+    let (fg, bg) = selected_colours(focused);
+    no_ui(img, FaceId::Regular13, text, fg, bg)
+}
+
+/// The focused application's name in the menu bar.
+fn menu_app(img: &screen::Image, text: &str) -> Result<(usize, usize), String> {
+    ui(
+        img,
+        FaceId::SemiBold13,
+        text,
+        LIGHT.bar_text,
+        zui::bar_color(&LIGHT),
+    )
+}
+
+/// Other menu-bar text (the clock).
+fn menu_text(img: &screen::Image, text: &str) -> Result<(usize, usize), String> {
+    ui(
+        img,
+        FaceId::Regular13,
+        text,
+        LIGHT.bar_text,
+        zui::bar_color(&LIGHT),
+    )
+}
+
+/// A notification banner's body line.
+fn banner_body(img: &screen::Image, text: &str) -> Result<(usize, usize), String> {
+    ui(img, FaceId::Regular13, text, LIGHT.text, LIGHT.banner)
+}
+
+fn no_banner_body(img: &screen::Image, text: &str) -> Result<(), String> {
+    no_ui(img, FaceId::Regular13, text, LIGHT.text, LIGHT.banner)
+}
+
+/// A dock icon's name, shown above it while the pointer is on it.
+fn tooltip(img: &screen::Image, text: &str) -> Result<(usize, usize), String> {
+    ui(
+        img,
+        FaceId::Regular13,
+        text,
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )
+}
+
+fn no_tooltip(img: &screen::Image, text: &str) -> Result<(), String> {
+    no_ui(
+        img,
+        FaceId::Regular13,
+        text,
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )
+}
+
+/// The wallpaper's colour on screen row `y` (light appearance).
+fn wallpaper(y: usize) -> [u8; 3] {
+    let c = zoo_abi::font::blend(
+        LIGHT.wall_top,
+        LIGHT.wall_bottom,
+        (y * 255 / (SCREEN.1 - 1)) as u8,
+    );
+    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+}
+
 fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
-    let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
-    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    need(img, "Home", CONTENT_TEXT, CONTENT)?;
-    let first = need(img, "Documents/", CONTENT_TEXT, SELECTED)?;
-    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Documentsx/", CONTENT_TEXT, SELECTED)?;
-    absent(img, "Files", BAR_TEXT, DESKTOP_BG)?;
+    let menu = menu_app(img, "Files")?;
+    let t = title(img, "Files", true)?;
+    content(img, "Home")?;
+    let first = selected(img, "Documents/", true)?;
+    content(img, "This window is a crash test.")?;
+    title(img, "Assistant", false)?;
+    no_selected(img, "Documentsx/", true)?;
+    no_title(img, "Files", false)?;
     Ok(format!(
-        "menu `ZooOS` at {menu:?}, focused title `Files` at {title:?}, home folder with `Documents/` selected at {first:?}, Crash Test window shown; wrong text rejected"
+        "menu bar names `Files` at {menu:?}; `Files` focused (title at {t:?}) with `Documents/` selected at {first:?}; Crash Test and the Assistant shown; wrong text rejected"
     ))
 }
 
 fn check_file_details(img: &screen::Image) -> Result<String, String> {
-    let name = need(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
-    let size = need(img, "README.txt (34 bytes)", CONTENT_TEXT, SELECTED)?;
-    absent(img, "Home/Music", CONTENT_TEXT, CONTENT)?;
+    let name = content(img, "Home/Photos")?;
+    let size = selected(img, "README.txt (34 bytes)", true)?;
+    no_content(img, "Home/Music")?;
     Ok(format!(
         "3rd entry opened: `Home/Photos` at {name:?}, `README.txt (34 bytes)` selected at {size:?}; wrong folder rejected"
     ))
 }
 
 fn check_app_restart(img: &screen::Image) -> Result<String, String> {
-    let status = need(img, "Crash Test crashed; restarted (1 of 3)", BAR_TEXT, BAR)?;
-    let title = need(img, "Crash Test", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    need(img, "This window is a crash test.", CONTENT_TEXT, CONTENT)?;
+    let body = banner_body(img, "It crashed and was restarted (1 of 3).")?;
+    let t = title(img, "Crash Test", true)?;
+    content(img, "This window is a crash test.")?;
     // Files kept its state through Crash Test's crash.
-    need(img, "Home/Photos", CONTENT_TEXT, CONTENT)?;
-    absent(img, "Crash Test crashed; restarted (2 of 3)", BAR_TEXT, BAR)?;
+    content(img, "Home/Photos")?;
+    no_banner_body(img, "It crashed and was restarted (2 of 3).")?;
     Ok(format!(
-        "status `Crash Test crashed; restarted (1 of 3)` at {status:?}, focused `Crash Test` at {title:?}, Files details unchanged"
+        "banner `It crashed and was restarted (1 of 3).` at {body:?}, focused `Crash Test` at {t:?}, Files details unchanged"
     ))
 }
 
 fn check_server_restart(img: &screen::Image) -> Result<String, String> {
-    let menu = need(img, "ZooOS", BAR_TEXT, BAR)?;
-    let title = need(img, "Files", TITLE_FOCUSED_TEXT, TITLE_FOCUSED)?;
-    let first = need(img, "Documents/", CONTENT_TEXT, SELECTED)?;
-    need(img, "Tab: next window", BAR_TEXT, BAR)?;
-    // A fresh window server: the old crash notice is gone.
-    absent(img, "Crash Test crashed; restarted (1 of 3)", BAR_TEXT, BAR)?;
+    let menu = menu_app(img, "Files")?;
+    let t = title(img, "Files", true)?;
+    let first = selected(img, "Documents/", true)?;
+    // A fresh window server: the old crash banner is gone.
+    no_banner_body(img, "It crashed and was restarted (1 of 3).")?;
     Ok(format!(
-        "fresh desktop after the window-server crash: `ZooOS` at {menu:?}, `Files` focused at {title:?}, list reset at {first:?}"
+        "fresh desktop after the window-server crash: menu bar `Files` at {menu:?}, `Files` focused at {t:?}, list reset at {first:?}"
     ))
 }
 
@@ -3298,7 +3569,7 @@ fn check_console_back(img: &screen::Image) -> Result<String, String> {
     if screen::find_row(img, "zoo> echo bock").is_some() {
         return Err("a wrong string matched; the check is not discriminating".into());
     }
-    if screen::find_text(img, "ZooOS", BAR_TEXT, BAR).is_some() {
+    if menu_app(img, "Files").is_ok() {
         return Err("the desktop menu bar is still on screen".into());
     }
     Ok(format!(

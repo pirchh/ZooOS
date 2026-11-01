@@ -150,6 +150,27 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 1: a macOS-style desktop (2026-11-01)
+
+Design: docs/u1-design.md.
+
+- Owner's choices: Inter (download approved, 33.7 MB release zip, three
+  TTFs used; tools/fonts/README.md), light and dark with a switch, a much
+  higher resolution with uncramped windows.
+- Text is rendered at build time (`fontdue` =0.9.3 in xtask only) into an
+  initrd atlas; the atlas format and layout code are shared in `zoo-abi`,
+  so screenshot checks reproduce the screen exactly.
+- QEMU's display prefers 1920x1080 through its EDID; the bootloader's
+  minimum-size option picked 2560x1600 instead.
+- Desktop geometry and both palettes live in `zoo_abi::ui`, shared with
+  the tests.
+- The bottom status line became notification banners.
+- The dock is always shown.
+- The menu bar is opaque, which keeps its text checkable exactly; the
+  gradient barely showed through.
+- Menus are labels until U4.
+- Version 0.54.0.
+
 ## Linux step 10d: Wine's prefix in the home folder (2026-11-01)
 
 Design: docs/linux10d-design.md.

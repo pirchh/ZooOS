@@ -1,12 +1,14 @@
-//! PeacockHandler: the window server (docs/m4-design.md §4). Owns the
-//! display and keyboard, runs three applications (Files, Crash Test and the
-//! Assistant, docs/m5c2-design.md) over channels, draws a menu bar, the
-//! windows and a status line, routes keys to the focused window, and
-//! restarts applications that crash. The mouse (docs/d1-design.md) moves a
-//! pointer; a click focuses a window and a title-bar drag moves it. Only
-//! the parts of the screen that changed are redrawn (docs/d2-design.md).
-//! Windows have close buttons and an auto-hiding dock reopens closed
-//! applications (docs/d3-design.md).
+//! PeacockHandler: the window server (docs/m4-design.md §4; look:
+//! docs/u1-design.md). Owns the display and keyboard, runs four
+//! applications (Files, Crash Test, the Assistant and Notes) over channels,
+//! and draws a macOS-style desktop: a translucent menu bar, rounded windows
+//! with shadows and traffic lights, Inter text from the font atlas in the
+//! initrd, a dock, and notification banners. Light and dark appearances
+//! switch with F8 or the menu bar's switch. Keys go to the focused window;
+//! the mouse focuses, moves, resizes, closes, minimises and zooms windows
+//! (docs/d1-design.md, d3, d8, d9). Only the parts of the screen that
+//! changed are redrawn (docs/d2-design.md). Applications that crash are
+//! restarted.
 //!
 //! Its second start-up handle is the home directory (from Zookeeper); each
 //! start of the Assistant gets a fresh copy, which it passes on to the file
@@ -16,9 +18,13 @@
 #![no_main]
 
 use core::fmt::Write as _;
-use noto_sans_mono_bitmap::{FontWeight, RasterHeight, get_raster, get_raster_width};
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
+use zoo_abi::font::{Atlas, Face, FaceId, blend};
+use zoo_abi::ui::{
+    BASELINE, DARK, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H, Palette as Theme, RADIUS,
+    RESIZE_CORNER, TEXT_X, TITLE_H,
+};
 use zoo_abi::{CLOCK_REALTIME, FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
 use zoo_rt::{
@@ -28,35 +34,18 @@ use zoo_rt::{
 
 zoo_rt::entry2!(main);
 
-// ---- colours (docs/m4-design.md §7), as 0xRRGGBB ----------------------
-const DESKTOP: u32 = 0x1E3A4C;
-const BAR: u32 = 0xE8E8E8;
-const BAR_TEXT: u32 = 0x202020;
-const TITLE_FOCUSED: u32 = 0x3D7EBF;
-const TITLE_FOCUSED_TEXT: u32 = 0xFFFFFF;
-const TITLE_UNFOCUSED: u32 = 0x9AA5AE;
-const TITLE_UNFOCUSED_TEXT: u32 = 0x202020;
-const CONTENT: u32 = 0xFFFFFF;
-const CONTENT_TEXT: u32 = 0x202020;
-const SELECTED: u32 = 0xCFE3F7;
-const BORDER: u32 = 0x5A6670;
-const CLOSE_BUTTON: u32 = 0xE0443E;
-const DOCK_BG: u32 = 0xDDE3E8;
-const DOCK_TEXT: u32 = 0x202020;
-const TILE_TEXT: u32 = 0xFFFFFF;
-/// Dock tile colours, indexed like the applications.
-const TILE: [u32; APPS] = [0x3D7EBF, 0xD9822B, 0x3E9E6B, 0xC9A227];
-const POINTER: u32 = 0xFFFFFF;
-const POINTER_EDGE: u32 = 0x000000;
+// ---- appearance (docs/u1-design.md §3), colours as 0xRRGGBB --------------
 
-const WEIGHT: FontWeight = FontWeight::Regular;
-const SIZE: RasterHeight = RasterHeight::Size16;
-const CHAR_W: usize = get_raster_width(WEIGHT, SIZE);
-const BAR_H: usize = 24;
-const TITLE_H: usize = 24;
-const LINE_H: usize = 20;
-const MARGIN: usize = 24;
-const TEXT_COLS: usize = 80;
+/// Traffic lights: fill and rim, close/minimise/zoom.
+const LIGHTS: [(u32, u32); 3] = [
+    (0xFF5F57, 0xE0443E),
+    (0xFEBC2E, 0xDEA123),
+    (0x28C840, 0x1AAB29),
+];
+/// Dock icon colours, indexed like the applications.
+const ICON: [u32; APPS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
+const POINTER: u32 = 0x000000;
+const POINTER_EDGE: u32 = 0xFFFFFF;
 
 /// Largest supported screen; the back buffer lives in `.bss`.
 const MAX_W: usize = 1920;
@@ -65,37 +54,32 @@ static mut BACK: [u32; MAX_W * MAX_H] = [0; MAX_W * MAX_H];
 
 /// Times one application may be restarted after crashing.
 const APP_RESTARTS: u32 = 3;
-
 /// Damage rectangles kept per frame before falling back to a full repaint.
-const MAX_DAMAGE: usize = 8;
+const MAX_DAMAGE: usize = 12;
 /// Pointer arrow size.
 const POINTER_W: usize = 12;
 const POINTER_H: usize = 17;
 /// Applications, in dock order; Notes is the last.
 const APPS: usize = 4;
 const NOTES: usize = 3;
-/// Where Notes opens: (x, y, w, h).
-const NOTES_RECT: (usize, usize, usize, usize) = (200, 100, 640, 480);
 /// Two presses within this many ticks (and 4 px) are a double-click.
 const DOUBLE_CLICK: u64 = 50;
-/// Resizing: the bottom-right corner area that grabs, and the smallest
-/// window.
-const RESIZE_CORNER: usize = 12;
-const MIN_W: usize = 200;
-const MIN_H: usize = 120;
-/// Close button: size, and gap from the title bar's right end.
-const CLOSE_SIZE: usize = 12;
-const CLOSE_GAP: usize = 8;
-/// Dock geometry: one slot per application, a square tile in each, the
-/// name under it, then the running dot.
-const DOCK_SLOT_W: usize = 96;
-const DOCK_PAD: usize = 8;
-const DOCK_TILE: usize = 48;
-const DOCK_H: usize = 92;
+const MIN_W: usize = 240;
+const MIN_H: usize = 140;
 /// Ticks an application gets to end after its window is closed.
 const CLOSE_WAIT: u64 = 100;
 /// Frames kept for the timing report (F11).
 const FRAME_SAMPLES: usize = 64;
+/// Window shadows: how far they spread, and how far down they sit.
+const SHADOW: usize = 24;
+const SHADOW_DROP: usize = 8;
+/// What a window's redraw covers beyond its rectangle.
+const MARGIN: usize = SHADOW + SHADOW_DROP;
+/// Notification banners: size, and how long they stay (ticks).
+const BANNER_W: usize = 360;
+const BANNER_H: usize = 62;
+const BANNER_TICKS: u64 = 600;
+const TEXT_COLS: usize = 80;
 
 /// Test-only fault address (docs/m4-design.md §4, the F12 key).
 const KERNEL_ADDR: u64 = 0xFFFF_C000_0000_1000;
@@ -123,7 +107,7 @@ impl Text {
 }
 
 struct App {
-    /// Shown in the status line, e.g. "Crash Test".
+    /// Its name in the dock and banners, e.g. "Crash Test".
     label: &'static str,
     program: &'static str,
     /// Gets a copy of the home directory handle as its second handle.
@@ -133,6 +117,8 @@ struct App {
     running: bool,
     /// Closed by the user: window hidden, not restarted.
     closed: bool,
+    /// Minimised: running, window hidden until its dock icon is clicked.
+    minimized: bool,
     restarts: u32,
     title: Text,
     lines: [Text; MAX_LINES],
@@ -150,12 +136,17 @@ impl App {
             process: 0,
             running: false,
             closed: false,
+            minimized: false,
             restarts: 0,
             title: Text::new(),
             lines: [const { Text::new() }; MAX_LINES],
             count: 0,
             selected: None,
         }
+    }
+
+    fn visible(&self) -> bool {
+        !self.closed && !self.minimized
     }
 
     fn start(&mut self, home: u64) -> bool {
@@ -227,6 +218,36 @@ fn parse_num(s: &[u8]) -> Option<usize> {
     })
 }
 
+/// Coverage (0..=255) of a quarter circle of radius `r` at offset (dx, dy)
+/// from the corner's outer edge, the corner's centre being (r, r): signed
+/// distance from the squared distance (no square root needed).
+fn corner_coverage(r: usize, dx: usize, dy: usize) -> u8 {
+    let (fx, fy) = (r as f32 - dx as f32 - 0.5, r as f32 - dy as f32 - 0.5);
+    let d2 = fx * fx + fy * fy;
+    let r2 = (r * r) as f32;
+    // Distance beyond the circle, ~(d^2 - r^2) / 2r.
+    let sd = (d2 - r2) / (2.0 * r as f32);
+    let c = 0.5 - sd;
+    if c <= 0.0 {
+        0
+    } else if c >= 1.0 {
+        255
+    } else {
+        (c * 255.0 + 0.5) as u8
+    }
+}
+
+/// Smooth falloff over `2 * SHADOW` steps: 255 inside, 0 outside.
+fn shadow_ramp() -> [u8; 2 * SHADOW] {
+    let mut r = [0u8; 2 * SHADOW];
+    for (k, v) in r.iter_mut().enumerate() {
+        let t = (k as f32 + 0.5) / (2 * SHADOW) as f32;
+        let s = 1.0 - t * t * (3.0 - 2.0 * t);
+        *v = (s * 255.0 + 0.5) as u8;
+    }
+    r
+}
+
 struct Screen {
     w: usize,
     h: usize,
@@ -239,12 +260,16 @@ struct Screen {
 }
 
 impl Screen {
+    /// True if rectangle (x, y, w, h) reaches into the clip rectangle:
+    /// shapes that do not are skipped (docs/u1-design.md §4).
+    fn visible(&self, x: usize, y: usize, w: usize, h: usize) -> bool {
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        x < cx1 && y < cy1 && x + w > cx0 && y + h > cy0
+    }
+
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32) {
         let (cx0, cy0, cx1, cy1) = self.clip;
-        let x0 = x.max(cx0);
-        let y0 = y.max(cy0);
-        let x1 = (x + w).min(cx1);
-        let y1 = (y + h).min(cy1);
+        let (x0, y0, x1, y1) = (x.max(cx0), y.max(cy0), (x + w).min(cx1), (y + h).min(cy1));
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -253,38 +278,198 @@ impl Screen {
         }
     }
 
-    fn plot(&mut self, x: usize, y: usize, c: u32) {
+    /// Blends `c` over the pixel at (x, y) by `a` (0..=255).
+    fn blend_px(&mut self, x: usize, y: usize, c: u32, a: u8) {
         let (cx0, cy0, cx1, cy1) = self.clip;
-        if x >= cx0 && x < cx1 && y >= cy0 && y < cy1 {
-            self.back[y * self.w + x] = c;
+        if a != 0 && x >= cx0 && x < cx1 && y >= cy0 && y < cy1 {
+            let p = &mut self.back[y * self.w + x];
+            *p = if a == 255 { c } else { blend(*p, c, a) };
         }
     }
 
-    /// Draws `text` with its top-left at (x, y), blending each glyph pixel
-    /// between `bg` and `fg` (the formula the verifier reproduces), clipped
-    /// to `max_w` pixels.
-    fn text(&mut self, x: usize, y: usize, text: &str, fg: u32, bg: u32, max_w: usize) {
-        let mut cx = x;
-        for c in text.chars() {
-            if cx + CHAR_W > x + max_w || cx + CHAR_W > self.w {
-                break;
+    /// Blends `c` over a rectangle by `a`.
+    fn tint(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32, a: u8) {
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        let (x0, y0, x1, y1) = (x.max(cx0), y.max(cy0), (x + w).min(cx1), (y + h).min(cy1));
+        if x0 >= x1 {
+            return;
+        }
+        for row in y0..y1 {
+            for p in &mut self.back[row * self.w + x0..row * self.w + x1] {
+                *p = blend(*p, c, a);
             }
-            let (cx0, cy0, cx1, cy1) = self.clip;
-            // Glyphs wholly outside the clip are skipped.
-            if cx + CHAR_W <= cx0 || cx >= cx1 || y + LINE_H <= cy0 || y >= cy1 {
-                cx += CHAR_W;
+        }
+    }
+
+    /// A rounded rectangle, anti-aliased, blended by `a`; `corners` says
+    /// which are round: top-left, top-right, bottom-left, bottom-right.
+    #[allow(clippy::too_many_arguments)]
+    fn round_rect(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        r: usize,
+        c: u32,
+        a: u8,
+        corners: [bool; 4],
+    ) {
+        if !self.visible(x, y, w, h) {
+            return;
+        }
+        let r = r.min(w / 2).min(h / 2);
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        let rows = cy0.saturating_sub(y)..(cy1 - y).min(h);
+        let cols = cx0.saturating_sub(x)..cx1.saturating_sub(x).min(w);
+        for row in rows {
+            let (top, bottom) = (row < r, row >= h - r);
+            if !top && !bottom {
+                if a == 255 {
+                    self.fill(x, y + row, w, 1, c);
+                } else {
+                    self.tint(x, y + row, w, 1, c, a);
+                }
                 continue;
             }
-            let raster = get_raster(c, WEIGHT, SIZE)
-                .or_else(|| get_raster('?', WEIGHT, SIZE))
-                .expect("'?' is in the font");
-            for (dy, row) in raster.raster().iter().enumerate() {
-                for (dx, &i) in row.iter().enumerate() {
-                    self.plot(cx + dx, y + dy, blend(bg, fg, i));
+            let dy = if top { row } else { h - 1 - row };
+            let (left_round, right_round) = if top {
+                (corners[0], corners[1])
+            } else {
+                (corners[2], corners[3])
+            };
+            for col in cols.clone() {
+                let cov = if col < r && left_round {
+                    corner_coverage(r, col, dy)
+                } else if col >= w - r && right_round {
+                    corner_coverage(r, w - 1 - col, dy)
+                } else {
+                    255
+                };
+                let cov = ((u32::from(cov) * u32::from(a) + 127) / 255) as u8;
+                self.blend_px(x + col, y + row, c, cov);
+            }
+        }
+    }
+
+    /// A one-pixel anti-aliased outline of a rounded rectangle.
+    fn round_outline(&mut self, x: usize, y: usize, w: usize, h: usize, r: usize, c: u32) {
+        if !self.visible(x, y, w, h) {
+            return;
+        }
+        let r = r.min(w / 2).min(h / 2);
+        // Straight edges.
+        self.fill(x + r, y, w - 2 * r, 1, c);
+        self.fill(x + r, y + h - 1, w - 2 * r, 1, c);
+        self.fill(x, y + r, 1, h - 2 * r, c);
+        self.fill(x + w - 1, y + r, 1, h - 2 * r, c);
+        // Corners: the ring between radius r and r - 1.
+        for dy in 0..r {
+            for dx in 0..r {
+                let outer = corner_coverage(r, dx, dy);
+                let inner = if dx >= 1 && dy >= 1 {
+                    corner_coverage(r - 1, dx - 1, dy - 1)
+                } else {
+                    0
+                };
+                let cov = outer.saturating_sub(inner);
+                if cov == 0 {
+                    continue;
+                }
+                for (px, py) in [
+                    (x + dx, y + dy),
+                    (x + w - 1 - dx, y + dy),
+                    (x + dx, y + h - 1 - dy),
+                    (x + w - 1 - dx, y + h - 1 - dy),
+                ] {
+                    self.blend_px(px, py, c, cov);
                 }
             }
-            cx += CHAR_W;
         }
+    }
+
+    /// A filled anti-aliased disc of diameter `d` with its top-left at
+    /// (x, y), and a rim colour on its outermost pixel ring.
+    fn disc(&mut self, x: usize, y: usize, d: usize, fill: u32, rim: u32) {
+        if !self.visible(x, y, d, d) {
+            return;
+        }
+        let r = d / 2;
+        for dy in 0..d {
+            for dx in 0..d {
+                // Mirror into the top-left quarter.
+                let (qx, qy) = (dx.min(d - 1 - dx), dy.min(d - 1 - dy));
+                let outer = corner_coverage(r, qx, qy);
+                if outer == 0 {
+                    continue;
+                }
+                let inner = if qx >= 1 && qy >= 1 && r > 1 {
+                    corner_coverage(r - 1, qx - 1, qy - 1)
+                } else {
+                    0
+                };
+                self.blend_px(x + dx, y + dy, rim, outer);
+                self.blend_px(x + dx, y + dy, fill, inner);
+            }
+        }
+    }
+
+    /// A soft shadow of black under the rectangle, `a` at its strongest,
+    /// drawn only outside the rectangle itself (which covers the rest).
+    fn shadow(&mut self, rect: (usize, usize, usize, usize), a: u8, ramp: &[u8; 2 * SHADOW]) {
+        let (wx, wy, ww, wh) = rect;
+        // The shadow's rectangle: the window's, moved down.
+        let (sx0, sy0) = (wx as isize, (wy + SHADOW_DROP) as isize);
+        let (sx1, sy1) = (sx0 + ww as isize, sy0 + wh as isize);
+        let s = SHADOW as isize;
+        // How strong at distance d outside an edge (negative: inside).
+        let f = |d: isize| -> u32 {
+            let k = d + s;
+            if k < 0 {
+                255
+            } else if k >= 2 * s {
+                0
+            } else {
+                u32::from(ramp[k as usize])
+            }
+        };
+        let (cx0, cy0, cx1, cy1) = self.clip;
+        let y0 = (sy0 - s).max(cy0 as isize).max(0) as usize;
+        let y1 = ((sy1 + s) as usize).min(cy1);
+        let x0 = (sx0 - s).max(cx0 as isize).max(0) as usize;
+        let x1 = ((sx1 + s) as usize).min(cx1);
+        for py in y0..y1 {
+            let fy = f((sy0 - py as isize).max(py as isize - (sy1 - 1)));
+            if fy == 0 {
+                continue;
+            }
+            let inside_rows = py >= wy && py < wy + wh;
+            for px in x0..x1 {
+                if inside_rows && px >= wx && px < wx + ww {
+                    continue;
+                }
+                let fx = f((sx0 - px as isize).max(px as isize - (sx1 - 1)));
+                let v = fx * fy * u32::from(a) / (255 * 255);
+                if v != 0 {
+                    let p = &mut self.back[py * self.w + px];
+                    *p = blend(*p, 0x000000, v as u8);
+                }
+            }
+        }
+    }
+
+    /// Draws `text` in `face` with its baseline at `y`, starting at `x`,
+    /// clipped at `max_x`; returns where it ended.
+    fn text(&mut self, face: &Face, x: usize, y: usize, text: &str, c: u32, max_x: usize) -> usize {
+        if !self.visible(x, y.saturating_sub(20), max_x.saturating_sub(x), 28) {
+            return x + face.width(text);
+        }
+        let end = face.draw(text, x as i32, y as i32, max_x as i32, |px, py, cov| {
+            if px >= 0 && py >= 0 {
+                self.blend_px(px as usize, py as usize, c, cov);
+            }
+        });
+        end.max(0) as usize
     }
 
     /// Copies rectangle (x0, y0, x1, y1) of the back buffer to the
@@ -316,9 +501,6 @@ impl Screen {
     }
 }
 
-/// Columns kept for the menu-bar clock (`Sat 31 Oct 06:31 UTC` and a
-/// margin).
-const CLOCK_COLS: usize = 22;
 const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -339,7 +521,8 @@ fn civil_from_days(z: i64) -> (usize, i64) {
 }
 
 /// The menu-bar clock (docs/d5-design.md): the UTC date and time, or the
-/// uptime when there is no clock.
+/// uptime when there is no clock. UTC is named: there are no time zones
+/// yet.
 fn write_clock(out: &mut Line) {
     match zoo_rt::clock(CLOCK_REALTIME) {
         Ok(ns) => {
@@ -349,7 +532,7 @@ fn write_clock(out: &mut Line) {
             let (month, day) = civil_from_days(days);
             let _ = write!(
                 out,
-                "{} {} {} {:02}:{:02} UTC",
+                "{} {} {}  {:02}:{:02} UTC",
                 WEEKDAYS[days.rem_euclid(7) as usize],
                 day,
                 MONTHS[month - 1],
@@ -370,23 +553,38 @@ fn cycles() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
-fn blend(bg: u32, fg: u32, i: u8) -> u32 {
-    let i = i as u32;
-    let ch = |shift: u32| {
-        let b = (bg >> shift) & 0xFF;
-        let f = (fg >> shift) & 0xFF;
-        ((b * (255 - i) + f * i + 127) / 255) << shift
-    };
-    ch(16) | ch(8) | ch(0)
+/// The font atlas from the initrd (`ui/fonts.zfnt`).
+fn load_atlas() -> Option<Atlas<'static>> {
+    let mut index = 0;
+    while let Ok(e) = zoo_rt::fs_stat(index) {
+        if e.name() == "ui/fonts.zfnt" {
+            return Atlas::parse(zoo_rt::fs_map(index).ok()?);
+        }
+        index += 1;
+    }
+    None
+}
+
+/// The menu-bar labels after the application's name (they open in U4).
+const MENUS: [&str; 5] = ["File", "Edit", "View", "Window", "Help"];
+
+struct Banner {
+    title: &'static str,
+    body: Line,
+    until: u64,
 }
 
 struct Desktop {
     screen: Screen,
+    atlas: Atlas<'static>,
+    dark: bool,
+    /// Wallpaper colour per row, for the current appearance.
+    wall: [u32; MAX_H],
+    ramp: [u8; 2 * SHADOW],
     apps: [App; APPS],
     /// Home directory handle; copies go to the Assistant.
     home: u64,
     focus: usize,
-    status: Line,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
     wins: [(usize, usize, usize, usize); APPS],
     /// Drawing order, back to front; the focused window is last.
@@ -414,24 +612,29 @@ struct Desktop {
     /// Recent frames: (cycles, pixels drawn).
     frames: [(u64, u64); FRAME_SAMPLES],
     frame_count: usize,
-    /// The dock is shown (pointer near the bottom).
-    dock_visible: bool,
+    /// The dock icon under the pointer (its name shows above it).
+    hover: Option<usize>,
+    banner: Option<Banner>,
 }
 
 impl Desktop {
-    /// The starting layout: Files on the left; Crash Test and the Assistant
-    /// stacked on the right.
-    fn layout(w: usize, h: usize) -> [(usize, usize, usize, usize); APPS] {
-        let win_w = (w - 3 * MARGIN) / 2;
-        let top_y = BAR_H + MARGIN;
-        let full_h = h - top_y - BAR_H - MARGIN;
-        let half_h = (full_h - MARGIN) / 2;
-        [
-            (MARGIN, top_y, win_w, full_h),
-            (2 * MARGIN + win_w, top_y, win_w, half_h),
-            (2 * MARGIN + win_w, top_y + half_h + MARGIN, win_w, half_h),
-            NOTES_RECT,
-        ]
+    fn face(&self, id: FaceId) -> Face<'static> {
+        self.atlas.face(id).expect("checked at start-up")
+    }
+
+    fn theme(&self) -> &'static Theme {
+        if self.dark { &DARK } else { &LIGHT }
+    }
+
+    fn set_appearance(&mut self, dark: bool) {
+        self.dark = dark;
+        let t = self.theme();
+        let h = self.screen.h.max(2);
+        for (y, c) in self.wall[..h].iter_mut().enumerate() {
+            *c = blend(t.wall_top, t.wall_bottom, (y * 255 / (h - 1)) as u8);
+        }
+        self.full = true;
+        zoo_rt::log!("PeacockHandler: appearance {}", t.name);
     }
 
     /// Marks rectangle (x, y, w, h) for redrawing.
@@ -453,10 +656,15 @@ impl Desktop {
         self.damaged += 1;
     }
 
-    /// A window, with its border.
+    /// A window, with its shadow.
     fn damage_window(&mut self, i: usize) {
         let (x, y, w, h) = self.wins[i];
-        self.damage(x - 1, y - 1, w + 2, h + 2);
+        self.damage(
+            x.saturating_sub(MARGIN),
+            y.saturating_sub(MARGIN),
+            w + 2 * MARGIN,
+            h + 2 * MARGIN,
+        );
     }
 
     fn damage_pointer(&mut self) {
@@ -464,11 +672,36 @@ impl Desktop {
     }
 
     fn damage_menu_bar(&mut self) {
-        self.damage(0, 0, self.screen.w, BAR_H);
+        self.damage(0, 0, self.screen.w, MENU_H);
     }
 
-    fn damage_status(&mut self) {
-        self.damage(0, self.screen.h - BAR_H, self.screen.w, BAR_H);
+    fn dock_rect(&self) -> (usize, usize, usize, usize) {
+        zoo_abi::ui::dock_rect(self.screen.w, self.screen.h, APPS)
+    }
+
+    fn damage_dock(&mut self) {
+        let (x, y, w, h) = self.dock_rect();
+        // With the label above an icon.
+        self.damage(x, y.saturating_sub(40), w, h + 40);
+    }
+
+    fn banner_rect(&self) -> (usize, usize, usize, usize) {
+        (
+            self.screen.w - 16 - BANNER_W,
+            MENU_H + 10,
+            BANNER_W,
+            BANNER_H,
+        )
+    }
+
+    fn damage_banner(&mut self) {
+        let (x, y, w, h) = self.banner_rect();
+        self.damage(
+            x - MARGIN,
+            y.saturating_sub(MARGIN),
+            w + 2 * MARGIN,
+            h + 2 * MARGIN,
+        );
     }
 
     fn set_focus(&mut self, i: usize) {
@@ -490,25 +723,25 @@ impl Desktop {
         self.order = order;
     }
 
-    /// Topmost window under the pointer.
+    /// Topmost visible window under the pointer.
     fn window_at(&self, x: usize, y: usize) -> Option<usize> {
         self.order.iter().rev().copied().find(|&i| {
             let (wx, wy, ww, wh) = self.wins[i];
-            !self.apps[i].closed && x >= wx && x < wx + ww && y >= wy && y < wy + wh
+            self.apps[i].visible() && x >= wx && x < wx + ww && y >= wy && y < wy + wh
         })
     }
 
-    /// Top-left corner of window `i`'s close button.
-    fn close_button(&self, i: usize) -> (usize, usize) {
-        let (x, y, w, _) = self.wins[i];
-        (
-            x + w - CLOSE_GAP - CLOSE_SIZE,
-            y + (TITLE_H - CLOSE_SIZE) / 2,
-        )
+    /// The traffic light under the pointer in window `i`, if any.
+    fn light_at(&self, i: usize) -> Option<usize> {
+        (0..3).find(|&k| {
+            let (cx, cy) = zoo_abi::ui::light_centre(self.wins[i], k);
+            self.px.abs_diff(cx) <= LIGHT_D / 2 + 1 && self.py.abs_diff(cy) <= LIGHT_D / 2 + 1
+        })
     }
 
-    /// Double-click on a title bar: fill the space between the bars, or go
-    /// back to the size and place from before.
+    /// The green light or a title-bar double-click: fill the space between
+    /// the menu bar and the dock, or go back to the size and place from
+    /// before.
     fn toggle_zoom(&mut self, i: usize) {
         self.damage_window(i);
         self.drag = None;
@@ -519,13 +752,7 @@ impl Desktop {
             }
             None => {
                 self.unzoomed[i] = Some(self.wins[i]);
-                let (w, h) = (self.screen.w, self.screen.h);
-                self.wins[i] = (
-                    MARGIN,
-                    BAR_H + MARGIN,
-                    w - 2 * MARGIN,
-                    h - 2 * BAR_H - 2 * MARGIN,
-                );
+                self.wins[i] = zoo_abi::ui::zoomed(self.screen.w, self.screen.h);
                 zoo_rt::log!("PeacockHandler: zoomed {}", self.apps[i].label);
             }
         }
@@ -538,35 +765,17 @@ impl Desktop {
         self.px + RESIZE_CORNER >= x + w && self.py + RESIZE_CORNER >= y + h
     }
 
-    fn on_close_button(&self, i: usize) -> bool {
-        let (bx, by) = self.close_button(i);
-        self.px >= bx && self.px < bx + CLOSE_SIZE && self.py >= by && self.py < by + CLOSE_SIZE
-    }
-
-    /// The dock panel (x, y, w, h), centred above the status line.
-    fn dock_rect(&self) -> (usize, usize, usize, usize) {
-        let w = self.apps.len() * DOCK_SLOT_W + 2 * DOCK_PAD;
-        let x = (self.screen.w - w) / 2;
-        let y = self.screen.h - BAR_H - DOCK_PAD - DOCK_H;
-        (x, y, w, DOCK_H)
-    }
-
-    fn damage_dock(&mut self) {
-        let (x, y, w, h) = self.dock_rect();
-        self.damage(x - 1, y - 1, w + 2, h + 2);
-    }
-
-    /// The dock slot under the pointer.
+    /// The dock icon under the pointer.
     fn dock_slot(&self) -> Option<usize> {
-        let (x, y, w, h) = self.dock_rect();
-        let inside = self.px >= x + DOCK_PAD
-            && self.px < x + w - DOCK_PAD
-            && self.py >= y
-            && self.py < y + h;
-        inside.then(|| (self.px - x - DOCK_PAD) / DOCK_SLOT_W)
+        let (w, h) = (self.screen.w, self.screen.h);
+        (0..APPS).find(|&k| {
+            let (ix, iy) = zoo_abi::ui::dock_icon(w, h, APPS, k);
+            self.px >= ix && self.px < ix + DOCK_ICON && self.py >= iy && self.py < iy + DOCK_ICON
+        })
     }
 
-    /// A dock tile: opens a closed application, or raises a running one.
+    /// A dock icon: opens a closed application, shows a minimised one, or
+    /// raises a running one.
     fn dock_click(&mut self, i: usize) {
         self.damage_dock();
         if self.apps[i].closed {
@@ -579,11 +788,29 @@ impl Desktop {
             app.closed = false;
             zoo_rt::log!("PeacockHandler: opened {}", app.label);
             self.damage_window(i);
+        } else if self.apps[i].minimized {
+            self.apps[i].minimized = false;
+            zoo_rt::log!("PeacockHandler: showed {}", self.apps[i].label);
+            self.damage_window(i);
         }
         self.set_focus(i);
     }
 
-    /// The close button: ends the application without restarting it and
+    /// The topmost other visible window gets the focus.
+    fn focus_another(&mut self, i: usize) {
+        if self.focus == i
+            && let Some(j) = self
+                .order
+                .iter()
+                .rev()
+                .copied()
+                .find(|&j| j != i && self.apps[j].visible())
+        {
+            self.set_focus(j);
+        }
+    }
+
+    /// The red light: ends the application without restarting it and
     /// hides its window.
     fn close_app(&mut self, i: usize) {
         self.damage_window(i);
@@ -604,66 +831,26 @@ impl Desktop {
         app.running = false;
         app.closed = true;
         zoo_rt::log!("PeacockHandler: closed {}", app.label);
-        if self.focus == i
-            && let Some(j) = self
-                .order
-                .iter()
-                .rev()
-                .copied()
-                .find(|&j| j != i && !self.apps[j].closed)
-        {
-            self.set_focus(j);
-        }
+        self.focus_another(i);
     }
 
-    /// Tab: the next open window.
+    /// The yellow light: hides the window; the dock shows it again.
+    fn minimize(&mut self, i: usize) {
+        self.damage_window(i);
+        self.damage_menu_bar();
+        self.apps[i].minimized = true;
+        zoo_rt::log!("PeacockHandler: minimized {}", self.apps[i].label);
+        self.focus_another(i);
+    }
+
+    /// Tab: the next visible window.
     fn focus_next(&mut self) {
         let n = self.apps.len();
         if let Some(j) = (1..n)
             .map(|k| (self.focus + k) % n)
-            .find(|&j| !self.apps[j].closed)
+            .find(|&j| self.apps[j].visible())
         {
             self.set_focus(j);
-        }
-    }
-
-    fn draw_dock(&mut self) {
-        let (dx, dy, dw, dh) = self.dock_rect();
-        let s = &mut self.screen;
-        s.fill(dx - 1, dy - 1, dw + 2, dh + 2, BORDER);
-        s.fill(dx, dy, dw, dh, DOCK_BG);
-        for (i, app) in self.apps.iter().enumerate() {
-            let slot = dx + DOCK_PAD + i * DOCK_SLOT_W;
-            let tx = slot + (DOCK_SLOT_W - DOCK_TILE) / 2;
-            let ty = dy + DOCK_PAD;
-            s.fill(tx, ty, DOCK_TILE, DOCK_TILE, TILE[i]);
-            let initial = &app.label[..1];
-            s.text(
-                tx + (DOCK_TILE - CHAR_W) / 2,
-                ty + (DOCK_TILE - 16) / 2,
-                initial,
-                TILE_TEXT,
-                TILE[i],
-                CHAR_W,
-            );
-            let name_w = app.label.len() * CHAR_W;
-            s.text(
-                slot + (DOCK_SLOT_W - name_w) / 2,
-                ty + DOCK_TILE + 4,
-                app.label,
-                DOCK_TEXT,
-                DOCK_BG,
-                DOCK_SLOT_W,
-            );
-            if app.running {
-                s.fill(
-                    slot + DOCK_SLOT_W / 2 - 2,
-                    ty + DOCK_TILE + 24,
-                    4,
-                    4,
-                    DOCK_TEXT,
-                );
-            }
         }
     }
 
@@ -676,56 +863,25 @@ impl Desktop {
         self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
         let down = e.buttons & 1 != 0;
         if down && !self.held {
-            if self.dock_visible
-                && let Some(i) = self.dock_slot()
-            {
-                self.dock_click(i);
-            } else if let Some(i) = self.window_at(self.px, self.py)
-                && self.on_close_button(i)
-            {
-                self.close_app(i);
-            } else if let Some(i) = self.window_at(self.px, self.py) {
-                if i != self.focus {
-                    zoo_rt::log!("PeacockHandler: click focuses {}", self.apps[i].label);
-                }
-                self.set_focus(i);
-                let (wx, wy, ww, wh) = self.wins[i];
-                if self.py < wy + TITLE_H {
-                    let now = zoo_rt::ticks();
-                    let (t, lx, ly) = self.last_click;
-                    if now.saturating_sub(t) <= DOUBLE_CLICK
-                        && self.px.abs_diff(lx) <= 4
-                        && self.py.abs_diff(ly) <= 4
-                    {
-                        self.toggle_zoom(i);
-                        self.last_click = (0, 0, 0);
-                    } else {
-                        self.last_click = (now, self.px, self.py);
-                        self.drag = Some((i, self.px - wx, self.py - wy));
-                    }
-                } else if self.on_resize_corner(i) {
-                    self.resize = Some((i, wx + ww - self.px, wy + wh - self.py));
-                }
-            }
+            self.press();
         } else if down && let Some((i, ox, oy)) = self.resize {
             self.damage_window(i);
             let (x, y, _, _) = self.wins[i];
             // At least MIN_W x MIN_H, and inside the screen.
             let nw = (self.px + ox).saturating_sub(x).clamp(MIN_W, w - 1 - x);
-            let nh = (self.py + oy).saturating_sub(y).clamp(MIN_H, h - BAR_H - y);
+            let nh = (self.py + oy).saturating_sub(y).clamp(MIN_H, h - 1 - y);
             self.wins[i] = (x, y, nw, nh);
             self.damage_window(i);
         } else if down {
             if let Some((i, ox, oy)) = self.drag {
                 self.damage_window(i);
                 let (_, _, ww, wh) = self.wins[i];
-                // Keep the border on screen and part of the title bar
-                // reachable.
-                let x = (self.px as isize - ox as isize).clamp(1, w as isize - 48) as usize;
-                let y = (self.py as isize - oy as isize)
-                    .clamp(BAR_H as isize + 1, (h - BAR_H - TITLE_H) as isize)
-                    as usize;
-                self.wins[i] = (x, y, ww, wh);
+                // Keep part of the title bar reachable, below the menu bar.
+                let x =
+                    (self.px as isize - ox as isize).clamp(-(ww as isize) + 80, w as isize - 80);
+                let y =
+                    (self.py as isize - oy as isize).clamp(MENU_H as isize, (h - TITLE_H) as isize);
+                self.wins[i] = (x.max(0) as usize, y as usize, ww, wh);
                 self.damage_window(i);
             }
         } else if let Some((i, _, _)) = self.resize.take() {
@@ -747,27 +903,62 @@ impl Desktop {
         }
         self.held = down;
         self.damage_pointer();
-        // Like an auto-hiding dock: shown while the pointer is near it.
-        let show = self.py + DOCK_PAD >= self.dock_rect().1;
-        if show != self.dock_visible {
-            self.dock_visible = show;
+        let hover = self.dock_slot();
+        if hover != self.hover {
+            self.hover = hover;
             self.damage_dock();
         }
         true
     }
 
-    /// A white arrow with a black edge, its tip at the pointer.
-    fn draw_pointer(&mut self) {
-        let (px, py) = (self.px, self.py);
-        let s = &mut self.screen;
-        for r in 0..POINTER_H {
-            // Rows 0-11: the head, widening by one pixel a row; rows 12-16:
-            // the stem.
-            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
-            for c in from..=to {
-                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
-                s.plot(px + c, py + r, if edge { POINTER_EDGE } else { POINTER });
+    /// The left button went down.
+    fn press(&mut self) {
+        if let Some(i) = self.dock_slot() {
+            self.dock_click(i);
+            return;
+        }
+        if self.py < MENU_H {
+            let mut clock = Line::new();
+            write_clock(&mut clock);
+            let cw = self.face(FaceId::Regular13).width(clock.as_str());
+            let (sx, sy) = zoo_abi::ui::appearance_switch(self.screen.w, cw);
+            if self.px.abs_diff(sx) <= 9 && self.py.abs_diff(sy) <= 9 {
+                self.set_appearance(!self.dark);
             }
+            return;
+        }
+        let Some(i) = self.window_at(self.px, self.py) else {
+            return;
+        };
+        match self.light_at(i) {
+            Some(0) => return self.close_app(i),
+            Some(1) => return self.minimize(i),
+            Some(_) => {
+                self.set_focus(i);
+                return self.toggle_zoom(i);
+            }
+            None => {}
+        }
+        if i != self.focus {
+            zoo_rt::log!("PeacockHandler: click focuses {}", self.apps[i].label);
+        }
+        self.set_focus(i);
+        let (wx, wy, ww, wh) = self.wins[i];
+        if self.py < wy + TITLE_H {
+            let now = zoo_rt::ticks();
+            let (t, lx, ly) = self.last_click;
+            if now.saturating_sub(t) <= DOUBLE_CLICK
+                && self.px.abs_diff(lx) <= 4
+                && self.py.abs_diff(ly) <= 4
+            {
+                self.toggle_zoom(i);
+                self.last_click = (0, 0, 0);
+            } else {
+                self.last_click = (now, self.px, self.py);
+                self.drag = Some((i, self.px - wx, self.py - wy));
+            }
+        } else if self.on_resize_corner(i) {
+            self.resize = Some((i, wx + ww - self.px, wy + wh - self.py));
         }
     }
 
@@ -832,115 +1023,302 @@ impl Desktop {
 
     /// Draws everything, limited to the screen's clip rectangle.
     fn draw(&mut self) {
-        let (w, h) = (self.screen.w, self.screen.h);
-        let s = &mut self.screen;
-        s.fill(0, 0, w, h, DESKTOP);
+        let (cx0, cy0, cx1, cy1) = self.screen.clip;
+        for y in cy0..cy1 {
+            let c = self.wall[y];
+            self.screen.back[y * self.screen.w + cx0..y * self.screen.w + cx1].fill(c);
+        }
+        for k in 0..APPS {
+            let i = self.order[k];
+            if self.apps[i].visible() {
+                self.draw_window(i);
+            }
+        }
+        self.draw_menu_bar();
+        self.draw_banner();
+        self.draw_dock();
+        self.draw_pointer();
+    }
 
-        // Menu bar: product name, focused window, uptime.
-        s.fill(0, 0, w, BAR_H, BAR);
-        s.text(8, 4, "ZooOS", BAR_TEXT, BAR, 80);
-        let focused = if self.apps[self.focus].closed {
-            ""
-        } else {
-            self.apps[self.focus].title.as_str()
-        };
-        s.text(8 + 8 * CHAR_W, 4, focused, BAR_TEXT, BAR, w / 2);
+    fn draw_menu_bar(&mut self) {
+        let t = self.theme();
+        let w = self.screen.w;
+        if self.screen.clip.1 >= MENU_H {
+            return;
+        }
+        self.screen.fill(0, 0, w, MENU_H, zoo_abi::ui::bar_color(t));
+        let (bold, regular) = (self.face(FaceId::SemiBold13), self.face(FaceId::Regular13));
+        let base = 18;
+        self.draw_paw(18, 13, t.bar_text);
+        let app = &self.apps[self.focus];
+        let name = if app.visible() { app.label } else { "Finder" };
+        let mut x = self.screen.text(&bold, 40, base, name, t.bar_text, w / 2) + 22;
+        for m in MENUS {
+            x = self.screen.text(&regular, x, base, m, t.bar_text, w / 2) + 20;
+        }
         let mut clock = Line::new();
         write_clock(&mut clock);
-        s.text(
-            w.saturating_sub(CLOCK_COLS * CHAR_W),
-            4,
-            clock.as_str(),
-            BAR_TEXT,
-            BAR,
-            CLOCK_COLS * CHAR_W,
-        );
-
-        // Windows, back to front.
-        for i in self.order {
-            let app = &self.apps[i];
-            if app.closed {
-                continue;
+        let cw = regular.width(clock.as_str());
+        self.screen
+            .text(&regular, w - 16 - cw, base, clock.as_str(), t.bar_text, w);
+        // The appearance switch: a disc, half filled.
+        let (sx, sy) = zoo_abi::ui::appearance_switch(w, cw);
+        let (bx, by) = (sx - 7, sy - 7);
+        self.screen.disc(bx, by, 14, t.bar_text, t.bar_text);
+        self.screen
+            .disc(bx + 2, by + 2, 10, zoo_abi::ui::bar_color(t), t.bar_text);
+        // The right half filled: dark shown as filled.
+        for dy in 0..10 {
+            for dx in 5..10 {
+                let (qx, qy) = (dx.min(9 - dx), dy.min(9 - dy));
+                let c = corner_coverage(5, qx, qy);
+                self.screen
+                    .blend_px(bx + 2 + dx, by + 2 + dy, t.bar_text, c);
             }
-            let (x, win_y, win_w, win_h) = self.wins[i];
-            let (tbg, tfg) = if i == self.focus {
-                (TITLE_FOCUSED, TITLE_FOCUSED_TEXT)
+        }
+    }
+
+    /// A small paw print: the ZooOS mark.
+    fn draw_paw(&mut self, cx: usize, cy: usize, c: u32) {
+        let s = &mut self.screen;
+        s.disc(cx - 4, cy - 1, 9, c, c);
+        for (dx, dy) in [(-7isize, -5isize), (-3, -9), (2, -9), (6, -5)] {
+            let (x, y) = ((cx as isize + dx - 2) as usize, (cy as isize + dy) as usize);
+            s.disc(x, y, 5, c, c);
+        }
+    }
+
+    fn draw_window(&mut self, i: usize) {
+        let t = self.theme();
+        let focused = i == self.focus;
+        let (x, y, w, h) = self.wins[i];
+        let (cx0, cy0, cx1, cy1) = self.screen.clip;
+        if x + w + MARGIN <= cx0 || x >= cx1 + MARGIN || y + h + MARGIN <= cy0 || y >= cy1 + MARGIN
+        {
+            return;
+        }
+        let ramp = self.ramp;
+        self.screen.shadow(
+            (x, y, w, h),
+            if focused { t.shadow } else { t.shadow_blurred },
+            &ramp,
+        );
+        let all = [true; 4];
+        self.screen
+            .round_rect(x, y, w, h, RADIUS, t.content, 255, all);
+        let title = if focused { t.title } else { t.title_blurred };
+        self.screen.round_rect(
+            x,
+            y,
+            w,
+            TITLE_H,
+            RADIUS,
+            title,
+            255,
+            [true, true, false, false],
+        );
+        self.screen.fill(x, y + TITLE_H - 1, w, 1, t.separator);
+        self.screen.round_outline(x, y, w, h, RADIUS, t.outline);
+        for (k, &colours) in LIGHTS.iter().enumerate() {
+            let (lx, ly) = zoo_abi::ui::light_centre(self.wins[i], k);
+            let (fill, rim) = if focused {
+                colours
             } else {
-                (TITLE_UNFOCUSED, TITLE_UNFOCUSED_TEXT)
+                (t.light_off, t.light_off)
             };
-            s.fill(x - 1, win_y - 1, win_w + 2, win_h + 2, BORDER);
-            s.fill(x, win_y, win_w, TITLE_H, tbg);
-            // Title text stops short of the close button.
-            s.text(
-                x + 8,
-                win_y + 4,
-                app.title.as_str(),
-                tfg,
-                tbg,
-                win_w - 16 - CLOSE_SIZE - CLOSE_GAP,
-            );
-            let (bx, by) = (
-                x + win_w - CLOSE_GAP - CLOSE_SIZE,
-                win_y + (TITLE_H - CLOSE_SIZE) / 2,
-            );
-            for cy in 0..CLOSE_SIZE {
-                for cx in 0..CLOSE_SIZE {
-                    // A disc: (2c - 11)^2 summed within 12^2.
-                    let (ex, ey) = (2 * cx as isize - 11, 2 * cy as isize - 11);
-                    if ex * ex + ey * ey <= 144 {
-                        s.plot(bx + cx, by + cy, CLOSE_BUTTON);
-                    }
-                }
-            }
-            s.fill(x, win_y + TITLE_H, win_w, win_h - TITLE_H, CONTENT);
-            let top = win_y + TITLE_H + 6;
-            if !app.running {
-                s.text(
-                    x + 8,
-                    top + 2,
-                    "(not running)",
-                    CONTENT_TEXT,
-                    CONTENT,
-                    win_w - 16,
-                );
-                continue;
-            }
-            for (li, line) in app.lines[..app.count].iter().enumerate() {
-                let ly = top + li * LINE_H;
-                if ly + LINE_H > win_y + win_h {
-                    break;
-                }
-                let bg = if app.selected == Some(li) {
-                    SELECTED
-                } else {
-                    CONTENT
-                };
-                if bg != CONTENT {
-                    s.fill(x + 2, ly, win_w - 4, LINE_H, bg);
-                }
-                s.text(x + 8, ly + 2, line.as_str(), CONTENT_TEXT, bg, win_w - 16);
-            }
+            self.screen
+                .disc(lx - LIGHT_D / 2, ly - LIGHT_D / 2, LIGHT_D, fill, rim);
         }
+        let medium = self.face(FaceId::Medium13);
+        let regular = self.face(FaceId::Regular13);
+        let app = &self.apps[i];
+        let tw = medium.width(app.title.as_str());
+        let lights_end = x + zoo_abi::ui::LIGHT_X + 2 * zoo_abi::ui::LIGHT_GAP + 16;
+        let tx = (x + w.saturating_sub(tw) / 2).max(lights_end);
+        let tc = if focused {
+            t.title_text
+        } else {
+            t.title_text_blurred
+        };
+        self.screen
+            .text(&medium, tx, y + 18, app.title.as_str(), tc, x + w - 12);
+        let right = x + w - TEXT_X;
+        if !app.running {
+            let top = zoo_abi::ui::line_top(self.wins[i], 0);
+            self.screen.text(
+                &regular,
+                x + TEXT_X,
+                top + BASELINE,
+                "Not running",
+                t.text_dim,
+                right,
+            );
+            return;
+        }
+        for li in 0..app.count {
+            let top = zoo_abi::ui::line_top(self.wins[i], li);
+            if top + LINE_H > y + h - 4 {
+                break;
+            }
+            let selected = app.selected == Some(li);
+            let fg = if selected && focused {
+                t.select_text
+            } else {
+                t.text
+            };
+            if selected {
+                let bg = if focused { t.select } else { t.select_blurred };
+                self.screen
+                    .round_rect(x + 8, top, w - 16, LINE_H, 5, bg, 255, all);
+            }
+            self.screen.text(
+                &regular,
+                x + TEXT_X,
+                top + BASELINE,
+                self.apps[i].lines[li].as_str(),
+                fg,
+                right,
+            );
+        }
+    }
 
-        // Status line.
-        s.fill(0, h - BAR_H, w, BAR_H, BAR);
-        s.text(
-            8,
-            h - BAR_H + 4,
-            self.status.as_str(),
-            BAR_TEXT,
-            BAR,
-            w - 16,
-        );
-        if self.dock_visible {
-            self.draw_dock();
+    fn draw_banner(&mut self) {
+        let Some(b) = &self.banner else { return };
+        let (title, body) = (b.title, b.body.as_str());
+        let t = self.theme();
+        let (x, y, w, h) = self.banner_rect();
+        if !self.screen.visible(
+            x - MARGIN,
+            y.saturating_sub(MARGIN),
+            w + 2 * MARGIN,
+            h + 2 * MARGIN,
+        ) {
+            return;
         }
-        self.draw_pointer();
+        let ramp = self.ramp;
+        self.screen.shadow((x, y, w, h), t.shadow_blurred, &ramp);
+        self.screen
+            .round_rect(x, y, w, h, 12, t.banner, 255, [true; 4]);
+        self.screen.round_outline(x, y, w, h, 12, t.outline);
+        let bold = self.face(FaceId::SemiBold13);
+        let regular = self.face(FaceId::Regular13);
+        self.screen
+            .text(&bold, x + 16, y + 24, title, t.text, x + w - 12);
+        self.screen
+            .text(&regular, x + 16, y + 44, body, t.text, x + w - 12);
+    }
+
+    fn draw_dock(&mut self) {
+        let t = self.theme();
+        let (sw, sh) = (self.screen.w, self.screen.h);
+        let (dx, dy, dw, dh) = self.dock_rect();
+        // With the name shown above an icon.
+        if !self.screen.visible(dx, dy.saturating_sub(40), dw, dh + 40) {
+            return;
+        }
+        self.screen
+            .round_rect(dx, dy, dw, dh, 18, t.dock_tint, t.dock_alpha, [true; 4]);
+        self.screen.round_outline(dx, dy, dw, dh, 18, t.outline);
+        for k in 0..APPS {
+            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+            self.draw_icon(k, ix, iy);
+            if self.apps[k].running {
+                let c = t.bar_text;
+                self.screen
+                    .disc(ix + DOCK_ICON / 2 - 2, iy + DOCK_ICON + 2, 4, c, c);
+            }
+        }
+        if let Some(k) = self.hover {
+            let small = self.face(FaceId::Regular13);
+            let label = self.apps[k].label;
+            let lw = small.width(label) + 20;
+            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+            let lx = (ix + DOCK_ICON / 2).saturating_sub(lw / 2);
+            let ly = iy - 10 - 26;
+            self.screen
+                .round_rect(lx, ly, lw, 24, 6, t.tooltip, 255, [true; 4]);
+            self.screen.round_outline(lx, ly, lw, 24, 6, t.outline);
+            self.screen
+                .text(&small, lx + 10, ly + 17, label, t.tooltip_text, lx + lw);
+        }
+    }
+
+    /// An application's dock icon: a rounded square in its colour with a
+    /// simple white mark.
+    fn draw_icon(&mut self, k: usize, x: usize, y: usize) {
+        let s = &mut self.screen;
+        let d = DOCK_ICON;
+        if !s.visible(x, y, d, d) {
+            return;
+        }
+        s.round_rect(x, y, d, d, 12, ICON[k], 255, [true; 4]);
+        // A lighter top half, as if lit from above.
+        s.round_rect(x, y, d, d / 2, 12, 0xFFFFFF, 28, [true, true, false, false]);
+        let white = 0xFFFFFF;
+        match k {
+            // Files: a folder.
+            0 => {
+                s.round_rect(
+                    x + 11,
+                    y + 16,
+                    14,
+                    6,
+                    2,
+                    white,
+                    230,
+                    [true, true, false, false],
+                );
+                s.round_rect(x + 11, y + 20, 30, 20, 3, white, 255, [true; 4]);
+            }
+            // Crash Test: an exclamation mark.
+            1 => {
+                s.round_rect(x + d / 2 - 3, y + 12, 6, 20, 3, white, 255, [true; 4]);
+                s.disc(x + d / 2 - 3, y + 36, 6, white, white);
+            }
+            // Assistant: a four-pointed sparkle.
+            2 => {
+                let (cx, cy) = (x + d / 2, y + d / 2);
+                for r in 0..16usize {
+                    let half = (16 - r) / 4;
+                    s.fill(cx - half, cy - r, 2 * half + 1, 1, white);
+                    s.fill(cx - half, cy + r, 2 * half + 1, 1, white);
+                    s.fill(cx - r, cy - half, 1, 2 * half + 1, white);
+                    s.fill(cx + r, cy - half, 1, 2 * half + 1, white);
+                }
+            }
+            // Notes: a page with lines.
+            _ => {
+                s.round_rect(x + 10, y + 16, d - 20, d - 26, 4, white, 255, [true; 4]);
+                for l in 0..4 {
+                    s.fill(x + 16, y + 24 + l * 6, d - 32, 2, 0xC9C9CE);
+                }
+            }
+        }
+    }
+
+    /// A black arrow with a white edge, its tip at the pointer.
+    fn draw_pointer(&mut self) {
+        let (px, py) = (self.px, self.py);
+        let s = &mut self.screen;
+        for r in 0..POINTER_H {
+            // Rows 0-11: the head, widening by one pixel a row; rows 12-16:
+            // the stem.
+            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
+            for c in from..=to {
+                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
+                s.blend_px(
+                    px + c,
+                    py + r,
+                    if edge { POINTER_EDGE } else { POINTER },
+                    255,
+                );
+            }
+        }
     }
 
     fn send_key(&self, key: Key) {
         let app = &self.apps[self.focus];
-        if app.running {
+        if app.running && app.visible() {
             let mut l = Line::new();
             key.encode(&mut l);
             // A full queue drops the key; the app is busy or stuck.
@@ -952,7 +1330,7 @@ impl Desktop {
     fn app_ended(&mut self, i: usize) {
         self.damage_window(i);
         self.damage_dock();
-        self.damage_status();
+        self.damage_banner();
         if i == self.focus {
             self.damage_menu_bar();
         }
@@ -962,26 +1340,36 @@ impl Desktop {
         let outcome = wait(app.process);
         let _ = close(app.process);
         let mut status = Line::new();
+        let mut body = Line::new();
         if app.restarts < APP_RESTARTS {
             app.restarts += 1;
+            let how = if outcome == Err(Error::Crashed) {
+                "crashed"
+            } else {
+                "ended"
+            };
             let _ = write!(
                 status,
                 "{} {}; restarted ({} of {})",
-                app.label,
-                if outcome == Err(Error::Crashed) {
-                    "crashed"
-                } else {
-                    "ended"
-                },
-                app.restarts,
-                APP_RESTARTS
+                app.label, how, app.restarts, APP_RESTARTS
+            );
+            let _ = write!(
+                body,
+                "It {} and was restarted ({} of {}).",
+                how, app.restarts, APP_RESTARTS
             );
             app.start(self.home);
         } else {
             let _ = write!(status, "{} ended; restart limit reached", app.label);
+            let _ = write!(body, "It ended; restart limit reached.");
         }
         zoo_rt::log!("PeacockHandler: {}", status.as_str());
-        self.status = status;
+        self.banner = Some(Banner {
+            title: app.label,
+            body,
+            until: zoo_rt::ticks() + BANNER_TICKS,
+        });
+        self.damage_banner();
     }
 }
 
@@ -1002,6 +1390,22 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             info.bytes_per_pixel
         );
         return 3;
+    }
+    let Some(atlas) = load_atlas() else {
+        let _ = log("PeacockHandler: no font atlas (ui/fonts.zfnt) in the initrd");
+        return 4;
+    };
+    if [
+        FaceId::Regular13,
+        FaceId::Medium13,
+        FaceId::SemiBold13,
+        FaceId::Regular11,
+    ]
+    .iter()
+    .any(|&f| atlas.face(f).is_none())
+    {
+        let _ = log("PeacockHandler: the font atlas lacks a face");
+        return 4;
     }
     // A screen larger than the back buffer: the desktop uses its top-left
     // part and the rest is painted once (docs/usb-boot.md).
@@ -1039,6 +1443,10 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             back: &mut back[..w * h],
             clip: (0, 0, w, h),
         },
+        atlas,
+        dark: false,
+        wall: [0; MAX_H],
+        ramp: shadow_ramp(),
         apps: [
             App::new("Files", "files", true),
             App::new("Crash Test", "crash-test", false),
@@ -1047,8 +1455,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         ],
         home,
         focus: 0,
-        status: Line::new(),
-        wins: Desktop::layout(w, h),
+        wins: zoo_abi::ui::initial_windows(w, h),
         order: [3, 1, 2, 0],
         px: w / 2,
         py: h / 2,
@@ -1063,12 +1470,10 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         always_full: false,
         frames: [(0, 0); FRAME_SAMPLES],
         frame_count: 0,
-        dock_visible: false,
+        hover: None,
+        banner: None,
     };
-    let _ = write!(
-        desk.status,
-        "Tab: next window   Arrows/Enter/Backspace: use window   Esc: leave the desktop"
-    );
+    desk.set_appearance(false);
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
@@ -1099,6 +1504,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 Some(DecodedKey::Unicode('\u{1b}')) => {
                     let _ = log("PeacockHandler: leaving the desktop");
                     return 0;
+                }
+                // The appearance (docs/u1-design.md).
+                Some(DecodedKey::RawKey(KeyCode::F8)) => {
+                    desk.set_appearance(!desk.dark);
+                    dirty = true;
                 }
                 // Test keys for frame timing (docs/d2-design.md §3-4).
                 Some(DecodedKey::RawKey(KeyCode::F9)) => {
@@ -1165,11 +1575,19 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             }
         }
 
-        // Clock.
+        // Clock, and banners that have had their time.
         let second = zoo_rt::ticks() / 100;
         if second != last_second {
             last_second = second;
             desk.damage_menu_bar();
+            if desk
+                .banner
+                .as_ref()
+                .is_some_and(|b| zoo_rt::ticks() >= b.until)
+            {
+                desk.damage_banner();
+                desk.banner = None;
+            }
             dirty = true;
         }
 

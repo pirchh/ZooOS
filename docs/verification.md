@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L10d section
-(version 0.53.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U1 section
+(version 0.54.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,75 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 1 results: a macOS-style desktop (version 0.54.0)
+
+Design: docs/u1-design.md. Inter 4.1 from tools/fonts/README.md
+(checksums there).
+
+**Screen:** `ZOO_OS INFO console 1920x1080` and `PeacockHandler: display
+1920x1080 acquired`. The big-screen case still gets 2560×1600 and uses
+1920×1200 of it.
+
+**Checks moved to the new look:**
+- `screen::find_ui` renders expected text from the same atlas with the
+  same layout code (`zoo_abi::font::Face::draw`) and searches the
+  screenshot for an exact match.
+- Positions come from `zoo_abi::ui` through a pointer tracker.
+- Cases updated: `desktop`, `mouse`, `redraw`, `dock`, `notes-1`,
+  `notes-2`, `notes-cursor`, `resize`, `zoom`, `files-browse`,
+  `menu-clock`, `assistant`, `assistant-model`, `big-screen`,
+  `usb-desktop`.
+- Crash notices are now checked in the banner, and the dock check uses
+  hover names and running dots.
+
+**New case `appearance`:** F8 turns the desktop dark (`Files` title,
+content, selection, menu bar and wallpaper in the dark palette, nothing
+left in the light one). Then a click on the menu bar's switch turns it
+light again.
+
+**`redraw` strengthened:** the pointer now also ends a crawl across a
+text line with its area over the top two rows of the capitals. Without
+that, the first negative control below passed.
+
+**Speed** (`--accel whpx --case frames`, three runs each; numbers in
+docs/u1-design.md §4):
+- full repaint: 9.4–9.9 M cycles for 2.07 M px;
+- pointer move: 59,149–62,200 cycles, against 31,158–31,718 in D2 at
+  1280×800;
+- a first version that drew whole shapes outside the redrawn area took
+  751,112–962,589.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 59 cases `OK`;
+`assistant-live`, `wine-home-1`, `wine-home-2` `SKIP`. Then with `--accel
+whpx`: `assistant-live` 31.6 s, `wine-home-1` 63.9 s, `wine-home-2` 11.5 s,
+all pass.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed, including the atlas test
+  (`font::tests::atlas_parses_and_lays_out`).
+- `cargo clippy -D warnings`: kernel (both modes), `xtask`, `zoo-user`,
+  `zoo-abi`, 0 warnings.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| Text skipped unless the redrawn area reaches 8 px above its baseline | First `OK` (the check could not see it); after strengthening `redraw`: `FAIL`, `2 of 2023680 pixels differ from the partial redraws, first at (1070, 547)` |
+| Switching appearance without a full repaint | `FAIL appearance`: ``screen 1-dark: `Files` not on screen`` |
+
+**Found during the work:**
+- The checker first kept one coverage value per pixel, but neighbouring
+  glyphs overlap: in `Assistant` one pixel is covered by both `n` and
+  `t`, and the screen blends both. The checker now blends in drawing
+  order.
+- A panic (`slice index starts at 1967008 but ends at 1966943`): the
+  translucency helper built a backwards slice for a rectangle outside the
+  redrawn area.
+- The atlas parser read the face header at the wrong offsets (10/14/18 for
+  8/12/16); the new atlas test exercises it.
+- Inter 4 has no legacy `kern` table, so the atlas carries no kerning.
 
 ## Linux step 10d results: Wine's prefix in the home folder (version 0.53.0)
 
