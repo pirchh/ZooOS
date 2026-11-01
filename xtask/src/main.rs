@@ -30,11 +30,13 @@ commands:
   usb-image                 build the everyday (fast-boot) image as
                             build/usb/zoo-os-usb.img for a USB stick; writes
                             no device (docs/usb-boot.md)
-  run [--mode M | --panic] [--timeout-secs N]
+  run [--mode M | --panic | --model] [--accel tcg|whpx|kvm] [--timeout-secs N]
                             build one mode (default fast-boot: no boot-check
                             programs), then boot it in QEMU
                             with COM1 on this terminal
-                            (Ctrl+C stops QEMU; no timeout unless given)
+                            (Ctrl+C stops QEMU; no timeout unless given).
+                            --model: the normal image with the assistant's
+                            model (tools/models/); use with --accel
   infer [--prompt TEXT] [--tokens N]
                             run the model on the host (tools/models/), print
                             prompt/output token ids, top logits and timing
@@ -123,7 +125,35 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 (false, [one]) => *one,
                 _ => return Err("run takes exactly one mode, not `all`".into()),
             };
+            // `--accel` was accepted here but never applied, so every
+            // session ran under TCG (docs/verification.md, run fix).
+            if let Some(a) = &opts.accel {
+                qemu::set_accel(a);
+            }
             let tools = config::Tools::resolve_for_qemu()?;
+            if opts.model {
+                // The normal image with the assistant's model added (as the
+                // `assistant-live` case uses), about 410 MB larger.
+                if opts.mode.is_some() || opts.panic {
+                    return Err("--model uses the normal image; drop --mode/--panic".into());
+                }
+                let data = infer::load_model(&root)?;
+                let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
+                let img = image::build_model_image(
+                    &root,
+                    &tools,
+                    &data,
+                    infer::GUEST_PROMPT,
+                    &r.output_ids,
+                )?;
+                return qemu::run_interactive(
+                    &root,
+                    &tools,
+                    image::Mode::Normal,
+                    &img,
+                    opts.timeout,
+                );
+            }
             let img = image::build(&root, &tools, mode)?;
             qemu::run_interactive(&root, &tools, mode, &img, opts.timeout)
         }
@@ -226,6 +256,7 @@ struct Options {
     tokens: Option<usize>,
     accel: Option<String>,
     skip_model: bool,
+    model: bool,
     case: Option<String>,
     system_file: Option<String>,
 }
@@ -244,6 +275,7 @@ impl Options {
                 "--mode" => o.mode = Some(value("--mode")?),
                 "--panic" => o.panic = true,
                 "--skip-model" => o.skip_model = true,
+                "--model" => o.model = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
