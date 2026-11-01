@@ -318,6 +318,64 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
     Ok(img)
 }
 
+/// The Wine image (docs/linux10-design.md): the fast-boot kernel with the
+/// normal initrd plus the exported Wine build (`build/wine/`, made by
+/// tools/wine/export.sh). Wine's programs name musl's libc as
+/// `libc.musl-x86_64.so.1` (Alpine's name); musl's loader treats any
+/// `libc.` name as itself, so no file of that name is needed. `None`
+/// without the export.
+pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, String> {
+    let export = root.join("build").join("wine").join("wine-11.0-zooos.tar");
+    if !export.is_file() {
+        return Ok(None);
+    }
+    let _ = build(root, tools, Mode::FastBoot)?;
+    let base = initrd(root, tools)?;
+    let mut archive =
+        std::fs::read(&base).map_err(|e| format!("cannot read {}: {e}", base.display()))?;
+    archive.truncate(archive.len().saturating_sub(2 * zoo_abi::tar::BLOCK));
+    let wine =
+        std::fs::read(&export).map_err(|e| format!("cannot read {}: {e}", export.display()))?;
+    let mut files = 0;
+    for e in zoo_abi::tar::read(&wine) {
+        let e = e.map_err(|e| format!("{}: {e:?}", export.display()))?;
+        let header = zoo_abi::tar::header(e.name, e.data.len())
+            .ok_or_else(|| format!("cannot make a tar header for {}", e.name))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(e.data);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+        files += 1;
+    }
+    archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
+    for e in zoo_abi::tar::read(&archive) {
+        e.map_err(|e| format!("wine initrd self-check failed: {e:?}"))?;
+    }
+    let out_dir = root.join("build").join("wine");
+    let initrd_path = out_dir.join("initrd-wine.tar");
+    std::fs::write(&initrd_path, &archive)
+        .map_err(|e| format!("cannot write {}: {e}", initrd_path.display()))?;
+    let elf = root
+        .join("target")
+        .join(format!("kernel-{}", Mode::FastBoot.name()))
+        .join(KERNEL_TARGET)
+        .join("release")
+        .join(KERNEL_PACKAGE);
+    let img = out_dir.join("zoo-os-wine-uefi.img");
+    bootloader::UefiBoot::new(&elf)
+        .set_ramdisk(&initrd_path)
+        .create_disk_image(&img)
+        .map_err(|e| format!("failed to create {}: {e:#}", img.display()))?;
+    println!(
+        "[build] wine image ({files} Wine files, initrd {} MB) -> {}",
+        archive.len() >> 20,
+        img.display()
+    );
+    Ok(Some(img))
+}
+
 /// The model image (docs/m5b-design.md §5): the normal kernel with an
 /// initrd that also holds the model and `test/elephant.txt` (the prompt and
 /// the token ids the host engine produced for it). Kept separate so the

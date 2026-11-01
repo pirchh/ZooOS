@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -21,7 +22,21 @@ static int by_name(const void *a, const void *b) {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
-int main(void) {
+extern char **environ;
+
+int main(int argc, char **argv) {
+    /* The argument strings, then the environment strings, lie one after
+     * another in increasing order, as Linux lays them out (programs that
+     * rewrite their title rely on it; docs/linux10-design.md). */
+    for (int k = 0; k + 1 < argc; k++)
+        if (argv[k + 1] != argv[k] + strlen(argv[k]) + 1) return fail(5, "argument layout");
+    if (environ[0] != argv[argc - 1] + strlen(argv[argc - 1]) + 1) return fail(6, "environment layout");
+
+    /* Resource limits and the file-creation mask (docs/linux10-design.md). */
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur != 64) return fail(7, "getrlimit");
+    if (umask(077) != 022 || umask(022) != 077) return fail(8, "umask");
+
     struct utsname u;
     if (uname(&u)) return fail(10, "uname");
     printf("SkuaTest: uname %s %s\n", u.sysname, u.machine);

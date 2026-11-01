@@ -146,6 +146,8 @@ impl Otter {
         let mut out = Vec::new();
         for i in 0.. {
             match dir_list(self.home, path, i) {
+                // Hidden names (`.tmp`, Wine's `.wine`), as in macOS.
+                Ok(e) if e.name().starts_with('.') => {}
                 Ok(e) => out.push(e),
                 Err(Error::NotFound) if dir_stat(self.home, path).is_ok() => break,
                 Err(e) => return Err(e),

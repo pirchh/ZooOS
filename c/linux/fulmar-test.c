@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <unistd.h>
 
 static int fail(int code, const char *what) {
@@ -90,6 +91,24 @@ int main(void) {
     if (ftruncate(fd, 18)) return fail(46, "ftruncate");
     close(fd);
     if (stat("notes.txt", &st) || st.st_size != 18) return fail(47, "size after ftruncate");
+
+    /* pwrite/pread at an offset leave the position alone
+     * (docs/linux10-design.md). */
+    fd = open("notes.txt", O_RDWR);
+    if (fd < 0) return fail(48, "open O_RDWR");
+    if (pwrite(fd, "line", 4, 0) != 4) return fail(49, "pwrite");
+    char four[5] = {0};
+    if (pread(fd, four, 4, 5) != 4 || strcmp(four, "one\n") != 0) return fail(55, "pread");
+    if (lseek(fd, 0, SEEK_CUR) != 0) return fail(56, "position moved by pread/pwrite");
+    close(fd);
+    /* fchdir to an open folder, and statfs. */
+    int dfd = open("/home/user", O_RDONLY | O_DIRECTORY);
+    if (dfd < 0 || fchdir(dfd) != 0) return fail(57, "fchdir");
+    close(dfd);
+    if (access("Fulmar/notes.txt", F_OK) != 0) return fail(58, "relative path after fchdir");
+    chdir("/home/user/Fulmar");
+    struct statfs sfs;
+    if (statfs("/home/user", &sfs) != 0 || sfs.f_bsize != 4096) return fail(59, "statfs");
 
     /* 1 MiB through write and read, timed in CPU cycles (docs/f1-design.md). */
     static unsigned char mib[1 << 20], mib2[1 << 20];

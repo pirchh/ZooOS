@@ -238,19 +238,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=6",
     ]);
-    let mut fast_boot = expect(Mode::FastBoot, &fast_head);
-    fast_boot
-        .then_any_order(&[
+    let fast_boot_desktop_exits = |m: Mode| {
+        let mut e = expect(m, &fast_head);
+        e.then_any_order(&[
             "ZOO_OS PROC exit pid=7 name=files code=0",
             "ZOO_OS PROC exit pid=8 name=crash-test code=0",
             "ZOO_OS PROC exit pid=9 name=assistant code=0",
             "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
-        ])
-        .then(&[
-            "ZOO_OS SHELL line=run tern-test fast",
-            "ZOO_OS PROC start pid=10 name=tern-test",
-            "ZOO_OS PROC exit pid=10 name=tern-test code=0",
         ]);
+        e
+    };
+    let mut fast_boot = fast_boot_desktop_exits(Mode::FastBoot);
+    fast_boot.then(&[
+        "ZOO_OS SHELL line=run tern-test fast",
+        "ZOO_OS PROC start pid=10 name=tern-test",
+        "ZOO_OS PROC exit pid=10 name=tern-test code=0",
+    ]);
     let mut keyboard = normal.clone();
     keyboard.then(&["ZOO_OS SHELL line=echo hi", "ZOO_OS SHELL line=mem"]);
     let mut scroll = normal.clone();
@@ -321,7 +324,40 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         }
     };
 
+    // Wine (docs/linux10-design.md), when tools/wine/export.sh has run.
+    let wine_image = image::build_wine_image(root, tools)?;
+    let mut wine_version = fast_boot_desktop_exits(Mode::FastBoot);
+    wine_version.then(&[
+        "ZOO_OS SHELL line=linux /usr/bin/wine --version",
+        "ZOO_OS PROC start pid=10 name=wine",
+        "ZOO_OS PROC exit pid=10 name=wine code=0",
+    ]);
+
     let cases = [
+        Case {
+            name: "wine-version",
+            mode: Mode::FastBoot,
+            custom_image: wine_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: wine_version,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "Wine 11.0 (built for musl) starts under musl's loader and prints its version",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::Settle(QUIET),
+                    Action::Keys(vec!["esc"]),
+                    Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+                    Action::Settle(QUIET),
+                    Action::Keys(typed("linux /usr/bin/wine --version")),
+                    Action::WaitContains("wine-11.0".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=10 name=wine code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
         Case {
             name: "normal",
             mode: Mode::Normal,
@@ -792,7 +828,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Keys(typed("linux skua-test")),
                     Action::WaitContains("SkuaTest: uname Linux x86_64".into()),
                     Action::WaitContains("SkuaTest: HOME=/home/user USER=user".into()),
-                    Action::WaitContains("SkuaTest: /home/user: Documents Music Photos".into()),
+                    Action::WaitContains("SkuaTest: /home/user: .tmp Documents Music Photos".into()),
                     Action::WaitContains(
                         "SkuaTest: cwd /home/user; Documents/notes.txt starts \"Shopping: flour, eggs, milk.\""
                             .into(),
@@ -1434,6 +1470,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
+        if c.name.starts_with("wine-") && c.custom_image.is_none() {
+            let line = format!(
+                "SKIP  {:<22} not run: no Wine export in build/wine (tools/wine/README.md)
+",
                 c.name
             );
             print!("{line}");
@@ -2937,6 +2983,7 @@ fn typed(text: &str) -> Vec<&'static str> {
             '-' => "minus",
             '/' => "slash",
             '.' => "dot",
+            '%' => "shift+5",
             other => panic!("typed: no key for {other:?}"),
         })
         .chain(["ret"])

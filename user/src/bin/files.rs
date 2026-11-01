@@ -128,8 +128,9 @@ fn main(channel: u64, home: u64) -> u8 {
 /// Fills `entries` with the folder at `path`; returns how many.
 fn list(home: u64, path: &str, entries: &mut [Option<Entry>]) -> usize {
     let mut count = 0;
+    let mut index = 0u64;
     while count < entries.len() {
-        let e: DirEntry = match dir_list(home, path, count as u64) {
+        let e: DirEntry = match dir_list(home, path, index) {
             Ok(e) => e,
             Err(Error::NotFound) => break,
             Err(e) => {
@@ -137,7 +138,12 @@ fn list(home: u64, path: &str, entries: &mut [Option<Entry>]) -> usize {
                 break;
             }
         };
+        index += 1;
         let len = (e.name_len as usize).min(MAX_DIR_NAME);
+        // Hidden names (`.tmp`, Wine's `.wine`) are not shown, as in macOS.
+        if len > 0 && e.name[0] == b'.' {
+            continue;
+        }
         entries[count] = Some(Entry {
             name: e.name,
             len,
