@@ -116,7 +116,25 @@ pub mod sys {
     /// cycles from a mouse event's arrival to `MOUSE_READ`) to `a1` and
     /// restarts the counts. A measurement aid (docs/u1b-design.md).
     pub const INPUT_LATENCY: u64 = 65;
+    /// Display owner, when `DisplayInfo::flags` has `DISPLAY_FLUSH`
+    /// (docs/gpu1-design.md): shows rectangle `a1` = x | y << 16 |
+    /// w << 32 | h << 48 of the display memory.
+    pub const DISPLAY_FLUSH: u64 = 66;
+    /// Display owner, with `DISPLAY_HW_CURSOR`: sets the cursor image
+    /// (`a1`: `CURSOR_SIZE`² pixels of 0xAARRGGBB), its hot spot (`a2` =
+    /// x | y << 16) and position (`a3` = x | y << 16).
+    pub const CURSOR_SET: u64 = 67;
+    /// Display owner, with `DISPLAY_HW_CURSOR`: moves the cursor to
+    /// (`a1`, `a2`).
+    pub const CURSOR_MOVE: u64 = 68;
 }
+
+/// The hardware cursor image is `CURSOR_SIZE` x `CURSOR_SIZE` pixels.
+pub const CURSOR_SIZE: usize = 64;
+/// `DisplayInfo::flags`: changes show only after `DISPLAY_FLUSH`.
+pub const DISPLAY_FLUSH_NEEDED: u64 = 1;
+/// `DisplayInfo::flags`: a hardware cursor (`CURSOR_SET`, `CURSOR_MOVE`).
+pub const DISPLAY_HW_CURSOR: u64 = 2;
 
 /// Most blocks in one `BLOCK_READ_RUN`/`BLOCK_WRITE_RUN`.
 pub const BLOCK_RUN_MAX: usize = 16;
@@ -245,6 +263,8 @@ pub struct DisplayInfo {
     pub stride: u64,
     pub bytes_per_pixel: u64,
     pub format: u64,
+    /// `DISPLAY_FLUSH_NEEDED`, `DISPLAY_HW_CURSOR`.
+    pub flags: u64,
 }
 
 /// Where `mem_alloc` places a process's heap, and its per-process limit.

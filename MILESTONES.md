@@ -123,7 +123,8 @@ and verification:
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U3 | Finder-style Files; restyled Notes and Assistant | proposed |
 | U4 | Menus that open, Command-key shortcuts, animated window moves, saved appearance | proposed |
-| U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; GPU cursor plane (virtio-gpu in QEMU first) so the pointer moves without a redraw | proposed |
+| GPU1 | virtio-gpu (via `virtio-vga`) for the desktop: flushed updates and a hardware cursor the host draws; used by `run` (docs/gpu1-design.md) | done 2026-11-01 |
+| U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; cursor planes on real GPUs (per GPU family) | proposed |
 
 ## Services (owner direction 2026-10-30)
 

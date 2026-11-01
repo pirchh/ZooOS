@@ -40,6 +40,27 @@ pub enum Usb {
 
 static USB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
+/// The display device of the next machine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Display {
+    /// QEMU's standard VGA: a plain framebuffer, as on real hardware's
+    /// firmware framebuffer.
+    Vga,
+    /// `virtio-vga`: VGA for the firmware and console, virtio-gpu (flushed
+    /// updates, hardware cursor) for the desktop (docs/gpu1-design.md).
+    VirtioVga,
+}
+
+static VIRTIO_DISPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The display device the next machine gets.
+pub fn set_display(d: Display) {
+    VIRTIO_DISPLAY.store(
+        d == Display::VirtioVga,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 /// The USB devices the next machine gets.
 pub fn set_usb(usb: Usb) {
     USB.store(usb as u8, std::sync::atomic::Ordering::Relaxed);
@@ -147,11 +168,16 @@ fn machine_args(
     }
     // A display whose preferred mode (in its EDID) is 1920x1080, the mode
     // the firmware then starts in (docs/u1-design.md).
+    let device = if VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
+        "virtio-vga,xres=1920,yres=1080,edid=on"
+    } else {
+        "VGA,xres=1920,yres=1080,edid=on"
+    };
     args.extend([
         "-vga".into(),
         "none".into(),
         "-device".into(),
-        "VGA,xres=1920,yres=1080,edid=on".into(),
+        device.into(),
     ]);
     let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
     if usb == Usb::Direct as u8 {
@@ -235,6 +261,9 @@ pub fn run_interactive(
     );
     // A tablet: the pointer follows the host's exactly, without a grab.
     set_usb(Usb::Tablet);
+    // A virtio GPU: updates shown when flushed, and a hardware cursor that
+    // the host draws (docs/gpu1-design.md).
+    set_display(Display::VirtioVga);
     let mut args = machine_args(tools, image, &vars, false, &data)?;
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);

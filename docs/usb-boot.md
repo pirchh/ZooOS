@@ -48,6 +48,7 @@ a USB stick.
 | USB 2 port reset and firmware hand-off paths are untested (QEMU skips them) | a device on that port is not enabled (`error=port-…`) | debug with the serial log or the screen |
 | Laptop keyboards on i2c/eSPI, touchpads | no input on that laptop | try a USB keyboard and mouse |
 | No ACPI: no power-off, no sleep | switch off with the power button | ACPI later |
+| The xHCI interrupt (MSI-X or MSI, since U1c) never arrives on that PC | input still works through the 10 ms tick poll, a little less responsive | report the `usb interrupts=` line |
 
 ## What to report back
 

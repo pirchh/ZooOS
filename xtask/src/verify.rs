@@ -270,6 +270,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     let mouse = mouse_expectation(&normal);
     let redraw = mouse_expectation(&normal);
     let frames = mouse_expectation(&normal);
+    let frames_gpu = frames.clone();
     let dock = dock_expectation(&normal);
     let notes = notes_expectation(&normal);
     let mut menu_clock = normal.clone();
@@ -621,7 +622,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: desktop,
+            expectation: desktop.clone(),
             // Boot, five interaction phases, two restarts: allow longer.
             timeout: s.timeout * 3,
             want: "pass",
@@ -833,12 +834,57 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::Tablet,
-            expectation: tablet,
+            expectation: tablet.clone(),
             timeout: s.timeout * 2,
             want: "pass",
             purpose: "USB tablet (what `run` uses): absolute positions land exactly (a click on a 12 px close light), events arrive by interrupt",
             interaction: Some(tablet_steps()),
             screen_checks: vec![],
+        },
+        Case {
+            name: "gpu-desktop",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop.clone(),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the desktop case on virtio-vga: the window server takes the GPU, crashes and takes it again, then the console returns in VGA mode",
+            interaction: Some(desktop_steps()),
+            screen_checks: vec![
+                ("1-desktop", check_desktop_started),
+                ("2-details", check_file_details),
+                ("3-app-restart", check_app_restart),
+                ("4-server-restart", check_server_restart),
+                ("5-console", check_console_back),
+            ],
+        },
+        Case {
+            name: "gpu-frames",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: frames_gpu,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "frame cost on the virtio GPU, flushes included: full repaints on every pointer move (numbers meaningful with --accel)",
+            interaction: Some(gpu_frames_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "gpu-tablet",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: tablet.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "what `run` uses: virtio-vga and a tablet; flushed updates, a hardware cursor that moves without redraws, exact clicks",
+            interaction: Some(tablet_steps_with(true)),
+            screen_checks: vec![("1-gpu-desktop", check_gpu_desktop)],
         },
         Case {
             name: "big-screen",
@@ -1752,6 +1798,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         };
         qemu::set_usb(c.usb);
+        // `gpu-` cases run on `virtio-vga`; the rest on plain VGA, the
+        // real-hardware path (docs/gpu1-design.md).
+        qemu::set_display(if c.name.starts_with("gpu-") {
+            qemu::Display::VirtioVga
+        } else {
+            qemu::Display::Vga
+        });
         let r = qemu::run_case(
             root,
             tools,
@@ -2613,10 +2666,16 @@ fn redraw_steps() -> Interaction {
 /// After a sweep and F11: the sweep's frame report, then mouse events that
 /// reached the window server well within a tick (docs/u1b-design.md).
 fn input_wait_checks(steps: &mut Vec<Action>) {
+    input_wait_checks_frames(steps, 20, 1_000_000);
+}
+
+/// As `input_wait_checks`, with the sweep's frame count in `min..=max`
+/// (with a hardware cursor, moving the pointer redraws nothing).
+fn input_wait_checks_frames(steps: &mut Vec<Action>, min: u64, max: u64) {
     // The sweep's own report (an earlier F11 printed the reset before it).
     steps.push(Action::WaitNumbers(
         "PeacockHandler: frames".into(),
-        vec![("frames", 20, 1_000_000)],
+        vec![("frames", min, max)],
     ));
     steps.push(Action::WaitNumbers(
         "PeacockHandler: input wait".into(),
@@ -2636,7 +2695,19 @@ fn abs_at((x, y): (usize, usize)) -> Action {
 }
 
 fn tablet_steps() -> Interaction {
+    tablet_steps_with(false)
+}
+
+/// The tablet case's steps; `gpu`: on a virtio GPU with a hardware cursor,
+/// where the sweep redraws nothing.
+fn tablet_steps_with(gpu: bool) -> Interaction {
     let mut steps = start_desktop();
+    if gpu {
+        steps.push(Action::WaitSeen(
+            "ZOO_OS INFO gpu scanout 1920x1080 hardware-cursor".into(),
+        ));
+        steps.push(Action::WaitSeen("PeacockHandler: hardware cursor".into()));
+    }
     steps.extend([
         Action::WaitSeen("ZOO_OS INFO usb pointer absolute x=0..32767 y=0..32767".into()),
         Action::WaitSeen("ZOO_OS INFO usb interrupts=msix".into()),
@@ -2662,7 +2733,15 @@ fn tablet_steps() -> Interaction {
     }
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["f11"]));
-    input_wait_checks(&mut steps);
+    if gpu {
+        // Moving a hardware cursor redraws nothing; the menu-bar clock
+        // still ticks once a second during the sweep.
+        input_wait_checks_frames(&mut steps, 0, 5);
+        steps.push(Action::Settle(QUIET));
+        steps.push(Action::Screenshot("1-gpu-desktop"));
+    } else {
+        input_wait_checks(&mut steps);
+    }
     Interaction { steps }
 }
 
@@ -2672,6 +2751,27 @@ fn pointer_sweep(steps: &mut Vec<Action>) {
             steps.push(Action::Mouse(dx, 0));
         }
     }
+}
+
+/// Full repaints with flushes on the virtio GPU: F9 makes every pointer
+/// move repaint the whole screen.
+fn gpu_frames_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen("PeacockHandler: hardware cursor".into()));
+    steps.push(Action::Keys(vec!["f11", "f9"]));
+    steps.push(Action::WaitContains("full repaint every frame on".into()));
+    steps.push(Action::Keys(vec!["f11"]));
+    pointer_sweep(&mut steps);
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 20, 1_000_000)],
+    ));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
+    Interaction { steps }
 }
 
 fn frames_steps() -> Interaction {
@@ -3594,6 +3694,17 @@ fn wallpaper(y: usize) -> [u8; 3] {
         (y * 255 / (SCREEN.1 - 1)) as u8,
     );
     [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+}
+
+/// The desktop on the virtio GPU: drawn (so flushed), with Crash Test
+/// closed, and no pointer in the picture (the host draws the cursor).
+fn check_gpu_desktop(img: &screen::Image) -> Result<String, String> {
+    let home = content(img, "Home")?;
+    no_title(img, "Crash Test", false)?;
+    no_title(img, "Crash Test", true)?;
+    Ok(format!(
+        "Files content `Home` at {home:?}; Crash Test closed"
+    ))
 }
 
 fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
