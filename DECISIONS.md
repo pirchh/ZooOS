@@ -150,6 +150,25 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2a: a compositor in the window server (2026-11-01)
+
+Design: docs/u2-compositor-design.md.
+
+- Windows are cached as layers with alpha, built by drawing each twice
+  (over black and over white), so the existing drawing code stays the
+  only drawing code.
+- Moves only composite. Look changes rebuild the layer. App line changes
+  redraw just those lines in place. Live resizes draw directly.
+- Overlapping damage merges. On the virtio GPU the window server draws
+  straight into display memory.
+- Frame pacing was not added: every measured frame is under 1 ms, so
+  pacing would only add delay.
+- The verify `redraw` case now drags in four moves and ends with a
+  different focus than it started with. The new `redraw-content` case
+  checks in-place content updates. Each was needed to catch a control the
+  old case missed.
+- Version 0.57.0.
+
 ## GPU step 1: virtio-gpu display and a hardware cursor (2026-11-01)
 
 Design: docs/gpu1-design.md.

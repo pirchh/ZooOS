@@ -659,12 +659,25 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: redraw,
+            expectation: redraw.clone(),
             timeout: s.timeout * 2,
             want: "pass",
             purpose: "partial redraws: after pointer moves, a click and a drag, the screen equals a full repaint",
             interaction: Some(redraw_steps()),
             screen_checks: vec![("1-partial", check_partial), ("2-full", check_full_repaint)],
+        },
+        Case {
+            name: "redraw-content",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: redraw.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "content updates redrawn in place in a window's layer: after Files' selection moves, the screen equals a full repaint from scratch",
+            interaction: Some(redraw_content_steps()),
+            screen_checks: vec![("1-content", check_content_moved), ("2-full", check_full_repaint)],
         },
         Case {
             name: "frames",
@@ -2622,10 +2635,15 @@ fn redraw_steps() -> Interaction {
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
-        // Onto the Files title bar and drag it by (100, 50).
+        // Onto the Files title bar and drag it by (100, 50) in four moves:
+        // each must clean up where the window was (docs/u2-compositor-
+        // design.md).
         p.to(title_bar(FILES_WIN)),
         Action::Button(true),
-        p.by(100, 50),
+        p.by(25, 12),
+        p.by(25, 13),
+        p.by(25, 12),
+        p.by(25, 13),
         Action::Button(false),
         Action::WaitContains(moved_to("Files", FILES_WIN, (100, 50))),
         Action::Keys(vec!["tab"]),
@@ -2769,6 +2787,12 @@ fn gpu_frames_steps() -> Interaction {
         "PeacockHandler: frames".into(),
         vec![("frames", 20, 1_000_000)],
     ));
+    // Back to partial redraws, then a window drag.
+    steps.push(Action::Keys(vec!["f9"]));
+    steps.push(Action::WaitContains("full repaint every frame off".into()));
+    steps.push(Action::Settle(QUIET));
+    drag_measure(&mut steps);
+    content_measure(&mut steps);
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     Interaction { steps }
@@ -2792,14 +2816,85 @@ fn frames_steps() -> Interaction {
     steps.push(Action::Keys(vec!["f11"]));
     steps.push(Action::WaitContains("PeacockHandler: frames".into()));
     input_wait_checks(&mut steps);
+    drag_measure(&mut steps);
+    content_measure(&mut steps);
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     Interaction { steps }
 }
 
+/// Frame cost of an application's content update: F11, Down and Up five
+/// times each in Files (each press moves its selection), F11. At least 8
+/// frames.
+fn content_measure(steps: &mut Vec<Action>) {
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    for _ in 0..5 {
+        steps.push(Action::Keys(vec!["down", "up"]));
+    }
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 8, 1_000_000)],
+    ));
+}
+
+/// Frame cost of dragging a window (docs/u2-compositor-design.md): F11
+/// resets the counts, Files is dragged by its title bar in 30 small moves,
+/// F11 reports. At least 20 frames.
+fn drag_measure(steps: &mut Vec<Action>) {
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(FILES_WIN)));
+    steps.push(Action::Button(true));
+    for _ in 0..30 {
+        steps.push(p.by(6, 3));
+    }
+    steps.push(Action::Button(false));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: moved Files to".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 20, 1_000_000)],
+    ));
+}
+
+/// Files, still focused, with its selection two entries down: only its
+/// content changed since start-up (docs/u2-compositor-design.md).
+fn redraw_content_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::Keys(vec!["down", "down"]),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-content"),
+        Action::Keys(vec!["f10"]),
+        Action::WaitContains("PeacockHandler: full repaint".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-full"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_content_moved(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "Files", true)?;
+    let sel = selected(img, "Photos/", true)?;
+    Ok(format!(
+        "`Files` focused at {t:?}; `Photos/` selected at {sel:?}"
+    ))
+}
+
 fn check_partial(img: &screen::Image) -> Result<String, String> {
-    // Clicking the Files title focused Files; Tab then moved on to Crash Test.
+    // Clicking the Files title focused Files; Tab then moved on to Crash
+    // Test, so both windows now look different from how they started.
     let t = title(img, "Crash Test", true)?;
+    no_title(img, "Files", true)?;
     let f = win(FILES_WIN);
     let want = title_pen((f.0 + 100, f.1 + 50, f.2, f.3), "Files");
     let files = title(img, "Files", false)?;
