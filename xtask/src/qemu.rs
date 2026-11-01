@@ -59,7 +59,9 @@ fn opt_path(p: &Path) -> Result<String, String> {
 /// `headless` hides the display window; the emulated screen still exists
 /// (verify takes screenshots of it).
 /// Size of the data disk created for a run (docs/s5-design.md).
-pub const DATA_DISK_BYTES: u64 = 16 << 20;
+/// The data disk: 1 GiB (docs/linux10c-design.md). The file is only
+/// extended, so the host stores just the blocks written.
+pub const DATA_DISK_BYTES: u64 = 1 << 30;
 
 /// Creates (or, with `reset`, recreates) a zero-filled data disk at `path`.
 pub fn ensure_data_disk(path: &Path, reset: bool) -> Result<(), String> {

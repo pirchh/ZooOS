@@ -7074,6 +7074,36 @@ impl Scheduler {
                     Err(_) => err(Error::Fault),
                 }
             }
+            sys::BLOCK_READ_RUN | sys::BLOCK_WRITE_RUN => {
+                // a1 = block handle, a2 = first block | count << 48,
+                // a3 = buffer of count * 4 KiB.
+                match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Block,
+                        ..
+                    }) => {}
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                }
+                let (block, count) = (a2 & ((1 << 48) - 1), (a2 >> 48) as usize);
+                if count == 0 || count > zoo_abi::BLOCK_RUN_MAX {
+                    return err(Error::Inval);
+                }
+                let write = number == sys::BLOCK_WRITE_RUN;
+                let len = (count * BLOCK_BYTES) as u64;
+                if !ok(a3, len, !write) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped user range of `count` blocks in
+                // the active address space (writable when reading into it).
+                let buf = unsafe { core::slice::from_raw_parts_mut(a3 as *mut u8, len as usize) };
+                match virtio_blk::transfer_run(mem, block, buf, write) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(virtio_blk::BlockError::OutOfRange) => err(Error::Inval),
+                    Err(virtio_blk::BlockError::NoDevice) => err(Error::NotFound),
+                    Err(_) => err(Error::Fault),
+                }
+            }
             sys::LOG_ATTACH => {
                 let p = self.proc(i);
                 if !p.log_ok {

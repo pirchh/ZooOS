@@ -218,9 +218,9 @@ fn checks(home: u64, root: u64) -> Result<(), (u8, &'static str)> {
         "/bin files stay",
     )?;
     check(
-        file_write(home, "Scratch2/b.txt", 16 << 20, b"x") == Err(Error::Inval),
+        file_write(home, "Scratch2/b.txt", 1 << 32, b"x") == Err(Error::Inval),
         46,
-        "16 MiB file limit",
+        "4 GiB file limit",
     )?;
 
     // 8. Clean up: home must be as it was.

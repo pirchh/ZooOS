@@ -102,7 +102,15 @@ pub mod sys {
     pub const SHM_CREATE: u64 = 59;
     pub const SHM_MAP: u64 = 60;
     pub const SHM_UNMAP: u64 = 61;
+    /// Reads or writes up to `BLOCK_RUN_MAX` consecutive blocks in one
+    /// request (docs/linux10c-design.md): the second argument is the first
+    /// block in bits 0..48 and the count in bits 48..64.
+    pub const BLOCK_READ_RUN: u64 = 62;
+    pub const BLOCK_WRITE_RUN: u64 = 63;
 }
+
+/// Most blocks in one `BLOCK_READ_RUN`/`BLOCK_WRITE_RUN`.
+pub const BLOCK_RUN_MAX: usize = 16;
 
 /// Most pages in one shared-memory object.
 pub const SHM_MAX_PAGES: u64 = 256;
