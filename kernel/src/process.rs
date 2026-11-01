@@ -34,7 +34,7 @@ use spin::Mutex;
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts as cpu_interrupts;
 use x86_64::registers::control::{Cr2, Cr3};
-use x86_64::registers::model_specific::FsBase;
+use x86_64::registers::model_specific::{FsBase, GsBase};
 use x86_64::structures::paging::{PhysFrame, Translate};
 use zoo_abi::BLOCK_BYTES;
 use zoo_abi::{
@@ -210,7 +210,7 @@ struct Proc {
     /// A Linux program (docs/linux1-design.md).
     linux: bool,
     /// Linux descriptors with close-on-exec set (bit `fd`).
-    linux_cloexec: u64,
+    linux_cloexec: FdBits,
     /// The pid of the Linux program that started this one (0: the kernel),
     /// and the children this one started: pid and, once ended, the Linux
     /// wait status (docs/linux5-design.md).
@@ -229,11 +229,14 @@ struct Proc {
     /// The signal that ended the process, if one did.
     linux_term_sig: Option<u8>,
     /// Linux descriptors in non-blocking mode (bit `fd`, docs/linux7-design.md).
-    linux_nonblock: u64,
+    linux_nonblock: FdBits,
     /// The running Linux program's path (`/proc/self/exe`).
     linux_exe: String,
     /// The file-creation mask (`umask`).
     linux_umask: u64,
+    /// `MAP_SHARED` mappings of tmpfs files: their pages are the file's,
+    /// unmapped (not freed) when they go (docs/linux10b-design.md).
+    linux_shared: Vec<SharedMap>,
     /// Anonymous memory committed when first touched (docs/linux6-design.md):
     /// (start, length, Linux protection) ranges inside reservations.
     linux_lazy: Vec<(u64, u64, u64)>,
@@ -269,6 +272,9 @@ struct Task {
     fpu: Option<Box<FxArea>>,
     /// User FS base (thread-local storage), loaded when the thread runs.
     fs_base: u64,
+    /// User GS base: Wine's Windows code finds its thread block (TEB)
+    /// through GS (docs/linux10b-design.md). Loaded like `fs_base`.
+    gs_base: u64,
     /// Address this thread waits on in `futex_wait`.
     futex: Option<u64>,
     /// Set by `futex_wake`; the restarted `futex_wait` then returns 0.
@@ -309,6 +315,7 @@ impl Task {
             fs_pending: false,
             fpu: None,
             fs_base: 0,
+            gs_base: 0,
             futex: None,
             futex_woken: false,
             exc_stack: 0,
@@ -354,7 +361,7 @@ impl Proc {
             committed: 0,
             exc_handler: 0,
             linux: false,
-            linux_cloexec: 0,
+            linux_cloexec: FdBits::EMPTY,
             linux_parent: 0,
             linux_children: Vec::new(),
             linux_borrowed: false,
@@ -363,30 +370,23 @@ impl Proc {
             linux_sigsrc: [0; 64],
             linux_term_sig: None,
             linux_lazy: Vec::new(),
-            linux_nonblock: 0,
+            linux_nonblock: FdBits::EMPTY,
             linux_exe: String::new(),
             linux_umask: 0o022,
+            linux_shared: Vec::new(),
         }
     }
 
     fn set_nonblock(&mut self, fd: usize, on: bool) {
-        if on {
-            self.linux_nonblock |= 1 << fd;
-        } else {
-            self.linux_nonblock &= !(1 << fd);
-        }
+        self.linux_nonblock.set(fd, on);
     }
 
     fn nonblock(&self, fd: u64) -> bool {
-        fd < 64 && self.linux_nonblock >> fd & 1 != 0
+        usize::try_from(fd).is_ok_and(|fd| self.linux_nonblock.get(fd))
     }
 
     fn set_cloexec(&mut self, fd: usize, on: bool) {
-        if on {
-            self.linux_cloexec |= 1 << fd;
-        } else {
-            self.linux_cloexec &= !(1 << fd);
-        }
+        self.linux_cloexec.set(fd, on);
     }
 
     /// The `sa_flags` set for Linux signal `sig`.
@@ -491,6 +491,9 @@ struct Scheduler {
     /// abstract name space, "/path" for paths. A name is free again once
     /// its socket is closed.
     unix_names: Vec<(String, alloc::sync::Weak<Mutex<Sock>>)>,
+    /// `/tmp` (docs/linux10b-design.md): every node by its full path
+    /// (`tmp/…`); `/tmp` itself is implicit.
+    tmpfs: alloc::collections::BTreeMap<String, TmpNode>,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -519,7 +522,7 @@ fn with_sched<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> R {
 
 pub fn init() {
     cpu_interrupts::without_interrupts(|| {
-        let mut tasks = Vec::with_capacity(MAX_TASKS);
+        let mut tasks = Vec::with_capacity(64);
         tasks.push(Some(Task::new(0, 0, "kernel")));
         *SCHED.lock() = Some(Scheduler {
             tasks,
@@ -537,6 +540,7 @@ pub fn init() {
             prefer_user: true,
             pending_home: None,
             unix_names: Vec::new(),
+            tmpfs: alloc::collections::BTreeMap::new(),
         });
     });
 }
@@ -549,6 +553,14 @@ pub fn idle_hlt() {
     KERNEL_IDLE.store(true, Ordering::Relaxed);
     cpu_interrupts::enable_and_hlt();
     cpu_interrupts::disable();
+    KERNEL_IDLE.store(false, Ordering::Relaxed);
+}
+
+/// Input arrived for the kernel task (keyboard, mouse; interrupt context):
+/// it is no longer idle, so the next tick gives it a turn even while user
+/// programs are always ready. Without this a program that never blocks
+/// kept the shell from ever seeing a key (docs/linux10b-design.md).
+pub fn kernel_has_input() {
     KERNEL_IDLE.store(false, Ordering::Relaxed);
 }
 
@@ -570,7 +582,18 @@ pub fn spawn_linux_from_kernel(cmdline: &str) -> Result<u64, Error> {
     with_sched(|s, m| {
         // The home folder the shell asked the supervisor for, if any.
         let home = s.pending_home.take();
-        let (_, pid) = s.spawn_as(m, cmdline, [home, None], true)?;
+        // Leading `NAME=VALUE` words set environment variables
+        // (docs/linux10b-design.md).
+        let mut env = Vec::new();
+        let mut rest = cmdline;
+        while let Some((word, more)) = rest.split_once('\0')
+            && let Some((name, _)) = word.split_once('=')
+            && env_name(name)
+        {
+            env.push(word);
+            rest = more;
+        }
+        let (_, pid) = s.spawn_as(m, rest, [home, None], true, &env)?;
         Ok(pid)
     })
 }
@@ -820,7 +843,7 @@ impl Scheduler {
         cmdline: &str,
         give: [Option<HandleEntry>; 2],
     ) -> Result<(usize, u64), Error> {
-        self.spawn_as(mem, cmdline, give, false)
+        self.spawn_as(mem, cmdline, give, false, &[])
     }
 
     /// `spawn`, or (`linux`) a Linux program from `linux/` in the initrd,
@@ -831,6 +854,7 @@ impl Scheduler {
         cmdline: &str,
         give: [Option<HandleEntry>; 2],
         linux: bool,
+        env: &[&str],
     ) -> Result<(usize, u64), Error> {
         let arg0 = cmdline.split('\0').next().unwrap_or("");
         // A Linux program may be named by its absolute initrd path
@@ -874,7 +898,15 @@ impl Scheduler {
         let entry = interp.as_ref().map_or(image.entry, |x| x.1.entry);
         let rsp = if linux {
             let args: Vec<&str> = cmdline.split('\0').take(LINUX_ARGS_MAX).collect();
-            linux_stack(mem, stack_page, &args, &LINUX_ENV, file, &image, base)
+            // The standard environment, with `env` replacing or adding.
+            let mut vars: Vec<&str> = LINUX_ENV.to_vec();
+            for &e in env {
+                let name = e.split_once('=').map_or(e, |x| x.0);
+                vars.retain(|v| v.split_once('=').map_or(*v, |x| x.0) != name);
+                vars.push(e);
+            }
+            vars.truncate(LINUX_ARGS_MAX);
+            linux_stack(mem, stack_page, &args, &vars, file, &image, base)
         } else {
             USER_STACK_TOP - 8
         };
@@ -1073,6 +1105,10 @@ impl Scheduler {
                 // Shared pages: freed when their last reference goes.
                 mem.unmap_user_keep(p.p4, *va, *pages);
             }
+            for m in &p.linux_shared {
+                // tmpfs pages: likewise.
+                mem.unmap_user_keep(p.p4, m.va, m.pages);
+            }
             if !p.linux_borrowed {
                 mem.free_address_space(p.p4);
             }
@@ -1110,6 +1146,8 @@ impl Scheduler {
                 // User FS base (thread-local storage). Kernel code does not
                 // use FS, so it can stay loaded while in the kernel.
                 FsBase::write(VirtAddr::new_truncate(t.fs_base));
+                // Likewise GS: the kernel never uses it (no `swapgs`).
+                GsBase::write(VirtAddr::new_truncate(t.gs_base));
             }
             let frame = t.frame as *mut TrapFrame;
             if !t.restart {
@@ -1237,6 +1275,8 @@ impl Scheduler {
     /// `write`/`writev` on descriptor `fd` (docs/linux5-design.md).
     fn linux_write(&mut self, i: usize, fd: u64, bytes: &[u8], mem: &Memory) -> Outcome {
         match self.linux_file(i, fd) {
+            // Devices take everything.
+            Some(LinuxFile::Dev(_)) => Outcome::Ret(bytes.len() as i64),
             // Standard output and error go to the program's log.
             Some(LinuxFile::Console { input: false }) => {
                 let t = self.task(i);
@@ -1606,6 +1646,9 @@ impl Scheduler {
                     return false;
                 }
                 self.proc(i).committed += 1;
+            } else if write && !mem.user_range_ok(p4, va, 1, true) {
+                // A private tmpfs page not yet copied (copy on write).
+                self.tmp_cow(i, mem, va);
             }
             va += 4096;
         }
@@ -1621,6 +1664,9 @@ impl Scheduler {
             return;
         };
         let end = start.saturating_add(len);
+        // Shared tmpfs pages first: unmapped, not freed (they are the
+        // file's), and their mapping records cut around the range.
+        self.tmp_unshare(i, mem, start, len, false);
         let mut va = start;
         while let Some(m) = mem.next_mapped(p4, va, end) {
             mem.unmap_user_free(p4, m, 1);
@@ -1645,6 +1691,149 @@ impl Scheduler {
             }
         }
         p.vmas = out;
+    }
+
+    /// Takes tmpfs file pages out of `[start, start + len)`: unmapped
+    /// (not freed: they are the file's) and their records cut around the
+    /// range. With `copy`, only private read-only mappings are affected,
+    /// and their pages are replaced by private copies (the mapping is
+    /// being made writable).
+    fn tmp_unshare(&mut self, i: usize, mem: &mut Memory, start: u64, len: u64, copy: bool) {
+        let Some(p4) = self.task(i).p4 else {
+            return;
+        };
+        let end = start.saturating_add(len);
+        let mut keep = Vec::new();
+        let mut copied = 0;
+        for m in core::mem::take(&mut self.proc(i).linux_shared) {
+            let m_end = m.va + m.pages * 4096;
+            if m_end <= start || m.va >= end || (copy && !m.private) {
+                keep.push(m);
+                continue;
+            }
+            let (cs, ce) = (m.va.max(start), m_end.min(end));
+            mem.unmap_user_keep(p4, cs, (ce - cs) / 4096);
+            let mut va = cs;
+            while va < ce {
+                x86_64::instructions::tlb::flush(VirtAddr::new(va));
+                if copy {
+                    let d = m.data.lock();
+                    let from = d.frames[m.first + ((va - m.va) / 4096) as usize];
+                    if let Ok(to) = mem.map_user_page(p4, va, false, m.x) {
+                        // SAFETY: both are whole frames in the physical
+                        // window; `to` was just allocated.
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                mem.phys_to_virt(from.start_address()),
+                                mem.phys_to_virt(to.start_address()),
+                                4096,
+                            )
+                        };
+                        copied += 1;
+                    }
+                }
+                va += 4096;
+            }
+            if m.va < cs {
+                keep.push(SharedMap {
+                    pages: (cs - m.va) / 4096,
+                    ..m.clone()
+                });
+            }
+            if m_end > ce {
+                let first = m.first + ((ce - m.va) / 4096) as usize;
+                keep.push(SharedMap {
+                    va: ce,
+                    pages: (m_end - ce) / 4096,
+                    first,
+                    ..m.clone()
+                });
+            }
+        }
+        let p = self.proc(i);
+        p.linux_shared = keep;
+        p.committed += copied;
+    }
+
+    /// Copy-on-write of the private tmpfs page holding `addr`, if the
+    /// mapping allows writing: the page gets its own copy, writable.
+    fn tmp_cow(&mut self, i: usize, mem: &mut Memory, addr: u64) -> bool {
+        let Some(p4) = self.task(i).p4 else {
+            return false;
+        };
+        let page = addr & !0xFFF;
+        let Some(m) = self
+            .proc(i)
+            .linux_shared
+            .iter()
+            .find(|m| m.private && m.w && m.va <= page && page < m.va + m.pages * 4096)
+        else {
+            return false;
+        };
+        let x = m.x;
+        self.tmp_unshare(i, mem, page, 4096, true);
+        mem.protect_user_page(p4, page, true, x).is_ok()
+    }
+
+    /// Records new access for the tmpfs mappings in `[start, start + len)`,
+    /// splitting records at the range's ends.
+    fn tmp_protect(&mut self, i: usize, start: u64, len: u64, w: bool, x: bool) {
+        let end = start.saturating_add(len);
+        let p = self.proc(i);
+        let mut out = Vec::with_capacity(p.linux_shared.len() + 2);
+        for m in core::mem::take(&mut p.linux_shared) {
+            let m_end = m.va + m.pages * 4096;
+            if m_end <= start || m.va >= end {
+                out.push(m);
+                continue;
+            }
+            let (cs, ce) = (m.va.max(start), m_end.min(end));
+            if m.va < cs {
+                out.push(SharedMap {
+                    pages: (cs - m.va) / 4096,
+                    ..m.clone()
+                });
+            }
+            let first = m.first + ((cs - m.va) / 4096) as usize;
+            out.push(SharedMap {
+                va: cs,
+                pages: (ce - cs) / 4096,
+                first,
+                w,
+                x,
+                ..m.clone()
+            });
+            if m_end > ce {
+                let first = m.first + ((ce - m.va) / 4096) as usize;
+                out.push(SharedMap {
+                    va: ce,
+                    pages: (m_end - ce) / 4096,
+                    first,
+                    ..m.clone()
+                });
+            }
+        }
+        p.linux_shared = out;
+    }
+
+    /// Makes the private tmpfs pages in `[start, start + len)` read-only
+    /// again after `mprotect` (writes must fault, to copy them).
+    fn tmp_cow_protect(&mut self, i: usize, mem: &mut Memory, start: u64, len: u64) {
+        let Some(p4) = self.task(i).p4 else {
+            return;
+        };
+        let end = start.saturating_add(len);
+        for m in &self.proc(i).linux_shared {
+            if !m.private {
+                continue;
+            }
+            let (cs, ce) = (m.va.max(start), (m.va + m.pages * 4096).min(end));
+            let mut va = cs;
+            while va < ce {
+                let _ = mem.protect_user_page(p4, va, false, m.x);
+                va += 4096;
+            }
+        }
     }
 
     /// Adds the reservation `[start, start + len)` (which must be free).
@@ -1948,6 +2137,11 @@ impl Scheduler {
         if !self.is_linux(i) {
             return false;
         }
+        // A write to a private tmpfs page: copy it and retry.
+        if f.vector == 14 && f.error & 3 == 3 && addr < USER_HALF_END && self.tmp_cow(i, mem, addr)
+        {
+            return true;
+        }
         // First touch of lazily mapped memory: commit the page and retry.
         if f.vector == 14
             && f.error & 1 == 0
@@ -2061,9 +2255,16 @@ impl Scheduler {
         unsafe { (frame_addr as *mut TrapFrame).write(frame) };
         let mut area = Box::new(fpu::new_state());
         fpu::save(&mut area);
-        let (pid, pidx, name, fs_base, sigmask) = {
+        let (pid, pidx, name, fs_base, gs_base, sigmask) = {
             let t = self.task(i);
-            (t.pid, t.proc, t.name.clone(), t.fs_base, t.sigmask)
+            (
+                t.pid,
+                t.proc,
+                t.name.clone(),
+                t.fs_base,
+                t.gs_base,
+                t.sigmask,
+            )
         };
         let mut task = Task::new(pid, tid, &name);
         task.frame = frame_addr;
@@ -2076,6 +2277,7 @@ impl Scheduler {
         } else {
             fs_base
         };
+        task.gs_base = gs_base;
         task.sigmask = sigmask;
         task.clear_tid = if flags & CLONE_CHILD_CLEARTID != 0 {
             ctid
@@ -2224,6 +2426,20 @@ impl Scheduler {
         child.linux_borrowed = share;
         child.linux_sigactions = parent.linux_sigactions.clone();
         child.linux_lazy = parent.linux_lazy.clone();
+        if !share {
+            // Shared tmpfs mappings stay shared: the copies the address
+            // space copy made give way to the file's own pages.
+            for m in &parent.linux_shared {
+                mem.unmap_user_free(p4, m.va, m.pages);
+                let d = m.data.lock();
+                for k in 0..m.pages {
+                    let frame = d.frames[m.first + k as usize];
+                    let w = m.w && !m.private;
+                    let _ = mem.map_user_frame(p4, m.va + k * 4096, frame, w, m.x);
+                }
+            }
+            child.linux_shared = parent.linux_shared.clone();
+        }
         if let Some(e) = home {
             let h = child.insert(e).expect("new process has free handle slots");
             child.linux_home = Some(h);
@@ -2245,9 +2461,9 @@ impl Scheduler {
         // parent's state.
         let mut area = Box::new(fpu::new_state());
         fpu::save(&mut area);
-        let (fs_base, sigmask, altstack) = {
+        let (fs_base, gs_base, sigmask, altstack) = {
             let t = self.task(i);
-            (t.fs_base, t.sigmask, t.altstack)
+            (t.fs_base, t.gs_base, t.sigmask, t.altstack)
         };
         let mut task = Task::new(pid, pid, &name);
         task.sigmask = sigmask;
@@ -2258,6 +2474,7 @@ impl Scheduler {
         task.proc = Some(pidx);
         task.kstack = Some((slot, top));
         task.fs_base = fs_base;
+        task.gs_base = gs_base;
         self.tasks[index] = Some(task);
         kprintln!("ZOO_OS PROC start pid={} name={}", pid, name);
         if share {
@@ -2342,31 +2559,39 @@ impl Scheduler {
         p.map_next = MAP_BASE;
         p.exc_handler = 0;
         for fd in 0..p.linux_files.len() {
-            if p.linux_cloexec >> fd & 1 != 0 {
+            if p.linux_cloexec.get(fd) {
                 p.linux_files[fd] = None;
-                p.linux_nonblock &= !(1 << fd);
+                p.linux_nonblock.set(fd, false);
             }
         }
-        p.linux_cloexec = 0;
+        p.linux_cloexec = FdBits::EMPTY;
         // Caught signals return to their default action; ignored stay so.
         p.linux_sigactions.retain(|a| a.1[0] == 1);
+        let shared = core::mem::take(&mut p.linux_shared);
         let t = self.task(i);
         t.p4 = Some(p4);
         t.name = String::from(name);
         t.fs_base = 0;
+        t.gs_base = 0;
         t.altstack = (0, 0, false);
         t.clear_tid = 0;
         let area = Box::new(fpu::new_state());
         fpu::restore(&area);
         t.fpu = Some(area);
         FsBase::write(VirtAddr::new(0));
+        GsBase::write(VirtAddr::new(0));
         // SAFETY: `p4` maps the kernel half like every process table, so the
         // running kernel code and stack stay mapped; this task no longer
         // uses the old table.
         unsafe { Cr3::write(p4, Cr3::read().1) };
         if !borrowed {
+            // tmpfs pages belong to their files.
+            for m in &shared {
+                mem.unmap_user_keep(old, m.va, m.pages);
+            }
             mem.free_address_space(old);
         }
+        drop(shared);
         let sel = gdt::selectors();
         *f = TrapFrame {
             rip: entry,
@@ -2389,10 +2614,773 @@ impl Scheduler {
         ok: &impl Fn(u64, u64, bool) -> bool,
         addr: u64,
     ) -> Option<String> {
+        self.linux_path_at(i, ok, AT_FDCWD as u64, addr, false).ok()
+    }
+    // ---- tmpfs: `/tmp` in RAM (docs/linux10b-design.md) -----------------
+
+    /// The user path at `addr`, relative to the working directory or (when
+    /// `dirfd` is not `AT_FDCWD`) to an open folder, with tmpfs symbolic
+    /// links followed (the last component too, unless `nofollow`).
+    fn linux_path_at(
+        &mut self,
+        i: usize,
+        ok: &impl Fn(u64, u64, bool) -> bool,
+        dirfd: u64,
+        addr: u64,
+        nofollow: bool,
+    ) -> Result<String, i64> {
         let mut name = [0u8; LINUX_PATH_MAX];
-        let n = user_cstr(ok, addr, &mut name)?;
-        let path = core::str::from_utf8(&name[..n]).ok()?;
-        Some(linux_resolve(&self.proc(i).linux_cwd, path))
+        let n = user_cstr(ok, addr, &mut name).ok_or(EFAULT)?;
+        let raw = core::str::from_utf8(&name[..n]).map_err(|_| EINVAL)?;
+        let base = if raw.starts_with('/') || dirfd as i64 == AT_FDCWD {
+            self.proc(i).linux_cwd.clone()
+        } else {
+            match self.linux_file(i, dirfd) {
+                Some(LinuxFile::Dir(p, _) | LinuxFile::TmpDir(p, _)) => p.clone(),
+                Some(LinuxFile::HomeDir(rel, _)) if rel.is_empty() => String::from("home/user"),
+                Some(LinuxFile::HomeDir(rel, _)) => format!("home/user/{rel}"),
+                Some(_) => return Err(ENOTDIR),
+                None => return Err(EBADF),
+            }
+        };
+        self.tmp_expand(linux_resolve(&base, raw), nofollow)
+    }
+
+    /// Follows the tmpfs symbolic links in `path` (at most 40).
+    fn tmp_expand(&self, path: String, nofollow: bool) -> Result<String, i64> {
+        let mut path = path;
+        let mut hops = 0;
+        'again: loop {
+            let comps: Vec<String> = path
+                .split('/')
+                .filter(|c| !c.is_empty())
+                .map(String::from)
+                .collect();
+            let mut prefix = String::new();
+            for (k, c) in comps.iter().enumerate() {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(c);
+                if k + 1 == comps.len() && nofollow {
+                    break;
+                }
+                if let Some(TmpNode::Link(target)) = self.tmpfs.get(&prefix) {
+                    hops += 1;
+                    if hops > 40 {
+                        return Err(ELOOP);
+                    }
+                    let parent = prefix.rsplit_once('/').map_or("", |p| p.0);
+                    let rest = comps[k + 1..].join("/");
+                    let joined = if rest.is_empty() {
+                        target.clone()
+                    } else {
+                        format!("{target}/{rest}")
+                    };
+                    path = linux_resolve(parent, &joined);
+                    continue 'again;
+                }
+            }
+            return Ok(path);
+        }
+    }
+
+    /// What `path` is in tmpfs: `/tmp` itself is a folder.
+    fn tmp_kind(&self, path: &str) -> Option<TmpNode> {
+        if path == "tmp" {
+            return Some(TmpNode::Dir);
+        }
+        self.tmpfs.get(path).cloned()
+    }
+
+    /// True if `path`'s parent is a tmpfs folder.
+    fn tmp_parent_is_dir(&self, path: &str) -> bool {
+        let parent = path.rsplit_once('/').map_or("", |p| p.0);
+        matches!(self.tmp_kind(parent), Some(TmpNode::Dir))
+    }
+
+    /// Linux calls on tmpfs paths and descriptors, and `memfd_create`;
+    /// `None` for everything else (docs/linux10b-design.md).
+    fn tmp_call(&mut self, i: usize, f: &mut TrapFrame, mem: &mut Memory) -> Option<Outcome> {
+        let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
+        let p4 = self.task(i).p4?;
+        let fail = |e: i64| Some(Outcome::Ret(-e));
+        // The descriptor-based calls, when the descriptor is in tmpfs.
+        let fd_call = match number {
+            0 | 1 | 17 | 18 | 19 | 20 | 8 | 217 | 5 | 77 | 285 | 81 => Some(a1),
+            262 if f.r10 & AT_EMPTY_PATH != 0 => Some(a1),
+            9 if f.r10 & MAP_ANONYMOUS == 0 => Some(f.r8),
+            _ => None,
+        };
+        if let Some(fd) = fd_call {
+            if !matches!(
+                self.linux_file(i, fd),
+                Some(LinuxFile::Tmp { .. } | LinuxFile::TmpDir(..))
+            ) {
+                return None;
+            }
+            return Some(self.tmp_fd_call(i, f, mem, p4, fd));
+        }
+        if number == 319 {
+            // memfd_create(name, flags): an unnamed tmpfs file.
+            if a2 & !(1 | 2) != 0 {
+                return fail(EINVAL);
+            }
+            let file = LinuxFile::Tmp {
+                data: Arc::new(Mutex::new(TmpData {
+                    frames: Vec::new(),
+                    size: 0,
+                })),
+                pos: 0,
+                write: true,
+                append: false,
+            };
+            return Some(match self.alloc_fd(i, 0, file, a2 & 1 != 0) {
+                Ok(fd) => Outcome::Ret(fd as i64),
+                Err(e) => Outcome::Ret(-e),
+            });
+        }
+        // The path-based calls: (dirfd, path pointer, do not follow the last
+        // link). A second path (rename, symlink) is handled below.
+        let (dirfd, at, nofollow) = match number {
+            2 | 4 | 21 | 80 | 83 | 84 | 76 | 90 | 137 => (AT_FDCWD as u64, a1, false),
+            6 | 87 | 89 => (AT_FDCWD as u64, a1, true),
+            257 | 269 | 258 | 268 => (a1, a2, false),
+            262 => (a1, a2, f.r10 & AT_SYMLINK_NOFOLLOW != 0),
+            263 | 267 => (a1, a2, true),
+            82 | 264 | 316 => {
+                let (fd1, p1, fd2, p2) = if number == 82 {
+                    (AT_FDCWD as u64, a1, AT_FDCWD as u64, a2)
+                } else {
+                    (a1, a2, a3, f.r10)
+                };
+                let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+                let (Ok(from), Ok(to)) = (
+                    self.linux_path_at(i, &ok, fd1, p1, true),
+                    self.linux_path_at(i, &ok, fd2, p2, true),
+                ) else {
+                    return None;
+                };
+                return match (tmp_is(&from), tmp_is(&to)) {
+                    (false, false) => None,
+                    (true, true) => Some(self.tmp_rename(&from, &to)),
+                    _ => fail(EXDEV),
+                };
+            }
+            88 | 266 => {
+                // symlink(target, linkpath), symlinkat(target, dirfd, linkpath)
+                let (fd, lp) = if number == 88 {
+                    (AT_FDCWD as u64, a2)
+                } else {
+                    (a2, a3)
+                };
+                let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+                let mut raw = [0u8; LINUX_PATH_MAX];
+                let Some(n) = user_cstr(&ok, a1, &mut raw) else {
+                    return fail(EFAULT);
+                };
+                let Ok(target) = core::str::from_utf8(&raw[..n]) else {
+                    return fail(EINVAL);
+                };
+                let target = String::from(target);
+                let link = match self.linux_path_at(i, &ok, fd, lp, true) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
+                };
+                if !tmp_is(&link) {
+                    // Links elsewhere (the home folder) are not supported yet.
+                    return fail(if self.home_rel(i, &link).is_some() {
+                        EPERM
+                    } else {
+                        EROFS
+                    });
+                }
+                if self.tmp_kind(&link).is_some() || self.unix_bound(&link) {
+                    return fail(EEXIST);
+                }
+                if !self.tmp_parent_is_dir(&link) {
+                    return fail(ENOENT);
+                }
+                self.tmpfs.insert(link, TmpNode::Link(target));
+                return Some(Outcome::Ret(0));
+            }
+            _ => return None,
+        };
+        let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
+        let path = match self.linux_path_at(i, &ok, dirfd, at, nofollow) {
+            Ok(p) => p,
+            Err(e) => return fail(e),
+        };
+        if !tmp_is(&path) {
+            return None;
+        }
+        // A bound socket's name: the normal calls handle it.
+        if self.unix_bound(&path) && matches!(number, 4 | 6 | 262 | 87 | 263 | 21 | 269) {
+            return None;
+        }
+        let kind = self.tmp_kind(&path);
+        Some(match number {
+            // open(path, flags), openat(dirfd, path, flags)
+            2 | 257 => {
+                let flags = if number == 2 { a2 } else { a3 };
+                let write = flags & 3 != 0;
+                let file = match kind {
+                    Some(TmpNode::Dir) => {
+                        if write {
+                            return fail(EISDIR);
+                        }
+                        LinuxFile::TmpDir(path, 0)
+                    }
+                    Some(TmpNode::File(data)) => {
+                        if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
+                            return fail(EEXIST);
+                        }
+                        if flags & O_DIRECTORY != 0 {
+                            return fail(ENOTDIR);
+                        }
+                        if write && flags & O_TRUNC != 0 {
+                            data.lock().size = 0;
+                        }
+                        LinuxFile::Tmp {
+                            data,
+                            pos: 0,
+                            write,
+                            append: flags & O_APPEND != 0,
+                        }
+                    }
+                    Some(TmpNode::Link(_)) => return fail(ELOOP),
+                    None => {
+                        if flags & O_CREAT == 0 {
+                            return fail(ENOENT);
+                        }
+                        if !self.tmp_parent_is_dir(&path) {
+                            return fail(ENOENT);
+                        }
+                        let data = Arc::new(Mutex::new(TmpData {
+                            frames: Vec::new(),
+                            size: 0,
+                        }));
+                        self.tmpfs.insert(path, TmpNode::File(data.clone()));
+                        LinuxFile::Tmp {
+                            data,
+                            pos: 0,
+                            write,
+                            append: flags & O_APPEND != 0,
+                        }
+                    }
+                };
+                match self.alloc_fd(i, 0, file, flags & O_CLOEXEC != 0) {
+                    Ok(fd) => {
+                        self.proc(i).set_nonblock(fd, flags & O_NONBLOCK != 0);
+                        Outcome::Ret(fd as i64)
+                    }
+                    Err(e) => Outcome::Ret(-e),
+                }
+            }
+            // stat, lstat, newfstatat
+            4 | 6 | 262 => {
+                let st = if number == 262 { a3 } else { a2 };
+                let (mode, size, ino) = match &kind {
+                    Some(TmpNode::Dir) if path == "tmp" => (0o041_777u32, 0, 1),
+                    Some(TmpNode::Dir) => (0o040_700, 0, fnv(&path)),
+                    Some(TmpNode::File(d)) => (0o100_600, d.lock().size, Arc::as_ptr(d) as u64),
+                    Some(TmpNode::Link(t)) => (0o120_777, t.len() as u64, fnv(&path)),
+                    None => return fail(ENOENT),
+                };
+                if !self.linux_commit(i, mem, st, 144, true) {
+                    return fail(EFAULT);
+                }
+                write_stat(st, mode, size, ino);
+                Outcome::Ret(0)
+            }
+            // access, faccessat, chmod, fchmodat, statfs
+            21 | 269 | 90 | 268 => match kind {
+                Some(_) => Outcome::Ret(0),
+                None => Outcome::Ret(-ENOENT),
+            },
+            137 => {
+                if kind.is_none() {
+                    return fail(ENOENT);
+                }
+                return None; // the generic statfs answer
+            }
+            // chdir(path)
+            80 => match kind {
+                Some(TmpNode::Dir) => {
+                    self.proc(i).linux_cwd = path;
+                    Outcome::Ret(0)
+                }
+                Some(_) => Outcome::Ret(-ENOTDIR),
+                None => Outcome::Ret(-ENOENT),
+            },
+            // mkdir, mkdirat
+            83 | 258 => {
+                if kind.is_some() || self.unix_bound(&path) {
+                    return fail(EEXIST);
+                }
+                if !self.tmp_parent_is_dir(&path) {
+                    return fail(ENOENT);
+                }
+                self.tmpfs.insert(path, TmpNode::Dir);
+                Outcome::Ret(0)
+            }
+            // rmdir, unlinkat(AT_REMOVEDIR)
+            84 | 263 if number == 84 || a3 & AT_REMOVEDIR != 0 => match kind {
+                Some(TmpNode::Dir) if path == "tmp" => Outcome::Ret(-EBUSY),
+                Some(TmpNode::Dir) => {
+                    let inside = format!("{path}/");
+                    if self.tmpfs.keys().any(|k| k.starts_with(&inside)) {
+                        return fail(ENOTEMPTY);
+                    }
+                    self.tmpfs.remove(&path);
+                    Outcome::Ret(0)
+                }
+                Some(_) => Outcome::Ret(-ENOTDIR),
+                None => Outcome::Ret(-ENOENT),
+            },
+            // unlink, unlinkat: open descriptors keep the data.
+            87 | 263 => match kind {
+                Some(TmpNode::Dir) => Outcome::Ret(-EISDIR),
+                Some(_) => {
+                    self.tmpfs.remove(&path);
+                    Outcome::Ret(0)
+                }
+                None => Outcome::Ret(-ENOENT),
+            },
+            // readlink, readlinkat
+            89 | 267 => {
+                let (buf, size) = if number == 89 { (a2, a3) } else { (a3, f.r10) };
+                let Some(TmpNode::Link(target)) = kind else {
+                    return fail(if kind.is_some() { EINVAL } else { ENOENT });
+                };
+                let n = target.len().min(size as usize);
+                if n > 0 && !self.linux_commit(i, mem, buf, n as u64, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::copy_nonoverlapping(target.as_ptr(), buf as *mut u8, n) };
+                Outcome::Ret(n as i64)
+            }
+            // truncate(path, len)
+            76 => match kind {
+                Some(TmpNode::File(d)) => tmp_resize(&d, a2, mem),
+                Some(TmpNode::Dir) => Outcome::Ret(-EISDIR),
+                _ => Outcome::Ret(-ENOENT),
+            },
+            _ => return None,
+        })
+    }
+
+    /// The descriptor-based calls on tmpfs files and folders.
+    fn tmp_fd_call(
+        &mut self,
+        i: usize,
+        f: &mut TrapFrame,
+        mem: &mut Memory,
+        p4: PhysFrame,
+        fd: u64,
+    ) -> Outcome {
+        let (number, a2, a3) = (f.rax, f.rsi, f.rdx);
+        let fail = |e: i64| Outcome::Ret(-e);
+        let file = self.linux_file(i, fd).cloned();
+        match (number, file) {
+            // read, readv, pread64
+            (0 | 19 | 17, Some(LinuxFile::Tmp { data, pos, .. })) => {
+                let mut pieces = Vec::new();
+                if number == 19 {
+                    if a3 > 1024 || !self.linux_commit(i, mem, a2, a3 * 16, false) {
+                        return fail(EINVAL);
+                    }
+                    for k in 0..a3 {
+                        // SAFETY: inside the iovec array checked above.
+                        pieces.push(unsafe {
+                            let p = (a2 + 16 * k) as *const u64;
+                            (p.read_unaligned(), p.add(1).read_unaligned())
+                        });
+                    }
+                } else {
+                    pieces.push((a2, a3));
+                }
+                let mut at = if number == 17 { f.r10 } else { pos };
+                let mut total = 0u64;
+                for (base, len) in pieces {
+                    let d = data.lock();
+                    let n = len.min(d.size.saturating_sub(at));
+                    if n == 0 {
+                        break;
+                    }
+                    drop(d);
+                    if !self.linux_commit(i, mem, base, n, true) {
+                        return if total == 0 { fail(EFAULT) } else { break };
+                    }
+                    let d = data.lock();
+                    tmp_copy(mem, &d.frames, at, base as *mut u8, n as usize, false);
+                    at += n;
+                    total += n;
+                }
+                if number != 17
+                    && let Some(LinuxFile::Tmp { pos, .. }) = self.linux_file(i, fd)
+                {
+                    *pos = at;
+                }
+                Outcome::Ret(total as i64)
+            }
+            // write, writev, pwrite64
+            (
+                1 | 20 | 18,
+                Some(LinuxFile::Tmp {
+                    data,
+                    pos,
+                    write,
+                    append,
+                }),
+            ) => {
+                if !write {
+                    return fail(EBADF);
+                }
+                let mut pieces = Vec::new();
+                if number == 20 {
+                    if a3 > 1024 || !self.linux_commit(i, mem, a2, a3 * 16, false) {
+                        return fail(EINVAL);
+                    }
+                    for k in 0..a3 {
+                        // SAFETY: inside the iovec array checked above.
+                        pieces.push(unsafe {
+                            let p = (a2 + 16 * k) as *const u64;
+                            (p.read_unaligned(), p.add(1).read_unaligned())
+                        });
+                    }
+                } else {
+                    pieces.push((a2, a3));
+                }
+                let mut at = if number == 18 {
+                    f.r10
+                } else if append {
+                    data.lock().size
+                } else {
+                    pos
+                };
+                let mut total = 0u64;
+                for (base, len) in pieces {
+                    if len == 0 {
+                        continue;
+                    }
+                    if !self.linux_commit(i, mem, base, len, false) {
+                        return if total == 0 { fail(EFAULT) } else { break };
+                    }
+                    let mut d = data.lock();
+                    if !tmp_grow(&mut d, at + len, mem) {
+                        return if total == 0 { fail(ENOSPC) } else { break };
+                    }
+                    tmp_copy(mem, &d.frames, at, base as *mut u8, len as usize, true);
+                    d.size = d.size.max(at + len);
+                    at += len;
+                    total += len;
+                }
+                if number != 18
+                    && let Some(LinuxFile::Tmp { pos, .. }) = self.linux_file(i, fd)
+                {
+                    *pos = at;
+                }
+                Outcome::Ret(total as i64)
+            }
+            // lseek
+            (8, Some(LinuxFile::Tmp { data, pos, .. })) => {
+                let from = match a3 {
+                    0 => 0i64,
+                    1 => pos as i64,
+                    2 => data.lock().size as i64,
+                    _ => return fail(EINVAL),
+                };
+                let new = from.saturating_add(a2 as i64);
+                if new < 0 {
+                    return fail(EINVAL);
+                }
+                if let Some(LinuxFile::Tmp { pos, .. }) = self.linux_file(i, fd) {
+                    *pos = new as u64;
+                }
+                Outcome::Ret(new)
+            }
+            (8, Some(LinuxFile::TmpDir(..))) if a2 == 0 && a3 == 0 => {
+                if let Some(LinuxFile::TmpDir(_, pos)) = self.linux_file(i, fd) {
+                    *pos = 0;
+                }
+                Outcome::Ret(0)
+            }
+            // fstat, newfstatat(fd, "", AT_EMPTY_PATH)
+            (5 | 262, file) => {
+                let st = if number == 262 { a3 } else { a2 };
+                let (mode, size, ino) = match &file {
+                    Some(LinuxFile::Tmp { data, .. }) => {
+                        (0o100_600u32, data.lock().size, Arc::as_ptr(data) as u64)
+                    }
+                    Some(LinuxFile::TmpDir(p, _)) => {
+                        (if p == "tmp" { 0o041_777 } else { 0o040_700 }, 0, fnv(p))
+                    }
+                    _ => return fail(EBADF),
+                };
+                if !self.linux_commit(i, mem, st, 144, true) {
+                    return fail(EFAULT);
+                }
+                write_stat(st, mode, size, ino);
+                Outcome::Ret(0)
+            }
+            // ftruncate, fallocate(fd, mode, off, len)
+            (
+                77,
+                Some(LinuxFile::Tmp {
+                    data, write: true, ..
+                }),
+            ) => tmp_resize(&data, a2, mem),
+            (
+                285,
+                Some(LinuxFile::Tmp {
+                    data, write: true, ..
+                }),
+            ) => {
+                let end = a3.saturating_add(f.r10);
+                let mut d = data.lock();
+                if !tmp_grow(&mut d, end, mem) {
+                    return fail(ENOSPC);
+                }
+                if a2 & 1 == 0 {
+                    d.size = d.size.max(end); // not FALLOC_FL_KEEP_SIZE
+                }
+                Outcome::Ret(0)
+            }
+            (77 | 285, Some(_)) => fail(EINVAL),
+            // fchdir
+            (81, Some(LinuxFile::TmpDir(p, _))) => {
+                self.proc(i).linux_cwd = p;
+                Outcome::Ret(0)
+            }
+            (81, Some(_)) => fail(ENOTDIR),
+            // getdents64
+            (217, Some(LinuxFile::TmpDir(dir, start))) => {
+                let inside = format!("{dir}/");
+                let mut names: Vec<(String, u8)> =
+                    alloc::vec![(String::from("."), 4), (String::from(".."), 4)];
+                for (k, node) in self.tmpfs.range(inside.clone()..) {
+                    let Some(rest) = k.strip_prefix(&inside) else {
+                        break;
+                    };
+                    if rest.contains('/') {
+                        continue;
+                    }
+                    let t = match node {
+                        TmpNode::Dir => 4,
+                        TmpNode::File(_) => 8,
+                        TmpNode::Link(_) => 10,
+                    };
+                    names.push((String::from(rest), t));
+                }
+                let mut out = Vec::new();
+                let mut k = start;
+                while let Some((name, t)) = names.get(k) {
+                    let reclen = (19 + name.len() + 1).div_ceil(8) * 8;
+                    if out.len() + reclen > a3 as usize {
+                        if out.is_empty() {
+                            return fail(EINVAL);
+                        }
+                        break;
+                    }
+                    let mut rec = alloc::vec![0u8; reclen];
+                    rec[0..8].copy_from_slice(&(k as u64 + 1).to_le_bytes());
+                    rec[8..16].copy_from_slice(&(k as u64 + 1).to_le_bytes());
+                    rec[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
+                    rec[18] = *t;
+                    rec[19..19 + name.len()].copy_from_slice(name.as_bytes());
+                    out.extend_from_slice(&rec);
+                    k += 1;
+                }
+                if !out.is_empty() {
+                    if !self.linux_commit(i, mem, a2, out.len() as u64, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(out.as_ptr(), a2 as *mut u8, out.len())
+                    };
+                }
+                if let Some(LinuxFile::TmpDir(_, pos)) = self.linux_file(i, fd) {
+                    *pos = k;
+                }
+                Outcome::Ret(out.len() as i64)
+            }
+            // mmap of a tmpfs file
+            (9, Some(LinuxFile::Tmp { data, .. })) => self.tmp_mmap(i, f, mem, p4, data),
+            (_, Some(LinuxFile::TmpDir(..))) => fail(EISDIR),
+            _ => fail(EBADF),
+        }
+    }
+
+    /// `mmap` of a tmpfs file: `MAP_SHARED` maps the file's own pages, so
+    /// every process mapping it (and the file's descriptors) see the same
+    /// memory; `MAP_PRIVATE` maps a copy.
+    fn tmp_mmap(
+        &mut self,
+        i: usize,
+        f: &TrapFrame,
+        mem: &mut Memory,
+        p4: PhysFrame,
+        data: Arc<Mutex<TmpData>>,
+    ) -> Outcome {
+        let (addr, len0, prot, flags, off) = (f.rdi, f.rsi, f.rdx, f.r10, f.r9);
+        let fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+        if len0 == 0 || !off.is_multiple_of(4096) || (fixed && !addr.is_multiple_of(4096)) {
+            return Outcome::Ret(-EINVAL);
+        }
+        let len = page_up(len0);
+        let base = match self.linux_place(i, mem, addr, len, flags) {
+            Ok(b) => b,
+            Err(e) => return Outcome::Ret(-e),
+        };
+        let pages = len / 4096;
+        let first = (off / 4096) as usize;
+        let (w, x) = (prot & 2 != 0, prot & 4 != 0);
+        if prot & 7 == 0 {
+            return Outcome::Ret(base as i64);
+        }
+        let shared = flags & 3 == 1; // MAP_SHARED
+        // A vfork child borrows its parent's tables: no shared
+        // mappings there, which nothing would track.
+        if self.proc(i).linux_borrowed {
+            self.linux_carve(i, mem, base, len);
+            return Outcome::Ret(-ENOMEM);
+        }
+        // Private mappings use the file's pages too, read-only in the page
+        // tables; a write copies the page (`tmp_cow`), as on Linux.
+        let private = !shared;
+        let direct = true;
+        let mut d = data.lock();
+        if direct && !tmp_grow(&mut d, off + len, mem) {
+            drop(d);
+            self.linux_carve(i, mem, base, len);
+            return Outcome::Ret(-ENOMEM);
+        }
+        for k in 0..pages {
+            let va = base + k * 4096;
+            let r = if direct {
+                mem.map_user_frame(p4, va, d.frames[first + k as usize], w && shared, x)
+            } else {
+                mem.map_user_page(p4, va, w, x).map(|frame| {
+                    let at = off + k * 4096;
+                    if at < d.size {
+                        let n = (d.size - at).min(4096) as usize;
+                        let to = mem.phys_to_virt(frame.start_address());
+                        // SAFETY: `frame` was just mapped fresh; the source
+                        // page `first + k` exists (`at` < size).
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                mem.phys_to_virt(d.frames[first + k as usize].start_address()),
+                                to,
+                                n,
+                            )
+                        };
+                    }
+                })
+            };
+            if r.is_err() {
+                drop(d);
+                self.linux_carve(i, mem, base, len);
+                return Outcome::Ret(-ENOMEM);
+            }
+        }
+        drop(d);
+        if direct {
+            let m = SharedMap {
+                va: base,
+                pages,
+                first,
+                w,
+                x,
+                private,
+                data,
+            };
+            self.proc(i).linux_shared.push(m);
+        } else {
+            self.proc(i).committed += pages;
+        }
+        Outcome::Ret(base as i64)
+    }
+
+    /// rename within tmpfs: the node and, for a folder, all below it.
+    fn tmp_rename(&mut self, from: &str, to: &str) -> Outcome {
+        let Some(node) = self.tmp_kind(from) else {
+            return Outcome::Ret(-ENOENT);
+        };
+        if from == "tmp" || to == "tmp" {
+            return Outcome::Ret(-EBUSY);
+        }
+        if from == to {
+            return Outcome::Ret(0);
+        }
+        if !self.tmp_parent_is_dir(to) {
+            return Outcome::Ret(-ENOENT);
+        }
+        let from_inside = format!("{from}/");
+        if to.starts_with(&from_inside) {
+            return Outcome::Ret(-EINVAL);
+        }
+        match (&node, self.tmp_kind(to)) {
+            (TmpNode::Dir, Some(TmpNode::Dir)) => {
+                let to_inside = format!("{to}/");
+                if self.tmpfs.keys().any(|k| k.starts_with(&to_inside)) {
+                    return Outcome::Ret(-ENOTEMPTY);
+                }
+            }
+            (TmpNode::Dir, Some(_)) => return Outcome::Ret(-ENOTDIR),
+            (_, Some(TmpNode::Dir)) => return Outcome::Ret(-EISDIR),
+            _ => {}
+        }
+        let moved: Vec<String> = self
+            .tmpfs
+            .keys()
+            .filter(|k| k.starts_with(&from_inside))
+            .cloned()
+            .collect();
+        for k in moved {
+            if let Some(n) = self.tmpfs.remove(&k) {
+                self.tmpfs
+                    .insert(format!("{to}/{}", &k[from_inside.len()..]), n);
+            }
+        }
+        self.tmpfs.remove(from);
+        self.tmpfs.insert(String::from(to), node);
+        Outcome::Ret(0)
+    }
+
+    /// Where a new mapping of `len` bytes goes: a fresh reservation, or
+    /// (`MAP_FIXED`) `addr`, carving out what was there.
+    fn linux_place(
+        &mut self,
+        i: usize,
+        mem: &mut Memory,
+        addr: u64,
+        len: u64,
+        flags: u64,
+    ) -> Result<u64, i64> {
+        if flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0 {
+            let end = addr.checked_add(len).ok_or(ENOMEM)?;
+            let p = self.proc(i);
+            if addr < p.vm_lo || end > p.vm_hi {
+                return Err(ENOMEM);
+            }
+            let overlaps = p.vmas.iter().any(|&(s, l)| addr < s + l && s < end);
+            if overlaps && flags & MAP_FIXED_NOREPLACE != 0 {
+                return Err(EEXIST);
+            }
+            self.linux_carve(i, mem, addr, len);
+            if !self.linux_reserve_at(i, addr, len) {
+                return Err(ENOMEM);
+            }
+            return Ok(addr);
+        }
+        let p4 = self.task(i).p4.ok_or(ENOMEM)?;
+        match self.vm_call(i, sys::VM_RESERVE, 0, len, 0, p4, mem) {
+            Outcome::Ret(b) if b > 0 => Ok(b as u64),
+            _ => Err(ENOMEM),
+        }
     }
 
     /// A Linux x86-64 system call (docs/linux1-design.md): number in RAX,
@@ -2517,13 +3505,6 @@ impl Scheduler {
         if path == "home/user" {
             return Some(String::new());
         }
-        // `/tmp` is the home folder's `.tmp` (docs/linux10-design.md).
-        if path == "tmp" {
-            return Some(String::from(".tmp"));
-        }
-        if let Some(rest) = path.strip_prefix("tmp/") {
-            return Some(format!(".tmp/{rest}"));
-        }
         path.strip_prefix("home/user/").map(String::from)
     }
 
@@ -2596,6 +3577,9 @@ impl Scheduler {
         mem: &mut Memory,
         want: &core::cell::Cell<Option<(u64, u64, bool)>>,
     ) -> Outcome {
+        if let Some(outcome) = self.tmp_call(i, f, mem) {
+            return outcome;
+        }
         let (number, a1, a2, a3) = (f.rax, f.rdi, f.rsi, f.rdx);
         let p4 = self.task(i).p4.expect("system call from a user task");
         let ok = |addr: u64, len: u64, write: bool| {
@@ -2711,6 +3695,19 @@ impl Scheduler {
                     let fs = self.task(i).fs_base;
                     // SAFETY: checked as writable user memory.
                     unsafe { (a2 as *mut u64).write_unaligned(fs) };
+                    Outcome::Ret(0)
+                }
+                // ARCH_SET_GS
+                0x1001 if a2 < USER_HALF_END => {
+                    self.task(i).gs_base = a2;
+                    GsBase::write(VirtAddr::new_truncate(a2));
+                    Outcome::Ret(0)
+                }
+                // ARCH_GET_GS
+                0x1004 if ok(a2, 8, true) => {
+                    let gs = self.task(i).gs_base;
+                    // SAFETY: checked as writable user memory.
+                    unsafe { (a2 as *mut u64).write_unaligned(gs) };
                     Outcome::Ret(0)
                 }
                 _ => fail(EINVAL),
@@ -2944,6 +3941,8 @@ impl Scheduler {
                     }
                     at >= end
                 };
+                // tmpfs mappings record their new access.
+                self.tmp_protect(i, a1, len, a3 & 2 != 0, a3 & 4 != 0);
                 if reserved {
                     let lazy = &mut self.proc(i).linux_lazy;
                     lazy_cut(lazy, a1, len);
@@ -2966,11 +3965,57 @@ impl Scheduler {
                     if !reserved && pages != len / 4096 {
                         return fail(ENOMEM);
                     }
+                    // Private tmpfs pages stay read-only until copied.
+                    self.tmp_cow_protect(i, mem, a1, len);
                 }
                 Outcome::Ret(0)
             }
             // madvise: advice only.
             28 => Outcome::Ret(0),
+            // sched_setaffinity: one CPU, so any mask that includes it is
+            // already in effect. setpriority/getpriority: one priority.
+            203 | 141 => Outcome::Ret(0),
+            // Extended attributes (setxattr .. fremovexattr): not kept by
+            // any ZooOS file system. Wine then keeps DOS attributes itself.
+            188..=199 => fail(EOPNOTSUPP),
+            140 => Outcome::Ret(20), // the kernel's form of nice 0
+            // getrandom(buf, len, flags): see `random_fill`.
+            318 => {
+                let n = a2.min(1 << 20);
+                if n > 0 && !ok(a1, n, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                random_fill(unsafe { core::slice::from_raw_parts_mut(a1 as *mut u8, n as usize) });
+                Outcome::Ret(n as i64)
+            }
+            // getrusage(who, usage): ZooOS does not measure CPU time per
+            // process yet; every field reads 0 (not measured).
+            98 => {
+                if !ok(a2, 144, true) {
+                    return fail(EFAULT);
+                }
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::write_bytes(a2 as *mut u8, 0, 144) };
+                Outcome::Ret(0)
+            }
+            // sysinfo(info): uptime, memory and the process count.
+            99 => {
+                if !ok(a1, 112, true) {
+                    return fail(EFAULT);
+                }
+                let mut b = [0u8; 112];
+                let up = crate::interrupts::ticks() / u64::from(crate::interrupts::TIMER_HZ);
+                b[0..8].copy_from_slice(&up.to_le_bytes());
+                b[32..40].copy_from_slice(&(mem.frames.total() as u64).to_le_bytes());
+                b[40..48].copy_from_slice(&(mem.frames.available() as u64).to_le_bytes());
+                let procs = self.procs.iter().flatten().count() as u16;
+                b[80..82].copy_from_slice(&procs.to_le_bytes());
+                b[104..108].copy_from_slice(&4096u32.to_le_bytes()); // mem_unit
+                // SAFETY: checked as writable user memory.
+                unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), a1 as *mut u8, 112) };
+                Outcome::Ret(0)
+            }
             // sched_getaffinity(pid, len, mask): one CPU.
             204 => {
                 if a2 < 8 {
@@ -2994,7 +4039,9 @@ impl Scheduler {
                     return fail(EFAULT);
                 };
                 let write = flags & 3 != 0;
-                let file = if let Some(rel) = self.home_rel(i, &path) {
+                let file = if let Some(dev) = linux_device(&path) {
+                    LinuxFile::Dev(dev)
+                } else if let Some(rel) = self.home_rel(i, &path) {
                     let (status, entry) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
                     let exists = status >= 0;
                     if !exists && status != Error::NotFound.as_return() {
@@ -3088,8 +4135,43 @@ impl Scheduler {
                     }
                 }
                 let (data, pos) = match self.linux_file(i, a1).cloned() {
+                    // Handled by `tmp_call` before this.
+                    Some(LinuxFile::Tmp { .. } | LinuxFile::TmpDir(..)) => return fail(EBADF),
                     // Standard input: at its end (no terminal yet).
                     Some(LinuxFile::Console { input: true }) => return Outcome::Ret(0),
+                    Some(LinuxFile::Dev(Device::Null)) => return Outcome::Ret(0),
+                    Some(LinuxFile::Dev(dev)) => {
+                        let mut total = 0u64;
+                        let mut chunk = [0u8; 256];
+                        for (base, len) in pieces {
+                            let len = len.min(1 << 20);
+                            if len > 0 && !ok(base, len, true) {
+                                return if total == 0 {
+                                    fail(EFAULT)
+                                } else {
+                                    Outcome::Ret(total as i64)
+                                };
+                            }
+                            let mut done = 0;
+                            while done < len {
+                                let n = (len - done).min(chunk.len() as u64) as usize;
+                                if dev == Device::Random {
+                                    random_fill(&mut chunk[..n]);
+                                }
+                                // SAFETY: inside the range checked above.
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        chunk.as_ptr(),
+                                        (base + done) as *mut u8,
+                                        n,
+                                    )
+                                };
+                                done += n as u64;
+                            }
+                            total += len;
+                        }
+                        return Outcome::Ret(total as i64);
+                    }
                     Some(LinuxFile::Pipe(end)) if !end.write => {
                         return self.pipe_read(i, &end.pipe, &pieces, mem, usize::MAX);
                     }
@@ -3201,6 +4283,9 @@ impl Scheduler {
             // lseek(fd, offset, whence); on a folder only a rewind.
             8 => {
                 let (len, pos) = match self.linux_file(i, a1).cloned() {
+                    Some(LinuxFile::Dev(_)) => return Outcome::Ret(0),
+                    // Handled by `tmp_call` before this.
+                    Some(LinuxFile::Tmp { .. } | LinuxFile::TmpDir(..)) => return fail(EBADF),
                     Some(LinuxFile::File(data, pos)) => (data.len() as i64, pos as i64),
                     Some(LinuxFile::Home { path, pos, .. }) => {
                         let len = if a3 == 2 {
@@ -3323,6 +4408,10 @@ impl Scheduler {
                 // libraries apart by them). Initrd files use their address,
                 // home-folder files a hash of their path.
                 let mut ino = 0u64;
+                // Character devices' numbers, as Linux's (`makedev`). Wine
+                // compares stderr's with /dev/null's and stays silent when
+                // they match, so they must differ.
+                let mut rdev = 0u64;
                 let (fd, path, st) = match number {
                     5 => (Some(a1), 0, a2),
                     4 | 6 => (None, a1, a2),
@@ -3332,7 +4421,16 @@ impl Scheduler {
                 // A home-folder path to ask BadgerHandler about, or (mode, size).
                 let (home_path, known) = match fd {
                     Some(fd) => match self.linux_file(i, fd).cloned() {
-                        Some(LinuxFile::Console { .. }) => (None, Some((0o020_620u32, 0))),
+                        Some(LinuxFile::Dev(dev)) => {
+                            rdev = device_number(dev);
+                            (None, Some((0o020_666u32, 0)))
+                        }
+                        // Handled by `tmp_call` before this.
+                        Some(LinuxFile::Tmp { .. } | LinuxFile::TmpDir(..)) => return fail(EBADF),
+                        Some(LinuxFile::Console { .. }) => {
+                            rdev = CONSOLE_RDEV;
+                            (None, Some((0o020_620u32, 0)))
+                        }
                         Some(LinuxFile::Pipe(end)) => {
                             let len = end.pipe.lock().len as u64;
                             (None, Some((0o010_600, len)))
@@ -3343,7 +4441,12 @@ impl Scheduler {
                             ino = data.as_ptr() as u64;
                             (None, Some((0o100_444, data.len() as u64)))
                         }
-                        Some(LinuxFile::Dir(..)) => (None, Some((0o040_555, 0))),
+                        // Folders get distinct inode numbers: Wine compares
+                        // them to find which drive a path is on.
+                        Some(LinuxFile::Dir(p, _)) => {
+                            ino = fnv(&p);
+                            (None, Some((0o040_555, 0)))
+                        }
                         Some(LinuxFile::Home { path, .. } | LinuxFile::HomeDir(path, _)) => {
                             (Some(path), None)
                         }
@@ -3353,7 +4456,10 @@ impl Scheduler {
                         let Some(path) = self.linux_path(i, &ok, path) else {
                             return fail(EFAULT);
                         };
-                        if self.unix_bound(&path) {
+                        if let Some(dev) = linux_device(&path) {
+                            rdev = device_number(dev);
+                            (None, Some((0o020_666, 0)))
+                        } else if self.unix_bound(&path) {
                             // A bound Unix socket (wineserver checks with
                             // lstat that its socket is one).
                             (None, Some((0o140_600, 0)))
@@ -3365,7 +4471,10 @@ impl Scheduler {
                                     ino = data.as_ptr() as u64;
                                     (None, Some((0o100_444, data.len() as u64)))
                                 }
-                                Some(Kind::Dir) => (None, Some((0o040_555, 0))),
+                                Some(Kind::Dir) => {
+                                    ino = fnv(&path);
+                                    (None, Some((0o040_555, 0)))
+                                }
                                 None => return fail(ENOENT),
                             }
                         }
@@ -3374,9 +4483,8 @@ impl Scheduler {
                 let (mode, len) = match (home_path, known) {
                     (_, Some(k)) => k,
                     (Some(rel), None) => {
-                        ino = rel.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
-                            (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
-                        });
+                        // The full path, as for initrd and tmpfs folders.
+                        ino = fnv(&format!("home/user/{rel}"));
                         let (s, entry) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
                         if s < 0 {
                             return fail(zoo_errno(s));
@@ -3403,6 +4511,7 @@ impl Scheduler {
                 buf[24..28].copy_from_slice(&mode.to_le_bytes());
                 buf[28..32].copy_from_slice(&LINUX_UID.to_le_bytes());
                 buf[32..36].copy_from_slice(&LINUX_UID.to_le_bytes());
+                buf[40..48].copy_from_slice(&rdev.to_le_bytes());
                 buf[48..56].copy_from_slice(&len.to_le_bytes());
                 buf[56..64].copy_from_slice(&4096u64.to_le_bytes());
                 buf[64..72].copy_from_slice(&len.div_ceil(512).to_le_bytes());
@@ -3416,6 +4525,9 @@ impl Scheduler {
                 let Some(path) = self.linux_path(i, &ok, path) else {
                     return fail(EFAULT);
                 };
+                if linux_device(&path).is_some() {
+                    return Outcome::Ret(0);
+                }
                 if let Some(rel) = self.home_rel(i, &path) {
                     let (s, _) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
                     return if s < 0 {
@@ -3600,7 +4712,7 @@ impl Scheduler {
                         Err(e) => fail(e),
                     },
                     // F_GETFD, F_SETFD
-                    1 => Outcome::Ret((self.proc(i).linux_cloexec >> fd & 1) as i64),
+                    1 => Outcome::Ret(i64::from(self.proc(i).linux_cloexec.get(fd))),
                     // F_GETLK: no other lock holder (one user, advisory);
                     // F_SETLK, F_SETLKW and the OFD forms: granted.
                     5 | 36 => {
@@ -3612,6 +4724,8 @@ impl Scheduler {
                         Outcome::Ret(0)
                     }
                     6 | 7 | 37 | 38 => Outcome::Ret(0),
+                    // F_ADD_SEALS, F_GET_SEALS (memfd): no seals kept.
+                    1033 | 1034 => Outcome::Ret(0),
                     2 => {
                         self.proc(i).set_cloexec(fd, a3 & 1 != 0);
                         Outcome::Ret(0)
@@ -3633,6 +4747,11 @@ impl Scheduler {
                                     append,
                                     ..
                                 } => 1 | if append { O_APPEND as i64 } else { 0 },
+                                LinuxFile::Tmp {
+                                    write: true,
+                                    append,
+                                    ..
+                                } => 2 | if append { O_APPEND as i64 } else { 0 },
                                 _ => 0,
                             },
                         )
@@ -5075,6 +6194,24 @@ impl Scheduler {
                 }
                 Outcome::Ret(0)
             }
+            // clock_getres(clock, res): the clocks above count nanoseconds.
+            229 => {
+                if !matches!(a1, 0 | 1 | 4 | 7 | 8 | 9) {
+                    return fail(EINVAL);
+                }
+                if a2 != 0 {
+                    if !ok(a2, 16, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory.
+                    unsafe {
+                        let p = a2 as *mut u64;
+                        p.write_unaligned(0);
+                        p.add(1).write_unaligned(1);
+                    }
+                }
+                Outcome::Ret(0)
+            }
             // nanosleep(req, rem), clock_nanosleep(clock, flags, req, rem):
             // relative sleeps, rounded up to timer ticks.
             35 | 230 => {
@@ -5385,7 +6522,7 @@ impl Scheduler {
                         };
                         let frame = PhysFrame::containing_address(phys);
                         if mem
-                            .map_user_frame(p4, DISPLAY_BASE + k * 4096, frame, true)
+                            .map_user_frame(p4, DISPLAY_BASE + k * 4096, frame, true, false)
                             .is_err()
                         {
                             mem.unmap_user_keep(p4, DISPLAY_BASE, k);
@@ -5515,7 +6652,7 @@ impl Scheduler {
                 let va = self.proc(i).map_next;
                 for (k, &frame) in pages.frames.iter().enumerate() {
                     if mem
-                        .map_user_frame(p4, va + k as u64 * 4096, frame, true)
+                        .map_user_frame(p4, va + k as u64 * 4096, frame, true, false)
                         .is_err()
                     {
                         mem.unmap_user_keep(p4, va, k as u64);
@@ -5559,6 +6696,7 @@ impl Scheduler {
                             p4,
                             va + k * 4096,
                             PhysFrame::containing_address(p),
+                            false,
                             false,
                         )
                     });
@@ -6558,6 +7696,14 @@ fn load_segments(
 
 // ---- Linux programs (docs/linux1-design.md) -----------------------------
 
+/// True if `s` can name an environment variable: letters, digits and
+/// `_`, not starting with a digit.
+fn env_name(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// The environment every Linux program starts with.
 const LINUX_ENV: [&str; 5] = [
     "HOME=/home/user",
@@ -6690,12 +7836,38 @@ const LINUX_WRITE_MAX: u64 = 64 * 1024;
 /// Linux programs' `brk` area (reserved on first use), and limits.
 const LINUX_BRK_SIZE: u64 = 64 * 1024 * 1024;
 const LINUX_PATH_MAX: usize = 256;
-const LINUX_FILES_MAX: usize = 64;
+/// Descriptors per Linux process: Linux's usual default limit. Wine keeps
+/// one open per loaded library, so 64 was too few (docs/linux10b-design.md).
+const LINUX_FILES_MAX: usize = 1024;
+
+/// One bit per Linux descriptor.
+#[derive(Clone, Copy)]
+struct FdBits([u64; LINUX_FILES_MAX / 64]);
+
+impl FdBits {
+    const EMPTY: Self = FdBits([0; LINUX_FILES_MAX / 64]);
+
+    fn get(&self, fd: usize) -> bool {
+        fd < LINUX_FILES_MAX && self.0[fd / 64] >> (fd % 64) & 1 != 0
+    }
+
+    fn set(&mut self, fd: usize, on: bool) {
+        if fd < LINUX_FILES_MAX {
+            if on {
+                self.0[fd / 64] |= 1 << (fd % 64);
+            } else {
+                self.0[fd / 64] &= !(1 << (fd % 64));
+            }
+        }
+    }
+}
 const LINUX_RW: u64 = zoo_abi::prot::READ | zoo_abi::prot::WRITE;
 const MAP_FIXED: u64 = 0x10;
 const MAP_FIXED_NOREPLACE: u64 = 0x10_0000;
 const MAP_ANONYMOUS: u64 = 0x20;
 const AT_EMPTY_PATH: u64 = 0x1000;
+const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+const AT_FDCWD: i64 = -100;
 const O_DIRECTORY: u64 = 0o200_000;
 const O_CREAT: u64 = 0o100;
 const O_EXCL: u64 = 0o200;
@@ -6852,6 +8024,16 @@ enum LinuxFile {
     /// (docs/linux7-design.md); duplicates share the object.
     Sock(Arc<Mutex<Sock>>),
     Event(Arc<Mutex<EventFd>>),
+    /// A tmpfs file (or memfd), and a tmpfs folder (docs/linux10b-design.md).
+    Tmp {
+        data: Arc<Mutex<TmpData>>,
+        pos: u64,
+        write: bool,
+        append: bool,
+    },
+    TmpDir(String, usize),
+    /// `/dev/null`, `/dev/zero`, `/dev/urandom` (docs/linux10b-design.md).
+    Dev(Device),
     Epoll(Arc<Mutex<Vec<EpollItem>>>),
     File(&'static [u8], u64),
     Dir(String, usize),
@@ -6970,6 +8152,203 @@ enum Sock {
         local: String,
         peer: String,
     },
+}
+
+/// A tmpfs file's contents: whole pages, freed when the last descriptor,
+/// name or mapping lets go, and the size in bytes.
+struct TmpData {
+    frames: Vec<PhysFrame>,
+    size: u64,
+}
+
+impl Drop for TmpData {
+    fn drop(&mut self) {
+        // Freed by the next reap, which holds the memory lock.
+        SHM_FREED.lock().append(&mut self.frames);
+    }
+}
+
+/// A tmpfs node.
+#[derive(Clone)]
+enum TmpNode {
+    Dir,
+    File(Arc<Mutex<TmpData>>),
+    Link(String),
+}
+
+/// A `MAP_SHARED` mapping of a tmpfs file: `pages` pages at `va`, from file
+/// page `first`, with their access.
+#[derive(Clone)]
+struct SharedMap {
+    va: u64,
+    pages: u64,
+    first: usize,
+    w: bool,
+    x: bool,
+    /// `MAP_PRIVATE`: the file's pages, read-only in the page tables, until
+    /// the program writes one, which then gets its own copy (copy on
+    /// write, `tmp_cow`): until then it sees the file's changes, as on
+    /// Linux. `w` and `x` are the access the program asked for.
+    private: bool,
+    data: Arc<Mutex<TmpData>>,
+}
+
+/// The character devices Linux programs can open.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Device {
+    Null,
+    Zero,
+    Random,
+}
+
+/// A device's number as Linux gives it (`makedev(1, minor)`, the memory
+/// devices).
+fn device_number(dev: Device) -> u64 {
+    match dev {
+        Device::Null => 0x103,
+        Device::Zero => 0x105,
+        Device::Random => 0x109,
+    }
+}
+
+/// The console's device number: `/dev/console`, `makedev(5, 1)`.
+const CONSOLE_RDEV: u64 = 0x501;
+
+/// The device at `path` (resolved), if any.
+fn linux_device(path: &str) -> Option<Device> {
+    match path {
+        "dev/null" => Some(Device::Null),
+        "dev/zero" => Some(Device::Zero),
+        "dev/urandom" | "dev/random" => Some(Device::Random),
+        _ => None,
+    }
+}
+
+/// State of the kernel's random number mixer.
+static RANDOM: Mutex<u64> = Mutex::new(0);
+
+/// Fills `buf` with random bytes: RDRAND when the CPU has it, mixed with
+/// the time-stamp counter; without RDRAND (QEMU's `qemu64` model) only a
+/// SplitMix64 sequence seeded from the clock and the time-stamp counter,
+/// which is unpredictable enough for hash seeds and temporary names but
+/// not cryptographically strong (docs/linux10b-design.md).
+fn random_fill(buf: &mut [u8]) {
+    let rdrand = {
+        let ecx = core::arch::x86_64::__cpuid(1).ecx;
+        ecx & (1 << 30) != 0
+    };
+    let mut state = RANDOM.lock();
+    if *state == 0 {
+        *state = crate::rtc::realtime_ns().unwrap_or(0) ^ 0x9e37_79b9_7f4a_7c15;
+    }
+    for chunk in buf.chunks_mut(8) {
+        // SAFETY: RDTSC is available on every x86-64 CPU.
+        let mut x = unsafe { core::arch::x86_64::_rdtsc() };
+        if rdrand {
+            let mut v = 0u64;
+            // SAFETY: CPUID reported RDRAND; a failed draw leaves `v` 0.
+            if unsafe { core::arch::x86_64::_rdrand64_step(&mut v) } == 1 {
+                x ^= v;
+            }
+        }
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15 ^ x);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        chunk.copy_from_slice(&z.to_le_bytes()[..chunk.len()]);
+    }
+}
+
+/// True if `path` (resolved) is in tmpfs.
+fn tmp_is(path: &str) -> bool {
+    path == "tmp" || path.starts_with("tmp/")
+}
+
+/// FNV-1a of a path: inode numbers for nodes without an address.
+fn fnv(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
+/// Gives a tmpfs file pages up to `end` bytes (zeroed); false when memory
+/// runs out.
+fn tmp_grow(d: &mut TmpData, end: u64, mem: &mut Memory) -> bool {
+    let want = end.div_ceil(4096) as usize;
+    while d.frames.len() < want {
+        if mem.frames.available() < 256 {
+            return false;
+        }
+        match mem.zeroed_frame() {
+            Ok(fr) => d.frames.push(fr),
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+/// `ftruncate`/`truncate` of a tmpfs file. Shrinking zeroes the bytes past
+/// the new end (its pages stay, as mappings may use them).
+fn tmp_resize(data: &Arc<Mutex<TmpData>>, len: u64, mem: &mut Memory) -> Outcome {
+    let mut d = data.lock();
+    if !tmp_grow(&mut d, len, mem) {
+        return Outcome::Ret(-ENOSPC);
+    }
+    if len < d.size {
+        let mut at = len;
+        while at < d.size {
+            let k = (at / 4096) as usize;
+            let o = (at % 4096) as usize;
+            let n = (4096 - o).min((d.size - at) as usize);
+            // SAFETY: page `k` of the file, through the physical window.
+            unsafe {
+                core::ptr::write_bytes(mem.phys_to_virt(d.frames[k].start_address()).add(o), 0, n)
+            };
+            at += n as u64;
+        }
+    }
+    d.size = len;
+    Outcome::Ret(0)
+}
+
+/// Copies `n` bytes between `buf` and a tmpfs file from file offset `at`:
+/// into the file if `into`, else out of it. The file's pages must cover
+/// the range; the caller checked `buf`.
+fn tmp_copy(mem: &Memory, frames: &[PhysFrame], at: u64, buf: *mut u8, n: usize, into: bool) {
+    let mut done = 0;
+    while done < n {
+        let pos = at as usize + done;
+        let (k, o) = (pos / 4096, pos % 4096);
+        let span = (n - done).min(4096 - o);
+        // SAFETY: page `k` exists (the caller grew the file or limited `n`
+        // to its size); `o + span` <= 4096; `buf..buf + n` was checked.
+        unsafe {
+            let page = mem.phys_to_virt(frames[k].start_address()).add(o);
+            if into {
+                core::ptr::copy_nonoverlapping(buf.add(done), page, span);
+            } else {
+                core::ptr::copy_nonoverlapping(page, buf.add(done), span);
+            }
+        }
+        done += span;
+    }
+}
+
+/// Writes a Linux `struct stat` (x86-64): one link, owner `LINUX_UID`.
+fn write_stat(st: u64, mode: u32, size: u64, ino: u64) {
+    let mut buf = [0u8; 144];
+    buf[0..8].copy_from_slice(&1u64.to_le_bytes());
+    buf[8..16].copy_from_slice(&ino.to_le_bytes());
+    buf[16..24].copy_from_slice(&1u64.to_le_bytes());
+    buf[24..28].copy_from_slice(&mode.to_le_bytes());
+    buf[28..32].copy_from_slice(&LINUX_UID.to_le_bytes());
+    buf[32..36].copy_from_slice(&LINUX_UID.to_le_bytes());
+    buf[48..56].copy_from_slice(&size.to_le_bytes());
+    buf[56..64].copy_from_slice(&4096u64.to_le_bytes());
+    buf[64..72].copy_from_slice(&size.div_ceil(512).to_le_bytes());
+    // SAFETY: the caller checked 144 writable user bytes at `st`.
+    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), st as *mut u8, 144) };
 }
 
 /// An eventfd counter.
@@ -7316,6 +8695,9 @@ const EINTR: i64 = 4;
 const ENODEV: i64 = 19;
 const ELIBBAD: i64 = 80;
 const ETIMEDOUT: i64 = 110;
+const EBUSY: i64 = 16;
+const EOPNOTSUPP: i64 = 95;
+const ELOOP: i64 = 40;
 const ENOTSOCK: i64 = 88;
 const ENOPROTOOPT: i64 = 92;
 const ESOCKTNOSUPPORT: i64 = 94;

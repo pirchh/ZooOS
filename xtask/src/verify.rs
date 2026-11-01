@@ -333,7 +333,42 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=10 name=wine code=0",
     ]);
 
+    let mut wine_cmd = fast_boot_desktop_exits(Mode::FastBoot);
+    wine_cmd.then(&[
+        "ZOO_OS SHELL line=linux WINEPREFIX=/tmp/wine /usr/bin/wine cmd /c echo %OS%",
+        "ZOO_OS PROC start pid=10 name=wine",
+    ]);
+    // Then Wine's own processes, in no fixed order (docs/linux10b-design.md).
+    wine_cmd.then_rest();
+
     let cases = [
+        Case {
+            name: "wine-cmd",
+            mode: Mode::FastBoot,
+            custom_image: wine_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: wine_cmd,
+            // 176-260 s under TCG: Wine creates its prefix on first run.
+            timeout: s.timeout * 16,
+            want: "pass",
+            purpose: "Wine runs cmd.exe, a Windows program, with its prefix in /tmp",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::Settle(QUIET),
+                    Action::Keys(vec!["esc"]),
+                    Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+                    Action::Settle(QUIET),
+                    Action::Keys(typed("linux WINEPREFIX=/tmp/wine /usr/bin/wine cmd /c echo %OS%")),
+                    // cmd.exe's own output line, not the shell's echo of
+                    // the command (which has `%OS%`).
+                    Action::WaitContains(":wine-preloader] Windows_NT".into()),
+                    Action::WaitContains("PROC exit pid=10 name=wine-preloader code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
         Case {
             name: "wine-version",
             mode: Mode::FastBoot,
@@ -436,7 +471,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: expect(
                 Mode::FaultHeapGuard,
                 &[
-                    "ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000101000",
+                    // The page after the 8 MiB heap (docs/linux10b-design.md).
+                    "ZOO_OS EXCEPTION page-fault access=read cause=not-present addr=0xffffc00000801000",
                 ],
             ),
             timeout: s.timeout,
@@ -828,7 +864,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Keys(typed("linux skua-test")),
                     Action::WaitContains("SkuaTest: uname Linux x86_64".into()),
                     Action::WaitContains("SkuaTest: HOME=/home/user USER=user".into()),
-                    Action::WaitContains("SkuaTest: /home/user: .tmp Documents Music Photos".into()),
+                    Action::WaitContains("SkuaTest: /home/user: Documents Music Photos".into()),
                     Action::WaitContains(
                         "SkuaTest: cwd /home/user; Documents/notes.txt starts \"Shopping: flour, eggs, milk.\""
                             .into(),
@@ -1011,6 +1047,69 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Keys(typed("linux ermine-test")),
                     Action::WaitContains("ErmineTest: all checks passed".into()),
                     Action::WaitFor("ZOO_OS PROC exit pid=26 name=ermine-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "linux-loon",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux loon-test",
+                    "ZOO_OS PROC start pid=26 name=loon-test",
+                    "ZOO_OS SHELL line=ps",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "the shell still answers while a Linux program spins without ever blocking",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux loon-test")),
+                    Action::WaitContains("LoonTest: spinning".into()),
+                    Action::Settle(QUIET),
+                    Action::Keys(typed("ps")),
+                    Action::WaitFor("ZOO_OS SHELL line=ps".into()),
+                    Action::WaitContains("loon-test        ready".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "linux-auklet",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=linux AUKLET=wing TERM=vt100 auklet-test",
+                    "ZOO_OS PROC start pid=26 name=auklet-test",
+                    // The child sharing a tmpfs mapping.
+                    "ZOO_OS PROC start pid=27 name=auklet-test",
+                    "ZOO_OS PROC exit pid=27 name=auklet-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=auklet-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "a Linux musl program uses /tmp: folders, symbolic links, *at calls, unlinked open files, memfd and MAP_SHARED across fork",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("linux AUKLET=wing TERM=vt100 auklet-test")),
+                    Action::WaitContains("AukletTest: /tmp/auklet: a link".into()),
+                    Action::WaitContains("AukletTest: all checks passed".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=auklet-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -2984,6 +3083,10 @@ fn typed(text: &str) -> Vec<&'static str> {
             '/' => "slash",
             '.' => "dot",
             '%' => "shift+5",
+            '=' => "equal",
+            '_' => "shift+minus",
+            '+' => "shift+equal",
+            ',' => "comma",
             other => panic!("typed: no key for {other:?}"),
         })
         .chain(["ret"])

@@ -44,6 +44,11 @@ pub enum Step {
     /// All of these, each exactly once, in any order (events from separate
     /// processes that may interleave), before the next step.
     AnyOrder(Vec<Matcher>),
+    /// Any further markers except a kernel panic or exception: for a
+    /// program whose process tree is not a fixed sequence (Wine starting
+    /// its Windows services). Must be last; the case's interaction steps
+    /// say what has to happen.
+    Rest,
 }
 
 impl fmt::Display for Step {
@@ -57,6 +62,7 @@ impl fmt::Display for Step {
                 }
                 write!(f, "]")
             }
+            Step::Rest => write!(f, "any markers but PANIC or EXCEPTION"),
         }
     }
 }
@@ -91,6 +97,12 @@ impl Expectation {
     pub fn then_prefix(&mut self, prefix: &str) -> &mut Self {
         self.required
             .push(Step::One(Matcher::Prefix(prefix.to_string())));
+        self
+    }
+
+    /// Ends the sequence with `Step::Rest`.
+    pub fn then_rest(&mut self) -> &mut Self {
+        self.required.push(Step::Rest);
         self
     }
 
@@ -141,6 +153,13 @@ pub fn evaluate(exp: &Expectation, log: &str) -> Verdict {
             continue;
         }
         match exp.required.get(next) {
+            Some(Step::Rest) => {
+                if marker.starts_with("ZOO_OS PANIC") || marker.starts_with("ZOO_OS EXCEPTION") {
+                    return Verdict::Unexpected(format!(
+                        "got `{marker}` after the expected markers"
+                    ));
+                }
+            }
             Some(Step::One(m)) if m.matches(marker) => next += 1,
             Some(Step::AnyOrder(ms)) => {
                 if used.len() != ms.len() {
@@ -167,7 +186,7 @@ pub fn evaluate(exp: &Expectation, log: &str) -> Verdict {
         }
     }
     match exp.required.get(next) {
-        None => Verdict::Pass,
+        None | Some(Step::Rest) => Verdict::Pass,
         Some(s) => Verdict::Pending(s.to_string()),
     }
 }
@@ -192,6 +211,28 @@ mod tests {
     const PANIC_OK: &str = "ZOO_OS BOOT version=0.1.0\r\n\
         ZOO_OS INFO mode=panic-test memory_regions=9 usable_bytes=1\r\n\
         ZOO_OS PANIC intentional-test\r\nZOO_OS INFO panic_location=kernel/src/main.rs:40\r\n";
+
+    #[test]
+    fn rest_accepts_more_but_not_a_panic() {
+        let mut e = normal(V);
+        e.then_rest();
+        assert_eq!(evaluate(&e, NORMAL_OK), Verdict::Pass);
+        let more = format!(
+            "{NORMAL_OK}ZOO_OS PROC start pid=10 name=wine
+"
+        );
+        assert_eq!(evaluate(&e, &more), Verdict::Pass);
+        let bad = format!(
+            "{more}ZOO_OS EXCEPTION page-fault
+"
+        );
+        assert!(matches!(evaluate(&e, &bad), Verdict::Unexpected(_)));
+        // Without it, the same extra marker fails.
+        assert!(matches!(
+            evaluate(&normal(V), &more),
+            Verdict::Unexpected(_)
+        ));
+    }
 
     #[test]
     fn normal_passes() {

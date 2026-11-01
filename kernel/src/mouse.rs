@@ -132,6 +132,7 @@ pub fn push_event(dx: i16, dy: i16, buttons: u8) {
     }
     QUEUE[head % CAPACITY].store(event, Ordering::Relaxed);
     HEAD.store(head.wrapping_add(1), Ordering::Release);
+    crate::process::kernel_has_input();
 }
 
 /// IRQ12: read the byte if it is the mouse's.

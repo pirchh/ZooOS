@@ -33,13 +33,18 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 pub const KSTACK_REGION: u64 = 0xFFFF_C000_8000_0000;
 pub const KSTACK_SLOT: u64 = 64 * 1024;
 pub const KSTACK_SIZE: u64 = 16 * 1024;
-pub const KSTACK_SLOTS: usize = 32;
+/// Tasks (threads) alive at once, kernel task excluded. Wine's start-up
+/// runs over a dozen processes with several threads each; 32 ran out
+/// (docs/linux10b-design.md). Only used slots have stack pages mapped.
+pub const KSTACK_SLOTS: usize = 512;
 
 /// Kernel virtual layout (design §3). The first page is the heap's lower
 /// guard; the page after the heap is its upper guard. Neither is mapped.
 pub const HEAP_REGION: u64 = 0xFFFF_C000_0000_0000;
 pub const HEAP_START: u64 = HEAP_REGION + 0x1000;
-pub const HEAP_SIZE: u64 = 1024 * 1024;
+/// 8 MiB: Wine's start-up keeps hundreds of tasks, descriptors and `/tmp`
+/// nodes in kernel memory; 1 MiB was the M1 size (docs/linux10b-design.md).
+pub const HEAP_SIZE: u64 = 8 * 1024 * 1024;
 pub const HEAP_GUARD_LOW: u64 = HEAP_REGION;
 pub const HEAP_GUARD_HIGH: u64 = HEAP_START + HEAP_SIZE;
 /// Device registers (MMIO), mapped uncached by `map_mmio`.

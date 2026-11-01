@@ -129,20 +129,24 @@ impl Memory {
         true
     }
 
-    /// Maps an existing frame (not from the allocator, e.g. the framebuffer)
-    /// at user address `va` in `p4`: user-accessible, no-execute.
+    /// Maps an existing frame (not owned by this mapping, e.g. the
+    /// framebuffer or a shared tmpfs page) at user address `va` in `p4`:
+    /// user-accessible, no-execute unless `executable`.
     pub fn map_user_frame(
         &mut self,
         p4: PhysFrame,
         va: u64,
         frame: PhysFrame,
         writable: bool,
+        executable: bool,
     ) -> Result<(), SpaceError> {
         debug_assert!(va < USER_END);
-        let mut flags =
-            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         if writable {
             flags |= PageTableFlags::WRITABLE;
+        }
+        if !executable {
+            flags |= PageTableFlags::NO_EXECUTE;
         }
         let parents =
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;

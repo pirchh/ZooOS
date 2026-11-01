@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
 
     /* Resource limits and the file-creation mask (docs/linux10-design.md). */
     struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur != 64) return fail(7, "getrlimit");
+    if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur != 1024) return fail(7, "getrlimit");
     if (umask(077) != 022 || umask(022) != 077) return fail(8, "umask");
 
     struct utsname u;
