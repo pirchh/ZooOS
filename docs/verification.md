@@ -42,6 +42,22 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Fix: `cargo xtask run` ignored `--accel` (version 0.55.0)
+
+- **The bug:** `run` parsed `--accel` but never called `qemu::set_accel`,
+  so every interactive session ran under TCG, including the owner's U1–U1c
+  sessions started with `--accel whpx`. `build/runs/run-fast-boot/
+  qemu-command.txt` showed `"-accel" "tcg"`. The verify cases were
+  unaffected: `verify` applies the flag.
+- **After the fix:** `cargo xtask run --accel whpx --timeout-secs 20`
+  prints `[run] booting fast-boot image in a QEMU window (accelerator
+  whpx)`. Its command line has `"-accel" "whpx"`, and the guest's local
+  APIC calibrates at `per-tick=125062`, against 626206 under TCG.
+- **New:** `run --model` boots the normal image with the assistant's model
+  added (built as `assistant-live` builds it). Without it, the everyday
+  fast-boot image has no model, and the Assistant answers only its typed
+  commands.
+
 ## UI step 1c results: USB input by interrupt, and a tablet (version 0.55.0)
 
 Design: docs/u1c-design.md.

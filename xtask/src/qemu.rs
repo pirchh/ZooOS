@@ -239,8 +239,9 @@ pub fn run_interactive(
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);
     println!(
-        "[run] booting {} image in a QEMU window; type there. Guest COM1 follows here.",
-        mode.name()
+        "[run] booting {} image in a QEMU window (accelerator {}); type there. Guest COM1 follows here.",
+        mode.name(),
+        accel()
     );
     println!("[run] Close the window or press Ctrl+C here to stop QEMU.");
     let child = Command::new(qemu)
