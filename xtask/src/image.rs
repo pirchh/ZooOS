@@ -320,8 +320,10 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
 
 /// The Wine image (docs/linux10-design.md): the fast-boot kernel with the
 /// normal initrd plus the exported Wine build (`build/wine/`, made by
-/// tools/wine/export.sh) and `lib/libc.musl-x86_64.so.1`, Alpine's name for
-/// musl's libc, as a hard link to the loader. `None` without the export.
+/// tools/wine/export.sh). Wine's programs name musl's libc as
+/// `libc.musl-x86_64.so.1` (Alpine's name); musl's loader treats any
+/// `libc.` name as itself, so no file of that name is needed. `None`
+/// without the export.
 pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, String> {
     let export = root.join("build").join("wine").join("wine-11.0-zooos.tar");
     if !export.is_file() {
@@ -347,9 +349,6 @@ pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, S
         );
         files += 1;
     }
-    let link = zoo_abi::tar::link_header("lib/libc.musl-x86_64.so.1", "lib/ld-musl-x86_64.so.1")
-        .ok_or("cannot make the libc link header")?;
-    archive.extend_from_slice(&link);
     archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
     for e in zoo_abi::tar::read(&archive) {
         e.map_err(|e| format!("wine initrd self-check failed: {e:?}"))?;

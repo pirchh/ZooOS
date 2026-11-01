@@ -828,7 +828,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Keys(typed("linux skua-test")),
                     Action::WaitContains("SkuaTest: uname Linux x86_64".into()),
                     Action::WaitContains("SkuaTest: HOME=/home/user USER=user".into()),
-                    Action::WaitContains("SkuaTest: /home/user: Documents Music Photos".into()),
+                    Action::WaitContains("SkuaTest: /home/user: .tmp Documents Music Photos".into()),
                     Action::WaitContains(
                         "SkuaTest: cwd /home/user; Documents/notes.txt starts \"Shopping: flour, eggs, milk.\""
                             .into(),
@@ -2983,6 +2983,7 @@ fn typed(text: &str) -> Vec<&'static str> {
             '-' => "minus",
             '/' => "slash",
             '.' => "dot",
+            '%' => "shift+5",
             other => panic!("typed: no key for {other:?}"),
         })
         .chain(["ret"])

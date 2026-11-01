@@ -113,7 +113,8 @@ and verification:
 | L7 | Unix stream sockets with `SCM_RIGHTS`, `poll`/`select`/`epoll`, `eventfd`, non-blocking descriptors (docs/linux7-design.md) | done 2026-10-31 |
 | L8 | Dynamically linked programs: musl's loader built from source, `PT_INTERP`, file-backed and fixed `mmap` (docs/linux8-design.md) | done 2026-10-31 |
 | L9 | The Linux address-space layout Wine needs: whole lower half, image reservations, 8 MiB lazy stack, Linux `munmap`/`MAP_FIXED` carving (docs/linux9-design.md) | done 2026-10-31 |
-| L10 | Building Wine 11.0 for musl (WSL Alpine, owner-approved) and running its loader, server and a first `.exe` | proposed |
+| L10a | Wine 11.0 built for musl (WSL Alpine), packed into a `wine` image; `wine --version` runs; Wine reaches its server (docs/linux10-design.md) | done 2026-10-31 |
+| L10b | tmpfs for `/tmp` and `memfd`, shared `mmap`, `mmap` of home files, symbolic links: a first Windows program (`cmd.exe`) | proposed |
 
 ## Services (owner direction 2026-10-30)
 

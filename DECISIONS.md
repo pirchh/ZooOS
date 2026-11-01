@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 10a: Wine builds, starts and reaches its server (2026-10-31)
+
+Design and findings: docs/linux10-design.md.
+
+- Wine 11.0 is built from source (owner's choice) in WSL Alpine, lean and
+  64-bit; exported as 958 files / 162 MB into a separate `wine` image.
+- Linux strings (arguments, environment) are laid out as on Linux; Wine's
+  preloader depends on it.
+- `/tmp` is the home folder's `.tmp` for now; names starting with `.` are
+  hidden in Mac-style listings. A RAM tmpfs is the next step (L10b).
+- musl's `libc.so` no longer links Zig's compiler runtime, which hid
+  `memcpy`/`memset`/`strlen`; three helpers come from c/musl/complex-mul.c.
+- The `libc.musl-x86_64.so.1` alias proved unnecessary (a negative control
+  passed): musl's loader treats any `libc.` name as itself. Removed with
+  the tar hard-link support added for it. Version 0.50.0.
+
 ## Linux step 9: the address-space layout Wine needs (2026-10-31)
 
 Design: docs/linux9-design.md.

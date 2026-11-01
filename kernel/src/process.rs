@@ -232,6 +232,8 @@ struct Proc {
     linux_nonblock: u64,
     /// The running Linux program's path (`/proc/self/exe`).
     linux_exe: String,
+    /// The file-creation mask (`umask`).
+    linux_umask: u64,
     /// Anonymous memory committed when first touched (docs/linux6-design.md):
     /// (start, length, Linux protection) ranges inside reservations.
     linux_lazy: Vec<(u64, u64, u64)>,
@@ -363,6 +365,7 @@ impl Proc {
             linux_lazy: Vec::new(),
             linux_nonblock: 0,
             linux_exe: String::new(),
+            linux_umask: 0o022,
         }
     }
 
@@ -1245,7 +1248,7 @@ impl Scheduler {
                 let pipe = end.pipe.clone();
                 self.pipe_write(i, &pipe, bytes, mem)
             }
-            Some(LinuxFile::Home { .. }) => self.home_write(i, fd, bytes, mem),
+            Some(LinuxFile::Home { .. }) => self.home_write(i, fd, bytes, mem, None),
             Some(LinuxFile::Sock(s)) => {
                 let s = s.clone();
                 self.sock_send(i, &s, bytes, Vec::new(), false, mem)
@@ -1653,6 +1656,14 @@ impl Scheduler {
         let at = p.vmas.partition_point(|&(s, _)| s < start);
         p.vmas.insert(at, (start, len));
         true
+    }
+
+    /// True if `path` (resolved, without the leading `/`) is the name of a
+    /// bound Unix socket (docs/linux10-design.md).
+    fn unix_bound(&self, path: &str) -> bool {
+        self.unix_names
+            .iter()
+            .any(|(n, w)| n.strip_prefix('/') == Some(path) && w.strong_count() > 0)
     }
 
     /// True if task `i` is a thread of a Linux program.
@@ -2207,6 +2218,7 @@ impl Scheduler {
         child.linux_cloexec = parent.linux_cloexec;
         child.linux_nonblock = parent.linux_nonblock;
         child.linux_exe = parent.linux_exe.clone();
+        child.linux_umask = parent.linux_umask;
         child.linux_cwd = parent.linux_cwd.clone();
         child.linux_parent = parent.pid;
         child.linux_borrowed = share;
@@ -2505,12 +2517,27 @@ impl Scheduler {
         if path == "home/user" {
             return Some(String::new());
         }
+        // `/tmp` is the home folder's `.tmp` (docs/linux10-design.md).
+        if path == "tmp" {
+            return Some(String::from(".tmp"));
+        }
+        if let Some(rest) = path.strip_prefix("tmp/") {
+            return Some(format!(".tmp/{rest}"));
+        }
         path.strip_prefix("home/user/").map(String::from)
     }
 
     /// write/writev to descriptor `fd` (3 and up): one request with as
     /// much as fits in a message; a short write, which callers repeat.
-    fn home_write(&mut self, i: usize, fd: u64, bytes: &[u8], mem: &Memory) -> Outcome {
+    /// `offset`: write there (`pwrite64`) without moving the position.
+    fn home_write(
+        &mut self,
+        i: usize,
+        fd: u64,
+        bytes: &[u8],
+        mem: &Memory,
+        offset: Option<u64>,
+    ) -> Outcome {
         let fail = |e: i64| Outcome::Ret(-e);
         let (path, pos, append) = match self.linux_file(i, fd).cloned() {
             Some(LinuxFile::Home {
@@ -2524,7 +2551,9 @@ impl Scheduler {
         if bytes.is_empty() {
             return Outcome::Ret(0);
         }
-        let at = if append {
+        let at = if let Some(o) = offset {
+            o
+        } else if append {
             let (s, entry) = step!(self.fs(i, Op::Stat, 0, 0, &path, &[]));
             if s < 0 {
                 return fail(zoo_errno(s));
@@ -2552,7 +2581,9 @@ impl Scheduler {
             }
             (s as usize).min(chunk.len())
         };
-        if let Some(LinuxFile::Home { pos, .. }) = self.linux_file(i, fd) {
+        if offset.is_none()
+            && let Some(LinuxFile::Home { pos, .. }) = self.linux_file(i, fd)
+        {
             *pos = at + n as u64;
         }
         Outcome::Ret(n as i64)
@@ -2805,7 +2836,61 @@ impl Scheduler {
                 }
                 Outcome::Ret(base as i64)
             }
-            // pread64(fd, buf, count, offset): initrd files.
+            // pwrite64(fd, buf, count, offset): home-folder files.
+            18 => {
+                let len = a3.min(LINUX_WRITE_MAX);
+                if len > 0 && !ok(a2, len, false) {
+                    return fail(EFAULT);
+                }
+                match self.linux_file(i, a1) {
+                    Some(LinuxFile::Home { .. }) => {}
+                    Some(LinuxFile::File(..)) => return fail(EBADF),
+                    Some(_) => return fail(ESPIPE),
+                    None => return fail(EBADF),
+                }
+                // SAFETY: checked as readable user memory.
+                let bytes = unsafe { core::slice::from_raw_parts(a2 as *const u8, len as usize) };
+                self.home_write(i, a1, bytes, mem, Some(f.r10))
+            }
+            // pread64(fd, buf, count, offset): initrd and home-folder files.
+            17 if matches!(self.linux_file(i, a1), Some(LinuxFile::Home { .. })) => {
+                let Some(LinuxFile::Home { path, .. }) = self.linux_file(i, a1).cloned() else {
+                    return fail(EBADF);
+                };
+                let off = f.r10;
+                let n = if let Some(shm) = self.proc(i).linux_shm.clone() {
+                    let want = (a3 as usize).min(LINUX_BULK);
+                    let len32 = (want as u32).to_le_bytes();
+                    let (s, _) = step!(self.fs(i, Op::ReadBulk, off, 0, &path, &len32));
+                    if s < 0 {
+                        return fail(zoo_errno(s));
+                    }
+                    let n = (s as usize).min(want);
+                    if n > 0 {
+                        if !ok(a2, n as u64, true) {
+                            return fail(EFAULT);
+                        }
+                        shm_to_user(mem, &shm, a2, n);
+                    }
+                    n
+                } else {
+                    let want = (a3 as usize).min(FS_MAX_DATA);
+                    let (s, bytes) = step!(self.fs(i, Op::Read, off, want as u16, &path, &[]));
+                    if s < 0 {
+                        return fail(zoo_errno(s));
+                    }
+                    let n = bytes.len().min(want);
+                    if n > 0 {
+                        if !ok(a2, n as u64, true) {
+                            return fail(EFAULT);
+                        }
+                        // SAFETY: checked as writable user memory.
+                        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), a2 as *mut u8, n) };
+                    }
+                    n
+                };
+                Outcome::Ret(n as i64)
+            }
             17 => {
                 let Some(LinuxFile::File(data, _)) = self.linux_file(i, a1).cloned() else {
                     return fail(if self.linux_file(i, a1).is_some() {
@@ -3268,7 +3353,11 @@ impl Scheduler {
                         let Some(path) = self.linux_path(i, &ok, path) else {
                             return fail(EFAULT);
                         };
-                        if let Some(rel) = self.home_rel(i, &path) {
+                        if self.unix_bound(&path) {
+                            // A bound Unix socket (wineserver checks with
+                            // lstat that its socket is one).
+                            (None, Some((0o140_600, 0)))
+                        } else if let Some(rel) = self.home_rel(i, &path) {
                             (Some(rel), None)
                         } else {
                             match initrd_kind(&path) {
@@ -3293,9 +3382,11 @@ impl Scheduler {
                             return fail(zoo_errno(s));
                         }
                         if entry.first() == Some(&(zoo_abi::KIND_DIR as u8)) {
-                            (0o040_755, 0)
+                            // One user: owner-only, as wineserver
+                            // requires of its folders.
+                            (0o040_700, 0)
                         } else {
-                            (0o100_644, entry_size(&entry))
+                            (0o100_600, entry_size(&entry))
                         }
                     }
                     (None, None) => return fail(EBADF),
@@ -3396,6 +3487,12 @@ impl Scheduler {
                 let Some(path) = self.linux_path(i, &ok, path) else {
                     return fail(EFAULT);
                 };
+                // Unlinking a bound socket's name frees the name.
+                if op == Op::RemoveFile && self.unix_bound(&path) {
+                    let full = format!("/{path}");
+                    self.unix_names.retain(|(n, _)| *n != full);
+                    return Outcome::Ret(0);
+                }
                 let Some(rel) = self.home_rel(i, &path) else {
                     return fail(if initrd_kind(&path).is_some() || op == Op::CreateDir {
                         EROFS
@@ -3504,6 +3601,17 @@ impl Scheduler {
                     },
                     // F_GETFD, F_SETFD
                     1 => Outcome::Ret((self.proc(i).linux_cloexec >> fd & 1) as i64),
+                    // F_GETLK: no other lock holder (one user, advisory);
+                    // F_SETLK, F_SETLKW and the OFD forms: granted.
+                    5 | 36 => {
+                        if !ok(a3, 2, true) {
+                            return fail(EFAULT);
+                        }
+                        // SAFETY: checked as writable user memory (l_type).
+                        unsafe { (a3 as *mut i16).write_unaligned(2) }; // F_UNLCK
+                        Outcome::Ret(0)
+                    }
+                    6 | 7 | 37 | 38 => Outcome::Ret(0),
                     2 => {
                         self.proc(i).set_cloexec(fd, a3 & 1 != 0);
                         Outcome::Ret(0)
@@ -3920,6 +4028,150 @@ impl Scheduler {
             }
             // pause(): until a signal is handled (EINTR).
             34 => Outcome::Block,
+            // setsid, getsid, setpgid, getpgid, getpgrp: one session and
+            // one process group per process (docs/linux10-design.md).
+            112 | 124 | 121 | 111 => Outcome::Ret(self.task(i).pid as i64),
+            109 => Outcome::Ret(0),
+            // chmod(path, mode), fchmod(fd, mode), fchmodat(dirfd, path,
+            // mode): accepted for existing files; the home folder has one
+            // owner and reports owner-only permissions.
+            90 | 268 => {
+                let at = if number == 90 { a1 } else { a2 };
+                let Some(path) = self.linux_path(i, &ok, at) else {
+                    return fail(EFAULT);
+                };
+                if let Some(rel) = self.home_rel(i, &path) {
+                    let (s, _) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
+                    return if s < 0 {
+                        fail(zoo_errno(s))
+                    } else {
+                        Outcome::Ret(0)
+                    };
+                }
+                match initrd_kind(&path) {
+                    Some(_) => fail(EROFS),
+                    None => fail(ENOENT),
+                }
+            }
+            91 => match self.linux_file(i, a1) {
+                Some(_) => Outcome::Ret(0),
+                None => fail(EBADF),
+            },
+            // umask(mask): kept per process (applied by no file system yet:
+            // the home folder has one owner).
+            95 => {
+                let p = self.proc(i);
+                let old = p.linux_umask;
+                p.linux_umask = a1 & 0o777;
+                Outcome::Ret(old as i64)
+            }
+            // statfs(path, buf), fstatfs(fd, buf): generic figures (4 KiB
+            // blocks, 255-byte names), tmpfs's type.
+            137 | 138 => {
+                if number == 138 && self.linux_file(i, a1).is_none() {
+                    return fail(EBADF);
+                }
+                if number == 137 {
+                    let Some(path) = self.linux_path(i, &ok, a1) else {
+                        return fail(EFAULT);
+                    };
+                    if initrd_kind(&path).is_none() && self.home_rel(i, &path).is_none() {
+                        return fail(ENOENT);
+                    }
+                }
+                if !ok(a2, 120, true) {
+                    return fail(EFAULT);
+                }
+                let v: [u64; 11] = [
+                    0x0102_1994,
+                    4096,
+                    262_144,
+                    131_072,
+                    131_072,
+                    65_536,
+                    32_768,
+                    0,
+                    255,
+                    4096,
+                    0,
+                ];
+                // SAFETY: checked as writable user memory (struct statfs).
+                unsafe {
+                    core::ptr::write_bytes(a2 as *mut u8, 0, 120);
+                    for (k, x) in v.iter().enumerate() {
+                        (a2 as *mut u64).add(k).write_unaligned(*x);
+                    }
+                }
+                Outcome::Ret(0)
+            }
+            // fchdir(fd): the working directory becomes an open folder.
+            81 => match self.linux_file(i, a1).cloned() {
+                Some(LinuxFile::Dir(path, _)) => {
+                    self.proc(i).linux_cwd = path;
+                    Outcome::Ret(0)
+                }
+                Some(LinuxFile::HomeDir(rel, _)) => {
+                    self.proc(i).linux_cwd = if rel.is_empty() {
+                        String::from("home/user")
+                    } else {
+                        format!("home/user/{rel}")
+                    };
+                    Outcome::Ret(0)
+                }
+                Some(_) => fail(ENOTDIR),
+                None => fail(EBADF),
+            },
+            // flock(fd, op): granted (advisory, one user).
+            73 => match self.linux_file(i, a1) {
+                Some(_) => Outcome::Ret(0),
+                None => fail(EBADF),
+            },
+            // getrlimit(res, rlim), prlimit64(pid, res, new, old),
+            // setrlimit(res, rlim): fixed limits (64 descriptors, an 8 MiB
+            // stack, the rest unlimited); new limits are accepted, not kept.
+            97 | 302 | 160 => {
+                let (res, old) = match number {
+                    97 => (a1, a2),
+                    302 => (a2, f.r10),
+                    _ => (a1, 0),
+                };
+                let (soft, hard) = match res {
+                    3 => (LINUX_STACK_SIZE, u64::MAX),
+                    7 => (LINUX_FILES_MAX as u64, LINUX_FILES_MAX as u64),
+                    0..=15 => (u64::MAX, u64::MAX),
+                    _ => return fail(EINVAL),
+                };
+                if old != 0 {
+                    if !ok(old, 16, true) {
+                        return fail(EFAULT);
+                    }
+                    // SAFETY: checked as writable user memory.
+                    unsafe {
+                        (old as *mut u64).write_unaligned(soft);
+                        (old as *mut u64).add(1).write_unaligned(hard);
+                    }
+                }
+                Outcome::Ret(0)
+            }
+            // prctl(option, …): names, the parent-death signal and
+            // dumpability are accepted; other options are not supported.
+            157 => match a1 {
+                1 | 4 | 15 | 38 => Outcome::Ret(0),
+                3 => Outcome::Ret(1),
+                16 => {
+                    if !ok(a2, 16, true) {
+                        return fail(EFAULT);
+                    }
+                    let mut name = [0u8; 16];
+                    let t = self.task(i);
+                    let n = t.name.len().min(15);
+                    name[..n].copy_from_slice(&t.name.as_bytes()[..n]);
+                    // SAFETY: checked as writable user memory (16 bytes).
+                    unsafe { core::ptr::copy_nonoverlapping(name.as_ptr(), a2 as *mut u8, 16) };
+                    Outcome::Ret(0)
+                }
+                _ => fail(EINVAL),
+            },
             // readlink(path, buf, size), readlinkat(dirfd, path, buf, size):
             // the only link is /proc/self/exe (and /proc/<pid>/exe), the
             // running program (docs/linux10-design.md).
@@ -6358,20 +6610,36 @@ fn linux_stack(
     let random: [u8; 16] =
         (u128::from(tsc).wrapping_mul(0x9E37_79B9_7F4A_7C15_F39C_C060_5CED_C835)).to_le_bytes();
     let random_at = put_bytes(&mut top, &random);
+    // The argument strings, then the environment strings (docs/linux3-
+    // design.md), one block in increasing order as Linux lays them out:
+    // programs that rewrite their process title (Wine's preloader) move
+    // `argv[1..]` down over `argv[0]` and rely on this
+    // (docs/linux10-design.md).
+    let args = &args[..args.len().min(LINUX_ARGS_MAX)];
+    let vars = &vars[..vars.len().min(LINUX_ARGS_MAX)];
+    let total: usize = args.iter().chain(vars).map(|s| s.len() + 1).sum();
+    top -= total;
+    let mut at = top;
+    let mut place = |s: &str| -> u64 {
+        // SAFETY: inside the stack page, as for `put_bytes` (the caller
+        // checked that everything fits); the block was reserved above.
+        unsafe {
+            core::ptr::copy_nonoverlapping(s.as_ptr(), kva.add(at), s.len());
+            kva.add(at + s.len()).write(0);
+        }
+        let addr = base + at as u64;
+        at += s.len() + 1;
+        addr
+    };
     let mut argv = [0u64; LINUX_ARGS_MAX];
-    let mut argc = 0;
-    for arg in args.iter().take(argv.len()) {
-        put_bytes(&mut top, &[0]);
-        argv[argc] = put_bytes(&mut top, arg.as_bytes());
-        argc += 1;
+    let argc = args.len();
+    for (k, arg) in args.iter().enumerate() {
+        argv[k] = place(arg);
     }
-    // The environment (docs/linux3-design.md).
     let mut env = [0u64; LINUX_ARGS_MAX];
-    let mut env_count = 0;
-    for v in vars.iter().take(env.len()) {
-        put_bytes(&mut top, &[0]);
-        env[env_count] = put_bytes(&mut top, v.as_bytes());
-        env_count += 1;
+    let env_count = vars.len();
+    for (k, v) in vars.iter().enumerate() {
+        env[k] = place(v);
     }
     // Program headers: the ELF header's table, found in a loaded segment.
     let phoff = u64::from_le_bytes(file[32..40].try_into().unwrap_or([0; 8]));

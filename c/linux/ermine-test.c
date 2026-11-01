@@ -15,6 +15,7 @@
 #include <sys/eventfd.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -114,6 +115,9 @@ int main(void) {
         return fail(21, "EADDRINUSE");
     close(dup_ls);
     if (listen(ls, 8)) return fail(22, "listen");
+    /* The name is visible as a socket (Wine's client checks with lstat). */
+    struct stat sst;
+    if (lstat(addr.sun_path, &sst) || !S_ISSOCK(sst.st_mode)) return fail(19, "lstat of a bound socket");
     pid_t c = fork();
     if (c == 0) {
         int s = socket(AF_UNIX, SOCK_STREAM, 0);

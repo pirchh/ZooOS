@@ -27,6 +27,6 @@ for l in libgcc_s.so.1 libfreetype.so.6 libz.so.1 libbz2.so.1 libpng16.so.16 \
     cp -L "$src" lib/
 done
 find usr lib \( -type f -o -type l \) | sort > "$W/files.list"
-tar --format=ustar --dereference --owner=0 --group=0 --mtime=@0 -cf "$OUT" -T "$W/files.list"
+tar --format=ustar --dereference --hard-dereference --owner=0 --group=0 --mtime=@0 -cf "$OUT" -T "$W/files.list"
 wc -l < "$W/files.list"
 du -h "$OUT"
