@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L9 section
-(version 0.49.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L10a section
+(version 0.50.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,59 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 10a results: Wine builds, starts and reaches its server (version 0.50.0)
+
+Design and findings: docs/linux10-design.md.
+
+**The build** (WSL Alpine 3.24.3, `tools/wine/build-wine.sh`, GCC 15.2.0
+and MinGW GCC 15.2.0): Wine 11.0, 64-bit, lean. The first attempt failed
+for lack of `linux-headers`; with them it built. `tools/wine/export.sh`
+packed 958 files, 162 MB, into `build/wine/`. The `wine` image's initrd
+is 164 MB.
+
+**New case `wine-version`:** `linux /usr/bin/wine --version` prints
+`[10:wine] wine-11.0` and exits 0.
+
+**New checks in existing cases:**
+- `linux-skua`: argument/environment layout, `getrlimit(RLIMIT_NOFILE)`
+  = 64, and `umask`.
+- `linux-fulmar`: `pwrite`/`pread` at an offset without moving the
+  position, `fchdir`, `statfs`.
+- `linux-ermine`: `lstat` of a bound socket is `S_ISSOCK`.
+
+`linux-skua`'s listing now includes `.tmp`, as Linux `readdir` shows dot
+names.
+
+**Full `cargo xtask verify --skip-model`** (TCG): exit 0, 49 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass in
+34.5 s.
+
+**Negative controls** (temporary edits, restored and compared):
+
+| Change | Result |
+| --- | --- |
+| Environment strings placed before the arguments | `FAIL linux-skua`: exit 6 (`environment layout`) |
+| Bound socket names invisible to `stat` | `FAIL linux-ermine`: exit 19 (`lstat of a bound socket (errno 2)`) |
+| The `libc.musl-x86_64.so.1` alias as a copy instead of a hard link | `OK`: musl never opens the file; the alias and the tar hard-link support were removed, and `wine-version` passes without them |
+
+**Failures met during the work:**
+- **The boot check `list` saw `.tmp`:** `Zookeeper code=27`. Fixed by
+  hiding dot names in the Mac-style listings.
+- **`wine` and L8's `libc.so`:** `Error relocating /usr/bin/wine: memcpy:
+  symbol not found`, exit 127. Fixed by not linking Zig's compiler
+  runtime (§4 of the design).
+- **`wine-preloader` with the old string layout:** a write fault at
+  `0x7ffefff0ffba`.
+- **`umask` on 90 (which is `chmod`):** `skua-test` `umask` failed with
+  `errno 38` until it was moved to 95.
+
+Exploration not in the suite: `wine cmd /c echo %OS%` reaches Wine's
+server and stops at `virtual_map_user_shared_data` (shared memory: L10b).
+
+Other checks: `cargo clippy` (kernel normal and `fast-boot`, `xtask`,
+`zoo-user` for its target): 0 warnings. `cargo test -p xtask -p zoo-abi`:
+24 and 10 passed. Not run: real hardware.
 
 ## Linux step 9 results: the address-space layout Wine needs (version 0.49.0)
 
