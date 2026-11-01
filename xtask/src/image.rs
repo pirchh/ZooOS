@@ -349,6 +349,19 @@ pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, S
         );
         files += 1;
     }
+    // musl's loader search path, as Alpine keeps it, plus Wine's Unix
+    // libraries: they name `ntdll.so` without a path, and musl only reuses
+    // the copy Wine already loaded once its search finds the same file
+    // (docs/linux10b-design.md).
+    let path_file = b"/lib:/usr/local/lib:/usr/lib:/usr/lib/wine/x86_64-unix\n";
+    let header = zoo_abi::tar::header("etc/ld-musl-x86_64.path", path_file.len())
+        .ok_or("cannot make a tar header for etc/ld-musl-x86_64.path")?;
+    archive.extend_from_slice(&header);
+    archive.extend_from_slice(path_file);
+    archive.resize(
+        archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+        0,
+    );
     archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
     for e in zoo_abi::tar::read(&archive) {
         e.map_err(|e| format!("wine initrd self-check failed: {e:?}"))?;

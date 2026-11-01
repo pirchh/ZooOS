@@ -54,6 +54,7 @@ pub fn push(byte: u8) {
     }
     QUEUE[head % CAPACITY].store(byte, Ordering::Relaxed);
     HEAD.store(head.wrapping_add(1), Ordering::Release);
+    crate::process::kernel_has_input();
 }
 
 /// Takes the oldest queued byte. Called only from the shell loop.

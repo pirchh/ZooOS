@@ -623,13 +623,6 @@ fn main(control: u64, disk: u64) -> u8 {
             b.store = Some(store);
         }
     }
-    // Linux programs' `/tmp` lives in the home folder as `.tmp`
-    // (docs/linux10-design.md): make sure it exists.
-    if let Ok(user) = b.tree.resolve(0, "home/user")
-        && b.tree.child(user, ".tmp").is_none()
-    {
-        let _ = b.tree.add(user, ".tmp", Kind::Dir, Content::Static(&[]));
-    }
     let mut buf = vec![0u8; zoo_abi::MAX_MESSAGE];
     loop {
         // Control channel first, then every folder channel.
