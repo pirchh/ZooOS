@@ -142,6 +142,14 @@ fn machine_args(
     if headless {
         args.extend(["-display".into(), "none".into()]);
     }
+    // A display whose preferred mode (in its EDID) is 1920x1080, the mode
+    // the firmware then starts in (docs/u1-design.md).
+    args.extend([
+        "-vga".into(),
+        "none".into(),
+        "-device".into(),
+        "VGA,xres=1920,yres=1080,edid=on".into(),
+    ]);
     let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
     if usb == Usb::Direct as u8 {
         args.extend([

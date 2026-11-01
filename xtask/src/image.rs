@@ -191,6 +191,19 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
             Vec::new()
         }
     };
+    // The UI font atlas (docs/u1-design.md).
+    let fonts = crate::font::build_atlas(root)?;
+    {
+        let entry = "ui/fonts.zfnt";
+        let header = zoo_abi::tar::header(entry, fonts.len())
+            .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(&fonts);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+    }
     for (entry, data) in &c_programs {
         let header = zoo_abi::tar::header(entry, data.len())
             .ok_or_else(|| format!("cannot make a tar header for {entry}"))?;
@@ -229,7 +242,7 @@ fn build_initrd(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
         .map(|e| e.map_err(|e| format!("initrd self-check failed: {e:?}")))
         .collect::<Result<Vec<_>, _>>()?
         .len();
-    if count != USER_PROGRAMS.len() + c_programs.len() + seeds.len() {
+    if count != USER_PROGRAMS.len() + c_programs.len() + seeds.len() + 1 {
         return Err(format!("initrd self-check found {count} files"));
     }
     let out_dir = root.join("build");
@@ -305,13 +318,13 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
     let img = out_dir.join(format!("zoo-os-{}-uefi.img", mode.name()));
     let mut boot = bootloader::UefiBoot::new(&elf);
     boot.set_ramdisk(&initrd);
+    let mut config = bootloader::BootConfig::default();
     if matches!(mode, Mode::BigScreen) {
         // Ask the firmware for a screen wider than the desktop's back
         // buffer, as on large monitors (docs/usb-boot.md).
-        let mut config = bootloader::BootConfig::default();
         config.frame_buffer.minimum_framebuffer_width = Some(2000);
-        boot.set_boot_config(&config);
     }
+    boot.set_boot_config(&config);
     boot.create_disk_image(&img)
         .map_err(|e| format!("failed to create UEFI disk image {}: {e:#}", img.display()))?;
     println!("[build] image ({}) -> {}", mode.name(), img.display());

@@ -3,6 +3,7 @@
 mod config;
 mod cprog;
 mod doctor;
+mod font;
 mod image;
 mod infer;
 mod markers;
