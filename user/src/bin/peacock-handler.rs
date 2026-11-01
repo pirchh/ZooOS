@@ -609,6 +609,8 @@ struct Desktop {
     full: bool,
     /// Test mode (F9): repaint everything every frame, as before D2.
     always_full: bool,
+    /// (cycles, ticks) at start-up: the time-stamp counter's rate.
+    started: (u64, u64),
     /// Recent frames: (cycles, pixels drawn).
     frames: [(u64, u64); FRAME_SAMPLES],
     frame_count: usize,
@@ -1019,6 +1021,19 @@ impl Desktop {
             if n > 0 { p[n / 2] } else { 0 }
         );
         self.frame_count = 0;
+        if let Ok([n, sum, max]) = zoo_rt::input_latency() {
+            let mean = sum.checked_div(n).unwrap_or(0);
+            let ticks = zoo_rt::ticks().saturating_sub(self.started.1).max(1);
+            let per_tick = (cycles().wrapping_sub(self.started.0) / ticks).max(1);
+            zoo_rt::log!(
+                "PeacockHandler: input wait {} events mean {} max {} cycles; per mille of a tick: mean {} longest {}",
+                n,
+                mean,
+                max,
+                mean * 1000 / per_tick,
+                max * 1000 / per_tick
+            );
+        }
     }
 
     /// Draws everything, limited to the screen's clip rectangle.
@@ -1468,6 +1483,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         damaged: 0,
         full: true,
         always_full: false,
+        started: (cycles(), zoo_rt::ticks()),
         frames: [(0, 0); FRAME_SAMPLES],
         frame_count: 0,
         hover: None,
@@ -1594,7 +1610,10 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         if dirty {
             desk.render();
         } else {
-            zoo_rt::sleep(1);
+            // Until input, a message from an application, or the next
+            // second (the clock); docs/u1b-design.md.
+            let now = zoo_rt::ticks();
+            let _ = zoo_rt::input_wait((now / 100 + 1) * 100 - now);
         }
     }
 }

@@ -19,7 +19,15 @@ pub const VEC_PAGE_FAULT: u64 = 14;
 pub const VEC_X87: u64 = 16;
 pub const VEC_SIMD: u64 = 19;
 pub const VEC_TIMER: u64 = 32;
+/// IRQ1 and IRQ12 through the PICs (docs/u1b-design.md): input wakes the
+/// task waiting for it at once instead of at the next tick.
+pub const VEC_KEYBOARD: u64 = 33;
+pub const VEC_MOUSE: u64 = 44;
 pub const VEC_SYSCALL: u64 = 0x80;
+/// Kernel-only (ring 0 gate): the idle kernel task gives the processor to
+/// a task that input woke while the kernel task was not halted
+/// (docs/u1b-design.md).
+pub const VEC_KERNEL_YIELD: u64 = 0x81;
 /// Not an IDT vector: the tag the `syscall` entry gives Linux system calls
 /// (docs/linux1-design.md).
 pub const VEC_LINUX: u64 = 0x1_0000;
@@ -226,7 +234,10 @@ stub!(stub_page_fault, VEC_PAGE_FAULT, error_code);
 stub!(stub_x87, VEC_X87);
 stub!(stub_simd, VEC_SIMD);
 stub!(stub_timer, VEC_TIMER);
+stub!(stub_keyboard, VEC_KEYBOARD);
+stub!(stub_mouse, VEC_MOUSE);
 stub!(stub_syscall, VEC_SYSCALL);
+stub!(stub_kernel_yield, VEC_KERNEL_YIELD);
 
 /// Called by `trap_common` with interrupts disabled. Returns the frame to
 /// resume: the same one, or another task's after a switch.
@@ -240,7 +251,19 @@ extern "C" fn trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
             interrupts::on_timer_tick();
             process::on_timer(frame)
         }
+        VEC_KEYBOARD | VEC_MOUSE => {
+            // Whether the kernel task was halted in `idle_hlt`, read before
+            // the handler queues the input (which clears the flag).
+            let idle = process::kernel_idle();
+            if f.vector == VEC_KEYBOARD {
+                interrupts::on_keyboard_irq();
+            } else {
+                interrupts::on_mouse_irq();
+            }
+            process::on_input(frame, idle)
+        }
         VEC_SYSCALL if f.is_user_mode() => process::on_syscall(frame),
+        VEC_KERNEL_YIELD if !f.is_user_mode() => process::on_kernel_yield(frame),
         VEC_LINUX if f.is_user_mode() => process::on_linux_syscall(frame),
         _ if f.is_user_mode() => process::on_user_fault(frame),
         _ => interrupts::kernel_trap_fault(f),

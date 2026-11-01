@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U1 section
-(version 0.54.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U1b section
+(version 0.54.1) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,53 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 1b results: input without waiting for the tick (version 0.54.1)
+
+Design: docs/u1b-design.md. Prompted by the owner finding U1 jittery.
+
+**Input wait** (`--accel whpx --case frames`: partial-redraw sweep, 40
+events, three runs each; TSC cycles from a mouse event's arrival to
+`MOUSE_READ`):
+
+| Build | Mean | Longest |
+| --- | --- | --- |
+| Before (window server polls each tick) | 14,399,606–16,097,558 | 30,875,290–32,043,520 |
+| Input wakes the server; idle kernel still halts with a program ready | 60,848–839,125 | 145,766–31,946,041 |
+| As merged | 52,523–89,478 | 113,111–533,743 |
+
+A tick is about 31 M cycles here. A pointer frame still costs
+57,827–65,989 cycles, so drawing is unchanged.
+
+**Without an accelerator** (`--case frames`): `OK`, `input wait 40 events
+mean 181501 max 472443 cycles; per mille of a tick: mean 5 longest 14`.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 59 cases `OK`.
+`assistant-live`, `wine-home-1` and `wine-home-2` were then run with
+`--accel whpx`, all `OK`.
+
+**Wine timing:** `wine-home-1` took 72.6–75.9 s over five runs, against
+63.9 s when U1 was measured. The same day, the kernel files from `main`
+took 71.3 and 71.7 s, so most of that gap is the machine, not the change.
+With the idle yield disabled it took 75.0 and 75.2 s. No cause was found
+for the remaining few percent, and none is claimed.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed.
+- clippy `-D warnings`: kernel (normal and `fast-boot`), `zoo-user` (its
+  own target), `zoo-abi` and `xtask`, all clean.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| Window server back to `sleep(1)` | ``FAIL frames: `tick: mean` 459 outside 0..=250`` (longest 954) |
+| Idle kernel task halts even with a program ready | ``FAIL frames: `longest` 1050 outside 0..=500``, then `1009` on a second run |
+
+**Found during the work:** the first check read the reset report printed
+just before the sweep (`input wait 0 events`). It now waits for the
+sweep's own frame report (at least 20 frames) first.
 
 ## UI step 1 results: a macOS-style desktop (version 0.54.0)
 

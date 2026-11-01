@@ -335,6 +335,9 @@ pub enum Action {
     /// between `min` and `max` milliseconds (host time) after the previous
     /// waited-for line.
     WaitGap(String, u64, u64),
+    /// Wait for a line containing the text, and require the number after
+    /// each (marker, min, max) in it to be within min..=max.
+    WaitNumbers(String, Vec<(&'static str, u64, u64)>),
 }
 
 /// Steps to perform, in order, while the case runs. All of them must finish
@@ -507,6 +510,26 @@ pub fn run_case(
                         None => false,
                     }
                 }
+                Action::WaitNumbers(part, bounds) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    match find_line_containing(complete, cursor, part) {
+                        Some(end) => {
+                            let line = complete[cursor..end]
+                                .lines()
+                                .rev()
+                                .find(|l| l.contains(part.as_str()))
+                                .unwrap_or("");
+                            cursor = end;
+                            if let Err(e) = check_numbers(line, bounds) {
+                                harness_error = Some(e);
+                                break;
+                            }
+                            println!("[verify] in range: {}", line.trim());
+                            true
+                        }
+                        None => false,
+                    }
+                }
                 Action::Keys(keys) => match type_keys(q, keys) {
                     Ok(()) => true,
                     Err(e) => {
@@ -645,6 +668,30 @@ pub fn run_case(
         shutdown,
         screenshots,
     })
+}
+
+/// The number right after each marker in `line` must be within its bounds.
+fn check_numbers(line: &str, bounds: &[(&str, u64, u64)]) -> Result<(), String> {
+    for &(marker, min, max) in bounds {
+        let at = line
+            .find(marker)
+            .ok_or_else(|| format!("no `{marker}` in `{}`", line.trim()))?;
+        let digits: String = line[at + marker.len()..]
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        let v: u64 = digits
+            .parse()
+            .map_err(|_| format!("no number after `{marker}` in `{}`", line.trim()))?;
+        if v < min || v > max {
+            return Err(format!(
+                "`{marker}` {v} outside {min}..={max} in `{}`",
+                line.trim()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Finds a complete line equal to `want` starting at or after byte `from`;

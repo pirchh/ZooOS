@@ -109,6 +109,13 @@ pub mod sys {
     /// block in bits 0..48 and the count in bits 48..64.
     pub const BLOCK_READ_RUN: u64 = 62;
     pub const BLOCK_WRITE_RUN: u64 = 63;
+    /// Display owner only (docs/u1b-design.md): blocks until keyboard or
+    /// mouse input arrives, any wake-up, or `a1` ticks pass.
+    pub const INPUT_WAIT: u64 = 64;
+    /// Display owner only: writes [events, total wait, longest wait] (TSC
+    /// cycles from a mouse event's arrival to `MOUSE_READ`) to `a1` and
+    /// restarts the counts. A measurement aid (docs/u1b-design.md).
+    pub const INPUT_LATENCY: u64 = 65;
 }
 
 /// Most blocks in one `BLOCK_READ_RUN`/`BLOCK_WRITE_RUN`.

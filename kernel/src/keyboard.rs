@@ -57,6 +57,11 @@ pub fn push(byte: u8) {
     crate::process::kernel_has_input();
 }
 
+/// True if a byte is waiting.
+pub fn pending() -> bool {
+    TAIL.load(Ordering::Relaxed) != HEAD.load(Ordering::Acquire)
+}
+
 /// Takes the oldest queued byte. Called only from the shell loop.
 pub fn pop() -> Option<u8> {
     let tail = TAIL.load(Ordering::Relaxed);

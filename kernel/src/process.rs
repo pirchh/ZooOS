@@ -266,6 +266,8 @@ struct Task {
     kstack: Option<(usize, u64)>,
     /// Deadline (in ticks) of an unfinished `sleep` or timed `futex_wait`.
     sleep_until: Option<u64>,
+    /// Blocked in `INPUT_WAIT`: keyboard and mouse interrupts wake it.
+    input_wait: bool,
     /// Linux file calls in progress (docs/linux4-design.md): the replies
     /// BadgerHandler has given this call so far, the next one the re-run
     /// asks for, and whether a request is waiting for its reply.
@@ -336,6 +338,7 @@ impl Task {
             p4: None,
             kstack: None,
             sleep_until: None,
+            input_wait: false,
             fs_results: Vec::new(),
             fs_cursor: 0,
             fs_pending: false,
@@ -578,14 +581,39 @@ pub fn init() {
     });
 }
 
+/// True if a user task is ready to run. Interrupts disabled.
+fn user_ready() -> bool {
+    SCHED.try_lock().is_some_and(|g| {
+        g.as_ref().is_some_and(|s| {
+            s.tasks
+                .iter()
+                .skip(1)
+                .flatten()
+                .any(|t| t.state == State::Ready)
+        })
+    })
+}
+
 /// Halts until the next interrupt, allowing a switch to a user task. Call
 /// with interrupts disabled; returns with interrupts disabled.
 pub fn idle_hlt() {
     crate::serial::pump();
     crate::console::render();
     KERNEL_IDLE.store(true, Ordering::Relaxed);
-    cpu_interrupts::enable_and_hlt();
-    cpu_interrupts::disable();
+    if user_ready() {
+        // A program is ready (woken by input, or handed the kernel task a
+        // turn at a tick): run it now rather than halt until the next tick
+        // (docs/u1b-design.md).
+        // SAFETY: vector 0x81 is the ring-0 yield gate (`trap.rs`), whose
+        // stub builds a `TrapFrame` like any interrupt. The scheduler
+        // switches to a ready task and later resumes this one right after
+        // the instruction, with interrupts still disabled (its saved
+        // RFLAGS), as this function promises its caller.
+        unsafe { core::arch::asm!("int 0x81") };
+    } else {
+        cpu_interrupts::enable_and_hlt();
+        cpu_interrupts::disable();
+    }
     KERNEL_IDLE.store(false, Ordering::Relaxed);
 }
 
@@ -595,6 +623,39 @@ pub fn idle_hlt() {
 /// kept the shell from ever seeing a key (docs/linux10b-design.md).
 pub fn kernel_has_input() {
     KERNEL_IDLE.store(false, Ordering::Relaxed);
+}
+
+/// True while the kernel task is halted in `idle_hlt`.
+pub fn kernel_idle() -> bool {
+    KERNEL_IDLE.load(Ordering::Relaxed)
+}
+
+fn input_pending() -> bool {
+    mouse::pending() || keyboard::pending()
+}
+
+/// Keyboard or mouse input was queued (interrupt context, from
+/// `trap_dispatch`; docs/u1b-design.md). Wakes a task waiting in
+/// `INPUT_WAIT`; if the kernel task was halted (`was_idle`), switches to
+/// it now rather than at the next tick. A busy task keeps the processor
+/// until its tick, as before.
+pub fn on_input(frame: *mut TrapFrame, was_idle: bool) -> *mut TrapFrame {
+    dispatch_locked(|s, m| {
+        if !input_pending() || !s.wake_input_waiters() {
+            return frame;
+        }
+        if s.current != 0 {
+            return frame;
+        }
+        if !was_idle {
+            // The kernel task is between halts; `idle_hlt` sees the ready
+            // task and yields to it.
+            return frame;
+        }
+        s.prefer_user = true;
+        s.switch_away(frame, m)
+    })
+    .unwrap_or(frame)
 }
 
 /// Number of user tasks not yet reaped.
@@ -835,6 +896,18 @@ impl Scheduler {
         // top.
         unsafe { (frame_addr as *mut TrapFrame).write(frame) };
         frame_addr
+    }
+
+    /// Readies tasks blocked in `INPUT_WAIT`; true if there was one.
+    fn wake_input_waiters(&mut self) -> bool {
+        let mut woke = false;
+        for t in self.tasks.iter_mut().flatten() {
+            if t.input_wait && t.state == State::Blocked {
+                t.state = State::Ready;
+                woke = true;
+            }
+        }
+        woke
     }
 
     fn wake_all(&mut self) {
@@ -7372,6 +7445,43 @@ impl Scheduler {
                 CLOCK_MONOTONIC => Outcome::Ret(rtc::monotonic_ns() as i64),
                 _ => err(Error::Inval),
             },
+            sys::INPUT_WAIT => {
+                let me = self.task(i).pid;
+                if self.display_owner != Some(me) {
+                    return err(Error::Rights);
+                }
+                let t = self.task(i);
+                if t.input_wait {
+                    // The re-run after a wake-up: input, a message, an exit
+                    // (`wake_all`) or the deadline. Any of them ends the wait.
+                    t.input_wait = false;
+                    t.sleep_until = None;
+                    return Outcome::Ret(0);
+                }
+                if a1 == 0 || input_pending() {
+                    return Outcome::Ret(0);
+                }
+                // Interrupts stay off until the switch, so input arriving
+                // from here on finds the task blocked and wakes it.
+                t.input_wait = true;
+                t.sleep_until = Some(interrupts::ticks().saturating_add(a1));
+                Outcome::Block
+            }
+            sys::INPUT_LATENCY => {
+                let me = self.task(i).pid;
+                if self.display_owner != Some(me) {
+                    return err(Error::Rights);
+                }
+                if !ok(a1, 24, true) {
+                    return err(Error::Fault);
+                }
+                let (n, sum, max) = mouse::take_wait_stats();
+                for (k, v) in [n, sum, max].into_iter().enumerate() {
+                    // SAFETY: inside the writable user range checked above.
+                    unsafe { ((a1 + 8 * k as u64) as *mut u64).write_unaligned(v) };
+                }
+                Outcome::Ret(0)
+            }
             sys::MOUSE_READ => {
                 // a1 = buffer of `MouseEvent`s, a2 = how many fit.
                 let me = self.task(i).pid;
@@ -9220,6 +9330,10 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
                 t.state = State::Ready;
             }
         }
+        // USB keyboards and mice are polled on this tick.
+        if input_pending() {
+            s.wake_input_waiters();
+        }
         if s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
             return frame;
         }
@@ -9230,6 +9344,15 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
         let next = s.switch_away(frame, m);
         s.prefer_user = true;
         next
+    })
+    .unwrap_or(frame)
+}
+
+/// `int 0x81` from `idle_hlt`: switch to a ready task (a user task first).
+pub fn on_kernel_yield(frame: *mut TrapFrame) -> *mut TrapFrame {
+    dispatch_locked(|s, m| {
+        s.prefer_user = true;
+        s.switch_away(frame, m)
     })
     .unwrap_or(frame)
 }

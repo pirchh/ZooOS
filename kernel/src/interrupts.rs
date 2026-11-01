@@ -27,6 +27,8 @@ const KEYBOARD_VECTOR: u8 = PIC_1_OFFSET + 1; // IRQ1
 const SPURIOUS_MASTER_VECTOR: u8 = PIC_1_OFFSET + 7; // IRQ7
 const MOUSE_VECTOR: u8 = PIC_2_OFFSET + 4; // IRQ12
 const SPURIOUS_SLAVE_VECTOR: u8 = PIC_2_OFFSET + 7; // IRQ15
+const _: () = assert!(KEYBOARD_VECTOR as u64 == trap::VEC_KEYBOARD);
+const _: () = assert!(MOUSE_VECTOR as u64 == trap::VEC_MOUSE);
 
 /// PIT input clock (Hz) and the divisor giving ~100 Hz.
 const PIT_HZ: u32 = 1_193_182;
@@ -74,13 +76,15 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
         idt.simd_floating_point
             .set_handler_addr(addr(trap::stub_simd));
         idt[TIMER_VECTOR].set_handler_addr(addr(trap::stub_timer));
+        idt[KEYBOARD_VECTOR].set_handler_addr(addr(trap::stub_keyboard));
+        idt[MOUSE_VECTOR].set_handler_addr(addr(trap::stub_mouse));
+        // Ring 0 only: `int 0x81` from user code raises #GP instead.
+        idt[trap::VEC_KERNEL_YIELD as u8].set_handler_addr(addr(trap::stub_kernel_yield));
         // The only gate user code may invoke directly.
         idt[trap::VEC_SYSCALL as u8]
             .set_handler_addr(addr(trap::stub_syscall))
             .set_privilege_level(PrivilegeLevel::Ring3);
     }
-    idt[KEYBOARD_VECTOR].set_handler_fn(keyboard_irq);
-    idt[MOUSE_VECTOR].set_handler_fn(mouse_irq);
     idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
     idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
     idt[crate::apic::SPURIOUS_VECTOR].set_handler_fn(spurious_apic);
@@ -189,14 +193,16 @@ pub fn on_timer_tick() {
 /// Local APIC spurious interrupt: no EOI is sent for it.
 extern "x86-interrupt" fn spurious_apic(_frame: InterruptStackFrame) {}
 
-extern "x86-interrupt" fn mouse_irq(_frame: InterruptStackFrame) {
+/// IRQ12. Called from `trap_dispatch`, which then wakes input waiters.
+pub fn on_mouse_irq() {
     crate::mouse::on_interrupt();
     // SAFETY: MOUSE_VECTOR is the vector the slave PIC raised; same lock
     // rule as the timer handler. The EOI goes to both PICs.
     unsafe { PICS.lock().notify_end_of_interrupt(MOUSE_VECTOR) };
 }
 
-extern "x86-interrupt" fn keyboard_irq(_frame: InterruptStackFrame) {
+/// IRQ1. Called from `trap_dispatch`, which then wakes input waiters.
+pub fn on_keyboard_irq() {
     keyboard::on_interrupt();
     // SAFETY: KEYBOARD_VECTOR is the vector the PIC raised; same lock rule
     // as the timer handler.

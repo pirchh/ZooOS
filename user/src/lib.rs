@@ -536,6 +536,21 @@ pub fn mouse_read(buf: &mut [zoo_abi::MouseEvent]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
+/// Blocks until keyboard or mouse input arrives, another wake-up (a
+/// message, a process exit) or `ticks` timer ticks pass; may return early.
+/// Display owner only.
+pub fn input_wait(ticks: u64) -> Result<(), Error> {
+    result(syscall(sys::INPUT_WAIT, ticks, 0, 0)).map(|_| ())
+}
+
+/// [events, total wait, longest wait]: TSC cycles from a mouse event's
+/// arrival to `mouse_read`, since the last call (display owner only).
+pub fn input_latency() -> Result<[u64; 3], Error> {
+    let mut v = [0u64; 3];
+    result(syscall(sys::INPUT_LATENCY, v.as_mut_ptr() as u64, 0, 0))?;
+    Ok(v)
+}
+
 /// A block-device handle for the data disk (the resident supervisor only).
 pub fn block_attach() -> Result<Handle, Error> {
     result(syscall(sys::BLOCK_ATTACH, 0, 0, 0))
