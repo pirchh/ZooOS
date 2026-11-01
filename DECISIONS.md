@@ -150,6 +150,25 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 10d: Wine's prefix in the home folder (2026-11-01)
+
+Design: docs/linux10d-design.md.
+
+- Names: any UTF-8 without `/` or NUL, up to 255 bytes.
+- `MAX_MESSAGE` is 1 KiB and the file protocol's path length is 2
+  bytes.
+- Linux paths go up to 4,096 bytes, copied to the heap.
+- Home-folder links are stored by BadgerHandler and followed by the
+  kernel from a copy read once (`ListLinks`) and kept current by its own
+  calls. ZooOS programs do not make links yet.
+- `mmap` of a home file is a private copy filled across re-runs of the
+  call; a writable `MAP_SHARED` mapping of one is refused (`ENODEV`).
+- Small consecutive writes to a home file are gathered (64 KiB) until the
+  process's next other call.
+- `wine-home-1`/`-2` run only with an accelerator (prefix creation takes
+  over 8 minutes under TCG).
+- Version 0.53.0.
+
 ## Linux step 10c: ZooFS 2 (2026-11-01)
 
 Design: docs/linux10c-design.md.
