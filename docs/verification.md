@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L10b section
-(version 0.51.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L10c section
+(version 0.52.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,56 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 10c results: ZooFS 2 (version 0.52.0)
+
+Design: docs/linux10c-design.md.
+
+**Why, measured.** After `wine cmd`, a temporary tree walker over
+`/tmp/wine` counted 880 files, 124 folders, 4 links, 167,234,870 bytes;
+the largest is `shell32.dll` at 9,193,459 bytes. `wine-cmd` takes
+44.1 s with `--accel whpx`, against 176-260 s under TCG.
+
+**New cases:**
+- `linux-murre-1`: `murre-test write` puts 40 MiB, then 300 small files,
+  a truncate, a rename and an unlink in `/home/user/Murre`. Saves are
+  forced part-way (generations 1-5, 2,048 blocks each); generation 6
+  holds the rest: 10,546 blocks in use, 10,807 bytes of metadata.
+- `linux-murre-2`: the same disk, rebooted. `murre-test check` reads
+  every byte back, including the overwritten region that starts off a
+  block boundary.
+- `persist-4`: generation 2 is saved to slot B, then a save is cut
+  short.
+- `persist-5`: generation 2 is damaged; generation 1 still reads `first
+  version`, although the cut-short save ran after it.
+
+**Changed:** `arcticfox-test` checks the 4 GiB file limit (was 16 MiB);
+`corrupt_newest_snapshot` damages ZooFS 2 metadata.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 56 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass
+in 32.1 s.
+
+**Speed**: `linux-fulmar`'s 1 MiB write and read, in kcycles under TCG,
+five runs each. `main` was built in a temporary worktree.
+
+| Build | Write | Read |
+| --- | --- | --- |
+| `main` (in-memory store) | 15,302 / 15,573 / 16,743 / 19,389 / 28,825 (median 16,743) | 6,867 / 7,100 / 7,187 / 9,986 / 12,172 (median 7,187) |
+| First ZooFS 2 (a sorted map and one allocation per block) | 19,977 / 20,252 / 22,008 / 22,489 / 36,226 (median 22,008) | 6,816 / 7,183 / 7,427 / 7,965 / 11,180 (median 7,427) |
+| ZooFS 2 as merged (chunked slab) | 15,927 / 16,001 / 16,160 / 16,173 / 16,675 (median 16,160) | 7,395 / 7,513 / 7,554 / 7,751 / 7,967 (median 7,554) |
+
+The merged version is level with `main`, within the noise of these runs.
+`murre-test` wrote 40 MiB in 5.7-6.8 billion cycles, including the five
+forced saves, and read it back from disk in 2.0-2.7 billion.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| The previous generation's blocks not protected | `FAIL persist-5`: `cat` printed `fifth version` (from the cut-short save) instead of `first version` |
+| Metadata CRC not checked | `FAIL persist-3`: the damaged generation 2 was loaded; no `cat` step within 90 s |
+| Data blocks not written (metadata only) | `FAIL linux-murre-2`: exit 33, `byte 1 is 0, not 187` |
 
 ## Linux step 10b results: `/tmp` in RAM; Wine runs `cmd.exe` (version 0.51.0)
 

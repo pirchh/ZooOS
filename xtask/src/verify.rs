@@ -1082,6 +1082,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }),
             screen_checks: vec![],
         },
+        murre_case(&normal, "linux-murre-1", s.timeout * 4),
+        murre_case(&normal, "linux-murre-2", s.timeout * 4),
         Case {
             name: "linux-auklet",
             mode: Mode::Normal,
@@ -1427,6 +1429,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         persist_case(&normal, "persist-1", 1, s.timeout * 3),
         persist_case(&normal, "persist-2", 2, s.timeout * 3),
         persist_case(&normal, "persist-3", 3, s.timeout * 3),
+        persist_case(&normal, "persist-4", 4, s.timeout * 3),
+        persist_case(&normal, "persist-5", 5, s.timeout * 3),
         Case {
             name: "c-program",
             mode: Mode::Normal,
@@ -2221,6 +2225,13 @@ fn persist_case(normal: &Expectation, name: &'static str, step: u8, timeout: Dur
     let mut steps = match step {
         1 => vec![],
         2 => vec![seen("BadgerHandler: loaded generation 2 from slot B")],
+        // persist-3 left generation 1 in slot A and a damaged slot B.
+        4 => vec![seen("BadgerHandler: loaded generation 1 from slot A")],
+        // persist-4 saved generation 2 to slot B, which is damaged now.
+        5 => vec![
+            seen("BadgerHandler: slot B: generation 2 failed its check, ignored"),
+            seen("BadgerHandler: loaded generation 1 from slot A"),
+        ],
         _ => vec![
             seen("BadgerHandler: slot B: generation 2 failed its check, ignored"),
             seen("BadgerHandler: loaded generation 1 from slot A"),
@@ -2269,6 +2280,49 @@ fn persist_case(normal: &Expectation, name: &'static str, step: u8, timeout: Dur
                     corrupt: false,
                 },
                 "reboot: the newest generation is loaded and the file reads back",
+            )
+        }
+        4 => {
+            e.then(&[
+                "ZOO_OS SHELL line=put Documents/kept.txt fourth version",
+                "ZOO_OS SHELL line=poke badger-handler half-save",
+                "ZOO_OS SHELL line=put Documents/kept.txt fifth version",
+                "ZOO_OS PROC exit pid=23 name=badger-handler code=41",
+                "ZOO_OS PROC start pid=26 name=badger-handler",
+                "ZOO_OS SHELL line=cat Documents/kept.txt",
+            ]);
+            steps.extend([
+                say("put Documents/kept.txt fourth version"),
+                contains("BadgerHandler: saved generation 2 to slot B"),
+                say("poke badger-handler half-save"),
+                Action::Settle(QUIET),
+                say("put Documents/kept.txt fifth version"),
+                contains("stopping after the payload of generation 3 (simulated power loss)"),
+                wait("ZOO_OS PROC start pid=26 name=badger-handler"),
+                contains("BadgerHandler: loaded generation 2 from slot B"),
+                Action::Settle(QUIET),
+                say("cat Documents/kept.txt"),
+                wait("fourth version"),
+            ]);
+            (
+                Disk::Shared {
+                    name: "persist",
+                    reset: false,
+                    corrupt: false,
+                },
+                "a save cut short may not overwrite the blocks of the generation before the current one",
+            )
+        }
+        5 => {
+            e.then(&["ZOO_OS SHELL line=cat Documents/kept.txt"]);
+            steps.extend([say("cat Documents/kept.txt"), wait("first version")]);
+            (
+                Disk::Shared {
+                    name: "persist",
+                    reset: false,
+                    corrupt: true,
+                },
+                "with the newest generation damaged, the one before it reads back intact although a later save was cut short",
             )
         }
         _ => {
@@ -2678,6 +2732,65 @@ fn notes_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
+}
+
+/// `linux-murre-1` writes 40 MiB and 300 small files on a fresh disk;
+/// `linux-murre-2` boots the same disk and reads every byte back
+/// (docs/linux10c-design.md).
+fn murre_case(normal: &Expectation, name: &'static str, timeout: Duration) -> Case {
+    let first = name == "linux-murre-1";
+    let mode = if first { "write" } else { "check" };
+    let mut e = normal.clone();
+    let line = format!("ZOO_OS SHELL line=linux murre-test {mode}");
+    e.then(&[
+        &line,
+        "ZOO_OS PROC start pid=26 name=murre-test",
+        "ZOO_OS PROC exit pid=26 name=murre-test code=0",
+    ]);
+    let mut steps = Vec::new();
+    if !first {
+        steps.push(Action::WaitSeen("BadgerHandler: loaded generation".into()));
+    }
+    steps.extend([
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed(&format!("linux murre-test {mode}"))),
+    ]);
+    if first {
+        steps.push(Action::WaitFor(
+            "ZOO_OS PROC exit pid=26 name=murre-test code=0".into(),
+        ));
+        // The last changes are saved once BadgerHandler has been quiet.
+        steps.push(Action::WaitContains(
+            "BadgerHandler: saved generation".into(),
+        ));
+        steps.push(Action::Settle(Duration::from_secs(3)));
+    } else {
+        steps.push(Action::WaitContains("MurreTest: all checks passed".into()));
+        steps.push(Action::WaitFor(
+            "ZOO_OS PROC exit pid=26 name=murre-test code=0".into(),
+        ));
+    }
+    Case {
+        name,
+        mode: Mode::Normal,
+        custom_image: None,
+        disk: Disk::Shared {
+            name: "murre",
+            reset: first,
+            corrupt: false,
+        },
+        usb: Usb::None,
+        expectation: e,
+        timeout,
+        want: "pass",
+        purpose: if first {
+            "a Linux program writes 40 MiB and 300 small files to the home folder (saves forced part-way)"
+        } else {
+            "after a reboot of the same disk, every byte of the 40 MiB and small files reads back"
+        },
+        interaction: Some(Interaction { steps }),
+        screen_checks: vec![],
+    }
 }
 
 /// `notes-1` types into Notes on a fresh disk; `notes-2` boots the same
@@ -3106,31 +3219,34 @@ const KEYS: [&str; 26] = [
     "t", "u", "v", "w", "x", "y", "z",
 ];
 
-/// Flips one byte inside the payload of the newest valid-looking snapshot
-/// slot on a data disk (docs/s5-design.md §4). Returns what it did.
+/// Flips one byte inside the metadata of the newest generation on a data
+/// disk (ZooFS 2, docs/linux10c-design.md): superblocks A and B are blocks
+/// 0 and 1; the metadata's first run starts at the block named at byte 40.
+/// Returns what it did.
 fn corrupt_newest_snapshot(path: &std::path::Path) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom, Write};
-    const MAGIC: &[u8; 8] = b"ZOOFS001";
+    const MAGIC: &[u8; 8] = b"ZOOFS002";
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)
         .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    let half = qemu::DATA_DISK_BYTES / 2;
-    let mut best: Option<(u64, u64)> = None; // (generation, slot offset)
-    for slot in [0, half] {
-        let mut h = [0u8; 16];
-        f.seek(SeekFrom::Start(slot)).map_err(|e| e.to_string())?;
+    let mut best: Option<(u64, u64, u64)> = None; // (generation, slot, metadata block)
+    for slot in [0u64, 1] {
+        let mut h = [0u8; 48];
+        f.seek(SeekFrom::Start(slot * 4096))
+            .map_err(|e| e.to_string())?;
         f.read_exact(&mut h).map_err(|e| e.to_string())?;
         if &h[..8] == MAGIC {
             let generation = u64::from_le_bytes(h[8..16].try_into().expect("8 bytes"));
-            if best.is_none_or(|(g, _)| generation > g) {
-                best = Some((generation, slot));
+            let meta = u64::from_le_bytes(h[40..48].try_into().expect("8 bytes"));
+            if best.is_none_or(|(g, _, _)| generation > g) {
+                best = Some((generation, slot, meta));
             }
         }
     }
-    let (generation, slot) = best.ok_or("no snapshot on the disk to corrupt")?;
-    let at = slot + 4096 + 20;
+    let (generation, slot, meta) = best.ok_or("no generation on the disk to corrupt")?;
+    let at = meta * 4096 + 20;
     let mut b = [0u8; 1];
     f.seek(SeekFrom::Start(at)).map_err(|e| e.to_string())?;
     f.read_exact(&mut b).map_err(|e| e.to_string())?;
@@ -3138,7 +3254,7 @@ fn corrupt_newest_snapshot(path: &std::path::Path) -> Result<String, String> {
     f.seek(SeekFrom::Start(at)).map_err(|e| e.to_string())?;
     f.write_all(&b).map_err(|e| e.to_string())?;
     Ok(format!(
-        "corrupted generation {generation} (slot at byte {slot}): flipped byte {at}"
+        "corrupted generation {generation} (superblock {slot}, metadata at block {meta}): flipped byte {at}"
     ))
 }
 

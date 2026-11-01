@@ -565,6 +565,31 @@ pub fn block_write(
     result(syscall(sys::BLOCK_WRITE, disk, block, buf.as_ptr() as u64)).map(|_| ())
 }
 
+/// Reads `buf.len() / 4096` consecutive blocks from `block` in one request
+/// (at most `zoo_abi::BLOCK_RUN_MAX`; `buf.len()` a multiple of 4 KiB).
+pub fn block_read_run(disk: Handle, block: u64, buf: &mut [u8]) -> Result<(), Error> {
+    let count = (buf.len() / zoo_abi::BLOCK_BYTES) as u64;
+    result(syscall(
+        sys::BLOCK_READ_RUN,
+        disk,
+        block | (count << 48),
+        buf.as_mut_ptr() as u64,
+    ))
+    .map(|_| ())
+}
+
+/// Writes `buf.len() / 4096` consecutive blocks from `block` in one request.
+pub fn block_write_run(disk: Handle, block: u64, buf: &[u8]) -> Result<(), Error> {
+    let count = (buf.len() / zoo_abi::BLOCK_BYTES) as u64;
+    result(syscall(
+        sys::BLOCK_WRITE_RUN,
+        disk,
+        block | (count << 48),
+        buf.as_ptr() as u64,
+    ))
+    .map(|_| ())
+}
+
 /// Size of the data disk in bytes.
 pub fn block_size(disk: Handle) -> Result<u64, Error> {
     result(syscall(sys::BLOCK_SIZE, disk, 0, 0))

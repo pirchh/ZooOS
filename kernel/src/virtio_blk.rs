@@ -35,6 +35,8 @@ const REQ_OUT: u32 = 1; // write
 
 /// Bytes per block the service reads and writes.
 pub const BLOCK: usize = 4096;
+/// Most consecutive blocks in one request (64 KiB; docs/linux10c-design.md).
+pub const MAX_RUN: usize = 16;
 /// Polling bound for one request (iterations); hitting it is an error.
 const POLL_LIMIT: u64 = 200_000_000;
 
@@ -45,7 +47,7 @@ struct Device {
     queue: PhysFrame,
     /// One page: request header at 0, status byte at 64.
     req: PhysFrame,
-    /// Bounce buffer for one block.
+    /// Bounce buffer: `MAX_RUN` contiguous blocks.
     data: PhysFrame,
     /// Next available-ring index we will use.
     avail_idx: u16,
@@ -141,8 +143,8 @@ pub fn init(mem: &mut Memory) -> Option<u64> {
     let pages = total.div_ceil(BLOCK);
     let queue = mem.frames.allocate_contiguous(pages)?;
     let req = mem.frames.allocate()?;
-    let data = mem.frames.allocate()?;
-    for (f, count) in [(queue, pages), (req, 1), (data, 1)] {
+    let data = mem.frames.allocate_contiguous(MAX_RUN)?;
+    for (f, count) in [(queue, pages), (req, 1), (data, MAX_RUN)] {
         // SAFETY: fresh frames owned by this driver, mapped in the physical
         // window; zeroed before the device sees them.
         unsafe { core::ptr::write_bytes(mem.phys_to_virt(f.start_address()), 0, count * BLOCK) };
@@ -179,18 +181,41 @@ pub fn transfer(
     buf: &mut [u8; BLOCK],
     write: bool,
 ) -> Result<(), BlockError> {
+    transfer_run(mem, block, buf, write)
+}
+
+/// Reads or writes `buf.len() / BLOCK` consecutive blocks from `block` in
+/// one request (at most `MAX_RUN`; `buf.len()` a multiple of `BLOCK`).
+/// Called with interrupts disabled.
+pub fn transfer_run(
+    mem: &Memory,
+    block: u64,
+    buf: &mut [u8],
+    write: bool,
+) -> Result<(), BlockError> {
+    let count = buf.len() / BLOCK;
+    if count == 0 || count > MAX_RUN || !buf.len().is_multiple_of(BLOCK) {
+        return Err(BlockError::OutOfRange);
+    }
     let mut g = DEVICE.lock();
     let d = g.as_mut().ok_or(BlockError::NoDevice)?;
     let sectors = (BLOCK / 512) as u64;
-    if (block + 1) * sectors > d.capacity_sectors {
+    let end = block
+        .checked_add(count as u64)
+        .ok_or(BlockError::OutOfRange)?;
+    if end
+        .checked_mul(sectors)
+        .is_none_or(|e| e > d.capacity_sectors)
+    {
         return Err(BlockError::OutOfRange);
     }
     let n = d.queue_size as usize;
     let virt = |f: PhysFrame| mem.phys_to_virt(f.start_address());
     let data_virt = virt(d.data);
     if write {
-        // SAFETY: the bounce page is this driver's own frame.
-        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), data_virt, BLOCK) };
+        // SAFETY: the bounce pages are this driver's own contiguous frames;
+        // `buf.len() <= MAX_RUN * BLOCK`.
+        unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), data_virt, buf.len()) };
     }
     let req_phys = d.req.start_address().as_u64();
     let req_virt = virt(d.req);
@@ -219,7 +244,7 @@ pub fn transfer(
     desc(
         1,
         d.data.start_address().as_u64(),
-        BLOCK as u32,
+        buf.len() as u32,
         DESC_NEXT | if write { 0 } else { DESC_WRITE },
         2,
     );
@@ -255,8 +280,8 @@ pub fn transfer(
         return Err(BlockError::Io);
     }
     if !write {
-        // SAFETY: the bounce page holds the block the device just wrote.
-        unsafe { core::ptr::copy_nonoverlapping(data_virt, buf.as_mut_ptr(), BLOCK) };
+        // SAFETY: the bounce pages hold the blocks the device just wrote.
+        unsafe { core::ptr::copy_nonoverlapping(data_virt, buf.as_mut_ptr(), buf.len()) };
     }
     Ok(())
 }

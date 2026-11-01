@@ -150,6 +150,24 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 10c: ZooFS 2 (2026-11-01)
+
+Design: docs/linux10c-design.md.
+
+- Owner's choice: a real on-disk file system rather than patching Wine to
+  link its DLLs. A Wine prefix is 880 files / 167 MB, and the S5 store
+  (all data in memory, one snapshot in 8 MiB) could not hold it.
+- Two alternating superblocks; data and metadata go only to blocks
+  neither the current nor the previous generation uses, and the
+  superblock is written last. Log wording kept from S5.
+- Each save allocates first-fit from block 2.
+- Changed blocks wait in a chunked slab; a save is forced at 8 MiB.
+- No migration from `ZOOFS001` (only test disks had it).
+- `BLOCK_READ_RUN`/`BLOCK_WRITE_RUN`: 16 blocks per request, the count in
+  bits 48..64 of the block argument.
+- Test data disks are 1 GiB.
+- Version 0.52.0.
+
 ## Linux step 10b: `/tmp` in RAM; Wine runs `cmd.exe` (2026-11-01)
 
 Design and findings: docs/linux10b-design.md.

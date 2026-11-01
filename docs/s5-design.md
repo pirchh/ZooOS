@@ -1,7 +1,9 @@
 # Services step 5 (S5): files that survive a reboot
 
 Status: implemented and verified 2026-10-31 (results in docs/verification.md;
-§5 records the differences from this plan). Builds on S4b (the
+§5 records the differences from this plan). **Superseded by ZooFS 2 in L10c
+(docs/linux10c-design.md, 2026-11-01)**, which keeps this document's two
+slots, generations and recovery rules but stores file data block by block. Builds on S4b (the
 filesystem service BadgerHandler). DECISIONS.md asks for recovery to be
 documented before personal data is trusted to the disk; §3 is that.
 
