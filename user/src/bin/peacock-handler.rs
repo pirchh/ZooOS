@@ -860,9 +860,17 @@ impl Desktop {
     fn mouse(&mut self, e: MouseEvent) -> bool {
         let (w, h) = (self.screen.w, self.screen.h);
         self.damage_pointer();
-        // The mouse reports dy positive upwards; screen y grows downwards.
-        self.px = (self.px as isize + e.dx as isize).clamp(0, w as isize - 1) as usize;
-        self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
+        if e.buttons & zoo_abi::MOUSE_ABSOLUTE != 0 {
+            // A tablet: a position across the screen, rounded to a pixel.
+            let max = zoo_abi::MOUSE_ABS_MAX as usize;
+            let at = |v: i16, n: usize| (v.max(0) as usize * (n - 1) + max / 2) / max;
+            self.px = at(e.dx, w);
+            self.py = at(e.dy, h);
+        } else {
+            // The mouse reports dy positive upwards; screen y grows downwards.
+            self.px = (self.px as isize + e.dx as isize).clamp(0, w as isize - 1) as usize;
+            self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
+        }
         let down = e.buttons & 1 != 0;
         if down && !self.held {
             self.press();

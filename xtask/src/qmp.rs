@@ -104,6 +104,14 @@ impl Qmp {
         self.command(&cmd).map(|_| ())
     }
 
+    /// Moves an absolute pointer (a tablet) to (x, y), each 0..=0x7FFF.
+    pub fn mouse_abs(&mut self, x: u32, y: u32) -> Result<(), String> {
+        let cmd = format!(
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"abs","data":{{"axis":"x","value":{x}}}}},{{"type":"abs","data":{{"axis":"y","value":{y}}}}}]}}}}"#
+        );
+        self.command(&cmd).map(|_| ())
+    }
+
     /// Presses (`down`) or releases one key, named by its QEMU qcode.
     pub fn key_event(&mut self, qcode: &str, down: bool) -> Result<(), String> {
         let cmd = format!(

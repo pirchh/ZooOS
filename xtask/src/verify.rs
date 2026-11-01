@@ -282,6 +282,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC start pid=29 name=crash-test",
         "ZOO_OS PROC start pid=30 name=assistant",
     ]);
+    // The tablet case closes Crash Test.
+    let mut tablet = menu_clock.clone();
+    tablet.then(&["ZOO_OS PROC exit pid=29 name=crash-test code=0"]);
     let mut args_clock = normal.clone();
     args_clock.then(&[
         "ZOO_OS SHELL line=run tern-test alpha beta",
@@ -809,10 +812,33 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         Action::Settle(QUIET),
                         Action::Screenshot("1-click"),
                     ]);
+                    // USB reports reach the window server when the
+                    // controller's interrupt arrives, not at the next tick
+                    // (docs/u1c-design.md).
+                    steps.push(Action::WaitSeen("ZOO_OS INFO usb interrupts=msix".into()));
+                    steps.push(Action::Keys(vec!["f11"]));
+                    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+                    pointer_sweep(&mut steps);
+                    steps.push(Action::Settle(QUIET));
+                    steps.push(Action::Keys(vec!["f11"]));
+                    input_wait_checks(&mut steps);
                     steps
                 },
             }),
             screen_checks: vec![("1-click", check_click_focus)],
+        },
+        Case {
+            name: "tablet",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: tablet,
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "USB tablet (what `run` uses): absolute positions land exactly (a click on a 12 px close light), events arrive by interrupt",
+            interaction: Some(tablet_steps()),
+            screen_checks: vec![],
         },
         Case {
             name: "big-screen",
@@ -2584,6 +2610,62 @@ fn redraw_steps() -> Interaction {
 }
 
 /// Pointer moves, each its own frame: 20 to the right, then 20 back.
+/// After a sweep and F11: the sweep's frame report, then mouse events that
+/// reached the window server well within a tick (docs/u1b-design.md).
+fn input_wait_checks(steps: &mut Vec<Action>) {
+    // The sweep's own report (an earlier F11 printed the reset before it).
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 20, 1_000_000)],
+    ));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: input wait".into(),
+        vec![
+            ("input wait", 20, 10_000),
+            ("tick: mean", 0, 250),
+            ("longest", 0, 500),
+        ],
+    ));
+}
+
+/// A tablet position for screen pixel (x, y): the inverse of the window
+/// server's rounding, so the pointer lands on exactly that pixel.
+fn abs_at((x, y): (usize, usize)) -> Action {
+    let to = |v: usize, n: usize| ((v * 0x7FFF + (n - 1) / 2) / (n - 1)) as u32;
+    Action::MouseAbs(to(x, SCREEN.0), to(y, SCREEN.1))
+}
+
+fn tablet_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::WaitSeen("ZOO_OS INFO usb pointer absolute x=0..32767 y=0..32767".into()),
+        Action::WaitSeen("ZOO_OS INFO usb interrupts=msix".into()),
+        // Straight onto Crash Test's red light (12 px across): it closes.
+        abs_at(zui::light_centre(win(CRASH_WIN), 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("ZOO_OS INFO usb pointer input".into()),
+        Action::WaitContains("PeacockHandler: closed Crash Test".into()),
+        Action::Settle(QUIET),
+        Action::Keys(vec!["f11"]),
+        Action::WaitContains("PeacockHandler: frames".into()),
+    ]);
+    // The pointer sweep, as absolute positions.
+    let (x0, y0) = inside(FILES_WIN);
+    for k in 0..40 {
+        let x = if k < 20 {
+            x0 + 12 * k
+        } else {
+            x0 + 12 * (40 - k)
+        };
+        steps.push(abs_at((x, y0)));
+    }
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    input_wait_checks(&mut steps);
+    Interaction { steps }
+}
+
 fn pointer_sweep(steps: &mut Vec<Action>) {
     for dx in [12, -12] {
         for _ in 0..20 {
@@ -2609,21 +2691,7 @@ fn frames_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["f11"]));
     steps.push(Action::WaitContains("PeacockHandler: frames".into()));
-    // The sweep's own report (the line above was the reset before it).
-    steps.push(Action::WaitNumbers(
-        "PeacockHandler: frames".into(),
-        vec![("frames", 20, 1_000_000)],
-    ));
-    // Mouse events reach the window server well within a tick: it waits
-    // for input rather than checking once a tick (docs/u1b-design.md).
-    steps.push(Action::WaitNumbers(
-        "PeacockHandler: input wait".into(),
-        vec![
-            ("input wait", 20, 10_000),
-            ("tick: mean", 0, 250),
-            ("longest", 0, 500),
-        ],
-    ));
+    input_wait_checks(&mut steps);
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     Interaction { steps }

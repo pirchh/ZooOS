@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U1b section
-(version 0.54.1) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U1c section
+(version 0.55.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,58 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 1c results: USB input by interrupt, and a tablet (version 0.55.0)
+
+Design: docs/u1c-design.md.
+
+**Interrupts:** under QEMU `qemu-xhci` offers MSI-X only (capabilities at
+0x90, MSI-X, and 0xA0, PCI Express). The boot log shows `ZOO_OS INFO usb
+interrupts=msix`.
+
+**USB mouse wait** (`--accel whpx --case usb-desktop`, 40-event sweep, TSC
+cycles from the controller's interrupt to `MOUSE_READ`):
+
+| Build | Mean | Longest |
+| --- | --- | --- |
+| Interrupt only stamps; reports taken at the tick (the old timing) | 17,009,645 and 19,916,866 | 31,775,496 and 146,450,574 |
+| Reports taken in the interrupt (three runs) | 433,305–520,623 | 1,176,026–2,180,180 |
+
+**Tablet** (`--accel whpx --case tablet`, three runs):
+- the report descriptor was read as `ZOO_OS INFO usb pointer absolute
+  x=0..32767 y=0..32767 buttons=3`;
+- an absolute move onto Crash Test's 12 px close light and a click closed
+  it;
+- sweep wait: mean 386,161–485,827, longest 940,619–2,876,353 cycles.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 60 cases `OK`
+(the new `tablet` included). Then with `--accel whpx` at version 0.55.0:
+
+| Case | Result |
+| --- | --- |
+| `assistant-live` | `OK`, 31.2 s |
+| `wine-home-1` | `OK`, 62.3 s, back near U1's 63.9 s, so U1b's 72–76 s was the machine |
+| `wine-home-2` | `OK`, 11.0 s |
+| `tablet`, `usb`, `usb-hub` | `OK`, boot log `ZOO_OS BOOT version=0.55.0` |
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed.
+- clippy `-D warnings`: kernel (normal and `fast-boot`), `zoo-abi`,
+  `zoo-user` and `xtask`, all clean.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| The xHCI interrupt only stamps; reports are left to the tick | ``FAIL usb-desktop: `tick: mean` 624 outside 0..=250`` (longest 4591), then 533 (longest 997) |
+| The window server treats absolute positions as motion | `FAIL tablet`: ``no `ZOO_OS PROC exit pid=29 name=crash-test code=0` within 60s`` (the click missed the light) |
+
+**Found during the work:**
+- The first MSI-only version fell back to polling (`usb interrupts=polled`)
+  because QEMU's controller has no MSI capability.
+- The first `tablet` run passed its steps, but its expectation did not
+  list Crash Test's exit after the close.
 
 ## UI step 1b results: input without waiting for the tick (version 0.54.1)
 

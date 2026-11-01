@@ -150,6 +150,26 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 1c: USB input by interrupt, and a tablet for QEMU (2026-11-01)
+
+Design: docs/u1c-design.md.
+
+- The owner still felt a slight lag after U1b and asked for an engineer's
+  call. The order chosen:
+  1. USB input by interrupt, which matters on real hardware and which the
+     tablet needs;
+  2. the tablet, for how QEMU feels;
+  3. acceleration, deferred until a real mouse can be tried.
+- The xHCI interrupt goes through MSI-X, else MSI, to the local APIC
+  (vector 0x50). The tick still polls as a fallback.
+- `cargo xtask run` uses a USB tablet. The verify cases keep their PS/2
+  and USB mice, so the relative path stays tested.
+- HID report descriptors are parsed for pointers without a boot protocol
+  (`kernel/src/hid.rs`). Boot-protocol keyboards and mice are unchanged.
+- ABI: `MOUSE_ABSOLUTE` (0x80) in `MouseEvent::buttons`, coordinates
+  0..=`MOUSE_ABS_MAX` (0x7FFF).
+- Version 0.55.0.
+
 ## UI step 1b: input without waiting for the tick (2026-11-01)
 
 Design: docs/u1b-design.md.
