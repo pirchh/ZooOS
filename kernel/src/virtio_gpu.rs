@@ -80,6 +80,9 @@ const SPINS: u64 = 200_000_000;
 /// The largest screen used (the window server's own limit).
 const MAX_W: u32 = 1920;
 const MAX_H: u32 = 1200;
+/// The smallest screen used: the desktop's design size.
+const MIN_W: u32 = 1920;
+const MIN_H: u32 = 1080;
 
 fn pci_read(dev: u8, func: u8, off: u8) -> u32 {
     let addr = 0x8000_0000 | u32::from(dev) << 11 | u32::from(func) << 8 | u32::from(off & 0xFC);
@@ -326,10 +329,10 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
             (w, h) = (p[2], p[3]);
         }
     }
-    if w == 0 || h == 0 {
-        (w, h) = (1280, 800);
-    }
-    let (w, h) = (w.min(MAX_W), h.min(MAX_H));
+    // At least the desktop's design size: QEMU's GTK window reports its
+    // own size as the preferred mode, 640x480 before any guest mode is
+    // set (docs/gpu1-design.md). At most the window server's limit.
+    let (w, h) = (w.clamp(MIN_W, MAX_W), h.clamp(MIN_H, MAX_H));
     let bytes = (w as usize) * (h as usize) * 4;
     let screen = mem.frames.allocate_contiguous(bytes.div_ceil(4096))?;
     let cursor = mem

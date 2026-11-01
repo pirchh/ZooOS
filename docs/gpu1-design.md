@@ -36,7 +36,10 @@ What the guest can see is in §4.
     notify configuration from the vendor capabilities. It negotiates
     `VIRTIO_F_VERSION_1` only and sets up the control and cursor queues
     (16 entries, polled, no interrupts). From `GET_DISPLAY_INFO` it takes
-    scanout 0's size, capped at 1920×1200. It allocates the screen (one
+    scanout 0's preferred size, kept between 1920×1080 and 1920×1200.
+    QEMU's GTK window reports its own size as the preferred mode, 640×480
+    before any guest mode is set; the headless test machines report the
+    configured 1920×1080. It allocates the screen (one
     contiguous block of RAM) and a 64×64 cursor.
   - **When a process takes the display:** `DISPLAY_ACQUIRE` creates the
     screen resource (B8G8R8X8) and the cursor resource (B8G8R8A8),
