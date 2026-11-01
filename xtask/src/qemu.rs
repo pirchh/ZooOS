@@ -58,12 +58,13 @@ fn opt_path(p: &Path) -> Result<String, String> {
 /// Software emulation (TCG) only, so no host hypervisor is required.
 /// `headless` hides the display window; the emulated screen still exists
 /// (verify takes screenshots of it).
-/// Size of the data disk created for a run (docs/s5-design.md).
-/// The data disk: 1 GiB (docs/linux10c-design.md). The file is only
-/// extended, so the host stores just the blocks written.
+/// The data disk created for a run: 1 GiB (docs/linux10c-design.md). The
+/// image file is sparse, so the host stores only the blocks written.
 pub const DATA_DISK_BYTES: u64 = 1 << 30;
 
-/// Creates (or, with `reset`, recreates) a zero-filled data disk at `path`.
+/// Creates (or, with `reset`, recreates) a zero-filled data disk at `path`,
+/// as a sparse file. NTFS reserves the whole length of a file extended
+/// otherwise: 1 GiB per case, which filled tens of GB of the host's disk.
 pub fn ensure_data_disk(path: &Path, reset: bool) -> Result<(), String> {
     if reset || !path.is_file() {
         if let Some(dir) = path.parent() {
@@ -71,6 +72,20 @@ pub fn ensure_data_disk(path: &Path, reset: bool) -> Result<(), String> {
         }
         let f =
             fs::File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        if cfg!(windows) {
+            let out = std::process::Command::new("fsutil")
+                .args(["sparse", "setflag"])
+                .arg(path)
+                .output()
+                .map_err(|e| format!("cannot run fsutil: {e}"))?;
+            if !out.status.success() {
+                return Err(format!(
+                    "fsutil sparse setflag {} failed: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&out.stdout).trim()
+                ));
+            }
+        }
         f.set_len(DATA_DISK_BYTES)
             .map_err(|e| format!("cannot size {}: {e}", path.display()))?;
     }

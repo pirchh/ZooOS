@@ -29,8 +29,8 @@ use zoo_rt::{Handle, channel_create, close, send, send_handle, try_recv, wait_an
 
 zoo_rt::entry2!(main);
 
-const MAX_NAME: usize = 64;
-const MAX_DEPTH: usize = 16;
+const MAX_NAME: usize = 255;
+const MAX_DEPTH: usize = 128;
 const MAX_NODES: usize = 65536;
 /// Largest file: 4 GiB (the block map of one costs 8 MiB of memory).
 const MAX_FILE: u64 = 1 << 32;
@@ -46,6 +46,9 @@ const PENDING_HARD_LIMIT: usize = 4 * PENDING_LIMIT;
 enum Kind {
     Dir,
     File,
+    /// A symbolic link (docs/linux10d-design.md): `Content::Link`. The
+    /// kernel follows links; BadgerHandler stores them.
+    Link,
 }
 
 /// A file's contents.
@@ -57,6 +60,8 @@ enum Content {
     /// contents of a block wait in `Badger::pending`. Bytes past `size` in
     /// the last block are always zero.
     Blocks { size: u64, map: Vec<u64> },
+    /// A symbolic link's target.
+    Link(String),
 }
 
 fn blocks_for(size: u64) -> usize {
@@ -94,16 +99,14 @@ fn end_session(s: Session) {
     let _ = close(s.chan);
 }
 
+/// A name: 1 to 255 bytes of UTF-8 without `/` or NUL, not `.` or `..`,
+/// as on Linux (docs/linux10d-design.md; Wine needs `c:` and `Program
+/// Files (x86)`).
 fn valid_component(c: &str) -> bool {
-    !c.is_empty()
-        && c.len() <= MAX_NAME
-        && c != "."
-        && c != ".."
-        && c.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'_' | b'-'))
+    !c.is_empty() && c.len() <= MAX_NAME && c != "." && c != ".." && !c.contains('\0')
 }
 
-/// Same rules as the kernel had: relative only; no empty, `.` or `..`.
+/// Relative only; no empty, `.` or `..` components.
 fn components(path: &str) -> Result<Vec<&str>, Error> {
     if path.is_empty() {
         return Ok(Vec::new());
@@ -238,16 +241,18 @@ impl Tree {
             (Kind::Dir, _) => n.children.len() as u64,
             (Kind::File, Content::Static(d)) => d.len() as u64,
             (Kind::File, Content::Blocks { size, .. }) => *size,
+            (_, Content::Link(t)) => t.len() as u64,
+            (Kind::Link, _) => 0,
         })
     }
 
     fn entry(&self, id: usize) -> DirEntry {
         let mut e = DirEntry::default();
         if let Some(n) = self.node(id) {
-            e.kind = if n.kind == Kind::Dir {
-                KIND_DIR
-            } else {
-                KIND_FILE
+            e.kind = match n.kind {
+                Kind::Dir => KIND_DIR,
+                Kind::File => KIND_FILE,
+                Kind::Link => zoo_abi::KIND_LINK,
             };
             e.size = self.size(id);
             let k = n.name.len().min(MAX_DIR_NAME);
@@ -263,7 +268,8 @@ impl Tree {
         }
         let id = self.resolve(base, path)?;
         let n = self.node(id).ok_or(Error::NotFound)?;
-        if n.kind != want {
+        // A link goes the way a file does.
+        if n.kind != want && !(want == Kind::File && n.kind == Kind::Link) {
             return Err(if want == Kind::Dir {
                 Error::NotDir
             } else {
@@ -511,6 +517,7 @@ impl Badger {
                 return Ok(());
             }
             Content::Blocks { map, .. } => map,
+            Content::Link(_) => return Err(Error::Inval),
         };
         let mut done = 0usize;
         while done < out.len() {
@@ -667,11 +674,13 @@ impl Badger {
         let (base, rights) = (self.sessions[k].node, self.sessions[k].rights);
         let need = match req.op {
             Op::Open => 0,
-            Op::CreateDir | Op::CreateFile => dir_rights::CREATE,
+            Op::CreateDir | Op::CreateFile | Op::CreateLink => dir_rights::CREATE,
             Op::RemoveDir | Op::RemoveFile => dir_rights::REMOVE,
             Op::Write | Op::Truncate | Op::WriteBulk => dir_rights::WRITE,
             Op::Rename => dir_rights::CREATE | dir_rights::REMOVE,
-            Op::List | Op::Stat | Op::Read | Op::ReadBulk => dir_rights::READ,
+            Op::List | Op::Stat | Op::Read | Op::ReadBulk | Op::ReadLink | Op::ListLinks => {
+                dir_rights::READ
+            }
         };
         if rights & need != need {
             return fsproto::reply(chan, Err(Error::Rights), &[]).is_ok();
@@ -759,6 +768,58 @@ impl Badger {
                     })
                     .map(|_| 0)
             }
+            Op::CreateLink => match core::str::from_utf8(req.data) {
+                Ok(target) if !target.is_empty() && target.len() <= zoo_abi::MAX_FS_PATH => {
+                    let t = &mut self.tree;
+                    t.new_entry(base, path)
+                        .and_then(|(p, name)| {
+                            t.add(p, name, Kind::Link, Content::Link(String::from(target)))
+                        })
+                        .map(|_| 0)
+                }
+                _ => Err(Error::Inval),
+            },
+            Op::ReadLink => self.tree.resolve(base, path).and_then(|id| {
+                match self.tree.node(id).map(|n| &n.content) {
+                    Some(Content::Link(t)) => {
+                        out.extend_from_slice(t.as_bytes());
+                        Ok(t.len() as u64)
+                    }
+                    _ => Err(Error::Inval),
+                }
+            }),
+            Op::ListLinks => self.tree.resolve(base, path).and_then(|dir| {
+                // Depth-first, in name order: the same order every time.
+                let mut stack = vec![(dir, String::new())];
+                let mut seen = 0u64;
+                while let Some((d, prefix)) = stack.pop() {
+                    let Some(n) = self.tree.node(d) else { continue };
+                    for &c in n.children.iter().rev() {
+                        let Some(cn) = self.tree.node(c) else {
+                            continue;
+                        };
+                        let mut p = prefix.clone();
+                        if !p.is_empty() {
+                            p.push('/');
+                        }
+                        p.push_str(&cn.name);
+                        match &cn.content {
+                            _ if cn.kind == Kind::Dir => stack.push((c, p)),
+                            Content::Link(t) => {
+                                if seen == req.arg {
+                                    out.extend_from_slice(p.as_bytes());
+                                    out.push(0);
+                                    out.extend_from_slice(t.as_bytes());
+                                    return Ok(out.len() as u64);
+                                }
+                                seen += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(Error::NotFound)
+            }),
             Op::RemoveDir => self.tree.remove(base, path, Kind::Dir).map(|_| 0),
             Op::RemoveFile => self.tree.remove(base, path, Kind::File).map(|id| {
                 // Its waiting blocks go with it (the slot may be reused).
@@ -830,6 +891,7 @@ impl Badger {
             req.op,
             Op::CreateDir
                 | Op::CreateFile
+                | Op::CreateLink
                 | Op::RemoveDir
                 | Op::RemoveFile
                 | Op::Write
@@ -1001,6 +1063,8 @@ const MAX_META_RUNS: usize = (BLOCK - 44) / 12;
 
 const REC_DIR: u8 = 1;
 const REC_FILE: u8 = 2;
+/// A symbolic link: its target follows the name (2-byte length, bytes).
+const REC_LINK: u8 = 3;
 
 /// Standard CRC-32 (IEEE, reflected).
 fn crc32(data: &[u8]) -> u32 {
@@ -1268,6 +1332,10 @@ fn parse_meta(meta: &[u8], blocks: u64, block: &mut dyn FnMut(u64)) -> Option<us
                 }
                 stack.push(n);
             }
+            REC_LINK => {
+                let len = r.u16()? as usize;
+                core::str::from_utf8(r.bytes(len)?).ok()?;
+            }
             REC_FILE => {
                 files += 1;
                 let size = r.u64()?;
@@ -1526,7 +1594,19 @@ impl Badger {
                 return false;
             };
             let name = String::from(name);
-            if kind == REC_DIR {
+            if kind == REC_LINK {
+                let Some(target) = r
+                    .u16()
+                    .and_then(|n| r.bytes(n as usize))
+                    .and_then(|b| core::str::from_utf8(b).ok())
+                else {
+                    return false;
+                };
+                let content = Content::Link(String::from(target));
+                if self.tree.add(dir, &name, Kind::Link, content).is_err() {
+                    return false;
+                }
+            } else if kind == REC_DIR {
                 let Some(n) = r.u32() else { return false };
                 match self.tree.add(dir, &name, Kind::Dir, Content::Static(&[])) {
                     Ok(id) => stack.push((id, n)),
@@ -1562,6 +1642,17 @@ impl Tree {
         let Some(n) = self.node(id) else { return };
         let name = n.name.as_bytes();
         match n.kind {
+            Kind::Link => {
+                let target = match &n.content {
+                    Content::Link(t) => t.as_bytes(),
+                    _ => &[],
+                };
+                out.push(REC_LINK);
+                out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+                out.extend_from_slice(name);
+                out.extend_from_slice(&(target.len() as u16).to_le_bytes());
+                out.extend_from_slice(target);
+            }
             Kind::Dir => {
                 out.push(REC_DIR);
                 out.extend_from_slice(&(name.len() as u16).to_le_bytes());
@@ -1578,7 +1669,7 @@ impl Tree {
                 let (size, map): (u64, &[u64]) = match &n.content {
                     Content::Blocks { size, map } => (*size, map),
                     // Converted before a save; an empty file otherwise.
-                    Content::Static(_) => (0, &[]),
+                    Content::Static(_) | Content::Link(_) => (0, &[]),
                 };
                 out.extend_from_slice(&size.to_le_bytes());
                 // Runs of consecutive blocks (first 0: a run of zeros).

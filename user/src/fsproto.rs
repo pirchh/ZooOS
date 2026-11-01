@@ -22,7 +22,8 @@ pub const TAG_SHM: u64 = 5;
 pub const BULK_PAGES: u64 = 16;
 pub const BULK_SIZE: usize = BULK_PAGES as usize * 4096;
 
-const HEADER: usize = 1 + 8 + 2 + 1;
+/// op | arg u64 | count u16 | path length u16 | path | data.
+const HEADER: usize = 1 + 8 + 2 + 2;
 /// Most file bytes in one reply.
 pub const MAX_DATA: usize = MAX_MESSAGE - 8;
 
@@ -44,6 +45,14 @@ pub enum Op {
     /// length (u32) in the data.
     ReadBulk = 12,
     WriteBulk = 13,
+    /// A symbolic link at the path; its target is the data
+    /// (docs/linux10d-design.md).
+    CreateLink = 14,
+    /// The target of the link at the path, as the reply.
+    ReadLink = 15,
+    /// The `arg`-th symbolic link below the folder, as `path\0target`;
+    /// `NOTFOUND` after the last.
+    ListLinks = 16,
 }
 
 impl Op {
@@ -62,6 +71,9 @@ impl Op {
             11 => Op::Rename,
             12 => Op::ReadBulk,
             13 => Op::WriteBulk,
+            14 => Op::CreateLink,
+            15 => Op::ReadLink,
+            16 => Op::ListLinks,
             _ => return None,
         })
     }
@@ -83,7 +95,7 @@ impl<'a> Request<'a> {
         let op = Op::from_u8(m[0])?;
         let arg = u64::from_le_bytes(m[1..9].try_into().ok()?);
         let count = u16::from_le_bytes(m[9..11].try_into().ok()?);
-        let plen = m[11] as usize;
+        let plen = u16::from_le_bytes(m[11..13].try_into().ok()?) as usize;
         let path = core::str::from_utf8(m.get(HEADER..HEADER + plen)?).ok()?;
         Some(Request {
             op,
@@ -108,13 +120,13 @@ fn encode(
     data: &[u8],
     out: &mut [u8; MAX_MESSAGE],
 ) -> Result<usize, Error> {
-    if path.len() > 255 || HEADER + path.len() + data.len() > MAX_MESSAGE {
+    if path.len() > zoo_abi::MAX_FS_PATH || HEADER + path.len() + data.len() > MAX_MESSAGE {
         return Err(Error::Inval);
     }
     out[0] = op as u8;
     out[1..9].copy_from_slice(&arg.to_le_bytes());
     out[9..11].copy_from_slice(&count.to_le_bytes());
-    out[11] = path.len() as u8;
+    out[11..13].copy_from_slice(&(path.len() as u16).to_le_bytes());
     out[HEADER..HEADER + path.len()].copy_from_slice(path.as_bytes());
     let end = HEADER + path.len() + data.len();
     out[HEADER + path.len()..end].copy_from_slice(data);

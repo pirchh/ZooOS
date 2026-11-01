@@ -234,6 +234,10 @@ struct Proc {
     linux_exe: String,
     /// The file-creation mask (`umask`).
     linux_umask: u64,
+    /// Small consecutive writes to one home-folder file, gathered into one
+    /// request (docs/linux10d-design.md); sent before the process's next
+    /// other call.
+    linux_wbuf: Option<WriteBuf>,
     /// `MAP_SHARED` mappings of tmpfs files: their pages are the file's,
     /// unmapped (not freed) when they go (docs/linux10b-design.md).
     linux_shared: Vec<SharedMap>,
@@ -295,6 +299,28 @@ struct Task {
     /// Between an `Open` reply and its folder handle (`fork`): the home
     /// channel is still in use.
     fs_hold: bool,
+    /// An `mmap` of a home-folder file being filled across re-runs of the
+    /// call (docs/linux10d-design.md).
+    home_map: Option<HomeMap>,
+}
+
+/// Gathered writes to a home-folder file: descriptor, path, where the
+/// bytes start, the bytes.
+struct WriteBuf {
+    fd: u64,
+    path: String,
+    at: u64,
+    data: Vec<u8>,
+}
+
+/// Progress of an `mmap` of a home-folder file: the call's arguments (a
+/// different call discards it), where it is mapped, and how much is read.
+#[derive(Clone, Copy)]
+struct HomeMap {
+    args: [u64; 6],
+    base: u64,
+    len: u64,
+    done: u64,
 }
 
 impl Task {
@@ -326,6 +352,7 @@ impl Task {
             altstack: (0, 0, false),
             clear_tid: 0,
             fs_hold: false,
+            home_map: None,
         }
     }
 }
@@ -374,6 +401,7 @@ impl Proc {
             linux_exe: String::new(),
             linux_umask: 0o022,
             linux_shared: Vec::new(),
+            linux_wbuf: None,
         }
     }
 
@@ -494,6 +522,10 @@ struct Scheduler {
     /// `/tmp` (docs/linux10b-design.md): every node by its full path
     /// (`tmp/…`); `/tmp` itself is implicit.
     tmpfs: alloc::collections::BTreeMap<String, TmpNode>,
+    /// The home folder's symbolic links by full path (`home/user/…`), read
+    /// from BadgerHandler once and then kept up to date by the calls that
+    /// change them (docs/linux10d-design.md). `None` until read.
+    home_links: Option<alloc::collections::BTreeMap<String, String>>,
 }
 
 /// Mirrors `display_owner.is_some()` for the shell's keyboard loop.
@@ -541,6 +573,7 @@ pub fn init() {
             pending_home: None,
             unix_names: Vec::new(),
             tmpfs: alloc::collections::BTreeMap::new(),
+            home_links: None,
         });
     });
 }
@@ -2629,9 +2662,12 @@ impl Scheduler {
         addr: u64,
         nofollow: bool,
     ) -> Result<String, i64> {
-        let mut name = [0u8; LINUX_PATH_MAX];
-        let n = user_cstr(ok, addr, &mut name).ok_or(EFAULT)?;
-        let raw = core::str::from_utf8(&name[..n]).map_err(|_| EINVAL)?;
+        let raw = user_path(ok, addr)?;
+        let raw = raw.as_str();
+        // Linux's limit on one name.
+        if raw.split('/').any(|c| c.len() > 255) {
+            return Err(ENAMETOOLONG);
+        }
         let base = if raw.starts_with('/') || dirfd as i64 == AT_FDCWD {
             self.proc(i).linux_cwd.clone()
         } else {
@@ -2646,7 +2682,8 @@ impl Scheduler {
         self.tmp_expand(linux_resolve(&base, raw), nofollow)
     }
 
-    /// Follows the tmpfs symbolic links in `path` (at most 40).
+    /// Follows the symbolic links in `path`, in tmpfs and in the home folder
+    /// (at most 40).
     fn tmp_expand(&self, path: String, nofollow: bool) -> Result<String, i64> {
         let mut path = path;
         let mut hops = 0;
@@ -2665,7 +2702,11 @@ impl Scheduler {
                 if k + 1 == comps.len() && nofollow {
                     break;
                 }
-                if let Some(TmpNode::Link(target)) = self.tmpfs.get(&prefix) {
+                let target = match self.tmpfs.get(&prefix) {
+                    Some(TmpNode::Link(t)) => Some(t),
+                    _ => self.home_links.as_ref().and_then(|m| m.get(&prefix)),
+                };
+                if let Some(target) = target {
                     hops += 1;
                     if hops > 40 {
                         return Err(ELOOP);
@@ -2775,25 +2816,16 @@ impl Scheduler {
                     (a2, a3)
                 };
                 let ok = |addr: u64, len: u64, write: bool| mem.user_range_ok(p4, addr, len, write);
-                let mut raw = [0u8; LINUX_PATH_MAX];
-                let Some(n) = user_cstr(&ok, a1, &mut raw) else {
-                    return fail(EFAULT);
+                let target = match user_path(&ok, a1) {
+                    Ok(t) => t,
+                    Err(e) => return fail(e),
                 };
-                let Ok(target) = core::str::from_utf8(&raw[..n]) else {
-                    return fail(EINVAL);
-                };
-                let target = String::from(target);
                 let link = match self.linux_path_at(i, &ok, fd, lp, true) {
                     Ok(p) => p,
                     Err(e) => return fail(e),
                 };
                 if !tmp_is(&link) {
-                    // Links elsewhere (the home folder) are not supported yet.
-                    return fail(if self.home_rel(i, &link).is_some() {
-                        EPERM
-                    } else {
-                        EROFS
-                    });
+                    return None; // the home folder: the generic code
                 }
                 if self.tmp_kind(&link).is_some() || self.unix_bound(&link) {
                     return fail(EEXIST);
@@ -3304,6 +3336,104 @@ impl Scheduler {
         Outcome::Ret(base as i64)
     }
 
+    /// `mmap` of a home-folder file: a private copy, read through the bulk
+    /// buffer 64 KiB at a time. Each read needs a reply from BadgerHandler,
+    /// so the call blocks and runs again; `Task::home_map` keeps the
+    /// progress (docs/linux10d-design.md). A writable `MAP_SHARED` mapping
+    /// is not supported (`ENODEV`): changes would not reach the file.
+    fn home_mmap(&mut self, i: usize, f: &TrapFrame, mem: &mut Memory) -> Outcome {
+        let args = [f.rdi, f.rsi, f.rdx, f.r10, f.r8, f.r9];
+        let (addr, len0, prot, flags, fd, off) =
+            (args[0], args[1], args[2], args[3], args[4], args[5]);
+        let Some(p4) = self.task(i).p4 else {
+            return Outcome::Ret(-EFAULT);
+        };
+        if flags & 3 == 1 && prot & 2 != 0 {
+            return Outcome::Ret(-ENODEV);
+        }
+        let Some(LinuxFile::Home { path, .. }) = self.linux_file(i, fd).cloned() else {
+            return Outcome::Ret(-EBADF);
+        };
+        let Some(shm) = self.proc(i).linux_shm.clone() else {
+            return Outcome::Ret(-ENODEV);
+        };
+        // A different call than the one in progress starts afresh.
+        let state = match self.task(i).home_map {
+            Some(m) if m.args == args => m,
+            _ => {
+                let len = page_up(len0);
+                let base = match self.linux_place(i, mem, addr, len, flags) {
+                    Ok(b) => b,
+                    Err(e) => return Outcome::Ret(-e),
+                };
+                // Writable while filled; the requested access at the end.
+                for k in 0..len / 4096 {
+                    if mem
+                        .map_user_page(p4, base + k * 4096, true, prot & 4 != 0)
+                        .is_err()
+                    {
+                        self.linux_carve(i, mem, base, len);
+                        return Outcome::Ret(-ENOMEM);
+                    }
+                    self.proc(i).committed += 1;
+                }
+                let m = HomeMap {
+                    args,
+                    base,
+                    len,
+                    done: 0,
+                };
+                self.task(i).home_map = Some(m);
+                m
+            }
+        };
+        let mut done = state.done;
+        while done < state.len {
+            let want = (state.len - done).min(LINUX_BULK as u64) as u32;
+            let r = self.fs(i, Op::ReadBulk, off + done, 0, &path, &want.to_le_bytes());
+            let (s, _) = match r {
+                FsStep::Done(s, b) => (s, b),
+                FsStep::Wait => return Outcome::Block,
+                FsStep::Fail(e) => {
+                    self.task(i).home_map = None;
+                    self.linux_carve(i, mem, state.base, state.len);
+                    return Outcome::Ret(-e);
+                }
+            };
+            if s < 0 {
+                self.task(i).home_map = None;
+                self.linux_carve(i, mem, state.base, state.len);
+                return Outcome::Ret(-zoo_errno(s));
+            }
+            let n = (s as u64).min(u64::from(want));
+            shm_to_user(mem, &shm, state.base + done, n as usize);
+            // The next read is a new request.
+            let t = self.task(i);
+            t.fs_results.clear();
+            t.fs_cursor = 0;
+            if n < u64::from(want) {
+                break; // the end of the file; the rest stays zero
+            }
+            done += n;
+            if let Some(m) = self.task(i).home_map.as_mut() {
+                m.done = done;
+            }
+        }
+        self.task(i).home_map = None;
+        if prot & 2 == 0 {
+            for k in 0..state.len / 4096 {
+                let _ = mem.protect_user_page(p4, state.base + k * 4096, false, prot & 4 != 0);
+            }
+        }
+        if prot & 7 == 0 {
+            // PROT_NONE: reserved and filled, but inaccessible.
+            for k in 0..state.len / 4096 {
+                let _ = mem.protect_user_page(p4, state.base + k * 4096, false, false);
+            }
+        }
+        Outcome::Ret(state.base as i64)
+    }
+
     /// rename within tmpfs: the node and, for a folder, all below it.
     fn tmp_rename(&mut self, from: &str, to: &str) -> Outcome {
         let Some(node) = self.tmp_kind(from) else {
@@ -3448,15 +3578,17 @@ impl Scheduler {
             _ => return FsStep::Fail(EIO),
         };
         if !self.task(i).fs_pending {
-            // Request: op | arg u64 | count u16 | path_len u8 | path | data.
-            if path.len() > 255 || 12 + path.len() + data.len() > MAX_MESSAGE {
+            // Request: op | arg u64 | count u16 | path_len u16 | path | data.
+            if path.len() > zoo_abi::MAX_FS_PATH
+                || FS_HEADER + path.len() + data.len() > MAX_MESSAGE
+            {
                 return FsStep::Fail(ENAMETOOLONG);
             }
-            let mut m = alloc::vec::Vec::with_capacity(12 + path.len() + data.len());
+            let mut m = alloc::vec::Vec::with_capacity(FS_HEADER + path.len() + data.len());
             m.push(op as u8);
             m.extend_from_slice(&arg.to_le_bytes());
             m.extend_from_slice(&count.to_le_bytes());
-            m.push(path.len() as u8);
+            m.extend_from_slice(&(path.len() as u16).to_le_bytes());
             m.extend_from_slice(path.as_bytes());
             m.extend_from_slice(data);
             {
@@ -3532,6 +3664,35 @@ impl Scheduler {
         if bytes.is_empty() {
             return Outcome::Ret(0);
         }
+        // Gather a small write behind the ones before it (the call's prologue
+        // sent anything that does not continue here).
+        if offset.is_none()
+            && !append
+            && bytes.len() < LINUX_BULK
+            && self.proc(i).linux_shm.is_some()
+        {
+            let p = self.proc(i);
+            match p.linux_wbuf.as_mut() {
+                Some(w) if w.fd == fd && w.at + w.data.len() as u64 == pos => {
+                    w.data.extend_from_slice(bytes)
+                }
+                Some(_) => {}
+                None => {
+                    p.linux_wbuf = Some(WriteBuf {
+                        fd,
+                        path: path.clone(),
+                        at: pos,
+                        data: bytes.to_vec(),
+                    })
+                }
+            }
+            if p.linux_wbuf.as_ref().is_some_and(|w| w.fd == fd) {
+                if let Some(LinuxFile::Home { pos, .. }) = self.linux_file(i, fd) {
+                    *pos += bytes.len() as u64;
+                }
+                return Outcome::Ret(bytes.len() as i64);
+            }
+        }
         let at = if let Some(o) = offset {
             o
         } else if append {
@@ -3554,7 +3715,7 @@ impl Scheduler {
             }
             (s as usize).min(chunk.len())
         } else {
-            let room = MAX_MESSAGE.saturating_sub(12 + path.len());
+            let room = MAX_MESSAGE.saturating_sub(FS_HEADER + path.len());
             let chunk = &bytes[..bytes.len().min(room)];
             let (s, _) = step!(self.fs(i, Op::Write, at, 0, &path, chunk));
             if s < 0 {
@@ -3577,6 +3738,63 @@ impl Scheduler {
         mem: &mut Memory,
         want: &core::cell::Cell<Option<(u64, u64, bool)>>,
     ) -> Outcome {
+        // The home folder's links, once (docs/linux10d-design.md).
+        if self.home_links.is_none() && self.proc(i).linux_home.is_some() {
+            let mut links = alloc::collections::BTreeMap::new();
+            for k in 0.. {
+                let (s, data) = step!(self.fs(i, Op::ListLinks, k, 0, "", &[]));
+                if s < 0 {
+                    break;
+                }
+                let n = (s as usize).min(data.len());
+                if let Some(z) = data[..n].iter().position(|&b| b == 0)
+                    && let (Ok(rel), Ok(target)) = (
+                        core::str::from_utf8(&data[..z]),
+                        core::str::from_utf8(&data[z + 1..n]),
+                    )
+                {
+                    links.insert(format!("home/user/{rel}"), String::from(target));
+                }
+            }
+            self.home_links = Some(links);
+            // The call itself starts its own requests afresh.
+            let t = self.task(i);
+            t.fs_results.clear();
+            t.fs_cursor = 0;
+        }
+        // Gathered writes go out before anything else this process does,
+        // unless this call is one more small write that continues them.
+        if let Some((fd, path, at, len)) = self
+            .proc(i)
+            .linux_wbuf
+            .as_ref()
+            .map(|w| (w.fd, w.path.clone(), w.at, w.data.len()))
+        {
+            let p4 = self.task(i).p4;
+            let more = match f.rax {
+                1 => Some(f.rdx),
+                20 => p4.and_then(|p4| iovec_total(mem, p4, f.rsi, f.rdx)),
+                _ => None,
+            };
+            let keep = f.rdi == fd && more.is_some_and(|m| len as u64 + m < LINUX_BULK as u64);
+            if !keep {
+                if let Some(shm) = self.proc(i).linux_shm.clone()
+                    && let Some(w) = self.proc(i).linux_wbuf.as_ref()
+                {
+                    bytes_to_shm(mem, &shm, &w.data);
+                }
+                let len32 = (len as u32).to_le_bytes();
+                let (s, _) = step!(self.fs(i, Op::WriteBulk, at, 0, &path, &len32));
+                self.proc(i).linux_wbuf = None;
+                let t = self.task(i);
+                t.fs_results.clear();
+                t.fs_cursor = 0;
+                if s < 0 || (s as usize) < len {
+                    // The write is lost; say so to the call that sent it.
+                    return Outcome::Ret(-if s < 0 { zoo_errno(s) } else { EIO });
+                }
+            }
+        }
         if let Some(outcome) = self.tmp_call(i, f, mem) {
             return outcome;
         }
@@ -3769,6 +3987,7 @@ impl Scheduler {
                 } else {
                     match self.linux_file(i, fd) {
                         Some(LinuxFile::File(d, _)) => Some(*d),
+                        Some(LinuxFile::Home { .. }) => return self.home_mmap(i, f, mem),
                         Some(_) => return fail(ENODEV),
                         None => return fail(EBADF),
                     }
@@ -3979,6 +4198,54 @@ impl Scheduler {
             // any ZooOS file system. Wine then keeps DOS attributes itself.
             188..=199 => fail(EOPNOTSUPP),
             140 => Outcome::Ret(20), // the kernel's form of nice 0
+            // utime(path, times), utimes(path, times), futimesat(dirfd,
+            // path, times), utimensat(dirfd, path, times, flags): accepted
+            // for existing files; no file system keeps times yet.
+            132 | 235 | 261 | 280 => {
+                let (dirfd, at) = match number {
+                    132 | 235 => (AT_FDCWD as u64, a1),
+                    _ => (a1, a2),
+                };
+                if at == 0 {
+                    // utimensat(fd, NULL, …): the descriptor itself.
+                    return if self.linux_file(i, dirfd).is_some() {
+                        Outcome::Ret(0)
+                    } else {
+                        fail(EBADF)
+                    };
+                }
+                let nofollow = number == 280 && f.r10 & AT_SYMLINK_NOFOLLOW != 0;
+                let path = match self.linux_path_at(i, &ok, dirfd, at, nofollow) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
+                };
+                if tmp_is(&path) {
+                    return if self.tmp_kind(&path).is_some() {
+                        Outcome::Ret(0)
+                    } else {
+                        fail(ENOENT)
+                    };
+                }
+                if self
+                    .home_links
+                    .as_ref()
+                    .is_some_and(|m| m.contains_key(&path))
+                {
+                    return Outcome::Ret(0);
+                }
+                if let Some(rel) = self.home_rel(i, &path) {
+                    let (s, _) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
+                    return if s < 0 {
+                        fail(zoo_errno(s))
+                    } else {
+                        Outcome::Ret(0)
+                    };
+                }
+                match initrd_kind(&path) {
+                    Some(_) => fail(EROFS),
+                    None => fail(ENOENT),
+                }
+            }
             // getrandom(buf, len, flags): see `random_fill`.
             318 => {
                 let n = a2.min(1 << 20);
@@ -4034,9 +4301,14 @@ impl Scheduler {
             // the read-only initrd (docs/linux2-design.md, linux3).
             // open(path, flags), openat(dirfd, path, flags)
             2 | 257 => {
-                let (path, flags) = if number == 2 { (a1, a2) } else { (a2, a3) };
-                let Some(path) = self.linux_path(i, &ok, path) else {
-                    return fail(EFAULT);
+                let (dirfd, path, flags) = if number == 2 {
+                    (AT_FDCWD as u64, a1, a2)
+                } else {
+                    (a1, a2, a3)
+                };
+                let path = match self.linux_path_at(i, &ok, dirfd, path, false) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
                 };
                 let write = flags & 3 != 0;
                 let file = if let Some(dev) = linux_device(&path) {
@@ -4349,9 +4621,10 @@ impl Scheduler {
                 let mut k = start;
                 loop {
                     // Entry k: `.`, `..`, then the folder's own entries.
-                    let (name, is_dir) = match k {
-                        0 => (String::from("."), true),
-                        1 => (String::from(".."), true),
+                    // (name, linux_dirent64 type: DT_DIR 4, DT_REG 8, DT_LNK 10)
+                    let (name, dtype) = match k {
+                        0 => (String::from("."), 4),
+                        1 => (String::from(".."), 4),
                         _ if home => {
                             let (s, entry) =
                                 step!(self.fs(i, Op::List, (k - 2) as u64, 0, &dir, &[]));
@@ -4360,10 +4633,15 @@ impl Scheduler {
                             }
                             let name =
                                 String::from_utf8_lossy(entry.get(9..).unwrap_or(&[])).into_owned();
-                            (name, entry.first() == Some(&(zoo_abi::KIND_DIR as u8)))
+                            let dtype = match entry.first().map(|&b| u64::from(b)) {
+                                Some(zoo_abi::KIND_DIR) => 4,
+                                Some(zoo_abi::KIND_LINK) => 10,
+                                _ => 8,
+                            };
+                            (name, dtype)
                         }
                         _ => match initrd_children(&dir).into_iter().nth(k - 2) {
-                            Some(e) => e,
+                            Some((name, is_dir)) => (name, if is_dir { 4 } else { 8 }),
                             None => break,
                         },
                     };
@@ -4379,7 +4657,7 @@ impl Scheduler {
                     rec[0..8].copy_from_slice(&(k as u64 + 1).to_le_bytes());
                     rec[8..16].copy_from_slice(&(k as u64 + 1).to_le_bytes());
                     rec[16..18].copy_from_slice(&(reclen as u16).to_le_bytes());
-                    rec[18] = if is_dir { 4 } else { 8 }; // DT_DIR, DT_REG
+                    rec[18] = dtype;
                     rec[19..19 + name.len()].copy_from_slice(name.as_bytes());
                     out.extend_from_slice(&rec);
                     k += 1;
@@ -4453,10 +4731,23 @@ impl Scheduler {
                         None => return fail(EBADF),
                     },
                     None => {
-                        let Some(path) = self.linux_path(i, &ok, path) else {
-                            return fail(EFAULT);
+                        let dirfd = if number == 262 { a1 } else { AT_FDCWD as u64 };
+                        let nofollow =
+                            number == 6 || (number == 262 && f.r10 & AT_SYMLINK_NOFOLLOW != 0);
+                        let path = match self.linux_path_at(i, &ok, dirfd, path, nofollow) {
+                            Ok(p) => p,
+                            Err(e) => return fail(e),
                         };
-                        if let Some(dev) = linux_device(&path) {
+                        let link_len = self
+                            .home_links
+                            .as_ref()
+                            .and_then(|m| m.get(&path))
+                            .map(|t| t.len() as u64);
+                        if let Some(len) = link_len {
+                            // A home-folder symbolic link itself (lstat).
+                            ino = fnv(&path);
+                            (None, Some((0o120_777, len)))
+                        } else if let Some(dev) = linux_device(&path) {
                             rdev = device_number(dev);
                             (None, Some((0o020_666, 0)))
                         } else if self.unix_bound(&path) {
@@ -4521,9 +4812,14 @@ impl Scheduler {
             }
             // access(path, mode), faccessat(dirfd, path, mode)
             21 | 269 => {
-                let (path, mode) = if number == 21 { (a1, a2) } else { (a2, a3) };
-                let Some(path) = self.linux_path(i, &ok, path) else {
-                    return fail(EFAULT);
+                let (dirfd, path, mode) = if number == 21 {
+                    (AT_FDCWD as u64, a1, a2)
+                } else {
+                    (a1, a2, a3)
+                };
+                let path = match self.linux_path_at(i, &ok, dirfd, path, false) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
                 };
                 if linux_device(&path).is_some() {
                     return Outcome::Ret(0);
@@ -4596,8 +4892,15 @@ impl Scheduler {
                     263 if a3 & AT_REMOVEDIR != 0 => Op::RemoveDir,
                     _ => Op::RemoveFile,
                 };
-                let Some(path) = self.linux_path(i, &ok, path) else {
-                    return fail(EFAULT);
+                let dirfd = if matches!(number, 258 | 263) {
+                    a1
+                } else {
+                    AT_FDCWD as u64
+                };
+                // The entry itself: a link is removed, not what it names.
+                let path = match self.linux_path_at(i, &ok, dirfd, path, true) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
                 };
                 // Unlinking a bound socket's name frees the name.
                 if op == Op::RemoveFile && self.unix_bound(&path) {
@@ -4616,19 +4919,62 @@ impl Scheduler {
                 if s < 0 {
                     fail(zoo_errno(s))
                 } else {
+                    if op == Op::RemoveFile
+                        && let Some(m) = self.home_links.as_mut()
+                    {
+                        m.remove(&path);
+                    }
                     Outcome::Ret(0)
                 }
+            }
+            // symlink(target, linkpath), symlinkat(target, dirfd, linkpath):
+            // the home folder (tmpfs links are `tmp_call`'s).
+            88 | 266 => {
+                let (dirfd, lp) = if number == 88 {
+                    (AT_FDCWD as u64, a2)
+                } else {
+                    (a2, a3)
+                };
+                let target = match user_path(&ok, a1) {
+                    Ok(t) => t,
+                    Err(e) => return fail(e),
+                };
+                if target.is_empty() {
+                    return fail(ENOENT);
+                }
+                let path = match self.linux_path_at(i, &ok, dirfd, lp, true) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
+                };
+                let Some(rel) = self.home_rel(i, &path) else {
+                    return fail(EROFS);
+                };
+                let (s, _) = step!(self.fs(i, Op::CreateLink, 0, 0, &rel, target.as_bytes()));
+                if s < 0 {
+                    return fail(zoo_errno(s));
+                }
+                if let Some(m) = self.home_links.as_mut() {
+                    m.insert(path, target);
+                }
+                Outcome::Ret(0)
             }
             // rename(old, new), renameat(olddir, old, newdir, new),
             // renameat2(…, flags): within the home folder.
             82 | 264 | 316 => {
-                let (from, to) = if number == 82 { (a1, a2) } else { (a2, f.r10) };
-                let (Some(from), Some(to)) =
-                    (self.linux_path(i, &ok, from), self.linux_path(i, &ok, to))
-                else {
-                    return fail(EFAULT);
+                let (fd1, from, fd2, to) = if number == 82 {
+                    (AT_FDCWD as u64, a1, AT_FDCWD as u64, a2)
+                } else {
+                    (a1, a2, a3, f.r10)
                 };
-                let (Some(from), Some(to)) = (self.home_rel(i, &from), self.home_rel(i, &to))
+                let (from_full, to_full) = match (
+                    self.linux_path_at(i, &ok, fd1, from, true),
+                    self.linux_path_at(i, &ok, fd2, to, true),
+                ) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(e), _) | (_, Err(e)) => return fail(e),
+                };
+                let (Some(from), Some(to)) =
+                    (self.home_rel(i, &from_full), self.home_rel(i, &to_full))
                 else {
                     return fail(EXDEV);
                 };
@@ -4636,6 +4982,20 @@ impl Scheduler {
                 if s < 0 {
                     fail(zoo_errno(s))
                 } else {
+                    // Links that moved: the entry itself or below it.
+                    if let Some(m) = self.home_links.as_mut() {
+                        let inside = format!("{from_full}/");
+                        let moved: Vec<String> = m
+                            .keys()
+                            .filter(|k| **k == from_full || k.starts_with(&inside))
+                            .cloned()
+                            .collect();
+                        for k in moved {
+                            if let Some(t) = m.remove(&k) {
+                                m.insert(format!("{to_full}{}", &k[from_full.len()..]), t);
+                            }
+                        }
+                    }
                     Outcome::Ret(0)
                 }
             }
@@ -5300,12 +5660,21 @@ impl Scheduler {
                 } else {
                     (a2, a3, f.r10)
                 };
-                let Some(path) = self.linux_path(i, &ok, at) else {
-                    return fail(EFAULT);
+                let dirfd = if number == 267 { a1 } else { AT_FDCWD as u64 };
+                let path = match self.linux_path_at(i, &ok, dirfd, at, true) {
+                    Ok(p) => p,
+                    Err(e) => return fail(e),
                 };
                 let pid = self.task(i).pid;
+                let home_link = self.home_links.as_ref().and_then(|m| m.get(&path)).cloned();
                 let target = if path == "proc/self/exe" || path == format!("proc/{pid}/exe") {
                     self.proc(i).linux_exe.clone()
+                } else if let Some(t) = home_link {
+                    t
+                } else if let Some(rel) = self.home_rel(i, &path) {
+                    // Not a link: EINVAL if it exists, its error if not.
+                    let (st, _) = step!(self.fs(i, Op::Stat, 0, 0, &rel, &[]));
+                    return fail(if st < 0 { zoo_errno(st) } else { EINVAL });
                 } else if initrd_kind(&path).is_some() {
                     return fail(EINVAL);
                 } else {
@@ -7865,7 +8234,7 @@ const LINUX_WRITE_MAX: u64 = 64 * 1024;
 
 /// Linux programs' `brk` area (reserved on first use), and limits.
 const LINUX_BRK_SIZE: u64 = 64 * 1024 * 1024;
-const LINUX_PATH_MAX: usize = 256;
+const LINUX_PATH_MAX: usize = 4096;
 /// Descriptors per Linux process: Linux's usual default limit. Wine keeps
 /// one open per loaded library, so 64 was too few (docs/linux10b-design.md).
 const LINUX_FILES_MAX: usize = 1024;
@@ -8022,6 +8391,33 @@ fn page_up(a: u64) -> u64 {
 
 /// A NUL-terminated user string into `buf`; its length, or `None` if it
 /// is unreadable or too long.
+/// A path from user memory: NUL-terminated UTF-8, at most `LINUX_PATH_MAX`
+/// bytes with the NUL (Linux's `PATH_MAX`), copied to the heap (kernel
+/// stacks are 16 KiB). `ENAMETOOLONG` if longer, `EFAULT` if unreadable.
+fn user_path(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64) -> Result<String, i64> {
+    let mut buf = alloc::vec![0u8; LINUX_PATH_MAX];
+    let mut k = 0;
+    loop {
+        if k == LINUX_PATH_MAX {
+            return Err(ENAMETOOLONG);
+        }
+        let a = addr.checked_add(k as u64).ok_or(EFAULT)?;
+        // One check per page: the rest of a checked page is readable too.
+        if (k == 0 || a & 0xFFF == 0) && !ok(a, 1, false) {
+            return Err(EFAULT);
+        }
+        // SAFETY: checked above as part of a readable user page.
+        let b = unsafe { (a as *const u8).read() };
+        if b == 0 {
+            break;
+        }
+        buf[k] = b;
+        k += 1;
+    }
+    buf.truncate(k);
+    String::from_utf8(buf).map_err(|_| EINVAL)
+}
+
 fn user_cstr(ok: &impl Fn(u64, u64, bool) -> bool, addr: u64, buf: &mut [u8]) -> Option<usize> {
     for (k, slot) in buf.iter_mut().enumerate() {
         let a = addr.checked_add(k as u64)?;
@@ -8574,7 +8970,12 @@ enum Op {
     Rename = 11,
     ReadBulk = 12,
     WriteBulk = 13,
+    CreateLink = 14,
+    ListLinks = 16,
 }
+
+/// Bytes before the path in a BadgerHandler request.
+const FS_HEADER: usize = 13;
 
 /// A Linux program's shared buffer with BadgerHandler: 16 pages, as
 /// `zoo_rt` uses (user/src/fsproto.rs).
@@ -8646,6 +9047,20 @@ fn shm_to_user(mem: &Memory, shm: &ShmPages, to: u64, n: usize) {
         unsafe { core::ptr::copy_nonoverlapping(from, (to + done as u64) as *mut u8, k) };
         done += k;
     }
+}
+
+/// The total length of a `writev` iovec array, if it is readable.
+fn iovec_total(mem: &Memory, p4: PhysFrame, iov: u64, count: u64) -> Option<u64> {
+    if count > 1024 || !mem.user_range_ok(p4, iov, count * 16, false) {
+        return None;
+    }
+    let mut total = 0u64;
+    for k in 0..count {
+        // SAFETY: inside the iovec array checked above.
+        let len = unsafe { ((iov + 16 * k + 8) as *const u64).read_unaligned() };
+        total = total.checked_add(len)?;
+    }
+    Some(total)
 }
 
 /// What an initrd path names.

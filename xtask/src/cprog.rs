@@ -14,7 +14,7 @@ pub const ZIG_DIR: &str = "zig-x86_64-windows-0.16.0";
 pub const C_PROGRAMS: [&str; 2] = ["puffin-test", "tern-test"];
 /// Ordinary Linux programs (`c/linux/`), built for x86_64-linux-musl and
 /// packed as `linux/<name>` (docs/linux1-design.md).
-pub const LINUX_PROGRAMS: [&str; 10] = [
+pub const LINUX_PROGRAMS: [&str; 11] = [
     "hello",
     "eider-test",
     "skua-test",
@@ -25,6 +25,7 @@ pub const LINUX_PROGRAMS: [&str; 10] = [
     "auklet-test",
     "loon-test",
     "murre-test",
+    "petrel-test",
 ];
 
 /// Linux programs without a C library, linked at a fixed address the way
