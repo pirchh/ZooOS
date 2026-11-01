@@ -17,6 +17,10 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use core::fmt::Write as _;
 use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
@@ -121,6 +125,12 @@ struct App {
     minimized: bool,
     restarts: u32,
     title: Text,
+    /// The title changed since the window was last shown (its title bar
+    /// must be drawn again, not just its content).
+    title_changed: bool,
+    /// Lines whose look changed since the window was last shown (bit k:
+    /// line k), so only they are drawn again.
+    changed: u32,
     lines: [Text; MAX_LINES],
     count: usize,
     selected: Option<usize>,
@@ -139,6 +149,8 @@ impl App {
             minimized: false,
             restarts: 0,
             title: Text::new(),
+            title_changed: false,
+            changed: 0,
             lines: [const { Text::new() }; MAX_LINES],
             count: 0,
             selected: None,
@@ -188,20 +200,44 @@ impl App {
     /// Applies one message; returns true when the window should be redrawn.
     fn apply(&mut self, msg: &[u8]) -> bool {
         if let Some(t) = msg.strip_prefix(b"title:") {
-            self.title.set(t);
+            // Applications send their title with every update; only a new
+            // one needs the title bar drawn again.
+            let n = t.len().min(TEXT_COLS);
+            if self.title.buf[..self.title.len] != t[..n] {
+                self.title.set(t);
+                self.title_changed = true;
+            }
         } else if let Some(n) = msg.strip_prefix(b"lines:") {
             if let Some(n) = parse_num(n) {
-                self.count = n.min(MAX_LINES);
+                let n = n.min(MAX_LINES);
+                // Lines that appear or disappear.
+                for k in n.min(self.count)..n.max(self.count) {
+                    self.changed |= 1 << k;
+                }
+                self.count = n;
             }
         } else if let Some(rest) = msg.strip_prefix(b"line:") {
             if let Some(colon) = rest.iter().position(|&b| b == b':')
                 && let Some(i) = parse_num(&rest[..colon])
                 && i < MAX_LINES
             {
-                self.lines[i].set(&rest[colon + 1..]);
+                let t = &rest[colon + 1..];
+                let n = t.len().min(TEXT_COLS);
+                if self.lines[i].buf[..self.lines[i].len] != t[..n] {
+                    self.lines[i].set(t);
+                    self.changed |= 1 << i;
+                }
             }
         } else if let Some(s) = msg.strip_prefix(b"sel:") {
-            self.selected = parse_num(s);
+            let new = parse_num(s);
+            if new != self.selected {
+                for k in [self.selected, new].into_iter().flatten() {
+                    if k < MAX_LINES {
+                        self.changed |= 1 << k;
+                    }
+                }
+                self.selected = new;
+            }
         } else if msg == b"show" {
             return true;
         }
@@ -256,6 +292,9 @@ struct Screen {
     bgr: bool,
     /// Changes show only after `display_flush` (a virtio GPU).
     flush: bool,
+    /// `back` is the display memory itself (with `flush`: nothing shows
+    /// before the flush, so no copy is needed for whole frames).
+    direct: bool,
     back: &'static mut [u32],
     /// Drawing is limited to this rectangle (x0, y0, x1, y1), exclusive.
     clip: (usize, usize, usize, usize),
@@ -478,6 +517,9 @@ impl Screen {
     /// framebuffer. Called after every damaged rectangle is drawn, so the
     /// screen only shows complete frames.
     fn present(&mut self, (x0, y0, x1, y1): (usize, usize, usize, usize)) {
+        if self.direct {
+            return;
+        }
         let (x1, y1) = (x1.min(self.w), y1.min(self.h));
         if x0 >= x1 {
             return;
@@ -501,6 +543,54 @@ impl Screen {
             }
         }
     }
+}
+
+/// A window's cached image (docs/u2-compositor-design.md): the window and
+/// its shadow, from (x - MARGIN, y - MARGIN), premultiplied by alpha, with
+/// alpha in the top byte. Rebuilt only when the window's look changes;
+/// moving a window only composites it again.
+struct Layer {
+    buf: Vec<u32>,
+    w: usize,
+    h: usize,
+    /// Per row, the fully opaque span [x0, x1): copied, not blended.
+    spans: Vec<(u32, u32)>,
+    dirty: bool,
+    /// Only some content rows changed: redraw them in place (one pass).
+    content_dirty: bool,
+    /// Those rows, (y0, y1) from the window's top.
+    pending: Vec<(usize, usize)>,
+}
+
+impl Layer {
+    const fn new() -> Layer {
+        Layer {
+            buf: Vec::new(),
+            w: 0,
+            h: 0,
+            spans: Vec::new(),
+            dirty: true,
+            content_dirty: false,
+            pending: Vec::new(),
+        }
+    }
+}
+
+/// `c` (premultiplied, alpha in the top byte) over `d`.
+fn over(d: u32, c: u32) -> u32 {
+    // No branches, so loops over it vectorise: a = 255 gives c, and
+    // a = 0 gives d (d · 255 / 255 is exact).
+    let a = c >> 24;
+    let inv = 255 - a;
+    // d · (255 - a) / 255 per channel, red and blue together in 16-bit
+    // lanes: (x + 1 + (x >> 8)) >> 8 is x / 255 rounded down for every
+    // x <= 255 · 255, and no lane carries into the next. `build_layer`
+    // keeps each colour channel <= a, so the sum stays <= 255.
+    let rb = (d & 0xFF_00FF) * inv;
+    let rb = ((rb + 0x01_0001 + ((rb >> 8) & 0xFF_00FF)) >> 8) & 0xFF_00FF;
+    let g = ((d >> 8) & 0xFF) * inv;
+    let g = ((g + 1 + (g >> 8)) >> 8) << 8;
+    (c & 0xFF_FFFF) + rb + g
 }
 
 const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
@@ -578,6 +668,10 @@ struct Banner {
 
 struct Desktop {
     screen: Screen,
+    /// Each window's cached image (docs/u2-compositor-design.md).
+    layers: [Layer; APPS],
+    /// Scratch buffer for building layers (the render over white).
+    scratch: Vec<u32>,
     /// The pointer is a hardware cursor: moving it needs no redraw
     /// (docs/gpu1-design.md).
     hw_cursor: bool,
@@ -620,6 +714,8 @@ struct Desktop {
     started: (u64, u64),
     /// Recent frames: (cycles, pixels drawn).
     frames: [(u64, u64); FRAME_SAMPLES],
+    /// Of each frame, the cycles spent showing it (copy or flush).
+    shows: [u64; FRAME_SAMPLES],
     frame_count: usize,
     /// The dock icon under the pointer (its name shows above it).
     hover: Option<usize>,
@@ -643,6 +739,9 @@ impl Desktop {
             *c = blend(t.wall_top, t.wall_bottom, (y * 255 / (h - 1)) as u8);
         }
         self.full = true;
+        for l in &mut self.layers {
+            l.dirty = true;
+        }
         zoo_rt::log!("PeacockHandler: appearance {}", t.name);
     }
 
@@ -657,6 +756,24 @@ impl Desktop {
         if r.0 >= r.2 || r.1 >= r.3 || self.full {
             return;
         }
+        // Merge with an overlapping rectangle when the union costs no more
+        // than both (a window moved a little: one area, not two).
+        let area = |r: (usize, usize, usize, usize)| (r.2 - r.0) * (r.3 - r.1);
+        let mut r = r;
+        let mut k = 0;
+        while k < self.damaged {
+            let d = self.damage[k];
+            let overlap = r.0 < d.2 && d.0 < r.2 && r.1 < d.3 && d.1 < r.3;
+            let union = (r.0.min(d.0), r.1.min(d.1), r.2.max(d.2), r.3.max(d.3));
+            if overlap && area(union) <= area(r) + area(d) {
+                r = union;
+                self.damaged -= 1;
+                self.damage[k] = self.damage[self.damaged];
+                k = 0;
+                continue;
+            }
+            k += 1;
+        }
         if self.damaged == MAX_DAMAGE {
             self.full = true;
             return;
@@ -665,8 +782,15 @@ impl Desktop {
         self.damaged += 1;
     }
 
-    /// A window, with its shadow.
+    /// A window, with its shadow, whose look changed: its layer is
+    /// rebuilt.
     fn damage_window(&mut self, i: usize) {
+        self.layers[i].dirty = true;
+        self.damage_window_area(i);
+    }
+
+    /// A window's area only (it moved; its look is unchanged).
+    fn damage_window_area(&mut self, i: usize) {
         let (x, y, w, h) = self.wins[i];
         self.damage(
             x.saturating_sub(MARGIN),
@@ -895,7 +1019,7 @@ impl Desktop {
             self.damage_window(i);
         } else if down {
             if let Some((i, ox, oy)) = self.drag {
-                self.damage_window(i);
+                self.damage_window_area(i);
                 let (_, _, ww, wh) = self.wins[i];
                 // Keep part of the title bar reachable, below the menu bar.
                 let x =
@@ -903,9 +1027,11 @@ impl Desktop {
                 let y =
                     (self.py as isize - oy as isize).clamp(MENU_H as isize, (h - TITLE_H) as isize);
                 self.wins[i] = (x.max(0) as usize, y as usize, ww, wh);
-                self.damage_window(i);
+                self.damage_window_area(i);
             }
         } else if let Some((i, _, _)) = self.resize.take() {
+            // Back to its layer.
+            self.damage_window(i);
             let (_, _, nw, nh) = self.wins[i];
             zoo_rt::log!(
                 "PeacockHandler: resized {} to {}x{}",
@@ -1004,10 +1130,22 @@ impl Desktop {
             return;
         }
         let start = cycles();
+        let resizing = self.resize.map(|r| r.0);
+        for i in 0..APPS {
+            if !self.apps[i].visible() || resizing == Some(i) {
+                continue;
+            }
+            if self.layers[i].dirty {
+                self.build_layer(i);
+            } else if self.layers[i].content_dirty {
+                self.refresh_content(i);
+            }
+        }
         for &r in &rects[..n] {
             self.screen.clip = r;
             self.draw();
         }
+        let drawn = cycles();
         for &r in &rects[..n] {
             self.screen.present(r);
             if self.screen.flush {
@@ -1021,6 +1159,7 @@ impl Desktop {
             .map(|r| ((r.2 - r.0) * (r.3 - r.1)) as u64)
             .sum();
         self.frames[self.frame_count % FRAME_SAMPLES] = (spent, pixels);
+        self.shows[self.frame_count % FRAME_SAMPLES] = cycles().wrapping_sub(drawn);
         self.frame_count += 1;
     }
 
@@ -1033,14 +1172,17 @@ impl Desktop {
             c[k] = cy;
             p[k] = px;
         }
+        let mut sh = self.shows;
         c[..n].sort_unstable();
         p[..n].sort_unstable();
+        sh[..n].sort_unstable();
         zoo_rt::log!(
-            "PeacockHandler: frames {} mode {} median {} cycles {} px",
+            "PeacockHandler: frames {} mode {} median {} cycles {} px (showing {})",
             self.frame_count,
             if self.always_full { "full" } else { "damage" },
             if n > 0 { c[n / 2] } else { 0 },
-            if n > 0 { p[n / 2] } else { 0 }
+            if n > 0 { p[n / 2] } else { 0 },
+            if n > 0 { sh[n / 2] } else { 0 }
         );
         self.frame_count = 0;
         if let Ok([n, sum, max]) = zoo_rt::input_latency() {
@@ -1067,8 +1209,15 @@ impl Desktop {
         }
         for k in 0..APPS {
             let i = self.order[k];
-            if self.apps[i].visible() {
+            if !self.apps[i].visible() {
+                continue;
+            }
+            // A window being resized changes every frame: drawn directly,
+            // its layer rebuilt when the resize ends.
+            if self.resize.is_some_and(|r| r.0 == i) {
                 self.draw_window(i);
+            } else {
+                self.composite(i);
             }
         }
         self.draw_menu_bar();
@@ -1076,6 +1225,206 @@ impl Desktop {
         self.draw_dock();
         if !self.hw_cursor {
             self.draw_pointer();
+        }
+    }
+
+    /// Draws window `i` into its layer: once over black and once over
+    /// white, which gives each pixel's colour (premultiplied) and alpha.
+    fn build_layer(&mut self, i: usize) {
+        let (x, y, w, h) = self.wins[i];
+        let (lw, lh) = (w + 2 * MARGIN, h + 2 * MARGIN);
+        let n = lw * lh;
+        let mut black = core::mem::take(&mut self.layers[i].buf);
+        let mut white = core::mem::take(&mut self.scratch);
+        black.clear();
+        black.resize(n, 0);
+        white.clear();
+        white.resize(n, 0xFF_FFFF);
+        self.wins[i] = (MARGIN, MARGIN, w, h);
+        self.draw_window_into(i, &mut black, lw, lh);
+        self.draw_window_into(i, &mut white, lw, lh);
+        self.wins[i] = (x, y, w, h);
+        let mut spans = core::mem::take(&mut self.layers[i].spans);
+        spans.clear();
+        for row in 0..lh {
+            // The first run of opaque pixels in the row.
+            let (mut s0, mut s1) = (None::<u32>, 0u32);
+            for col in 0..lw {
+                let k = row * lw + col;
+                let (b, wt) = (black[k], white[k]);
+                // Over black: a·c; over white: a·c + (1 - a)·255. The
+                // difference gives the alpha (green channel).
+                let a = 255 - (((wt >> 8) & 0xFF).saturating_sub((b >> 8) & 0xFF));
+                // Each channel at most `a` (true up to rounding), so `over`
+                // never carries between channels.
+                let ch = |shift: u32| ((b >> shift) & 0xFF).min(a) << shift;
+                black[k] = a << 24 | ch(16) | ch(8) | ch(0);
+                if a == 255 {
+                    if s0.is_none() {
+                        (s0, s1) = (Some(col as u32), col as u32 + 1);
+                    } else if s1 == col as u32 {
+                        s1 += 1;
+                    }
+                }
+            }
+            spans.push(s0.map_or((0, 0), |s0| (s0, s1)));
+        }
+        self.scratch = white;
+        let l = &mut self.layers[i];
+        l.buf = black;
+        l.spans = spans;
+        (l.w, l.h) = (lw, lh);
+        l.dirty = false;
+        l.content_dirty = false;
+        l.pending.clear();
+    }
+
+    /// Window `i`'s content area (x, y, w, h): below the title bar, inside
+    /// the outline.
+    fn content_rect(&self, i: usize) -> (usize, usize, usize, usize) {
+        let (x, y, w, h) = self.wins[i];
+        (
+            x + 1,
+            y + TITLE_H,
+            w.saturating_sub(2),
+            h.saturating_sub(TITLE_H + 1),
+        )
+    }
+
+    /// The content of window `i` changed (an application's update): the
+    /// rows of the lines that changed are drawn again.
+    fn damage_content(&mut self, i: usize) {
+        let mask = core::mem::take(&mut self.apps[i].changed);
+        let (x, y, w, h) = self.wins[i];
+        let (_, cy, cw, ch) = self.content_rect(i);
+        let bottom = cy + ch - y;
+        let mut k = 0;
+        while k < MAX_LINES {
+            if mask & (1 << k) == 0 {
+                k += 1;
+                continue;
+            }
+            // A run of changed lines k..end.
+            let mut end = k;
+            while end < MAX_LINES && mask & (1 << end) != 0 {
+                end += 1;
+            }
+            let y0 = zoo_abi::ui::line_top((0, 0, w, h), k).min(bottom);
+            let y1 = zoo_abi::ui::line_top((0, 0, w, h), end).min(bottom);
+            if y0 < y1 {
+                if !self.layers[i].dirty {
+                    self.layers[i].content_dirty = true;
+                    self.layers[i].pending.push((y0, y1));
+                }
+                self.damage(x + 1, y + y0, cw, y1 - y0);
+            }
+            k = end;
+        }
+    }
+
+    /// Redraws the content area into window `i`'s layer, once (no
+    /// second pass: the area is opaque). Only pixels the layer already
+    /// has as opaque are replaced, so the rounded corners keep their
+    /// alpha.
+    fn refresh_content(&mut self, i: usize) {
+        let (x, y, w, h) = self.wins[i];
+        let (lw, lh) = (self.layers[i].w, self.layers[i].h);
+        if (lw, lh) != (w + 2 * MARGIN, h + 2 * MARGIN) {
+            return self.build_layer(i);
+        }
+        self.wins[i] = (MARGIN, MARGIN, w, h);
+        let (cx, _, cw, _) = self.content_rect(i);
+        let mut scratch = core::mem::take(&mut self.scratch);
+        // Every pixel used is drawn first; old contents do not matter.
+        scratch.resize(lw * lh, 0);
+        let pending = core::mem::take(&mut self.layers[i].pending);
+        for &(y0, y1) in &pending {
+            let (r0, r1) = (MARGIN + y0, MARGIN + y1);
+            self.draw_window_clipped(i, &mut scratch, lw, lh, (cx, r0, cx + cw, r1));
+            let l = &mut self.layers[i];
+            for row in r0..r1 {
+                let at = row * lw;
+                for (d, &c) in l.buf[at + cx..at + cx + cw]
+                    .iter_mut()
+                    .zip(&scratch[at + cx..at + cx + cw])
+                {
+                    if *d >> 24 == 0xFF {
+                        *d = 0xFF00_0000 | (c & 0xFF_FFFF);
+                    }
+                }
+            }
+        }
+        self.wins[i] = (x, y, w, h);
+        let l = &mut self.layers[i];
+        l.pending = pending;
+        l.pending.clear();
+        l.content_dirty = false;
+        self.scratch = scratch;
+    }
+
+    /// `draw_window(i)` into `buf` (`w` x `h`) instead of the screen.
+    fn draw_window_into(&mut self, i: usize, buf: &mut [u32], w: usize, h: usize) {
+        self.draw_window_clipped(i, buf, w, h, (0, 0, w, h));
+    }
+
+    /// As `draw_window_into`, limited to `clip` (x0, y0, x1, y1).
+    fn draw_window_clipped(
+        &mut self,
+        i: usize,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        clip: (usize, usize, usize, usize),
+    ) {
+        // SAFETY: `buf` stays borrowed for this whole call and nothing else
+        // uses it; the slice is swapped back out of `screen` before the
+        // call returns, so it never outlives `buf`.
+        let tmp: &'static mut [u32] =
+            unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len()) };
+        let back = core::mem::replace(&mut self.screen.back, tmp);
+        let saved = (self.screen.w, self.screen.h, self.screen.clip);
+        (self.screen.w, self.screen.h, self.screen.clip) = (w, h, clip);
+        self.draw_window(i);
+        (self.screen.w, self.screen.h, self.screen.clip) = saved;
+        self.screen.back = back;
+    }
+
+    /// Window `i`'s layer over the screen, within the clip rectangle.
+    fn composite(&mut self, i: usize) {
+        let l = &self.layers[i];
+        if l.w == 0 {
+            return;
+        }
+        let (x, y, _, _) = self.wins[i];
+        let (ox, oy) = (x as isize - MARGIN as isize, y as isize - MARGIN as isize);
+        let (cx0, cy0, cx1, cy1) = self.screen.clip;
+        let ly0 = (cy0 as isize - oy).max(0) as usize;
+        let ly1 = (cy1 as isize - oy).clamp(0, l.h as isize) as usize;
+        let lx0 = (cx0 as isize - ox).max(0) as usize;
+        let lx1 = (cx1 as isize - ox).clamp(0, l.w as isize) as usize;
+        if lx0 >= lx1 || ly0 >= ly1 {
+            return;
+        }
+        let sw = self.screen.w;
+        // The screen column of layer column `lx0`.
+        let sx0 = (ox + lx0 as isize) as usize;
+        for ly in ly0..ly1 {
+            let src = &l.buf[ly * l.w + lx0..ly * l.w + lx1];
+            let sy = (oy + ly as isize) as usize;
+            let dst = &mut self.screen.back[sy * sw + sx0..sy * sw + sx0 + (lx1 - lx0)];
+            // The opaque span, relative to `lx0`.
+            let (s0, s1) = l.spans[ly];
+            let o0 = (s0 as usize).clamp(lx0, lx1) - lx0;
+            let o1 = ((s1 as usize).clamp(lx0, lx1) - lx0).max(o0);
+            for (d, &c) in dst[..o0].iter_mut().zip(&src[..o0]) {
+                *d = over(*d, c);
+            }
+            for (d, &c) in dst[o0..o1].iter_mut().zip(&src[o0..o1]) {
+                *d = c & 0xFF_FFFF;
+            }
+            for (d, &c) in dst[o1..].iter_mut().zip(&src[o1..]) {
+                *d = over(*d, c);
+            }
         }
     }
 
@@ -1484,10 +1833,24 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     } else {
         zoo_rt::log!("PeacockHandler: display {}x{} acquired", w, h);
     }
-    // SAFETY: this process is single-threaded and this is the only place a
-    // reference to the back buffer is created.
-    let back = unsafe { &mut *core::ptr::addr_of_mut!(BACK) };
+    // A display that shows changes only when flushed, as wide as its
+    // stride: draw into it directly (docs/u2-compositor-design.md).
+    let direct = info.flags & zoo_abi::DISPLAY_FLUSH_NEEDED != 0
+        && info.stride as usize == w
+        && (w, h) == (full_w, full_h);
+    let back: &'static mut [u32] = if direct {
+        // SAFETY: the kernel mapped `stride * height` pixels of 4 bytes at
+        // `base` for this process alone (`display_acquire`), and the
+        // mapping lasts as long as the process.
+        unsafe { core::slice::from_raw_parts_mut(info.base as *mut u32, w * h) }
+    } else {
+        // SAFETY: this process is single-threaded and this is the only
+        // place a reference to the back buffer is created.
+        unsafe { &mut *core::ptr::addr_of_mut!(BACK) }
+    };
     let mut desk = Desktop {
+        layers: [const { Layer::new() }; APPS],
+        scratch: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
         screen: Screen {
@@ -1497,6 +1860,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             fb: info.base as *mut u32,
             bgr: info.format == FORMAT_BGR,
             flush: info.flags & zoo_abi::DISPLAY_FLUSH_NEEDED != 0,
+            direct,
             back: &mut back[..w * h],
             clip: (0, 0, w, h),
         },
@@ -1527,6 +1891,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         always_full: false,
         started: (cycles(), zoo_rt::ticks()),
         frames: [(0, 0); FRAME_SAMPLES],
+        shows: [0; FRAME_SAMPLES],
         frame_count: 0,
         hover: None,
         banner: None,
@@ -1585,6 +1950,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 }
                 Some(DecodedKey::RawKey(KeyCode::F10)) => {
                     desk.full = true;
+                    // From scratch: every window drawn again, not just
+                    // composited, so the check compares against it.
+                    for l in &mut desk.layers {
+                        l.dirty = true;
+                    }
                     dirty = true;
                     let _ = log("PeacockHandler: full repaint");
                 }
@@ -1628,9 +1998,14 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 match try_recv(desk.apps[i].chan, &mut msg) {
                     Ok(n) => {
                         if desk.apps[i].apply(&msg[..n]) {
-                            desk.damage_window(i);
-                            if i == desk.focus {
-                                desk.damage_menu_bar();
+                            if core::mem::take(&mut desk.apps[i].title_changed) {
+                                desk.damage_window(i);
+                                // The menu bar names the focused app.
+                                if i == desk.focus {
+                                    desk.damage_menu_bar();
+                                }
+                            } else {
+                                desk.damage_content(i);
                             }
                             dirty = true;
                         }

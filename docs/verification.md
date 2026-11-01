@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The GPU1 section
-(version 0.56.1) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2a section
+(version 0.57.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,57 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2a results: a compositor in the window server (version 0.57.0)
+
+Design and the full measurement table: docs/u2-compositor-design.md §3.
+
+**New measurements** (`frames` and `gpu-frames`, WHPX):
+- the frame report now gives the cycles spent showing each frame;
+- the cases now also measure a window drag (30 moves of Files' title
+  bar) and content updates (Down and Up five times each in Files).
+
+**Before** (first runs on this branch, without the compositor), drag
+frames were full repaints: 7,674,908, 7,851,347 and 7,974,669 cycles on
+VGA; 9,836,683, 9,914,764 and 9,983,554 on the GPU.
+
+**After:**
+
+| Frame | VGA | GPU |
+| --- | --- | --- |
+| Drag | 2,297,288–2,313,467 for 630,720 px | 2,464,719–2,535,777 |
+| One-line selection move | 270,184–289,975 for 35,376 px | 384,130–506,243 |
+| Pointer | 14,871–16,313 | none |
+| Full repaint | 5,594,222–5,664,185 | 5,064,211–5,283,560 |
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 64 cases `OK`,
+including the new `redraw-content`. Then with `--accel whpx`:
+`assistant-live` 31.2 s, `wine-home-1` 63.2 s, `wine-home-2` 11.1 s,
+`gpu-tablet`, all `OK`, with `ZOO_OS BOOT version=0.57.0`.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed.
+- clippy `-D warnings`: kernel, `zoo-abi`, `zoo-user` and `xtask`, all
+  clean.
+- `cargo fmt --all --check`: clean.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| A look change leaves the layer cached | ``FAIL redraw: screen 1-partial: `Crash Test` not on screen`` |
+| A drag damages only the new position | `FAIL redraw: screen 2-full: 34828 of 2023680 pixels differ` |
+| The in-place content update writes nothing | ``FAIL redraw-content: screen 1-content: `Photos/` not on screen`` |
+
+**Found during the work:**
+- The first versions of the first and second controls passed. The old
+  `redraw` case ended with the same focus it started with, and dragged in
+  one move followed by a repaint large enough to hide trails. It now
+  drags in four moves and ends with Crash Test focused. A content check
+  placed in it was hidden by a later focus change, so it became its own
+  case, `redraw-content`.
+- In-place content updates first never ran: applications resend their
+  title with every update, and any title message counted as a change.
 
 ## GPU step 1 results: virtio-gpu display and a hardware cursor (version 0.56.0)
 
