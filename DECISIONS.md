@@ -150,6 +150,29 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Linux step 10b: `/tmp` in RAM; Wine runs `cmd.exe` (2026-11-01)
+
+Design and findings: docs/linux10b-design.md.
+
+- `/tmp` is a kernel tmpfs (replacing L10a's home `.tmp`). Its files are
+  whole pages shared by name, descriptors and mappings; symbolic links
+  live there only for now.
+- `MAP_SHARED` maps a file's own pages. `MAP_PRIVATE` is copy-on-write,
+  since Wine relies on read-only private views showing later changes.
+- Per-thread GS base (`ARCH_SET_GS`) for Wine's Windows code.
+- Inode numbers come from full paths for folders everywhere; Wine finds
+  drives by them.
+- Limits raised: 1,024 descriptors, 512 tasks, an 8 MiB kernel heap.
+- Random numbers without RDRAND come from a non-cryptographic mixer; this
+  is documented, not hidden.
+- The `wine` image carries `/etc/ld-musl-x86_64.path` with Wine's Unix
+  library folder.
+- Input marks the kernel task busy, so a spinning program cannot starve
+  the shell.
+- The verifier gained `Step::Rest` for Wine's unordered process tree; the
+  Wine case checks cmd's own output line and `wine`'s exit code.
+  Version 0.51.0.
+
 ## Linux step 10a: Wine builds, starts and reaches its server (2026-10-31)
 
 Design and findings: docs/linux10-design.md.

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The L10a section
-(version 0.50.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The L10b section
+(version 0.51.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,71 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Linux step 10b results: `/tmp` in RAM; Wine runs `cmd.exe` (version 0.51.0)
+
+Design and findings: docs/linux10b-design.md.
+
+**New case `wine-cmd`** (`wine` image): `linux WINEPREFIX=/tmp/wine
+/usr/bin/wine cmd /c echo %OS%`.
+- The case waits for cmd.exe's own output line, `[44:wine-preloader]
+  Windows_NT`, then for `ZOO_OS PROC exit pid=10 name=wine-preloader
+  code=0`. The shell's echo of the command contains `%OS%`, not
+  `Windows_NT`, so it cannot match.
+- Wine's processes (wineboot, services, rundll32, explorer, cmd) come
+  and go in no fixed order, so the case ends with `Step::Rest`: any
+  further markers except a kernel PANIC or EXCEPTION. A unit test covers
+  `Rest`.
+- Run time under TCG was 176.2 s, 188.5 s and 259.5 s in three runs.
+  Almost all of it is creating the prefix, which lives in RAM. The
+  timeout is 480 s.
+
+**New cases:**
+- `linux-auklet`:
+  - `/tmp` folders, files and symbolic links (relative, to a folder, a
+    loop giving `ELOOP`);
+  - `openat`/`mkdirat`/`fstatat`/`renameat`/`unlinkat` relative to an
+    open folder;
+  - `DT_LNK`;
+  - a file unlinked while open;
+  - `MAP_SHARED` across `fork`; `pread`/`pwrite` against the mapping;
+  - `MAP_PRIVATE` copy-on-write: unwritten pages follow the file,
+    written pages do not; read-only, then `mprotect` to writable;
+  - `memfd_create` with two mappings, one unmapped and the descriptor
+    closed;
+  - environment from `linux AUKLET=wing TERM=vt100 auklet-test`.
+- `linux-loon`: a program spins without system calls; the shell still
+  runs `ps` and lists it as ready.
+
+**Changed expectations:**
+- `linux-skua`: `RLIMIT_NOFILE` is 1024 and the home listing no longer
+  has `.tmp`.
+- `fault-heap-guard`: the guard page follows the 8 MiB heap
+  (`0xffffc00000801000`).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 52 cases `OK`,
+`assistant-live` `SKIP`. Then `--accel whpx --case assistant-live`: pass
+in 33.0 s.
+
+**Negative controls** (temporary edits, restored and compared with `cmp`):
+
+| Change | Result |
+| --- | --- |
+| `kernel_has_input` does nothing | `FAIL linux-loon`: no `ZOO_OS SHELL line=ps` within 30 s |
+| `MAP_PRIVATE` copies at `mmap` time | `FAIL linux-auklet`: exit 67 (`unwritten private sees the file`) |
+| Initrd folders report inode 0 | `FAIL wine-cmd`: `could not load kernel32.dll, status c0000135`; timeout at 360 s |
+
+**Failures met during the work:**
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `failed to remap the process USD` (L10a) | no shared mappings | tmpfs + `MAP_SHARED` |
+| A Wine thread stuck at one address; the shell stopped answering | `mov %gs:0x30` faulted (no GS base); the faulting loop starved the idle kernel task | `ARCH_SET_GS`; input marks the kernel task busy |
+| `could not load kernel32.dll`, Wine looking in `Z:\x86_64-windows` | every initrd folder had inode 0 | inodes from full paths |
+| `ws2_32.so`: `Error loading shared library ntdll.so` | musl's search path lacks Wine's Unix library folder | `/etc/ld-musl-x86_64.path` in the `wine` image |
+| `shell32.dll` status `c000011f` | 64 descriptors per process | 1,024 |
+| Dozens of `explorer.exe /desktop`, then `fork` `EAGAIN` | private mappings were copies, so the session's shared objects never appeared (`Session object id doesn't match`); 32 task slots | copy-on-write; 512 tasks |
+| Wine printed nothing at all | console and `/dev/null` both reported device number 0, which Wine reads as stderr being `/dev/null` | Linux device numbers |
 
 ## Linux step 10a results: Wine builds, starts and reaches its server (version 0.50.0)
 
