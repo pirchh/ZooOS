@@ -118,6 +118,7 @@ and verification:
 | L10c | ZooFS 2: the home folder on disk block by block, crash-safe generations, 4 GiB files, multi-block disk requests (docs/linux10c-design.md) | done 2026-11-01 |
 | L10d | Wine's prefix in the home folder: Linux names, home symbolic links, `*at` calls, `mmap` of home files, gathered small writes; the second start in seconds (docs/linux10d-design.md) | done 2026-11-01 |
 | U1 | macOS-style desktop: Inter text from a build-time atlas, rounded windows with traffic lights and shadows, Mac menu bar, dock, notification banners, light and dark appearances, 1920x1080 (docs/u1-design.md) | done 2026-11-01 |
+| U1b | Input reaches the window server at once instead of at the next 10 ms tick (docs/u1b-design.md) | done 2026-11-01 |
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U3 | Finder-style Files; restyled Notes and Assistant | proposed |
 | U4 | Menus that open, Command-key shortcuts, animated window moves, saved appearance | proposed |
@@ -168,7 +169,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | Step | Content | Status |
 | --- | --- | --- |
 | F1 | Shared-memory bulk file transfers; scheduler stall fixed (docs/f1-design.md) | done 2026-10-31 |
-| F2 | Faster first-time writes (file growth); interrupt-driven input | proposed |
+| F2 | Faster first-time writes (file growth); interrupt-driven USB input (PS/2 input wakes at once since U1b) | proposed |
 
 ## Boot speed
 

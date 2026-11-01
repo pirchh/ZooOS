@@ -2609,6 +2609,21 @@ fn frames_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["f11"]));
     steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    // The sweep's own report (the line above was the reset before it).
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 20, 1_000_000)],
+    ));
+    // Mouse events reach the window server well within a tick: it waits
+    // for input rather than checking once a tick (docs/u1b-design.md).
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: input wait".into(),
+        vec![
+            ("input wait", 20, 10_000),
+            ("tick: mean", 0, 250),
+            ("longest", 0, 500),
+        ],
+    ));
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     Interaction { steps }

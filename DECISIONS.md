@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 1b: input without waiting for the tick (2026-11-01)
+
+Design: docs/u1b-design.md.
+
+- The owner found U1 jittery and rigid. The cause, measured: mouse events
+  waited for the next 10 ms tick before the window server saw them (mean
+  about 5 ms, longest about 10 ms).
+- Keyboard and mouse interrupts now enter the task-switching trap path and
+  wake a display owner blocked in the new `INPUT_WAIT` (64). They switch
+  only away from the idle kernel task; a busy program is not preempted.
+- `INPUT_LATENCY` (65) is a measurement aid. The `frames` case checks
+  the mean wait against a share of a tick, so it holds without an
+  accelerator too.
+- The timer stays at 100 Hz. An absolute USB tablet for QEMU and
+  interrupt-driven USB input are left for later.
+- Version 0.54.1.
+
 ## UI step 1: a macOS-style desktop (2026-11-01)
 
 Design: docs/u1-design.md.

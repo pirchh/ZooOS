@@ -22,6 +22,18 @@ static QUEUE: [AtomicU64; CAPACITY] = [const { AtomicU64::new(0) }; CAPACITY];
 static HEAD: AtomicUsize = AtomicUsize::new(0);
 static TAIL: AtomicUsize = AtomicUsize::new(0);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
+/// When each queued event arrived (time-stamp counter), and how long events
+/// waited before `mouse_read` took them: count, sum and maximum in TSC
+/// cycles (docs/u1b-design.md).
+static STAMP: [AtomicU64; CAPACITY] = [const { AtomicU64::new(0) }; CAPACITY];
+static WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static WAIT_SUM: AtomicU64 = AtomicU64::new(0);
+static WAIT_MAX: AtomicU64 = AtomicU64::new(0);
+
+fn tsc() -> u64 {
+    // SAFETY: `rdtsc` only reads the time-stamp counter.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
 
 /// Bytes of the packet being assembled (IRQ context only).
 static PACKET: Mutex<([u8; 3], usize)> = Mutex::new(([0; 3], 0));
@@ -131,6 +143,7 @@ pub fn push_event(dx: i16, dy: i16, buttons: u8) {
         return;
     }
     QUEUE[head % CAPACITY].store(event, Ordering::Relaxed);
+    STAMP[head % CAPACITY].store(tsc(), Ordering::Relaxed);
     HEAD.store(head.wrapping_add(1), Ordering::Release);
     crate::process::kernel_has_input();
 }
@@ -154,8 +167,27 @@ pub fn pop() -> Option<(i16, i16, u8)> {
         return None;
     }
     let e = QUEUE[tail % CAPACITY].load(Ordering::Relaxed);
+    let waited = tsc().wrapping_sub(STAMP[tail % CAPACITY].load(Ordering::Relaxed));
+    WAIT_COUNT.fetch_add(1, Ordering::Relaxed);
+    WAIT_SUM.fetch_add(waited, Ordering::Relaxed);
+    WAIT_MAX.fetch_max(waited, Ordering::Relaxed);
     TAIL.store(tail.wrapping_add(1), Ordering::Release);
     Some((e as u16 as i16, (e >> 16) as u16 as i16, (e >> 32) as u8))
+}
+
+/// True if an event is waiting.
+pub fn pending() -> bool {
+    TAIL.load(Ordering::Relaxed) != HEAD.load(Ordering::Acquire)
+}
+
+/// (events, total wait, longest wait) in TSC cycles since the last call,
+/// from arrival to `mouse_read`; the counters restart.
+pub fn take_wait_stats() -> (u64, u64, u64) {
+    (
+        WAIT_COUNT.swap(0, Ordering::Relaxed),
+        WAIT_SUM.swap(0, Ordering::Relaxed),
+        WAIT_MAX.swap(0, Ordering::Relaxed),
+    )
 }
 
 /// Drops queued events (when nobody owns the display).
