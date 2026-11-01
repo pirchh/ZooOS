@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The GPU1 section
-(version 0.56.0) is the current state. Sections before it
+(version 0.56.1) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -81,6 +81,18 @@ BOOT version=0.56.0`.
 **Found during the work:** the first sweep bound allowed no frames at
 all, but the menu-bar clock ticks during the sweep. The bound is now 5,
 against 40–43 frames with a software pointer.
+
+**0.56.1, the windowed size:**
+- In the owner's QEMU window, the GPU's preferred mode was 640×480:
+  `ZOO_OS INFO gpu virtio 640x480`. QEMU's GTK display reports its window
+  size, and the headless cases report the configured 1920×1080.
+- The driver now keeps the size between 1920×1080 and 1920×1200.
+- `cargo xtask run --accel whpx --timeout-secs 40` (windowed) then logged
+  `gpu virtio 1920x1080`, `gpu scanout 1920x1080 hardware-cursor` and
+  `PeacockHandler: hardware cursor`.
+- `gpu-tablet`, `gpu-desktop`, `gpu-frames` and `usb` are `OK` with
+  `--accel whpx`, at `ZOO_OS BOOT version=0.56.1`. Only the virtio path
+  changed, so the full suite was not rerun.
 
 ## Fix: `cargo xtask run` ignored `--accel` (version 0.55.0)
 
