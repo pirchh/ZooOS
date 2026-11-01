@@ -48,8 +48,6 @@ const LIGHTS: [(u32, u32); 3] = [
 ];
 /// Dock icon colours, indexed like the applications.
 const ICON: [u32; APPS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
-const POINTER: u32 = 0x000000;
-const POINTER_EDGE: u32 = 0xFFFFFF;
 
 /// Largest supported screen; the back buffer lives in `.bss`.
 const MAX_W: usize = 1920;
@@ -61,8 +59,93 @@ const APP_RESTARTS: u32 = 3;
 /// Damage rectangles kept per frame before falling back to a full repaint.
 const MAX_DAMAGE: usize = 12;
 /// Pointer arrow size.
-const POINTER_W: usize = 12;
-const POINTER_H: usize = 17;
+/// The pointer image: its size (outline and shadow included) and where
+/// its tip, the hot spot, lies in it.
+const POINTER_W: usize = 18;
+const POINTER_H: usize = 24;
+const POINTER_HOT: usize = 2;
+/// The arrow's outline in pointer units, tip at (0, 0): the left edge
+/// straight down, a notch, the tail slanting down and right, the wing back
+/// up to the tip (the shape of the macOS arrow).
+const ARROW: [(f32, f32); 7] = [
+    (0.0, 0.0),
+    (0.0, 16.0),
+    (3.9, 12.4),
+    (6.6, 18.6),
+    (9.0, 17.6),
+    (6.4, 11.8),
+    (11.4, 11.6),
+];
+/// The white outline's width, in pointer units.
+const ARROW_EDGE: f32 = 1.3;
+
+/// Whether (x, y) is inside the arrow, and its squared distance to the
+/// arrow's outline.
+fn arrow_at(x: f32, y: f32) -> (bool, f32) {
+    let mut inside = false;
+    let mut d2 = f32::MAX;
+    for k in 0..ARROW.len() {
+        let (ax, ay) = ARROW[k];
+        let (bx, by) = ARROW[(k + 1) % ARROW.len()];
+        // Even-odd crossing test.
+        if (ay > y) != (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay) {
+            inside = !inside;
+        }
+        // Distance to the segment.
+        let (dx, dy) = (bx - ax, by - ay);
+        let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        let (ex, ey) = (ax + t * dx - x, ay + t * dy - y);
+        d2 = d2.min(ex * ex + ey * ey);
+    }
+    (inside, d2)
+}
+
+/// The pointer image (0xAARRGGBB, not premultiplied), `POINTER_W` x
+/// `POINTER_H`: a black arrow, a white outline and a soft shadow below,
+/// each pixel sampled 4 x 4 times for smooth edges.
+fn pointer_image() -> [u32; POINTER_W * POINTER_H] {
+    let mut img = [0u32; POINTER_W * POINTER_H];
+    let edge2 = ARROW_EDGE * ARROW_EDGE;
+    for r in 0..POINTER_H {
+        for c in 0..POINTER_W {
+            // Summed over the 16 samples: alpha, and white (premultiplied).
+            let (mut a, mut white) = (0.0f32, 0.0f32);
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let x = c as f32 + (sx as f32 + 0.5) / 4.0 - POINTER_HOT as f32;
+                    let y = r as f32 + (sy as f32 + 0.5) / 4.0 - POINTER_HOT as f32;
+                    let (inside, d2) = arrow_at(x, y);
+                    if inside {
+                        a += 1.0;
+                    } else if d2 <= edge2 {
+                        a += 1.0;
+                        white += 1.0;
+                    } else {
+                        // The shadow: the outlined arrow, 1.2 lower,
+                        // fading over two units.
+                        let (sin, sd2) = arrow_at(x, y - 1.2);
+                        let near = |w: f32| sd2 <= (ARROW_EDGE + w) * (ARROW_EDGE + w);
+                        a += if sin || near(0.0) {
+                            0.32
+                        } else if near(0.8) {
+                            0.2
+                        } else if near(1.8) {
+                            0.08
+                        } else {
+                            0.0
+                        };
+                    }
+                }
+            }
+            if a > 0.0 {
+                let alpha = (a / 16.0 * 255.0 + 0.5) as u32;
+                let grey = (white / a * 255.0 + 0.5) as u32;
+                img[r * POINTER_W + c] = (alpha.min(255) << 24) | (grey.min(255) * 0x01_0101);
+            }
+        }
+    }
+    img
+}
 /// Applications, in dock order; Notes is the last.
 const APPS: usize = 4;
 const NOTES: usize = 3;
@@ -677,6 +760,10 @@ struct Desktop {
     hw_cursor: bool,
     /// The hardware cursor has moved since it was last told.
     cursor_moved: bool,
+    /// The tick of the last frame (frame pacing).
+    last_frame_tick: u64,
+    /// The pointer image (`pointer_image`).
+    pointer: [u32; POINTER_W * POINTER_H],
     atlas: Atlas<'static>,
     dark: bool,
     /// Wallpaper colour per row, for the current appearance.
@@ -804,7 +891,12 @@ impl Desktop {
         if self.hw_cursor {
             self.cursor_moved = true;
         } else {
-            self.damage(self.px, self.py, POINTER_W, POINTER_H);
+            self.damage(
+                self.px.saturating_sub(POINTER_HOT),
+                self.py.saturating_sub(POINTER_HOT),
+                POINTER_W,
+                POINTER_H,
+            );
         }
     }
 
@@ -1684,37 +1776,32 @@ impl Desktop {
         }
     }
 
-    /// A black arrow with a white edge, its tip at the pointer.
-    /// The pointer arrow as a hardware-cursor image (0xAARRGGBB), the
-    /// same shape `draw_pointer` draws.
-    fn cursor_image() -> [u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE] {
+    /// The pointer as a hardware-cursor image (0xAARRGGBB, not
+    /// premultiplied): `self.pointer` in the cursor's 64x64 frame.
+    fn cursor_image(&self) -> [u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE] {
         let mut img = [0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE];
         for r in 0..POINTER_H {
-            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
-            for c in from..=to {
-                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
-                img[r * zoo_abi::CURSOR_SIZE + c] =
-                    0xFF00_0000 | if edge { POINTER_EDGE } else { POINTER };
-            }
+            img[r * zoo_abi::CURSOR_SIZE..r * zoo_abi::CURSOR_SIZE + POINTER_W]
+                .copy_from_slice(&self.pointer[r * POINTER_W..(r + 1) * POINTER_W]);
         }
         img
     }
 
+    /// The pointer image blended over the screen, its hot spot at the
+    /// pointer.
     fn draw_pointer(&mut self) {
-        let (px, py) = (self.px, self.py);
-        let s = &mut self.screen;
+        let (x0, y0) = (
+            self.px as isize - POINTER_HOT as isize,
+            self.py as isize - POINTER_HOT as isize,
+        );
         for r in 0..POINTER_H {
-            // Rows 0-11: the head, widening by one pixel a row; rows 12-16:
-            // the stem.
-            let (from, to) = if r < 12 { (0, r) } else { (3, 6) };
-            for c in from..=to {
-                let edge = c == from || c == to || r == 11 || r == POINTER_H - 1;
-                s.blend_px(
-                    px + c,
-                    py + r,
-                    if edge { POINTER_EDGE } else { POINTER },
-                    255,
-                );
+            for c in 0..POINTER_W {
+                let p = self.pointer[r * POINTER_W + c];
+                let (x, y) = (x0 + c as isize, y0 + r as isize);
+                if p >> 24 != 0 && x >= 0 && y >= 0 {
+                    self.screen
+                        .blend_px(x as usize, y as usize, p & 0xFF_FFFF, (p >> 24) as u8);
+                }
             }
         }
     }
@@ -1853,6 +1940,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         scratch: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
+        last_frame_tick: u64::MAX,
+        pointer: pointer_image(),
         screen: Screen {
             w,
             h,
@@ -1898,8 +1987,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     };
     desk.set_appearance(false);
     if info.flags & zoo_abi::DISPLAY_HW_CURSOR != 0 {
-        let image = Desktop::cursor_image();
-        if zoo_rt::cursor_set(&image, (0, 0), (desk.px, desk.py)).is_ok() {
+        let image = desk.cursor_image();
+        if zoo_rt::cursor_set(&image, (POINTER_HOT, POINTER_HOT), (desk.px, desk.py)).is_ok() {
             desk.hw_cursor = true;
             let _ = log("PeacockHandler: hardware cursor");
         }
@@ -1982,10 +2071,17 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
 
         // Mouse.
+        // Every queued event, not just one buffer's worth: the frame shows
+        // where the pointer is now (docs/u2-compositor-design.md §5).
         let mut events = [MouseEvent::default(); 16];
-        let n = zoo_rt::mouse_read(&mut events).unwrap_or(0);
-        for &e in &events[..n] {
-            dirty |= desk.mouse(e);
+        loop {
+            let n = zoo_rt::mouse_read(&mut events).unwrap_or(0);
+            for &e in &events[..n] {
+                dirty |= desk.mouse(e);
+            }
+            if n < events.len() {
+                break;
+            }
         }
         if desk.cursor_moved {
             desk.cursor_moved = false;
@@ -2035,8 +2131,18 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             dirty = true;
         }
 
-        if dirty {
+        // Damage still waiting from a paced frame counts too.
+        let pending = dirty || desk.damaged > 0 || desk.full;
+        if pending && zoo_rt::ticks() == desk.last_frame_tick {
+            // A frame already went out this tick: during continuous motion
+            // at most one frame a tick (100 a second), everything that
+            // arrives meanwhile merged into it. Each frame costs the
+            // display (QEMU's window) more than it costs this server
+            // (docs/u2-compositor-design.md §5).
+            zoo_rt::sleep(1);
+        } else if pending {
             desk.render();
+            desk.last_frame_tick = zoo_rt::ticks();
         } else {
             // Until input, a message from an application, or the next
             // second (the clock); docs/u1b-design.md.

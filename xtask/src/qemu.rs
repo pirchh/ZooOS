@@ -365,6 +365,8 @@ pub enum Action {
     /// Move a tablet's pointer to this absolute position (0..=0x7FFF on
     /// each axis).
     MouseAbs(u32, u32),
+    /// Tablet positions sent back to back, with no pause: a fast hand.
+    MouseAbsBurst(Vec<(u32, u32)>),
     /// Press (true) or release the left mouse button.
     Button(bool),
     /// Hold this key (a QEMU qcode) down for this many milliseconds.
@@ -425,7 +427,10 @@ pub fn run_case(
     let qemu = tools.qemu.as_deref().expect("resolved by resolve_for_qemu");
     let (dir, vars) = prepare_run_dir(root, case, tools)?;
     let log = dir.join("serial.log");
-    let mut args = machine_args(tools, image, &vars, true, data)?;
+    // ZOO_VERIFY_WINDOW=1 shows QEMU's window during verify cases, to
+    // measure what its display costs (docs/u2-compositor-design.md).
+    let headless = std::env::var_os("ZOO_VERIFY_WINDOW").is_none();
+    let mut args = machine_args(tools, image, &vars, headless, data)?;
     args.extend(
         [
             "-chardev".to_string(),
@@ -615,6 +620,25 @@ pub fn run_case(
                     });
                     match held {
                         Ok(()) => true,
+                        Err(e) => {
+                            harness_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                Action::MouseAbsBurst(points) => {
+                    let started = Instant::now();
+                    match points.iter().try_for_each(|&(x, y)| q.mouse_abs(x, y)) {
+                        Ok(()) => {
+                            // QEMU's main loop answers these commands; a
+                            // busy display makes them slower to deliver.
+                            println!(
+                                "[verify] burst of {} moves delivered in {} ms",
+                                points.len(),
+                                started.elapsed().as_millis()
+                            );
+                            true
+                        }
                         Err(e) => {
                             harness_error = Some(e);
                             break;

@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2a follow-up: pacing and the pointer (2026-11-01, 0.57.1)
+
+- Frames are paced to at most one a timer tick (100 a second) during
+  continuous motion. Measured: QEMU's display, not the window server, fell
+  behind on fast drags. Draining all queued input before a frame.
+- A new, anti-aliased macOS-style arrow pointer with an outline and
+  shadow, used as both the hardware cursor and the software pointer.
+- `ZOO_VERIFY_WINDOW=1` shows QEMU's window during verify, for measuring
+  its display cost.
+
 ## UI step 2a: a compositor in the window server (2026-11-01)
 
 Design: docs/u2-compositor-design.md.

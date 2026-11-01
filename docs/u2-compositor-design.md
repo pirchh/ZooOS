@@ -89,3 +89,56 @@ Medians from `--accel whpx`, three runs each, cycles per frame:
   currently scales the 1920×1080 picture up.
 - **Per-application surfaces:** applications send lines of text. A
   shared-memory surface per app would let apps draw their own content.
+
+## 5. Fast drags and frame pacing (0.57.1)
+
+**The report:** dragging a window quickly, in a maximised QEMU window on
+a 4K monitor, the window fell behind the pointer and then caught up.
+
+**What was measured** (the `gpu-fast-drag` case sends 400 tablet
+positions back to back while dragging Files):
+- Inside ZooOS, nothing queued up. Every event got its own frame, about
+  200 of them, and the longest wait was 1.5–2.0 M cycles (0.5 ms).
+- With QEMU's window shown (`ZOO_VERIFY_WINDOW=1`), the longest event wait
+  rose to 13.5 M cycles. The harness took 251–260 ms to deliver the burst,
+  against 194–196 ms headless. QEMU's main loop handles both the display
+  and input, and each flushed frame costs it a redraw of its window.
+- **The lag is QEMU's display falling behind, not ZooOS.** A maximised 4K
+  window costs QEMU far more per frame than the 1920×1080 test window,
+  which cannot be measured from the guest.
+
+**The change:**
+- **Frame pacing:** after a frame, another waits for the next timer tick.
+  During continuous motion that is at most 100 frames a second, with
+  everything that arrives in between merged into one frame. An event
+  after a quiet moment is still drawn at once.
+- **Draining input:** the window server reads every queued mouse event
+  before a frame, not just one buffer of 16.
+
+**Measured after the change** (three runs each):
+
+| | Frames | Burst delivered, headless | Burst delivered, window shown |
+| --- | --- | --- | --- |
+| Before | 197–214 | 194–196 ms | 251–260 ms |
+| Paced | 22–28 | 182–187 ms | 235–240 ms |
+
+QEMU does about 8× fewer redraws. The cost is that events in continuous
+motion now wait 4 ms on average (at most one 10 ms tick) before their
+frame, less than one 60 Hz refresh. The hardware cursor itself is not
+paced.
+
+## 6. The pointer (0.57.1)
+
+**The report:** the old pointer was a triangle on a straight stem, "like
+a lopsided Christmas tree".
+
+**The new pointer** is a proper arrow: the tip, a straight left edge, a
+notch, and a tail slanting down and right. It is filled black, with a
+1.3-unit white outline and a soft shadow 1.2 units lower.
+- **Drawing:** it is rasterised once at start-up, with 4 × 4 samples per
+  pixel (`pointer_image`).
+- **Use:** the same image is the hardware cursor on the virtio GPU, and
+  is blended in software on standard VGA.
+- **Hot spot:** at (2, 2).
+- **The `mouse` case** checks the white outline left of the hot spot, the
+  black inside to its right, and no dark arrow further left.
