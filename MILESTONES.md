@@ -119,9 +119,11 @@ and verification:
 | L10d | Wine's prefix in the home folder: Linux names, home symbolic links, `*at` calls, `mmap` of home files, gathered small writes; the second start in seconds (docs/linux10d-design.md) | done 2026-11-01 |
 | U1 | macOS-style desktop: Inter text from a build-time atlas, rounded windows with traffic lights and shadows, Mac menu bar, dock, notification banners, light and dark appearances, 1920x1080 (docs/u1-design.md) | done 2026-11-01 |
 | U1b | Input reaches the window server at once instead of at the next 10 ms tick (docs/u1b-design.md) | done 2026-11-01 |
+| U1c | USB input by MSI-X/MSI interrupt; USB tablet for `run` (absolute pointer, no grab) (docs/u1c-design.md) | done 2026-11-01 |
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U3 | Finder-style Files; restyled Notes and Assistant | proposed |
 | U4 | Menus that open, Command-key shortcuts, animated window moves, saved appearance | proposed |
+| U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; GPU cursor plane (virtio-gpu in QEMU first) so the pointer moves without a redraw | proposed |
 
 ## Services (owner direction 2026-10-30)
 
@@ -169,7 +171,7 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | Step | Content | Status |
 | --- | --- | --- |
 | F1 | Shared-memory bulk file transfers; scheduler stall fixed (docs/f1-design.md) | done 2026-10-31 |
-| F2 | Faster first-time writes (file growth); interrupt-driven USB input (PS/2 input wakes at once since U1b) | proposed |
+| F2 | Faster first-time writes (file growth) (input wakes at once since U1b, USB by interrupt since U1c) | proposed |
 
 ## Boot speed
 

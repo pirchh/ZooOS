@@ -30,7 +30,7 @@ static WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static WAIT_SUM: AtomicU64 = AtomicU64::new(0);
 static WAIT_MAX: AtomicU64 = AtomicU64::new(0);
 
-fn tsc() -> u64 {
+pub fn tsc() -> u64 {
     // SAFETY: `rdtsc` only reads the time-stamp counter.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
@@ -136,6 +136,12 @@ pub fn on_byte(byte: u8) {
 /// PS/2 handlers and the timer tick for USB mice (docs/h1b-design.md),
 /// which never nest.
 pub fn push_event(dx: i16, dy: i16, buttons: u8) {
+    push_event_at(dx, dy, buttons, tsc());
+}
+
+/// Like `push_event`, for an event that arrived at time-stamp `stamp`
+/// (the USB controller's interrupt, docs/u1c-design.md).
+pub fn push_event_at(dx: i16, dy: i16, buttons: u8, stamp: u64) {
     let event = (u64::from(buttons) << 32) | (u64::from(dy as u16) << 16) | u64::from(dx as u16);
     let head = HEAD.load(Ordering::Relaxed);
     if head.wrapping_sub(TAIL.load(Ordering::Acquire)) >= CAPACITY {
@@ -143,7 +149,7 @@ pub fn push_event(dx: i16, dy: i16, buttons: u8) {
         return;
     }
     QUEUE[head % CAPACITY].store(event, Ordering::Relaxed);
-    STAMP[head % CAPACITY].store(tsc(), Ordering::Relaxed);
+    STAMP[head % CAPACITY].store(stamp, Ordering::Relaxed);
     HEAD.store(head.wrapping_add(1), Ordering::Release);
     crate::process::kernel_has_input();
 }

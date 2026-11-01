@@ -1,10 +1,11 @@
 //! USB host controller (xHCI), first step (docs/h1-design.md): find the
 //! controller, take it from the firmware, start it, and enumerate the
 //! devices on its root ports (address each one, read its device and
-//! configuration descriptors, log what it is). Polled, no interrupts, one
-//! command ring, one event ring. HID keyboards and mice in boot protocol
-//! (docs/h1b-design.md) are polled on every timer tick; their reports feed
-//! the same keyboard and mouse queues as the PS/2 devices.
+//! configuration descriptors, log what it is). One command ring, one event
+//! ring. HID keyboards and mice in boot protocol (docs/h1b-design.md) feed
+//! the same keyboard and mouse queues as the PS/2 devices. Their reports
+//! are taken when the controller's MSI arrives (docs/u1c-design.md), and
+//! on every timer tick as a fallback (no MSI, or no local APIC).
 
 use crate::kprintln;
 use crate::memory::Memory;
@@ -204,7 +205,13 @@ const MAX_HIDS: usize = 4;
 enum HidKind {
     Keyboard,
     Mouse,
+    /// A HID pointer without the boot protocol (a tablet): its report
+    /// layout comes from its report descriptor (docs/u1c-design.md).
+    Pointer,
 }
+
+/// Longest report read from a HID endpoint.
+const MAX_REPORT: usize = 16;
 
 /// A HID boot-protocol device's interrupt IN endpoint.
 struct Hid {
@@ -224,6 +231,8 @@ struct Hid {
     repeat: Option<(u16, u64)>,
     /// Reports received.
     reports: u64,
+    /// For `HidKind::Pointer`: where its fields are.
+    pointer: Option<crate::hid::Pointer>,
 }
 
 struct Xhci {
@@ -235,6 +244,9 @@ struct Xhci {
     cmd: Ring,
     events: Events,
     hids: [Option<Hid>; MAX_HIDS],
+    /// When the latest interrupt arrived (TSC; 0 when polled): the time
+    /// the reports it announced are stamped with.
+    irq_stamp: u64,
 }
 
 // SAFETY: the raw pointers point into pages owned by this driver (DMA
@@ -303,32 +315,46 @@ impl Xhci {
                 && let Some(h) = self.hids[i].as_mut()
             {
                 let got = h.len.saturating_sub(e[2] & 0xFF_FFFF) as usize;
-                let mut report = [0u8; 8];
-                // SAFETY: the endpoint's own buffer page, `got <= len <= 8`.
-                for (k, b) in report.iter_mut().enumerate().take(got.min(8)) {
+                let mut report = [0u8; MAX_REPORT];
+                // SAFETY: the endpoint's own buffer page, `got <= len <=
+                // MAX_REPORT`.
+                for (k, b) in report.iter_mut().enumerate().take(got.min(MAX_REPORT)) {
                     *b = unsafe { h.buf.add(k).read_volatile() };
                 }
                 if h.reports == 0 {
                     crate::serial_println!(
                         "ZOO_OS INFO usb {} input",
-                        if h.kind == HidKind::Keyboard {
-                            "keyboard"
-                        } else {
-                            "mouse"
+                        match h.kind {
+                            HidKind::Keyboard => "keyboard",
+                            HidKind::Mouse => "mouse",
+                            HidKind::Pointer => "pointer",
                         }
                     );
                 }
                 h.reports += 1;
+                let stamp = if self.irq_stamp != 0 {
+                    self.irq_stamp
+                } else {
+                    crate::mouse::tsc()
+                };
                 match h.kind {
                     HidKind::Keyboard => {
                         let now = crate::interrupts::ticks();
-                        keyboard_report(&mut h.last, &report, &mut h.repeat, now)
+                        let mut keys = [0u8; 8];
+                        keys.copy_from_slice(&report[..8]);
+                        keyboard_report(&mut h.last, &keys, &mut h.repeat, now)
                     }
-                    HidKind::Mouse => crate::mouse::push_event(
+                    HidKind::Pointer => {
+                        if let Some(p) = h.pointer {
+                            pointer_report(&p, &report[..got.min(MAX_REPORT)], stamp);
+                        }
+                    }
+                    HidKind::Mouse => crate::mouse::push_event_at(
                         i16::from(report[1] as i8),
                         // USB reports y downwards; the queue holds y upwards.
                         -i16::from(report[2] as i8),
                         report[0] & 7,
+                        stamp,
                     ),
                 }
             }
@@ -449,7 +475,11 @@ pub fn init(mem: &mut Memory) -> Option<usize> {
         return None;
     };
     match start(mem, Regs { base }) {
-        Ok(n) => Some(n),
+        Ok(n) => {
+            let how = enable_msi(bus, dev, func, base, pages * 4096);
+            kprintln!("ZOO_OS INFO usb interrupts={}", how);
+            Some(n)
+        }
         Err(why) => {
             kprintln!("ZOO_OS INFO usb error={}", why);
             Some(0)
@@ -547,6 +577,7 @@ fn start(mem: &mut Memory, cap: Regs) -> Result<usize, &'static str> {
             cycle: 1,
         },
         hids: [const { None }; MAX_HIDS],
+        irq_stamp: 0,
     };
     let mut count = 0;
     for port in 1..=ports {
@@ -566,6 +597,147 @@ fn start(mem: &mut Memory, cap: Regs) -> Result<usize, &'static str> {
     }
     *HC.lock() = Some(hc);
     Ok(count)
+}
+
+/// Points the controller's interrupt at this CPU's local APIC (vector
+/// `VEC_XHCI`) through MSI-X or else MSI, then lets interrupter 0 raise
+/// it. Returns how: "polled" (the tick keeps polling) without a local APIC
+/// or either capability. `regs`/`mapped`: BAR 0 as mapped, where an MSI-X
+/// table must lie.
+fn enable_msi(bus: u8, dev: u8, func: u8, regs: u64, mapped: u64) -> &'static str {
+    let Some(apic) = crate::apic::id() else {
+        return "polled";
+    };
+    // Fixed delivery to this APIC; the vector, edge-triggered.
+    let address = 0xFEE0_0000 | apic << 12;
+    let vector = crate::trap::VEC_XHCI as u32;
+    // The capability list (status bit 4): MSI-X (id 0x11), MSI (id 5).
+    if pci_read(bus, dev, func, 0x04) & (1 << 20) == 0 {
+        return "polled";
+    }
+    let (mut msix, mut msi) = (None, None);
+    let mut at = (pci_read(bus, dev, func, 0x34) & 0xFC) as u8;
+    for _ in 0..48 {
+        if at < 0x40 {
+            break;
+        }
+        let head = pci_read(bus, dev, func, at);
+        match head & 0xFF {
+            0x11 => msix = msix.or(Some((at, head))),
+            5 => msi = msi.or(Some((at, head))),
+            _ => {}
+        }
+        at = ((head >> 8) & 0xFC) as u8;
+    }
+    let table = msix.map(|(cap, _)| pci_read(bus, dev, func, cap + 4));
+    let how = match (msix, table) {
+        // The table must be in BAR 0, inside what is mapped.
+        (Some((cap, head)), Some(table))
+            if table & 7 == 0 && u64::from(table & !7) + 16 <= mapped =>
+        {
+            // Enabled with every vector masked while entry 0 is written.
+            pci_write(bus, dev, func, cap, head | 1 << 31 | 1 << 30);
+            let e = (regs + u64::from(table & !7)) as *mut u32;
+            // SAFETY: entry 0 of the MSI-X table, inside BAR 0's mapped
+            // registers (checked above): address, upper address, data,
+            // vector control.
+            unsafe {
+                e.write_volatile(address);
+                e.add(1).write_volatile(0);
+                e.add(2).write_volatile(vector);
+                e.add(3).write_volatile(0); // unmasked
+            }
+            pci_write(bus, dev, func, cap, (head | 1 << 31) & !(1 << 30));
+            "msix"
+        }
+        _ => {
+            let Some((cap, head)) = msi else {
+                return "polled";
+            };
+            pci_write(bus, dev, func, cap + 4, address);
+            let data = if head & (1 << 23) != 0 {
+                pci_write(bus, dev, func, cap + 8, 0);
+                cap + 12
+            } else {
+                cap + 8
+            };
+            let old = pci_read(bus, dev, func, data);
+            pci_write(bus, dev, func, data, (old & !0xFFFF) | vector);
+            // Enabled, with one message.
+            pci_write(bus, dev, func, cap, (head & !(7 << 20)) | 1 << 16);
+            "msi"
+        }
+    };
+    // The legacy INTx line off.
+    let cmd = pci_read(bus, dev, func, 0x04);
+    pci_write(bus, dev, func, 0x04, (cmd & 0xFFFF) | 1 << 10);
+    let mut g = HC.lock();
+    let Some(hc) = g.as_mut() else {
+        return "polled";
+    };
+    // Interrupter 0: no moderation (an interrupt per report), enabled;
+    // then the controller's interrupt enable (USBCMD.INTE).
+    hc.rt.w32(0x20 + 0x04, 0);
+    hc.rt.w32(0x20, 1 << 1 | 1);
+    hc.op.w32(0, hc.op.r32(0) | 1 << 2);
+    how
+}
+
+/// A report-protocol pointer's report: absolute positions are scaled to
+/// 0..=`MOUSE_ABS_MAX` and queued with `MOUSE_ABSOLUTE`; relative motion
+/// is queued like a boot mouse's.
+fn pointer_report(p: &crate::hid::Pointer, report: &[u8], stamp: u64) {
+    let body = if p.id != 0 {
+        match report.split_first() {
+            Some((&id, rest)) if id == p.id => rest,
+            _ => return,
+        }
+    } else {
+        report
+    };
+    let (Some(x), Some(y)) = (crate::hid::read(body, p.x), crate::hid::read(body, p.y)) else {
+        return;
+    };
+    let mut buttons = 0u8;
+    for (k, b) in p.buttons.iter().enumerate() {
+        if b.is_some_and(|bit| crate::hid::bit(body, bit)) {
+            buttons |= 1 << k;
+        }
+    }
+    if p.absolute {
+        let scale = |v: i32, f: crate::hid::Field| {
+            let span = i64::from(f.max) - i64::from(f.min);
+            let at = (i64::from(v) - i64::from(f.min)).clamp(0, span);
+            (at * i64::from(zoo_abi::MOUSE_ABS_MAX) / span) as i16
+        };
+        crate::mouse::push_event_at(
+            scale(x, p.x),
+            scale(y, p.y),
+            buttons | zoo_abi::MOUSE_ABSOLUTE,
+            stamp,
+        );
+    } else {
+        let clamp = |v: i32| v.clamp(-32768, 32767) as i16;
+        // Reports give y downwards; the queue holds y upwards.
+        crate::mouse::push_event_at(clamp(x), clamp(-y), buttons, stamp);
+    }
+}
+
+/// The controller's MSI (interrupt context, from `trap_dispatch`):
+/// acknowledges it, then takes the reports it announced.
+pub fn on_interrupt() {
+    let stamp = crate::mouse::tsc();
+    if let Some(mut g) = HC.try_lock()
+        && let Some(hc) = g.as_mut()
+    {
+        // Acknowledge first (USBSTS.EINT and IMAN.IP are write-1-to-clear),
+        // so a report completing meanwhile raises a new interrupt.
+        hc.op.w32(4, 1 << 3);
+        hc.rt.w32(0x20, 1 << 1 | 1);
+        hc.irq_stamp = stamp;
+        hc.poll();
+        hc.irq_stamp = 0;
+    }
 }
 
 /// Timer tick: HID reports that have arrived (docs/h1b-design.md).
@@ -713,6 +885,7 @@ fn attach(mem: &mut Memory, hc: &mut Xhci, at: Location) -> Result<usize, &'stat
     // endpoint (address, max packet, interval).
     let mut hid: Option<(u8, HidKind)> = None;
     let mut endpoint: Option<(u8, u16, u8)> = None;
+    let mut report_len = 0u16;
     let mut at = 0;
     while at + 2 <= total && c[at] >= 2 {
         if c[at + 1] == 4 && at + 8 <= total {
@@ -731,10 +904,14 @@ fn attach(mem: &mut Memory, hc: &mut Xhci, at: Location) -> Result<usize, &'stat
                     hid = match (sub, proto) {
                         (1, 1) => Some((c[at + 2], HidKind::Keyboard)),
                         (1, 2) => Some((c[at + 2], HidKind::Mouse)),
+                        (0, _) => Some((c[at + 2], HidKind::Pointer)),
                         _ => None,
                     };
                 }
             }
+        } else if c[at + 1] == 0x21 && at + 9 <= total && hid.is_some() && endpoint.is_none() {
+            // The HID descriptor: the report descriptor's length.
+            report_len = u16::from_le_bytes([c[at + 7], c[at + 8]]);
         } else if c[at + 1] == 5 && at + 7 <= total && hid.is_some() && endpoint.is_none() {
             let (addr, attrs) = (c[at + 2], c[at + 3]);
             if addr & 0x80 != 0 && attrs & 3 == 3 {
@@ -757,6 +934,7 @@ fn attach(mem: &mut Memory, hc: &mut Xhci, at: Location) -> Result<usize, &'stat
             config,
             iface,
             ep,
+            report_len,
         };
         match start_hid(mem, hc, &mut ep0, &setup, kind) {
             Ok(()) => kprintln!("ZOO_OS INFO usb port={} input ready", port),
@@ -923,6 +1101,9 @@ struct HidSetup {
     iface: u8,
     /// (endpoint address, max packet size, interval)
     ep: (u8, u16, u8),
+    /// Length of the interface's report descriptor (from its HID
+    /// descriptor; 0 if none was seen).
+    report_len: u16,
 }
 
 /// Configures the device, selects the boot protocol, and adds the
@@ -942,8 +1123,42 @@ fn start_hid(
         .ok_or("too-many-hid-devices")?;
     let iface = u64::from(s.iface);
     // SET_CONFIGURATION, SET_PROTOCOL(boot), SET_IDLE(0: only changes).
+    // A pointer without boot protocol stays in report protocol (the
+    // default) and is described by its report descriptor.
     control_nodata(hc, ep0, s.slot, 9 << 8 | u64::from(s.config) << 16)?;
-    control_nodata(hc, ep0, s.slot, 0x21 | 0x0B << 8 | iface << 32)?;
+    let mut pointer = None;
+    if kind == HidKind::Pointer {
+        let len = s.report_len.clamp(1, 4096);
+        let pages = u64::from(len).div_ceil(4096);
+        if pages > 1 {
+            return Err("report-descriptor-too-long");
+        }
+        let (d_phys, d) = page(mem).ok_or("out-of-memory")?;
+        // GET_DESCRIPTOR (report, 0x22) from the interface.
+        control_get(
+            hc,
+            ep0,
+            s.slot,
+            0x81 | 6 << 8 | 0x2200 << 16 | iface << 32,
+            d_phys,
+            len,
+        )?;
+        // SAFETY: the page just filled by the transfer, `len <= 4096`.
+        let desc = unsafe { core::slice::from_raw_parts(d, usize::from(len)) };
+        let p = crate::hid::parse_pointer(desc).ok_or("not-a-pointer")?;
+        kprintln!(
+            "ZOO_OS INFO usb pointer {} x={}..{} y={}..{} buttons={}",
+            if p.absolute { "absolute" } else { "relative" },
+            p.x.min,
+            p.x.max,
+            p.y.min,
+            p.y.max,
+            p.buttons.iter().flatten().count()
+        );
+        pointer = Some(p);
+    } else {
+        control_nodata(hc, ep0, s.slot, 0x21 | 0x0B << 8 | iface << 32)?;
+    }
     // Some devices refuse SET_IDLE; that is allowed.
     let _ = control_nodata(hc, ep0, s.slot, 0x21 | 0x0A << 8 | iface << 32);
 
@@ -986,10 +1201,15 @@ fn start_hid(
         ring,
         buf_phys,
         buf,
-        len: mps.min(8),
+        len: mps.min(if kind == HidKind::Pointer {
+            MAX_REPORT as u32
+        } else {
+            8
+        }),
         last: [0; 8],
         repeat: None,
         reports: 0,
+        pointer,
     });
     Ok(())
 }

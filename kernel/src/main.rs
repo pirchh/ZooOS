@@ -27,6 +27,7 @@ mod cpu;
 mod faults;
 mod fpu;
 mod gdt;
+mod hid;
 mod initrd;
 mod interrupts;
 mod keyboard;

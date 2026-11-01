@@ -54,6 +54,12 @@ fn read(base: u64, reg: u64) -> u32 {
     unsafe { core::ptr::read_volatile((base + reg) as *const u32) }
 }
 
+/// This CPU's local APIC id, once the local APIC drives the tick.
+pub fn id() -> Option<u32> {
+    let base = LAPIC.load(Ordering::Relaxed);
+    (base != 0).then(|| read(base, 0x20) >> 24)
+}
+
 /// End of interrupt for the timer (interrupt context).
 pub fn eoi() {
     let base = LAPIC.load(Ordering::Relaxed);

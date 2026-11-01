@@ -299,7 +299,9 @@ pub struct HandleMsg {
 
 /// One mouse event from `mouse_read`: relative motion (`dy` positive
 /// upwards, as the mouse reports it) and the buttons held (bit 0 left,
-/// bit 1 right, bit 2 middle).
+/// bit 1 right, bit 2 middle). With `MOUSE_ABSOLUTE` set in `buttons`,
+/// `dx`/`dy` are instead a position: 0 to `MOUSE_ABS_MAX` across the
+/// screen, `dy` growing downwards (a tablet, docs/u1c-design.md).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MouseEvent {
@@ -308,6 +310,11 @@ pub struct MouseEvent {
     pub buttons: u8,
     pub _pad: [u8; 3],
 }
+
+/// `MouseEvent::buttons` flag: an absolute position.
+pub const MOUSE_ABSOLUTE: u8 = 0x80;
+/// The largest absolute coordinate (the far edge of the screen).
+pub const MOUSE_ABS_MAX: i16 = 0x7FFF;
 
 /// Bytes per block for `block_read`/`block_write`.
 pub const BLOCK_BYTES: usize = 4096;

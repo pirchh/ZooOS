@@ -23,6 +23,9 @@ pub const VEC_TIMER: u64 = 32;
 /// task waiting for it at once instead of at the next tick.
 pub const VEC_KEYBOARD: u64 = 33;
 pub const VEC_MOUSE: u64 = 44;
+/// The xHCI controller's MSI (docs/u1c-design.md), delivered by the local
+/// APIC.
+pub const VEC_XHCI: u64 = 0x50;
 pub const VEC_SYSCALL: u64 = 0x80;
 /// Kernel-only (ring 0 gate): the idle kernel task gives the processor to
 /// a task that input woke while the kernel task was not halted
@@ -236,6 +239,7 @@ stub!(stub_simd, VEC_SIMD);
 stub!(stub_timer, VEC_TIMER);
 stub!(stub_keyboard, VEC_KEYBOARD);
 stub!(stub_mouse, VEC_MOUSE);
+stub!(stub_xhci, VEC_XHCI);
 stub!(stub_syscall, VEC_SYSCALL);
 stub!(stub_kernel_yield, VEC_KERNEL_YIELD);
 
@@ -260,6 +264,12 @@ extern "C" fn trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
             } else {
                 interrupts::on_mouse_irq();
             }
+            process::on_input(frame, idle)
+        }
+        VEC_XHCI => {
+            let idle = process::kernel_idle();
+            crate::xhci::on_interrupt();
+            crate::apic::eoi();
             process::on_input(frame, idle)
         }
         VEC_SYSCALL if f.is_user_mode() => process::on_syscall(frame),

@@ -78,6 +78,7 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
         idt[TIMER_VECTOR].set_handler_addr(addr(trap::stub_timer));
         idt[KEYBOARD_VECTOR].set_handler_addr(addr(trap::stub_keyboard));
         idt[MOUSE_VECTOR].set_handler_addr(addr(trap::stub_mouse));
+        idt[trap::VEC_XHCI as u8].set_handler_addr(addr(trap::stub_xhci));
         // Ring 0 only: `int 0x81` from user code raises #GP instead.
         idt[trap::VEC_KERNEL_YIELD as u8].set_handler_addr(addr(trap::stub_kernel_yield));
         // The only gate user code may invoke directly.

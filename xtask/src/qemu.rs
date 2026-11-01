@@ -33,6 +33,9 @@ pub enum Usb {
     Direct,
     /// A hub on a root port, with the keyboard and mouse behind it.
     Hub,
+    /// A USB tablet (absolute pointer, no mouse grab); keyboard on PS/2.
+    /// What `run` uses (docs/u1c-design.md).
+    Tablet,
 }
 
 static USB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -160,6 +163,13 @@ fn machine_args(
             "-device".into(),
             "usb-mouse,bus=xhci.0".into(),
         ]);
+    } else if usb == Usb::Tablet as u8 {
+        args.extend([
+            "-device".into(),
+            "qemu-xhci,id=xhci".into(),
+            "-device".into(),
+            "usb-tablet,bus=xhci.0".into(),
+        ]);
     } else if usb == Usb::Hub as u8 {
         args.extend([
             "-device".into(),
@@ -223,6 +233,8 @@ pub fn run_interactive(
         "[run] data disk {} (delete it to start empty)",
         data.display()
     );
+    // A tablet: the pointer follows the host's exactly, without a grab.
+    set_usb(Usb::Tablet);
     let mut args = machine_args(tools, image, &vars, false, &data)?;
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);
@@ -320,6 +332,9 @@ pub enum Action {
     /// Move the mouse by (dx, dy) screen pixels, in steps of at most
     /// `MOUSE_STEP` (y grows downwards).
     Mouse(i32, i32),
+    /// Move a tablet's pointer to this absolute position (0..=0x7FFF on
+    /// each axis).
+    MouseAbs(u32, u32),
     /// Press (true) or release the left mouse button.
     Button(bool),
     /// Hold this key (a QEMU qcode) down for this many milliseconds.
@@ -576,6 +591,16 @@ pub fn run_case(
                         }
                     }
                 }
+                Action::MouseAbs(x, y) => match q.mouse_abs(*x, *y) {
+                    Ok(()) => {
+                        std::thread::sleep(KEY_GAP);
+                        true
+                    }
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
                 Action::Button(down) => match q.mouse_button(*down) {
                     Ok(()) => {
                         std::thread::sleep(KEY_GAP);
