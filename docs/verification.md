@@ -57,7 +57,14 @@ With the limit lowered to 8 KiB but the guard kept, Notes opened the file
 read-only (`is read-only: over 1 MiB, too large to edit`). That shows the
 guard works at any limit.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 91 cases `OK`.
+`assistant-live` and `everyday-model` are skipped under TCG.
+`wine-home-1` and `wine-home-2`, which open many folders, were run
+separately with `--accel whpx`: both `OK`, so the per-process limit leaves
+Wine room.
+- clippy with `-D warnings` (kernel, `zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
+- `cargo test -p xtask`: 25 passed.
 
 ## Assistant step 2b results: names in any letter case (version 0.73.1)
 
