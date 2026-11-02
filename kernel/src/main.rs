@@ -26,6 +26,7 @@ mod console;
 mod cpu;
 mod faults;
 mod fpu;
+mod fw_cfg;
 mod gdt;
 mod hid;
 mod initrd;
