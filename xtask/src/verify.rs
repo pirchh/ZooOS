@@ -693,6 +693,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-after", check_after_animations)],
         },
         Case {
+            name: "genie",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the genie: a minimise in slow motion (Shift held), caught early: the window's top still in place at full width while its bottom has pinched toward the dock",
+            interaction: Some(genie_steps()),
+            screen_checks: vec![("1-genie", check_genie)],
+        },
+        Case {
             name: "frames",
             mode: Mode::Normal,
             custom_image: None,
@@ -2782,6 +2795,62 @@ fn check_after_animations(img: &screen::Image) -> Result<String, String> {
     }
     Ok(format!(
         "`Crash Test` focused at {t:?}; `Files` back at {files:?}"
+    ))
+}
+
+fn genie_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        p.to(zui::light_centre(win(FILES_WIN), 1)),
+        // Shift held: the minimise takes 5.2 s instead of 0.52 s.
+        Action::Key("shift", true),
+        Action::Button(true),
+        Action::Button(false),
+        Action::Key("shift", false),
+        Action::WaitContains("PeacockHandler: minimized Files".into()),
+        // About 1.2 s in: still the first phase (the first 40 %).
+        Action::Settle(QUIET),
+        Action::Screenshot("1-genie"),
+        animation_done("minimize Files", 30, (5000, 8000)),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Early in the genie: the window's top edge is where it was, full width
+/// (its title bar still spans it), but its bottom-left corner has pinched
+/// in, showing wallpaper. A window shrinking toward the dock would have
+/// moved its top edge too.
+fn check_genie(img: &screen::Image) -> Result<String, String> {
+    let (x, y, w, h) = win(FILES_WIN);
+    // Files is focused when it is minimised: the snapshot has its title
+    // bar in the focused colour.
+    let bar = LIGHT.title;
+    let bar = [(bar >> 16) as u8, (bar >> 8) as u8, bar as u8];
+    let near = |p: Option<[u8; 3]>, c: [u8; 3]| {
+        p.is_some_and(|p| p.iter().zip(c).all(|(&a, b)| a.abs_diff(b) <= 6))
+    };
+    // Title bar colour at both ends of the top edge.
+    let (tl, tr) = (img.pixel(x + 40, y + 6), img.pixel(x + w - 40, y + 6));
+    if !near(tl, bar) || !near(tr, bar) {
+        return Err(format!(
+            "the top edge moved: title bar {bar:?} expected at both ends, found {tl:?} and {tr:?}"
+        ));
+    }
+    // Wallpaper, not window, at the bottom-left corner.
+    let corner = img.pixel(x + 12, y + h - 12);
+    let wall = img.pixel(x - 40, y + h - 12);
+    if corner != wall {
+        return Err(format!(
+            "the bottom-left corner has not pinched in: {corner:?}, wallpaper beside it {wall:?}"
+        ));
+    }
+    Ok(format!(
+        "genie, first phase: title bar still across the top at {:?}, wallpaper at the bottom-left corner {:?}",
+        (x, y),
+        (x + 12, y + h - 12)
     ))
 }
 

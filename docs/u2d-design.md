@@ -84,9 +84,53 @@ smoothly filtered, with its shadow.
 
 ## 5. Not done
 
-- **A true genie warp:** minimise is a scale-and-move toward the dock,
-  not a curved warp.
+- ~~A true genie warp~~: done in 0.60.0, §6.
 - **Animated zoom and focus fades:** zooming and changes of focus are
   not animated yet.
 - **Dock magnification and the launch bounce:** next in the polish pass.
 - **The layer rebuild on refocus:** see §3.
+
+## 6. The genie (0.60.0)
+
+**The owner's feedback:** the animations "feel good but they don't look
+as much like mac". The Mac minimise pinches the window toward the dock
+and then pulls it in. U2d's minimise was a plain scale-and-move.
+
+**`composite_genie` draws every row of the window body between a left
+and a right edge:**
+- **The edges:** S-curves (smoothstep) running from the window's width
+  at its top to the dock icon's width at the icon's bottom.
+- **First 40 %:** the curves bend in. The window's top stays put while
+  its bottom pinches toward the icon.
+- **The rest:** the body slides down the funnel, its bottom ahead of its
+  top (compressing), and fades in the last 15 %.
+- **Sampling:** rows are mapped linearly into the moving top and bottom,
+  then sampled bilinearly along the row. The shadow is not drawn, only
+  the body.
+
+**Lengths and frames:**
+- Minimise now takes 520 ms and restore 460 ms; restore is the same warp
+  run backwards.
+- Each frame damages the whole funnel's bounding box.
+
+**Slow motion:** with Shift held, a new animation runs ten times slower,
+as on a Mac. That is also how the `genie` case catches a frame early in
+the first phase.
+
+**Measured** (`animations`, `--accel whpx`, three runs):
+
+| | Result |
+| --- | --- |
+| Minimise | 53 frames, 523 ms |
+| Restore | 47–48 frames, 460–469 ms |
+| Genie frames | median 6.7–7.8 M cycles for 799,112 px, about 2.5 ms; the longest 16.5–23.7 M, the refocus rebuild of §3 |
+
+**Checked:**
+- **By eye:** frames at 30 %, 60 % and 90 % of a slowed minimise show the
+  pinch, then the slide down the funnel, then the narrow tail entering
+  the dock icon.
+- **The `genie` case:** early in a slow-motion minimise, the title bar
+  must still span the window's top at both ends, and the bottom-left
+  corner must show wallpaper.
+- **Its negative control:** minimise drawn as the old shrink → `FAIL
+  genie: the top edge moved`.
