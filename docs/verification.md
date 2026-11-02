@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The A3 section
-(version 0.73.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The A2b section
+(version 0.73.1) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,22 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Assistant step 2b results: names in any letter case (version 0.73.1)
+
+The owner asked "where is my music"; the model answered `list music`,
+which failed because the folder is `Music`.
+
+**New case `assistant-any-case`:** `OK`.
+- `list music` typed in the Assistant → ``OtterHandler: `music` is
+  `Music` `` in the log, and the screenshot shows
+  `  file playlist.txt (46 bytes)`.
+- `list musik` still shows `Error: not found`.
+
+**Negative control:** `list` without the case matching → `FAIL
+assistant-any-case` (timeout: the log line never came).
+
+FULL_SUITE_RESULT
 
 ## Assistant step 3 results: the model in the everyday system (version 0.73.0)
 

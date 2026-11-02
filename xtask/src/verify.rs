@@ -787,6 +787,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "assistant-any-case",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: any_case_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the Assistant's file tools take names in any letter case, as the model writes them: `list music` lists the Music folder; a name that matches nothing still fails",
+            interaction: Some(assistant_any_case_steps()),
+            screen_checks: vec![("1-listed", check_any_case)],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -4643,6 +4656,57 @@ fn check_recalled_again(img: &screen::Image) -> Result<String, String> {
     no_content(img, "Assistant (remembered): make")?;
     Ok(format!(
         "after a restart, answered from memory at {at:?}; the unrelated request went to the model ({model:?})"
+    ))
+}
+
+fn any_case_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=otter-handler",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+fn assistant_any_case_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Assistant.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("list music")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: `music` is `Music`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("list musik")));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("1-listed"));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn check_any_case(img: &screen::Image) -> Result<String, String> {
+    let at = content(img, "  file playlist.txt (46 bytes)")?;
+    let miss = content(img, "Error: not found")?;
+    Ok(format!(
+        "`list music` listed Music's playlist.txt at {at:?}; `list musik` failed at {miss:?}"
     ))
 }
 

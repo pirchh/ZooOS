@@ -163,10 +163,10 @@ impl Otter {
         let (tool, arg) = req.split_once(' ').unwrap_or((req, ""));
         match tool {
             "search" => self.search(arg.trim()),
-            "list" => self.list(clean(arg)?),
-            "inspect" => self.inspect(clean(arg)?),
-            "plan" => self.create(clean(arg)?, false),
-            "create" => self.create(clean(arg)?, true),
+            "list" => self.list(&self.resolve(clean(arg)?)),
+            "inspect" => self.inspect(&self.resolve(clean(arg)?)),
+            "plan" => self.create(&self.resolve(clean(arg)?), false),
+            "create" => self.create(&self.resolve(clean(arg)?), true),
             "undo" if arg.is_empty() => self.undo(),
             "remember" => self.remember(arg),
             "recall" => self.recall(arg),
@@ -257,6 +257,44 @@ impl Otter {
             }
         }
         Ok(out)
+    }
+
+    /// `path` with each name that exists only in other letter case
+    /// replaced by the name on disk, as macOS treats names: the model often
+    /// writes `music` for `Music`. A name that matches nothing, or more than
+    /// one entry, and the names after it stay as written.
+    fn resolve(&self, path: &str) -> String {
+        let mut out = String::new();
+        let mut parts = path.split('/').filter(|p| !p.is_empty());
+        for part in parts.by_ref() {
+            let exact = join(&out, part);
+            let name = if dir_stat(self.home, &exact).is_ok() {
+                None
+            } else {
+                let entries = self.entries(&out).unwrap_or_default();
+                let mut alike = entries
+                    .iter()
+                    .filter(|e| e.name().eq_ignore_ascii_case(part));
+                match (alike.next(), alike.next()) {
+                    (Some(e), None) => Some(String::from(e.name())),
+                    _ => {
+                        out = exact;
+                        break;
+                    }
+                }
+            };
+            out = match name {
+                Some(n) => join(&out, &n),
+                None => exact,
+            };
+        }
+        for part in parts {
+            out = join(&out, part);
+        }
+        if out != path {
+            zoo_rt::log!("OtterHandler: `{}` is `{}`", path, out);
+        }
+        out
     }
 
     fn list(&self, path: &str) -> Result<(), &'static str> {

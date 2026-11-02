@@ -134,6 +134,7 @@ and verification:
 | N3 | Network app (connection, fetch a page by name or address, text shown) and a DNS client (docs/n3-design.md) | done 2026-11-02 |
 | N1 | Network device (virtio-net, polled), raw-frame syscalls, IPv4 stack in user space: ARP, ICMP, UDP, DHCP client (docs/n1-design.md) | done 2026-11-02 |
 | N2 | TCP client and an HTTP request to a host-side test server (docs/n2-design.md) | done 2026-11-02 |
+| A2b | The Assistant's file tools take names in any letter case (`list music` lists `Music`) | done 2026-11-02 |
 | A3 | The model built into the everyday system (`run`, `usb-image`; `--no-model` to leave out); boot cost measured (+1.85 s) (docs/a3-design.md) | done 2026-11-02 |
 | A2 | The Assistant learns: request → command memory on disk, learned from answers and corrections; alike requests answered at once without the model (docs/a2-design.md) | done 2026-11-02 |
 | A1 | Faster model engine: vector dot products, no unread scores, precomputed rotary frequencies; 2.0–2.7× in the guest, answers unchanged (docs/a1-design.md) | done 2026-11-02 |
