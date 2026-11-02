@@ -17,6 +17,9 @@ pub enum Key {
     Enter,
     Back,
     Char(char),
+    /// Ctrl and a letter (capital with Shift), other than Ctrl+N, which
+    /// the window server keeps (docs/u3f-design.md).
+    Ctrl(char),
 }
 
 impl Key {
@@ -28,6 +31,7 @@ impl Key {
             b"key:right" => Key::Right,
             b"key:enter" => Key::Enter,
             b"key:back" => Key::Back,
+            _ if msg.starts_with(b"key:ctrl:") && msg.len() == 10 => Key::Ctrl(char::from(msg[9])),
             _ => {
                 let rest = msg.strip_prefix(b"key:char:")?;
                 let s = core::str::from_utf8(rest).ok()?;
@@ -51,6 +55,7 @@ impl Key {
             Key::Enter => out.write_str("key:enter"),
             Key::Back => out.write_str("key:back"),
             Key::Char(c) => write!(out, "key:char:{}", c),
+            Key::Ctrl(c) => write!(out, "key:ctrl:{}", c),
         };
     }
 }
@@ -129,6 +134,37 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Sidebar item `k` (docs/u3f-design.md); markup as in lines.
+    pub fn side(&self, k: usize, text: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "side:{}:{}", k, text);
+        self.send_line(&l)
+    }
+
+    /// How many sidebar items there are; 0: no sidebar.
+    pub fn sides(&self, n: usize) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "sides:{}", n);
+        self.send_line(&l)
+    }
+
+    pub fn side_select(&self, k: Option<usize>) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = match k {
+            Some(k) => write!(l, "side-sel:{}", k),
+            None => l.write_str("side-sel:-"),
+        };
+        self.send_line(&l)
+    }
+
+    /// Asks for file `path` (from home) to be opened in a window of
+    /// application `program`, which gets `open:<path>`.
+    pub fn open(&self, program: &str, path: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "open:{}:{}", program, path);
+        self.send_line(&l)
+    }
+
     /// Asks for application `program` to be opened.
     pub fn launch(&self, program: &str) -> Result<(), Error> {
         let mut l = Line::new();
@@ -139,21 +175,43 @@ impl Window {
 
 /// A message from the window server other than a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
+pub enum Event<'a> {
     /// The right button went down on content line `n`.
     RightClick(usize),
+    /// The right button went down in the content, below the lines.
+    RightClickEmpty,
     /// Item `n` of the menu this application asked for was chosen.
     MenuChoose(usize),
+    /// A click on content line `n` (docs/u3f-design.md).
+    Click(usize),
+    /// The second click of a double-click on content line `n`.
+    DoubleClick(usize),
+    /// A click on sidebar item `n`.
+    SideClick(usize),
+    /// Open this file (a path from home).
+    Open(&'a str),
 }
 
-impl Event {
-    pub fn parse(msg: &[u8]) -> Option<Event> {
+impl Event<'_> {
+    pub fn parse(msg: &[u8]) -> Option<Event<'_>> {
         let num = |s: &[u8]| core::str::from_utf8(s).ok()?.parse().ok();
-        if let Some(n) = msg.strip_prefix(b"rclick:") {
-            return num(n).map(Event::RightClick);
+        if msg == b"rclick:none" {
+            return Some(Event::RightClickEmpty);
         }
-        msg.strip_prefix(b"menu-choose:")
-            .and_then(num)
-            .map(Event::MenuChoose)
+        type Make = fn(usize) -> Event<'static>;
+        let numbered: [(&[u8], Make); 5] = [
+            (b"rclick:", Event::RightClick),
+            (b"menu-choose:", Event::MenuChoose),
+            (b"click:", Event::Click),
+            (b"dclick:", Event::DoubleClick),
+            (b"sclick:", Event::SideClick),
+        ];
+        for (prefix, make) in numbered {
+            if let Some(n) = msg.strip_prefix(prefix) {
+                return num(n).map(make);
+            }
+        }
+        let path = msg.strip_prefix(b"open:")?;
+        core::str::from_utf8(path).ok().map(Event::Open)
     }
 }

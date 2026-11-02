@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U3 section
-(version 0.63.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U3f section
+(version 0.64.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,46 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI steps 3f and 3g results: Finder-style Files, the editor, icons (version 0.64.0)
+
+Designs: docs/u3f-design.md, docs/u3g-design.md.
+
+**New case `finder`** (TCG): `OK`.
+- `1-sidebar`: `Favourites` (dim), `Home` selected, `Documents` in the
+  sidebar; Documents' folder icon at (312, 127); the `Folder` column.
+- `2-code`: `zoo.rs` focused; keyword `struct`, string `"Peacock"`,
+  comment, type `u32`, macro `println!` and function `main` each found in
+  their syntax colour, and `struct` not in the text colour. Ctrl+S logged
+  `Notes: saved 364 bytes` (360, `end` and the Enter the test types).
+- `3-folder`: a right-click on empty space, New Folder: `untitled folder`
+  created on disk and selected.
+
+**Updated cases:** folder names without `/` (`files`, `desktop`,
+`appearance`, `redraw-content`, …); `README.txt` and `34 bytes` checked
+apart; `notes-cursor` finds the cursor bar between `aX` and `bc`;
+`apps-folder` and `dock-menu` find Notes by its icon's yellow band.
+
+**Negative controls**, each run once and then reverted:
+
+| Broken on purpose | Result |
+| --- | --- |
+| Notes colours nothing (every file plain) | ``FAIL finder: screen 2-code: keyword: `struct` not on screen`` |
+| Remove from Dock keeps the pin (new icons) | ``FAIL dock-menu: screen 2-removed: Notes' yellow band is still in the dock (27 pixels on row 1013)`` |
+
+**Bugs found while testing:**
+- **The window server overflowed its stack at start-up.** Each window's
+  lines grew to 240 bytes, so the line buffers moved to the heap.
+- **A panic in `f32::clamp`.** It panics when rounding crosses its bounds,
+  which happened on a 0.06-wide rounded rectangle in the Crash Test icon.
+  `rr` now uses `max`/`min`.
+
+**Full `cargo xtask verify --skip-model`** (TCG): 77 cases `OK`, with one
+`FAIL`: `appearance` still looked for `Documents/` with the slash. The
+check was fixed and `appearance` rerun alone: `OK`. `assistant-live`
+passes with `--accel whpx` at `ZOO_OS BOOT version=0.64.0`.
+`cargo test -p xtask` (25 tests), clippy on `zoo-user` and `xtask`, and
+`cargo fmt --check`: clean.
 
 ## UI step 3 results: windows, dock menus, Applications (version 0.63.0)
 

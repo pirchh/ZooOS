@@ -725,6 +725,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "finder",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: notes_window_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "Finder-style Files and the Notes editor: a sidebar and icons; a sidebar click; a double-click opens a Rust file in Notes, coloured; Ctrl+S saves it; New Folder from a right-click",
+            interaction: Some(finder_steps()),
+            screen_checks: vec![
+                ("1-sidebar", check_finder),
+                ("2-code", check_code_colours),
+                ("3-folder", check_new_folder),
+            ],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -2428,8 +2445,8 @@ const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo."
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = title(img, "Files", true)?;
-    let sel = selected(img, "Photos/", true)?;
-    no_selected(img, "Documents/", true)?;
+    let sel = selected(img, "Photos", true)?;
+    no_selected(img, "Documents", true)?;
     let busy = content(img, "Thinking: ")?;
     Ok(format!(
         "while the model works (status `Thinking:` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
@@ -3411,7 +3428,7 @@ fn redraw_content_steps() -> Interaction {
 
 fn check_content_moved(img: &screen::Image) -> Result<String, String> {
     let t = title(img, "Files", true)?;
-    let sel = selected(img, "Photos/", true)?;
+    let sel = selected(img, "Photos", true)?;
     Ok(format!(
         "`Files` focused at {t:?}; `Photos/` selected at {sel:?}"
     ))
@@ -3508,11 +3525,11 @@ fn check_preview(img: &screen::Image) -> Result<String, String> {
 }
 
 fn check_back_up(img: &screen::Image) -> Result<String, String> {
-    let sel = selected(img, "Photos/", true)?;
-    no_selected(img, "Documents/", true)?;
+    let sel = selected(img, "Photos", true)?;
+    no_selected(img, "Documents", true)?;
     no_content(img, "Home/Photos")?;
     Ok(format!(
-        "back in `Home` from `Photos` with `Photos/` selected at {sel:?}"
+        "back in `Home` from `Photos` with `Photos` selected at {sel:?}"
     ))
 }
 
@@ -3810,13 +3827,28 @@ fn check_notes(img: &screen::Image) -> Result<String, String> {
 
 // ---- D10 Notes cursor (docs/d10-design.md) ------------------------------
 
+/// 0xRRGGBB as a screenshot pixel.
+fn rgb(c: u32) -> [u8; 3] {
+    [(c >> 16) as u8, (c >> 8) as u8, c as u8]
+}
+
 fn check_notes_cursor(img: &screen::Image) -> Result<String, String> {
-    let at = content(img, "aX|bc")?;
+    // The cursor is a bar between `aX` and `bc` (docs/u3f-design.md).
+    let at = content(img, "aX")?;
+    let rest = content(img, "bc")?;
     no_content(img, "aXY")?;
     no_content(img, "abcXY")?;
     content(img, "Documents/notes.txt (saved)")?;
+    let bar_x = at.0 + screen::ui_width(FaceId::Regular13, "aX") + 1;
+    let found = (bar_x..bar_x + 3).any(|x| img.pixel(x, at.1 - 6) == Some(rgb(LIGHT.accent)));
+    if rest.1 != at.1 || rest.0 <= at.0 || !found {
+        return Err(format!(
+            "no cursor bar between `aX` at {at:?} and `bc` at {rest:?} (looked at x {bar_x}..{})",
+            bar_x + 3
+        ));
+    }
     Ok(format!(
-        "`aX|bc` at {at:?}: X inserted two places back, Y deleted at the cursor, saved"
+        "`aX`, the cursor bar at x {bar_x}, then `bc` at {rest:?}: X inserted two places back, Y deleted at the cursor, saved"
     ))
 }
 
@@ -3855,13 +3887,7 @@ fn check_dark(img: &screen::Image) -> Result<String, String> {
     let d = &zui::DARK;
     let t = ui(img, FaceId::Medium13, "Files", d.title_text, d.title)?;
     let home = ui(img, FaceId::Regular13, "Home", d.text, d.content)?;
-    let sel = ui(
-        img,
-        FaceId::Regular13,
-        "Documents/",
-        d.select_text,
-        d.select,
-    )?;
+    let sel = ui(img, FaceId::Regular13, "Documents", d.select_text, d.select)?;
     let menu = ui(
         img,
         FaceId::SemiBold13,
@@ -3892,7 +3918,7 @@ fn check_dark(img: &screen::Image) -> Result<String, String> {
         return Err("the wallpaper is not the dark one".into());
     }
     Ok(format!(
-        "dark: `Files` title {t:?}, `Home` {home:?}, `Documents/` selected {sel:?}, menu bar {menu:?}, dark wallpaper; no light text left"
+        "dark: `Files` title {t:?}, `Home` {home:?}, `Documents` selected {sel:?}, menu bar {menu:?}, dark wallpaper; no light text left"
     ))
 }
 
@@ -3999,6 +4025,179 @@ fn dock_menu_expectation(normal: &Expectation) -> Expectation {
     e
 }
 
+/// The `finder` case: Notes (pid 31) opens and lasts to the end.
+fn notes_window_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=notes",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=31 name=notes code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+/// The centre-left of Files' sidebar item `k` (first window).
+fn files_side(k: usize) -> (usize, usize) {
+    let w = win(FILES_WIN);
+    (w.0 + 60, zui::line_top(w, k) + zui::LINE_H / 2)
+}
+
+/// Content line `k` of the first Files window, with its sidebar.
+fn finder_line(k: usize) -> (usize, usize) {
+    let w = win(FILES_WIN);
+    (
+        w.0 + zui::SIDEBAR_W + 60,
+        zui::line_top(w, k) + zui::LINE_H / 2,
+    )
+}
+
+fn finder_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::Screenshot("1-sidebar"),
+        // Documents in the sidebar.
+        p.to(files_side(2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: showing Home/Documents".into()),
+        // notes.txt, recipes, zoo.rs: a double-click on zoo.rs.
+        p.to(finder_line(3)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: opening Documents/zoo.rs in Notes".into()),
+        Action::WaitContains("PeacockHandler: Notes opens Documents/zoo.rs".into()),
+        Action::WaitContains("Notes: opened Documents/zoo.rs (".into()),
+        // Away from the text, then a change saved with Ctrl+S.
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+    ]);
+    steps.push(Action::Keys(typed("end")));
+    steps.extend([
+        Action::Key("ctrl", true),
+        Action::Keys(vec!["s"]),
+        Action::Key("ctrl", false),
+        // 360 bytes, `end` and the Enter `typed` adds.
+        Action::WaitContains("Notes: saved 364 bytes".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-code"),
+    ]);
+    // A right-click on Files' empty space (left of the Notes window).
+    let w = win(FILES_WIN);
+    let at = (w.0 + zui::SIDEBAR_W + 100, zui::line_top(w, 8));
+    let seps = [false, false];
+    steps.extend([
+        p.to(at),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains("PeacockHandler: menu Files: New Folder, New Text File".into()),
+        p.to((
+            at.0 + 90,
+            zui::menu_item_top(at.1 + 2, &seps, 0) + zui::MENU_ITEM_H / 2,
+        )),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: created folder Documents/untitled folder".into()),
+        p.to((SCREEN.0 / 2, SCREEN.1 - 200)),
+        Action::Settle(QUIET),
+        Action::Screenshot("3-folder"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Files at start: the sidebar (Home selected), a folder icon, the kind
+/// column.
+fn check_finder(img: &screen::Image) -> Result<String, String> {
+    let fav = ui(
+        img,
+        FaceId::Regular13,
+        "Favourites",
+        LIGHT.text_dim,
+        LIGHT.sidebar,
+    )?;
+    let docs = ui(
+        img,
+        FaceId::Regular13,
+        "Documents",
+        LIGHT.text,
+        LIGHT.sidebar,
+    )?;
+    let home = ui(
+        img,
+        FaceId::Regular13,
+        "Home",
+        LIGHT.text,
+        LIGHT.sidebar_select,
+    )?;
+    let kind = selected(img, "Folder", true)?;
+    // Documents' folder icon: its light front.
+    let w = win(FILES_WIN);
+    let (x0, y0) = (
+        w.0 + 1 + zui::SIDEBAR_W + zui::TEXT_X,
+        zui::line_top(w, 1) + 3,
+    );
+    let front = rgb(0x7DC2F7);
+    let icon = (y0..y0 + 16).any(|y| (x0..x0 + 16).any(|x| img.pixel(x, y) == Some(front)));
+    if !icon {
+        return Err(format!("no folder icon at ({x0}, {y0})"));
+    }
+    Ok(format!(
+        "sidebar: `Favourites` {fav:?}, `Home` selected {home:?}, `Documents` {docs:?}; folder icon at ({x0}, {y0}); `Folder` {kind:?}"
+    ))
+}
+
+/// zoo.rs in Notes: keywords, types, strings, comments, macros and
+/// functions each in their colour.
+fn check_code_colours(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "zoo.rs", true)?;
+    content(img, "Documents/zoo.rs (saved)")?;
+    let k = &LIGHT.syntax;
+    let mut found = Vec::new();
+    for (text, c, role) in [
+        ("struct", k[0], "keyword"),
+        ("\"Peacock\"", k[1], "string"),
+        (
+            "// A small program, to show Notes' colours.",
+            k[2],
+            "comment",
+        ),
+        ("u32", k[4], "type"),
+        ("println!", k[6], "macro"),
+        ("main", k[5], "function"),
+    ] {
+        let at = ui(img, FaceId::Regular13, text, c, LIGHT.content)
+            .map_err(|e| format!("{role}: {e}"))?;
+        found.push(format!("{role} `{text}` {at:?}"));
+    }
+    // Not all one colour: the keyword is not in the text colour.
+    no_ui(img, FaceId::Regular13, "struct", LIGHT.text, LIGHT.content)?;
+    content(img, "end")?;
+    Ok(format!("`zoo.rs` {t:?}; {}", found.join(", ")))
+}
+
+fn check_new_folder(img: &screen::Image) -> Result<String, String> {
+    let at = selected(img, "untitled folder", true)?;
+    content(img, "Home/Documents")?;
+    Ok(format!("`untitled folder` made and selected at {at:?}"))
+}
+
 /// The `apps-folder` case: the desktop runs twice.
 fn apps_folder_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
@@ -4043,10 +4242,10 @@ fn remove_notes(p: &mut Ptr) -> Vec<Action> {
     ]
 }
 
-/// The centre-left of Files' content line `k` (first window).
+/// The centre-left of Files' content line `k` (first window, right of
+/// its sidebar).
 fn files_line(k: usize) -> (usize, usize) {
-    let w = win(FILES_WIN);
-    (w.0 + 60, zui::line_top(w, k) + zui::LINE_H / 2)
+    finder_line(k)
 }
 
 fn apps_folder_steps() -> Interaction {
@@ -4118,16 +4317,27 @@ fn check_apps_folder(img: &screen::Image) -> Result<String, String> {
 /// Notes is back in the dock: the four-icon dock, Notes' yellow in it.
 fn check_notes_back(img: &screen::Image) -> Result<String, String> {
     let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, 3);
-    let (cx, cy) = (x + zui::DOCK_ICON / 2, y + zui::DOCK_ICON / 2);
-    let yellow = [0xF5, 0xC3, 0x42];
-    let found = (y..y + zui::DOCK_ICON)
-        .any(|py| (x..x + zui::DOCK_ICON).any(|px| img.pixel(px, py) == Some(yellow)));
-    if !found {
+    let row = notes_band_row(y);
+    let found = (x..x + zui::DOCK_ICON)
+        .filter(|&px| notes_yellow(img.pixel(px, row)))
+        .count();
+    if found < zui::DOCK_ICON / 2 {
         return Err(format!(
-            "no Notes yellow in the fourth dock slot around ({cx}, {cy})"
+            "no Notes yellow band in the fourth dock slot: {found} yellow pixels on row {row}"
         ));
     }
     Ok(format!("Notes back in the dock, in slot 4 at ({x}, {y})"))
+}
+
+/// The row through the yellow band at the top of the Notes icon whose
+/// top is at `icon_y` (docs/u3g-design.md); no other icon is yellow there.
+fn notes_band_row(icon_y: usize) -> usize {
+    icon_y + zui::DOCK_ICON * 15 / 100
+}
+
+/// Notes' band yellow (a gradient from 0xFFE27A to 0xF6C12E).
+fn notes_yellow(p: Option<[u8; 3]>) -> bool {
+    p.is_some_and(|[r, g, b]| r >= 0xF0 && (0xB8..=0xE8).contains(&g) && b <= 0x90)
 }
 
 /// The `windows` case: a second Files process (pid 31) starts and ends.
@@ -4318,7 +4528,6 @@ fn dock_minis_steps() -> Interaction {
 /// with their applications' badges: Files' blue first, the Assistant's
 /// violet second.
 fn check_dock_minis(img: &screen::Image) -> Result<String, String> {
-    let rgb = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8];
     let (_, y, _, h) = zui::dock_rect_with(SCREEN.0, SCREEN.1, 4, 2);
     let lx = zui::dock_divider_x(SCREEN.0, SCREEN.1, 4, 2);
     if img.pixel(lx, y + h / 2) != Some(rgb(LIGHT.separator)) {
@@ -4443,10 +4652,14 @@ fn check_dock_menu(img: &screen::Image) -> Result<String, String> {
 /// the row through their middles.
 fn check_notes_removed(img: &screen::Image) -> Result<String, String> {
     let (x, y, w, _) = zui::dock_rect(SCREEN.0, SCREEN.1, 3);
-    let row = y + zui::DOCK_PAD + zui::DOCK_ICON / 2;
-    let yellow = [0xF5, 0xC3, 0x42];
-    if (x..x + w).any(|px| img.pixel(px, row) == Some(yellow)) {
-        return Err("Notes' yellow is still in the dock".into());
+    let row = notes_band_row(y + zui::DOCK_PAD);
+    let found = (x..x + w)
+        .filter(|&px| notes_yellow(img.pixel(px, row)))
+        .count();
+    if found > 2 {
+        return Err(format!(
+            "Notes' yellow band is still in the dock ({found} pixels on row {row})"
+        ));
     }
     // The dock is up: Files' running dot, in the three-icon layout.
     let (fx, fy) = zui::dock_icon(SCREEN.0, SCREEN.1, 3, 0);
@@ -4524,7 +4737,6 @@ fn check_one_files(img: &screen::Image) -> Result<String, String> {
 /// text colour, the gap between its two upper toes in the bar colour (the
 /// old mark had a toe there).
 fn logo_at(img: &screen::Image, scale: usize) -> Result<String, String> {
-    let rgb = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8];
     let (ink, bar) = (rgb(LIGHT.bar_text), rgb(zui::bar_color(&LIGHT)));
     // Design units (50, 66) and (50, 30) in the 18-pixel box at (9, 4).
     let pad = (18 * scale, 16 * scale);
@@ -4854,22 +5066,23 @@ fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
     let menu = menu_app(img, "Files")?;
     let t = title(img, "Files", true)?;
     content(img, "Home")?;
-    let first = selected(img, "Documents/", true)?;
+    let first = selected(img, "Documents", true)?;
     content(img, "This window is a crash test.")?;
     title(img, "Assistant", false)?;
-    no_selected(img, "Documentsx/", true)?;
+    no_selected(img, "Documentsx", true)?;
     no_title(img, "Files", false)?;
     Ok(format!(
-        "menu bar names `Files` at {menu:?}; `Files` focused (title at {t:?}) with `Documents/` selected at {first:?}; Crash Test and the Assistant shown; wrong text rejected"
+        "menu bar names `Files` at {menu:?}; `Files` focused (title at {t:?}) with `Documents` selected at {first:?}; Crash Test and the Assistant shown; wrong text rejected"
     ))
 }
 
 fn check_file_details(img: &screen::Image) -> Result<String, String> {
     let name = content(img, "Home/Photos")?;
-    let size = selected(img, "README.txt (34 bytes)", true)?;
+    selected(img, "README.txt", true)?;
+    let size = selected(img, "34 bytes", true)?;
     no_content(img, "Home/Music")?;
     Ok(format!(
-        "3rd entry opened: `Home/Photos` at {name:?}, `README.txt (34 bytes)` selected at {size:?}; wrong folder rejected"
+        "3rd entry opened: `Home/Photos` at {name:?}, `README.txt` selected, its size `34 bytes` at {size:?}; wrong folder rejected"
     ))
 }
 
@@ -4888,7 +5101,7 @@ fn check_app_restart(img: &screen::Image) -> Result<String, String> {
 fn check_server_restart(img: &screen::Image) -> Result<String, String> {
     let menu = menu_app(img, "Files")?;
     let t = title(img, "Files", true)?;
-    let first = selected(img, "Documents/", true)?;
+    let first = selected(img, "Documents", true)?;
     // A fresh window server: the old crash banner is gone.
     no_banner_body(img, "It crashed and was restarted (1 of 3).")?;
     Ok(format!(

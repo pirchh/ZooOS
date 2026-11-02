@@ -270,11 +270,14 @@ const MARGIN: usize = SHADOW + SHADOW_DROP;
 const BANNER_W: usize = 360;
 const BANNER_H: usize = 62;
 const BANNER_TICKS: u64 = 600;
-const TEXT_COLS: usize = 80;
+const TEXT_COLS: usize = 240;
+/// Sidebar items a window can show (docs/u3f-design.md).
+const SIDE_ITEMS: usize = 12;
 
 /// Test-only fault address (docs/m4-design.md §4, the F12 key).
 const KERNEL_ADDR: u64 = 0xFFFF_C000_0000_1000;
 
+#[derive(Clone)]
 struct Text {
     buf: [u8; TEXT_COLS],
     len: usize,
@@ -320,15 +323,20 @@ struct App {
     /// Lines whose look changed since the window was last shown (bit k:
     /// line k), so only they are drawn again.
     changed: u32,
-    lines: [Text; MAX_LINES],
+    /// On the heap: eight windows of these are too much for the stack.
+    lines: Vec<Text>,
     count: usize,
     selected: Option<usize>,
     /// A request waiting to be handled (`Request`).
     request: Option<Request>,
+    /// Sidebar items (docs/u3f-design.md); none: no sidebar.
+    side: Vec<Text>,
+    sides: usize,
+    side_selected: Option<usize>,
 }
 
 impl App {
-    const fn new(prog: usize) -> App {
+    fn new(prog: usize) -> App {
         let (label, program, wants_home) = CATALOG[prog];
         App {
             label,
@@ -344,10 +352,13 @@ impl App {
             title: Text::new(),
             title_changed: false,
             changed: 0,
-            lines: [const { Text::new() }; MAX_LINES],
+            lines: (0..MAX_LINES).map(|_| Text::new()).collect(),
             count: 0,
             selected: None,
             request: None,
+            side: (0..SIDE_ITEMS).map(|_| Text::new()).collect(),
+            sides: 0,
+            side_selected: None,
         }
     }
 
@@ -442,6 +453,42 @@ impl App {
                 n += 1;
             }
             self.request = Some(Request::Menu(alloc::boxed::Box::new(labels), n));
+        } else if let Some(rest) = msg.strip_prefix(b"side:") {
+            // The sidebar is drawn with the frame: a change redraws the
+            // window (as a new title does).
+            if let Some(colon) = rest.iter().position(|&b| b == b':')
+                && let Some(i) = parse_num(&rest[..colon])
+                && i < SIDE_ITEMS
+            {
+                let t = &rest[colon + 1..];
+                let n = t.len().min(TEXT_COLS);
+                if self.side[i].buf[..self.side[i].len] != t[..n] {
+                    self.side[i].set(t);
+                    self.title_changed = true;
+                }
+            }
+        } else if let Some(n) = msg.strip_prefix(b"sides:") {
+            if let Some(n) = parse_num(n) {
+                let n = n.min(SIDE_ITEMS);
+                if n != self.sides {
+                    self.sides = n;
+                    self.title_changed = true;
+                }
+            }
+        } else if let Some(s) = msg.strip_prefix(b"side-sel:") {
+            let new = parse_num(s);
+            if new != self.side_selected {
+                self.side_selected = new;
+                self.title_changed = true;
+            }
+        } else if let Some(rest) = msg.strip_prefix(b"open:") {
+            if let Some(colon) = rest.iter().position(|&b| b == b':')
+                && let Some(prog) = program_index(&rest[..colon])
+            {
+                let mut path = Text::new();
+                path.set(&rest[colon + 1..]);
+                self.request = Some(Request::Open(prog, alloc::boxed::Box::new(path)));
+            }
         } else if let Some(p) = msg.strip_prefix(b"dock-add:") {
             self.request = program_index(p).map(Request::DockAdd);
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
@@ -549,6 +596,78 @@ impl Screen {
         if a != 0 && x >= cx0 && x < cx1 && y >= cy0 && y < cy1 {
             let p = &mut self.back[y * self.w + x];
             *p = if a == 255 { c } else { blend(*p, c, a) };
+        }
+    }
+
+    /// An anti-aliased shape in logical box (x, y, w, h): `inside(u, v)`
+    /// says whether a point (logical units from the box's corner) is in
+    /// it; each device pixel is sampled 4 x 4 times (docs/u3f-design.md).
+    fn shape(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        c: u32,
+        inside: impl Fn(f32, f32) -> bool,
+    ) {
+        let s = self.s;
+        if !self.visible(x, y, w, h) {
+            return;
+        }
+        let step = 1.0 / (4 * s) as f32;
+        for dy in 0..h * s {
+            for dx in 0..w * s {
+                let mut n = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let u = (dx * 4 + sx) as f32 * step + step / 2.0;
+                        let v = (dy * 4 + sy) as f32 * step + step / 2.0;
+                        n += u32::from(inside(u, v));
+                    }
+                }
+                if n > 0 {
+                    self.blend_dev(x * s + dx, y * s + dy, c, (n * 255 / 16) as u8);
+                }
+            }
+        }
+    }
+
+    /// As `shape`, filled with a vertical gradient from `top` to `bottom`
+    /// over the box, and blended by `alpha` (docs/u3g-design.md).
+    #[allow(clippy::too_many_arguments)]
+    fn shade(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        (top, bottom): (u32, u32),
+        alpha: u8,
+        inside: impl Fn(f32, f32) -> bool,
+    ) {
+        let s = self.s;
+        if !self.visible(x, y, w, h) {
+            return;
+        }
+        let step = 1.0 / (4 * s) as f32;
+        let rows = (h * s).max(1);
+        for dy in 0..h * s {
+            let c = blend(top, bottom, (dy * 255 / rows) as u8);
+            for dx in 0..w * s {
+                let mut n = 0u32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let u = (dx * 4 + sx) as f32 * step + step / 2.0;
+                        let v = (dy * 4 + sy) as f32 * step + step / 2.0;
+                        n += u32::from(inside(u, v));
+                    }
+                }
+                if n > 0 {
+                    let a = n * u32::from(alpha) / 16;
+                    self.blend_dev(x * s + dx, y * s + dy, c, a as u8);
+                }
+            }
         }
     }
 
@@ -877,6 +996,142 @@ enum Request {
     DockAdd(usize),
     /// Open this application.
     Launch(usize),
+    /// Open this file in a window of this application.
+    Open(usize, alloc::boxed::Box<Text>),
+}
+
+/// Whether (u, v) is in the rounded rectangle (x0, y0, x1, y1) of
+/// corner radius `r`.
+fn rr(u: f32, v: f32, (x0, y0, x1, y1): (f32, f32, f32, f32), r: f32) -> bool {
+    if u < x0 || u > x1 || v < y0 || v > y1 {
+        return false;
+    }
+    // Not `clamp`: it panics when rounding makes x0 + r > x1 - r.
+    let cx = u.max(x0 + r).min(x1 - r);
+    let cy = v.max(y0 + r).min(y1 - r);
+    (u - cx) * (u - cx) + (v - cy) * (v - cy) <= r * r
+}
+
+fn circle(u: f32, v: f32, cx: f32, cy: f32, r: f32) -> bool {
+    (u - cx) * (u - cx) + (v - cy) * (v - cy) <= r * r
+}
+
+/// A dock icon's image: the icon with room for its shadow, the icon at
+/// `ICON_AT` in it (logical pixels).
+const ICON_BOX: (usize, usize) = (DOCK_ICON + 8, DOCK_ICON + 10);
+const ICON_AT: (usize, usize) = (4, 2);
+
+/// A four-pointed sparkle centred at (cx, cy), `r` from centre to tip.
+fn sparkle(u: f32, v: f32, cx: f32, cy: f32, r: f32) -> bool {
+    let (a, b) = ((u - cx).abs(), (v - cy).abs());
+    a / r + b / (r * 0.3) <= 1.0 || a / (r * 0.3) + b / r <= 1.0 || a + b <= r * 0.42
+}
+
+/// Application `k`'s icon, `d` logical pixels square, at (x, y)
+/// (docs/u3g-design.md): a tile lit from above (a vertical gradient), a
+/// bright rim along its top and a darker one along its bottom, a soft
+/// shadow under it, and its symbol with a shadow of its own.
+#[allow(clippy::manual_range_contains)]
+fn app_icon(s: &mut Screen, k: usize, x: usize, y: usize, d: usize) {
+    let f = d as f32;
+    let rad = 0.225 * f;
+    let tile = move |u: f32, v: f32| rr(u, v, (0.0, 0.0, f, f), rad);
+    let big = d >= 32;
+    if big && x >= 4 && y >= 2 {
+        // The shadow: three widening, faint layers, a little lower.
+        for (grow, a) in [(3.0f32, 10u8), (2.0, 14), (1.0, 20)] {
+            s.shade(x - 4, y - 2, d + 8, d + 10, (0, 0), a, move |u, v| {
+                rr(
+                    u - 4.0,
+                    v - 4.0,
+                    (-grow, -grow, f + grow, f + grow),
+                    rad + grow,
+                )
+            });
+        }
+    }
+    let colours = [
+        (0x6CC4FF, 0x1F7AE8),
+        (0xB9B9C0, 0x6C6C73),
+        (0xB497FF, 0x5A36E0),
+        (0xFFFFFF, 0xECECEF),
+    ];
+    s.shade(x, y, d, d, colours[k], 255, tile);
+    if k == 3 {
+        // Notes: a yellow band at the top, ruled lines below it.
+        s.shade(
+            x,
+            y,
+            d,
+            d * 32 / 100,
+            (0xFFE27A, 0xF6C12E),
+            255,
+            move |u, v| tile(u, v) && v < 0.3 * f,
+        );
+        s.shade(x, y, d, d, (0xD9A621, 0xD9A621), 160, move |u, v| {
+            tile(u, v) && v >= 0.3 * f && v < 0.3 * f + f / 48.0 * 1.5
+        });
+        for row in [0.47f32, 0.6, 0.73] {
+            s.shade(x, y, d, d, (0xC9C9CE, 0xC9C9CE), 255, move |u, v| {
+                u >= 0.18 * f && u <= 0.82 * f && v >= row * f && v <= row * f + f / 32.0
+            });
+        }
+    }
+    // The rims: a bright edge along the top, a darker one along the bottom.
+    let w = (f / 40.0).max(0.6);
+    s.shade(x, y, d, d, (0xFFFFFF, 0xFFFFFF), 90, move |u, v| {
+        tile(u, v) && !rr(u, v - w, (0.0, 0.0, f, f), rad) && v < f * 0.5
+    });
+    s.shade(x, y, d, d, (0, 0), 50, move |u, v| {
+        tile(u, v) && !rr(u, v + w, (0.0, 0.0, f, f), rad) && v > f * 0.5
+    });
+    if k == 3 {
+        return;
+    }
+    // The symbol, in unit coordinates, and its colours.
+    let glyph = move |u: f32, v: f32| -> bool {
+        let (u, v) = (u / f, v / f);
+        match k {
+            0 => rr(u, v, (0.2, 0.28, 0.52, 0.42), 0.04) || rr(u, v, (0.2, 0.34, 0.8, 0.76), 0.06),
+            1 => v <= 0.78 && v >= 0.2 && (u - 0.5).abs() <= (v - 0.2) * 0.6,
+            _ => sparkle(u, v, 0.45, 0.54, 0.3) || sparkle(u, v, 0.74, 0.27, 0.11),
+        }
+    };
+    let ink = [
+        (0xD6EBFF, 0xBFDDFB),
+        (0xFFE066, 0xF5B400),
+        (0xFFFFFF, 0xEDE6FF),
+    ][k];
+    let drop = (f / 36.0).max(0.5);
+    s.shade(x, y, d, d, (0, 0), 70, move |u, v| glyph(u, v - drop));
+    s.shade(x, y, d, d, ink, 255, glyph);
+    match k {
+        // Files: the folder's lighter front.
+        0 => s.shade(x, y, d, d, (0xFFFFFF, 0xE4F0FC), 255, move |u, v| {
+            rr(u / f, v / f, (0.2, 0.42, 0.8, 0.76), 0.06)
+        }),
+        // Crash Test: an exclamation mark on the warning sign.
+        1 => s.shade(x, y, d, d, (0x2C2C2E, 0x2C2C2E), 255, move |u, v| {
+            let (u, v) = (u / f, v / f);
+            rr(u, v, (0.47, 0.4, 0.53, 0.6), 0.03) || circle(u, v, 0.5, 0.69, 0.036)
+        }),
+        _ => {}
+    }
+}
+
+/// The colour of markup role `r` (docs/u3f-design.md).
+fn role_colour(t: &Theme, r: u8, fg: u32) -> u32 {
+    match r {
+        b'k' => t.syntax[0],
+        b's' => t.syntax[1],
+        b'c' => t.syntax[2],
+        b'n' => t.syntax[3],
+        b't' => t.syntax[4],
+        b'f' => t.syntax[5],
+        b'm' => t.syntax[6],
+        b'd' => t.text_dim,
+        _ => fg,
+    }
 }
 
 /// The application whose program is `program`.
@@ -1366,6 +1621,9 @@ struct Desktop {
     layers: [Layer; WINDOWS],
     /// Scratch buffer for building layers (the render over white).
     scratch: Vec<u32>,
+    /// Application icons for the dock, drawn once at the screen's scale
+    /// (docs/u3g-design.md): premultiplied, `ICON_BOX` square plus margins.
+    icons: Vec<Vec<u32>>,
     /// The pointer is a hardware cursor: moving it needs no redraw
     /// (docs/gpu1-design.md).
     hw_cursor: bool,
@@ -1409,6 +1667,8 @@ struct Desktop {
     resize: Option<(usize, usize, usize)>,
     /// The last press on a title bar: (tick, x, y), for double-clicks.
     last_click: (u64, usize, usize),
+    /// The last click on a content line: (tick, window, line).
+    last_line: (u64, usize, usize),
     /// A zoomed window's rectangle before zooming (docs/d9-design.md).
     unzoomed: [Option<(usize, usize, usize, usize)>; WINDOWS],
     /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
@@ -1850,16 +2110,21 @@ impl Desktop {
         let Some(DockHit::App(k)) = self.dock_hit() else {
             // On a window's content line: its application decides.
             if let Some(i) = self.window_at(self.px, self.py) {
-                let line = (0..self.apps[i].count).find(|&k| {
-                    let top = zoo_abi::ui::line_top(self.wins[i], k);
-                    self.py >= top && self.py < top + LINE_H
-                });
-                if let Some(line) = line {
-                    self.set_focus(i);
-                    let mut l = Line::new();
-                    let _ = write!(l, "rclick:{}", line);
-                    let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                let (_, cy, _, _) = self.content_rect(i);
+                if self.py < cy || self.on_sidebar(i) || !self.apps[i].running {
+                    return;
                 }
+                self.set_focus(i);
+                let mut l = Line::new();
+                match self.line_at(i).filter(|&k| k < self.apps[i].count) {
+                    Some(line) => {
+                        let _ = write!(l, "rclick:{}", line);
+                    }
+                    None => {
+                        let _ = l.write_str("rclick:none");
+                    }
+                }
+                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
             }
             return;
         };
@@ -1969,7 +2234,9 @@ impl Desktop {
         }
         let label = CATALOG[prog].0;
         match a {
-            MenuAction::NewWindow => self.new_window_of(prog),
+            MenuAction::NewWindow => {
+                self.new_window_of(prog);
+            }
             MenuAction::Open => self.dock_click(prog),
             MenuAction::Remove => {
                 self.damage_dock();
@@ -2038,6 +2305,24 @@ impl Desktop {
         match req {
             Request::DockAdd(prog) => self.keep_in_dock(prog),
             Request::Launch(prog) => self.dock_click(prog),
+            Request::Open(prog, path) => {
+                let w = if self.program_running(prog) {
+                    self.new_window_of(prog)
+                } else {
+                    self.dock_click(prog);
+                    (!self.apps[prog].closed).then_some(prog)
+                };
+                if let Some(w) = w {
+                    let mut l = Line::new();
+                    let _ = write!(l, "open:{}", path.as_str());
+                    let _ = zoo_rt::send(self.apps[w].chan, l.as_str().as_bytes());
+                    zoo_rt::log!(
+                        "PeacockHandler: {} opens {}",
+                        self.apps[w].label,
+                        path.as_str()
+                    );
+                }
+            }
             Request::Menu(labels, n) => {
                 if n == 0 || i != self.focus {
                     return;
@@ -2146,9 +2431,10 @@ impl Desktop {
     /// Another window of application `prog`, in a free slot, cascaded
     /// from its frontmost window (docs/u3-design.md); its first window if
     /// none is open.
-    fn new_window_of(&mut self, prog: usize) {
+    fn new_window_of(&mut self, prog: usize) -> Option<usize> {
         if !self.program_running(prog) {
-            return self.dock_click(prog);
+            self.dock_click(prog);
+            return Some(prog);
         }
         let base = self
             .order
@@ -2160,7 +2446,7 @@ impl Desktop {
         let Some(i) = (PROGRAMS..WINDOWS).find(|&i| self.apps[i].closed && self.anims[i].is_none())
         else {
             zoo_rt::log!("PeacockHandler: no room for another window");
-            return;
+            return None;
         };
         self.apps[i] = App::new(prog);
         let (fx, fy, fw, fh) = self.wins[base];
@@ -2173,7 +2459,7 @@ impl Desktop {
         if !self.apps[i].start(self.home) {
             zoo_rt::log!("PeacockHandler: cannot start {}", self.apps[i].program);
             self.apps[i].closed = true;
-            return;
+            return None;
         }
         zoo_rt::log!(
             "PeacockHandler: new window {} (window {})",
@@ -2184,6 +2470,7 @@ impl Desktop {
         self.damage_dock();
         self.begin(i, AnimKind::Open);
         self.set_focus(i);
+        Some(i)
     }
 
     /// The topmost other visible window gets the focus.
@@ -2397,7 +2684,48 @@ impl Desktop {
             }
         } else if self.on_resize_corner(i) {
             self.resize = Some((i, wx + ww - self.px, wy + wh - self.py));
+        } else {
+            self.content_click(i);
         }
+    }
+
+    /// The content line of window `i` under the pointer.
+    fn line_at(&self, i: usize) -> Option<usize> {
+        (0..MAX_LINES).find(|&k| {
+            let top = zoo_abi::ui::line_top(self.wins[i], k);
+            self.py >= top && self.py < top + LINE_H
+        })
+    }
+
+    /// Whether the pointer is over window `i`'s sidebar.
+    fn on_sidebar(&self, i: usize) -> bool {
+        self.apps[i].sides > 0 && self.px < self.wins[i].0 + zoo_abi::ui::SIDEBAR_W
+    }
+
+    /// A click in window `i`'s content goes to its application
+    /// (docs/u3f-design.md): `sclick:<k>` on a sidebar item, `click:<k>`
+    /// on a line, `dclick:<k>` for the second click of a double-click.
+    fn content_click(&mut self, i: usize) {
+        let Some(k) = self.line_at(i) else {
+            return;
+        };
+        let mut l = Line::new();
+        if self.on_sidebar(i) {
+            if k >= self.apps[i].sides {
+                return;
+            }
+            let _ = write!(l, "sclick:{}", k);
+        } else {
+            if k >= self.apps[i].count {
+                return;
+            }
+            let now = zoo_rt::ticks();
+            let (t, w, line) = self.last_line;
+            let double = w == i && line == k && now.saturating_sub(t) <= DOUBLE_CLICK;
+            let _ = write!(l, "{}:{}", if double { "dclick" } else { "click" }, k);
+            self.last_line = if double { (0, WINDOWS, 0) } else { (now, i, k) };
+        }
+        let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
     }
 
     /// Redraws the damaged areas and shows them; records the frame's cost.
@@ -2968,12 +3296,58 @@ impl Desktop {
             );
             return;
         }
-        for li in 0..app.count {
+        // The sidebar (docs/u3f-design.md).
+        let sides = app.sides;
+        let side_w = if sides > 0 { zoo_abi::ui::SIDEBAR_W } else { 0 };
+        if sides > 0 {
+            let top = y + TITLE_H;
+            let sh = h.saturating_sub(TITLE_H + 1);
+            self.screen.round_rect(
+                x + 1,
+                top,
+                side_w,
+                sh,
+                RADIUS,
+                t.sidebar,
+                255,
+                [false, false, true, false],
+            );
+            self.screen.fill(x + side_w, top, 1, sh, t.separator);
+            for k in 0..sides {
+                let top = zoo_abi::ui::line_top(self.wins[i], k);
+                if top + LINE_H > y + h - 4 {
+                    break;
+                }
+                if self.apps[i].side_selected == Some(k) {
+                    self.screen.round_rect(
+                        x + 9,
+                        top,
+                        side_w - 16,
+                        LINE_H,
+                        5,
+                        t.sidebar_select,
+                        255,
+                        all,
+                    );
+                }
+                let item = self.apps[i].side[k].clone();
+                self.rich_text(
+                    x + TEXT_X,
+                    top + BASELINE,
+                    item.as_str(),
+                    t.text,
+                    x + side_w - 8,
+                    false,
+                );
+            }
+        }
+        let cx = x + side_w;
+        for li in 0..self.apps[i].count {
             let top = zoo_abi::ui::line_top(self.wins[i], li);
             if top + LINE_H > y + h - 4 {
                 break;
             }
-            let selected = app.selected == Some(li);
+            let selected = self.apps[i].selected == Some(li);
             let fg = if selected && focused {
                 t.select_text
             } else {
@@ -2982,16 +3356,174 @@ impl Desktop {
             if selected {
                 let bg = if focused { t.select } else { t.select_blurred };
                 self.screen
-                    .round_rect(x + 8, top, w - 16, LINE_H, 5, bg, 255, all);
+                    .round_rect(cx + 8, top, w - side_w - 16, LINE_H, 5, bg, 255, all);
             }
-            self.screen.text(
-                &regular,
-                x + TEXT_X,
+            let line = self.apps[i].lines[li].clone();
+            self.rich_text(
+                cx + TEXT_X,
                 top + BASELINE,
-                self.apps[i].lines[li].as_str(),
+                line.as_str(),
                 fg,
                 right,
+                selected && focused,
             );
+        }
+    }
+
+    /// A content line with markup (docs/u3f-design.md): an icon at the
+    /// start, colour roles, a caret, a right-aligned dim tail. `plain`
+    /// (a selected line) draws all of it in `fg`.
+    fn rich_text(&mut self, x: usize, base: usize, text: &str, fg: u32, max_x: usize, plain: bool) {
+        let t = self.theme();
+        let face = self.face(FaceId::Regular13);
+        let s = self.screen.s;
+        let b = text.as_bytes();
+        let mut x = x;
+        let mut k = 0;
+        if b.len() >= 2 && b[0] == 2 {
+            self.icon_small(b[1], x, base + 4 - 16, plain);
+            x += 22;
+            k = 2;
+        }
+        let mut colour = fg;
+        let mut start = k;
+        loop {
+            let end = k == b.len();
+            if !end && !matches!(b[k], 1 | 3 | b'\t') {
+                k += 1;
+                continue;
+            }
+            if start < k {
+                x = self
+                    .screen
+                    .text(&face, x, base, &text[start..k], colour, max_x);
+            }
+            if end {
+                return;
+            }
+            match b[k] {
+                1 => {
+                    if let Some(&r) = b.get(k + 1) {
+                        if !plain {
+                            colour = role_colour(t, r, fg);
+                        }
+                        k += 1;
+                    }
+                }
+                3 => {
+                    self.screen
+                        .fill(x + 1, base - 13, 2, 17, if plain { fg } else { t.accent });
+                    // Room for the bar, so it never covers a letter.
+                    x += 4;
+                }
+                _ => {
+                    let rest = &text[k + 1..];
+                    let w = face.width(rest).div_ceil(s);
+                    let c = if plain { fg } else { t.text_dim };
+                    let at = max_x.saturating_sub(w).max(x + 12);
+                    self.screen.text(&face, at, base, rest, c, max_x);
+                    return;
+                }
+            }
+            k += 1;
+            start = k;
+        }
+    }
+
+    /// A 16-px icon (docs/u3f-design.md) with its top-left at (x, y).
+    /// (Shapes read as coordinate bounds, so not as ranges.)
+    #[allow(clippy::manual_range_contains)]
+    fn icon_small(&mut self, kind: u8, x: usize, y: usize, on_select: bool) {
+        let t = self.theme();
+        let s = &mut self.screen;
+        if !s.visible(x, y, 16, 16) {
+            return;
+        }
+        let sym = if on_select { 0xFFFFFF } else { t.accent };
+        match kind {
+            b'F' => {
+                // A folder: the back with its tab, then the lighter front.
+                s.shape(x, y, 16, 16, 0x4A9FE8, |u, v| {
+                    rr(u, v, (1.0, 2.5, 7.5, 7.0), 1.5) || rr(u, v, (1.0, 4.0, 15.0, 14.5), 1.8)
+                });
+                s.shape(x, y, 16, 16, 0x7DC2F7, |u, v| {
+                    rr(u, v, (1.0, 6.0, 15.0, 14.5), 1.6)
+                });
+                s.shape(x, y, 16, 16, 0xA9D8FB, |u, v| {
+                    rr(u, v, (1.0, 6.0, 15.0, 7.0), 0.5)
+                });
+            }
+            b'D' | b'C' => {
+                // A page with a folded corner and lines of text.
+                let page = |u: f32, v: f32| rr(u, v, (2.5, 0.5, 13.5, 15.5), 1.5) && u - v < 9.5;
+                s.shape(x, y, 16, 16, 0xA9A9AF, page);
+                s.shape(x, y, 16, 16, 0xFFFFFF, |u, v| {
+                    rr(u, v, (3.3, 1.3, 12.7, 14.7), 1.0) && u - v < 8.7
+                });
+                s.shape(x, y, 16, 16, 0xD4D4D9, |u, v| {
+                    u >= 9.6 && v <= 4.4 && v >= u - 9.6 && u <= 13.0
+                });
+                let lines: [(u32, f32); 4] = if kind == b'C' {
+                    [
+                        (0xAD3DA4, 8.0),
+                        (0x3A7BD5, 10.5),
+                        (0x4C9A2A, 7.0),
+                        (0x3A7BD5, 9.0),
+                    ]
+                } else {
+                    [(0xC5C5CB, 10.5); 4]
+                };
+                for (j, &(c, end)) in lines.iter().enumerate() {
+                    let v0 = 5.5 + 2.3 * j as f32;
+                    s.shape(x, y, 16, 16, c, |u, v| {
+                        u >= 5.0 && u <= end && v >= v0 && v <= v0 + 1.1
+                    });
+                }
+            }
+            b'H' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // A house: the roof, the walls, a door.
+                let roof = v >= 1.5
+                    && v <= 8.5
+                    && (u - 8.0).abs() <= (v - 1.5) * 1.05 + 0.6
+                    && (u - 8.0).abs() >= (v - 1.5) * 1.05 - 1.9;
+                let walls = rr(u, v, (3.2, 7.0, 12.8, 14.5), 1.0)
+                    && !(rr(u, v, (4.6, 8.0, 11.4, 13.2), 0.6)
+                        && !(u >= 6.6 && u <= 9.4 && v >= 9.8));
+                roof || walls
+            }),
+            b'O' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // A page outline with two lines.
+                (rr(u, v, (3.0, 1.0, 13.0, 15.0), 1.8) && !rr(u, v, (4.4, 2.4, 11.6, 13.6), 0.8))
+                    || (u >= 6.0
+                        && u <= 10.0
+                        && ((v >= 6.0 && v <= 7.2) || (v >= 9.0 && v <= 10.2)))
+            }),
+            b'M' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // Two beamed notes.
+                circle(u, v, 5.0, 12.5, 2.4)
+                    || circle(u, v, 12.0, 11.0, 2.4)
+                    || (u >= 6.2 && u <= 7.4 && v >= 4.0 && v <= 12.5)
+                    || (u >= 13.2 && u <= 14.4 && v >= 2.5 && v <= 11.0)
+                    || (u >= 6.2 && u <= 14.4 && {
+                        let top = 4.0 - (u - 6.2) * (1.5 / 8.2);
+                        v >= top - 0.2 && v <= top + 2.0
+                    })
+            }),
+            b'P' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // A photo: a frame, a hill and the sun.
+                let frame =
+                    rr(u, v, (1.0, 2.5, 15.0, 13.5), 2.2) && !rr(u, v, (2.4, 3.9, 13.6, 12.1), 1.0);
+                let hill = v <= 12.1 && v >= 6.0 + (u - 6.5).abs() * 1.1 && u >= 2.4;
+                frame || hill || circle(u, v, 11.0, 6.6, 1.5)
+            }),
+            b'A' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // Applications: four rounded squares.
+                [(1.5, 1.5), (8.7, 1.5), (1.5, 8.7), (8.7, 8.7)]
+                    .iter()
+                    .any(|&(a, b)| rr(u, v, (a, b, a + 5.8, b + 5.8), 1.6))
+            }),
+            b'0'..=b'3' => app_icon(s, (kind - b'0') as usize, x, y, 16),
+            _ => {}
         }
     }
 
@@ -3117,55 +3649,68 @@ impl Desktop {
 
     /// An application's dock icon: a rounded square in its colour with a
     /// simple white mark.
+    /// Application `k`'s dock icon at (x, y), from its cached image.
     fn draw_icon(&mut self, k: usize, x: usize, y: usize) {
-        let s = &mut self.screen;
-        let d = DOCK_ICON;
-        if !s.visible(x, y, d, d) {
+        let s = self.screen.s;
+        let (bw, bh) = (ICON_BOX.0 * s, ICON_BOX.1 * s);
+        if !self
+            .screen
+            .visible(x - ICON_AT.0, y - ICON_AT.1, ICON_BOX.0, ICON_BOX.1)
+        {
             return;
         }
-        s.round_rect(x, y, d, d, 12, ICON[k], 255, [true; 4]);
-        // A lighter top half, as if lit from above.
-        s.round_rect(x, y, d, d / 2, 12, 0xFFFFFF, 28, [true, true, false, false]);
-        let white = 0xFFFFFF;
-        match k {
-            // Files: a folder.
-            0 => {
-                s.round_rect(
-                    x + 11,
-                    y + 16,
-                    14,
-                    6,
-                    2,
-                    white,
-                    230,
-                    [true, true, false, false],
-                );
-                s.round_rect(x + 11, y + 20, 30, 20, 3, white, 255, [true; 4]);
+        if self.icons.len() != PROGRAMS || self.icons[k].len() != bw * bh {
+            self.build_icons();
+        }
+        let (x0, y0) = ((x - ICON_AT.0) * s, (y - ICON_AT.1) * s);
+        let (cx0, cy0, cx1, cy1) = self.screen.clip;
+        let sw = self.screen.w;
+        let img = &self.icons[k];
+        for row in y0.max(cy0)..(y0 + bh).min(cy1) {
+            let (a, b) = (x0.max(cx0), (x0 + bw).min(cx1));
+            if a >= b {
+                continue;
             }
-            // Crash Test: an exclamation mark.
-            1 => {
-                s.round_rect(x + d / 2 - 3, y + 12, 6, 20, 3, white, 255, [true; 4]);
-                s.disc(x + d / 2 - 3, y + 36, 6, white, white);
-            }
-            // Assistant: a four-pointed sparkle.
-            2 => {
-                let (cx, cy) = (x + d / 2, y + d / 2);
-                for r in 0..16usize {
-                    let half = (16 - r) / 4;
-                    s.fill(cx - half, cy - r, 2 * half + 1, 1, white);
-                    s.fill(cx - half, cy + r, 2 * half + 1, 1, white);
-                    s.fill(cx - r, cy - half, 1, 2 * half + 1, white);
-                    s.fill(cx + r, cy - half, 1, 2 * half + 1, white);
-                }
-            }
-            // Notes: a page with lines.
-            _ => {
-                s.round_rect(x + 10, y + 16, d - 20, d - 26, 4, white, 255, [true; 4]);
-                for l in 0..4 {
-                    s.fill(x + 16, y + 24 + l * 6, d - 32, 2, 0xC9C9CE);
-                }
+            let src = &img[(row - y0) * bw + (a - x0)..(row - y0) * bw + (b - x0)];
+            for (d, &c) in self.screen.back[row * sw + a..row * sw + b]
+                .iter_mut()
+                .zip(src)
+            {
+                *d = over(*d, c);
             }
         }
+    }
+
+    /// Draws every application icon once, over black and over white, and
+    /// keeps them premultiplied (as `build_layer` does for windows).
+    fn build_icons(&mut self) {
+        let s = self.screen.s;
+        let (bw, bh) = (ICON_BOX.0 * s, ICON_BOX.1 * s);
+        self.icons.clear();
+        for k in 0..PROGRAMS {
+            let mut black = alloc::vec![0u32; bw * bh];
+            let mut white = alloc::vec![0xFF_FFFFu32; bw * bh];
+            for buf in [&mut black, &mut white] {
+                // SAFETY: `buf` stays borrowed for this block and nothing
+                // else uses it; it is swapped back out of `screen` before
+                // the block ends, so it never outlives `buf`.
+                let tmp: &'static mut [u32] =
+                    unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len()) };
+                let back = core::mem::replace(&mut self.screen.back, tmp);
+                let saved = (self.screen.w, self.screen.h, self.screen.clip);
+                (self.screen.w, self.screen.h, self.screen.clip) = (bw, bh, (0, 0, bw, bh));
+                app_icon(&mut self.screen, k, ICON_AT.0, ICON_AT.1, DOCK_ICON);
+                (self.screen.w, self.screen.h, self.screen.clip) = saved;
+                self.screen.back = back;
+            }
+            for (b, &w) in black.iter_mut().zip(&white) {
+                let a = 255 - (((w >> 8) & 0xFF).saturating_sub((*b >> 8) & 0xFF));
+                let ch = |shift: u32| ((*b >> shift) & 0xFF).min(a) << shift;
+                *b = a << 24 | ch(16) | ch(8) | ch(0);
+            }
+            self.icons.push(black);
+        }
+        zoo_rt::log!("PeacockHandler: dock icons drawn at {}x", s);
     }
 
     /// The pointer as a hardware-cursor image (0xAARRGGBB, not
@@ -3365,6 +3910,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     let mut desk = Desktop {
         layers: [const { Layer::new() }; WINDOWS],
         scratch: Vec::new(),
+        icons: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
         cursor_hidden: false,
@@ -3408,6 +3954,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         drag: None,
         resize: None,
         last_click: (0, 0, 0),
+        last_line: (0, WINDOWS, 0),
         unzoomed: [None; WINDOWS],
         damage: [(0, 0, 0, 0); MAX_DAMAGE],
         damaged: 0,
@@ -3532,10 +4079,21 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 Some(DecodedKey::RawKey(KeyCode::ArrowRight)) => desk.send_key(Key::Right),
                 Some(DecodedKey::Unicode('\n')) => desk.send_key(Key::Enter),
                 Some(DecodedKey::Unicode('\u{8}')) => desk.send_key(Key::Back),
-                // Ctrl+N: a new window of the focused application.
-                Some(DecodedKey::Unicode('n' | 'N')) if desk.ctrl => {
-                    desk.new_window();
-                    dirty = true;
+                // Ctrl+N: a new window of the focused application; other
+                // Ctrl+letters go to the application (`key:ctrl:<c>`,
+                // capital with Shift).
+                Some(DecodedKey::Unicode(c)) if desk.ctrl && c.is_ascii_alphabetic() => {
+                    let c = if desk.shift {
+                        c.to_ascii_uppercase()
+                    } else {
+                        c.to_ascii_lowercase()
+                    };
+                    if c == 'n' {
+                        desk.new_window();
+                        dirty = true;
+                    } else {
+                        desk.send_key(Key::Ctrl(c));
+                    }
                 }
                 Some(DecodedKey::Unicode(c)) if (' '..='~').contains(&c) => {
                     desk.send_key(Key::Char(c))
