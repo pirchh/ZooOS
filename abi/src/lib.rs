@@ -127,7 +127,19 @@ pub mod sys {
     /// Display owner, with `DISPLAY_HW_CURSOR`: moves the cursor to
     /// (`a1`, `a2`).
     pub const CURSOR_MOVE: u64 = 68;
+    /// The network device (docs/n1-design.md): a handle to it, for one
+    /// process at a time (`BUSY` while another live process has one).
+    pub const NET_ATTACH: u64 = 69;
+    /// Sends the Ethernet frame `a2`/`a3` (at most `NET_MAX_FRAME` bytes).
+    pub const NET_SEND: u64 = 70;
+    /// Takes one received frame into `a2`/`a3`: its length, or `AGAIN`.
+    pub const NET_RECV: u64 = 71;
+    /// The device's MAC address, in the low 48 bits (first byte lowest).
+    pub const NET_MAC: u64 = 72;
 }
+
+/// Largest Ethernet frame `NET_SEND` takes and `NET_RECV` returns.
+pub const NET_MAX_FRAME: usize = 1514;
 
 /// The hardware cursor image is `CURSOR_SIZE` x `CURSOR_SIZE` pixels.
 pub const CURSOR_SIZE: usize = 64;

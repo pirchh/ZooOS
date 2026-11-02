@@ -150,6 +150,24 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Network steps 1 and 2: a network device, IPv4, TCP (2026-11-02)
+
+Designs: docs/n1-design.md, docs/n2-design.md. Version 0.67.0.
+
+- virtio-net through the legacy interface, polled, as the block driver:
+  the smallest working driver. Interrupts come with a network service.
+- Raw frames go to one process at a time (`NET_ATTACH`), like the
+  display; the stack (Ethernet, ARP, IPv4, ICMP, UDP, DHCP, a TCP client)
+  is in user space (`zoo_rt::net`). A supervised network service with
+  sockets is the next step, and is when other programs stop seeing raw
+  frames.
+- Tests are hermetic: `net-` cases use QEMU's user network with
+  `restrict=on` (no host or internet access); the TCP test reaches a
+  server the harness runs on 127.0.0.1 through `guestfwd`. `run` gets the
+  unrestricted network.
+- Test program names: `tern-test` and `puffin-test` were already C test
+  programs, so the network checks are SnowGooseTest and GyrfalconTest.
+
 ## Assistant step 2: the Assistant learns from use (2026-11-02)
 
 Design: docs/a2-design.md. Version 0.66.0.
