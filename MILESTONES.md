@@ -136,6 +136,7 @@ and verification:
 | N2 | TCP client and an HTTP request to a host-side test server (docs/n2-design.md) | done 2026-11-02 |
 | A2 | The Assistant learns: request → command memory on disk, learned from answers and corrections; alike requests answered at once without the model (docs/a2-design.md) | done 2026-11-02 |
 | A1 | Faster model engine: vector dot products, no unread scores, precomputed rotary frequencies; 2.0–2.7× in the guest, answers unchanged (docs/a1-design.md) | done 2026-11-02 |
+| U3h | Files: Rename in place, Move to Trash, the Trash in the sidebar, Put Back (docs/u3h-design.md) | done 2026-11-02 |
 | U3g | Dock and app icons with depth: lit gradient tiles, rims, soft shadows, shadowed symbols, cached per scale (docs/u3g-design.md) | done 2026-11-02 |
 | U4 | Animated window moves (menus and shortcuts: U4a; saved appearance: U4b) | proposed |
 | U4b | The appearance kept across restarts; Notes wraps between words (docs/u4b-design.md) | done 2026-11-02 |
