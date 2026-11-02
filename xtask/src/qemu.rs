@@ -421,6 +421,8 @@ pub enum Action {
     MouseAbsBurst(Vec<(u32, u32)>),
     /// Press (true) or release the left mouse button.
     Button(bool),
+    /// Press (true) or release the right mouse button.
+    RightButton(bool),
     /// Hold this key (a QEMU qcode) down for this many milliseconds.
     HoldKey(&'static str, u64),
     /// Press (true) or release this key (a QEMU qcode), and leave it so.
@@ -710,6 +712,16 @@ pub fn run_case(
                     }
                 }
                 Action::MouseAbs(x, y) => match q.mouse_abs(*x, *y) {
+                    Ok(()) => {
+                        std::thread::sleep(KEY_GAP);
+                        true
+                    }
+                    Err(e) => {
+                        harness_error = Some(e);
+                        break;
+                    }
+                },
+                Action::RightButton(down) => match q.button("right", *down) {
                     Ok(()) => {
                         std::thread::sleep(KEY_GAP);
                         true

@@ -2,6 +2,39 @@
 //! the verifier so tests click where things are drawn. Rectangles are
 //! (x, y, width, height) in pixels; a window's includes its title bar.
 
+/// The applications, in dock order: (label, program). Files lists them in
+/// its Applications folder (docs/u3-design.md).
+pub const APPLICATIONS: [(&str, &str); 4] = [
+    ("Files", "files"),
+    ("Crash Test", "crash-test"),
+    ("Assistant", "assistant"),
+    ("Notes", "notes"),
+];
+
+/// Context menus (docs/u3-design.md): an item's height, a separator's,
+/// and the padding above the first item and below the last.
+pub const MENU_ITEM_H: usize = 24;
+pub const MENU_SEP_H: usize = 9;
+pub const MENU_PAD: usize = 6;
+
+/// A context menu's height for items where `true` marks a separator.
+pub fn menu_height(separators: &[bool]) -> usize {
+    2 * MENU_PAD
+        + separators
+            .iter()
+            .map(|&sep| if sep { MENU_SEP_H } else { MENU_ITEM_H })
+            .sum::<usize>()
+}
+
+/// The top of item `k` in a menu whose top is at `top`.
+pub fn menu_item_top(top: usize, separators: &[bool], k: usize) -> usize {
+    top + MENU_PAD
+        + separators[..k]
+            .iter()
+            .map(|&sep| if sep { MENU_SEP_H } else { MENU_ITEM_H })
+            .sum::<usize>()
+}
+
 /// The menu bar's height.
 pub const MENU_H: usize = 26;
 /// A window's title bar.
@@ -66,14 +99,49 @@ pub fn light_centre(win: (usize, usize, usize, usize), k: usize) -> (usize, usiz
 
 /// The dock (x, y, w, h) for `apps` icons on a `w` x `h` screen.
 pub fn dock_rect(w: usize, h: usize, apps: usize) -> (usize, usize, usize, usize) {
-    let dw = apps * DOCK_ICON + apps.saturating_sub(1) * DOCK_GAP + 2 * DOCK_PAD;
+    dock_rect_with(w, h, apps, 0)
+}
+
+/// The divider between applications and minimised windows: a gap, a
+/// one-pixel line, a gap (docs/u3-design.md).
+pub const DOCK_DIVIDER: usize = 2 * DOCK_GAP + 1;
+
+/// The dock with `apps` applications and `minis` minimised windows.
+pub fn dock_rect_with(
+    w: usize,
+    h: usize,
+    apps: usize,
+    minis: usize,
+) -> (usize, usize, usize, usize) {
+    let mut dw = apps * DOCK_ICON + apps.saturating_sub(1) * DOCK_GAP + 2 * DOCK_PAD;
+    if minis > 0 {
+        dw += DOCK_DIVIDER + minis * DOCK_ICON + (minis - 1) * DOCK_GAP;
+    }
     ((w - dw) / 2, h - DOCK_BOTTOM - DOCK_H, dw, DOCK_H)
 }
 
 /// The top-left of dock icon `k`.
 pub fn dock_icon(w: usize, h: usize, apps: usize, k: usize) -> (usize, usize) {
-    let (x, y, _, _) = dock_rect(w, h, apps);
+    dock_icon_with(w, h, apps, 0, k)
+}
+
+/// The top-left of application icon `k` in a dock with minimised windows.
+pub fn dock_icon_with(w: usize, h: usize, apps: usize, minis: usize, k: usize) -> (usize, usize) {
+    let (x, y, _, _) = dock_rect_with(w, h, apps, minis);
     (x + DOCK_PAD + k * (DOCK_ICON + DOCK_GAP), y + DOCK_PAD)
+}
+
+/// The x of the divider line.
+pub fn dock_divider_x(w: usize, h: usize, apps: usize, minis: usize) -> usize {
+    let (x, _, _, _) = dock_rect_with(w, h, apps, minis);
+    x + DOCK_PAD + apps * DOCK_ICON + apps.saturating_sub(1) * DOCK_GAP + DOCK_GAP
+}
+
+/// The top-left of minimised window `j`'s thumbnail.
+pub fn dock_mini(w: usize, h: usize, apps: usize, minis: usize, j: usize) -> (usize, usize) {
+    let (_, y, _, _) = dock_rect_with(w, h, apps, minis);
+    let x = dock_divider_x(w, h, apps, minis) + 1 + DOCK_GAP;
+    (x + j * (DOCK_ICON + DOCK_GAP), y + DOCK_PAD)
 }
 
 /// The top of content line `k` in window `win`.

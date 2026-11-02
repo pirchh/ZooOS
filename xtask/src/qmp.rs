@@ -122,8 +122,13 @@ impl Qmp {
 
     /// Presses (`down`) or releases the left mouse button.
     pub fn mouse_button(&mut self, down: bool) -> Result<(), String> {
+        self.button("left", down)
+    }
+
+    /// Presses or releases mouse button `name` (`left`, `right`).
+    pub fn button(&mut self, name: &str, down: bool) -> Result<(), String> {
         let cmd = format!(
-            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"btn","data":{{"down":{down},"button":"left"}}}}]}}}}"#
+            r#"{{"execute":"input-send-event","arguments":{{"events":[{{"type":"btn","data":{{"down":{down},"button":"{name}"}}}}]}}}}"#
         );
         self.command(&cmd).map(|_| ())
     }

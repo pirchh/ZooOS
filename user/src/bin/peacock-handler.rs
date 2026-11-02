@@ -26,7 +26,7 @@ use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1};
 use zoo_abi::font::{Atlas, Face, FaceId, blend};
 use zoo_abi::ui::{
-    BASELINE, DARK, DOCK_BOTTOM, DOCK_H, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H,
+    BASELINE, DARK, DOCK_BOTTOM, DOCK_H, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H, MENU_ITEM_H,
     Palette as Theme, RADIUS, RESIZE_CORNER, TEXT_X, TITLE_H,
 };
 use zoo_abi::{CLOCK_REALTIME, FORMAT_BGR, MAX_MESSAGE, MouseEvent};
@@ -47,7 +47,7 @@ const LIGHTS: [(u32, u32); 3] = [
     (0x28C840, 0x1AAB29),
 ];
 /// Dock icon colours, indexed like the applications.
-const ICON: [u32; APPS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
+const ICON: [u32; PROGRAMS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
 
 /// Largest supported screen, in logical pixels (a 2560x1440 monitor is
 /// used whole, at 1x; docs/u2b-design.md).
@@ -235,9 +235,24 @@ const DOCK_HIDE_DELAY_MS: u64 = 400;
 /// (logical pixels).
 const DOCK_EDGE: usize = 6;
 
+/// Where the dock's kept applications are saved, in the home folder.
+const DOCK_FILE: &str = ".dock";
+
 /// Applications, in dock order; Notes is the last.
-const APPS: usize = 4;
+const PROGRAMS: usize = 4;
 const NOTES: usize = 3;
+/// Window slots (docs/u3-design.md): the first `PROGRAMS` are each
+/// application's first window, in catalog order; the rest hold further
+/// windows (Ctrl+N).
+const WINDOWS: usize = 8;
+/// The applications, in dock order: (label, program, gets the home
+/// directory).
+const CATALOG: [(&str, &str, bool); PROGRAMS] = [
+    ("Files", "files", true),
+    ("Crash Test", "crash-test", false),
+    ("Assistant", "assistant", true),
+    ("Notes", "notes", true),
+];
 /// Two presses within this many ticks (and 4 px) are a double-click.
 const DOUBLE_CLICK: u64 = 50;
 const MIN_W: usize = 240;
@@ -288,6 +303,8 @@ struct App {
     program: &'static str,
     /// Gets a copy of the home directory handle as its second handle.
     wants_home: bool,
+    /// Its application, an index into `CATALOG` (and the dock).
+    prog: usize,
     chan: u64,
     process: u64,
     running: bool,
@@ -306,14 +323,18 @@ struct App {
     lines: [Text; MAX_LINES],
     count: usize,
     selected: Option<usize>,
+    /// A request waiting to be handled (`Request`).
+    request: Option<Request>,
 }
 
 impl App {
-    const fn new(label: &'static str, program: &'static str, wants_home: bool) -> App {
+    const fn new(prog: usize) -> App {
+        let (label, program, wants_home) = CATALOG[prog];
         App {
             label,
             program,
             wants_home,
+            prog,
             chan: 0,
             process: 0,
             running: false,
@@ -326,6 +347,7 @@ impl App {
             lines: [const { Text::new() }; MAX_LINES],
             count: 0,
             selected: None,
+            request: None,
         }
     }
 
@@ -412,6 +434,18 @@ impl App {
             }
         } else if msg == b"show" {
             return true;
+        } else if let Some(items) = msg.strip_prefix(b"menu:") {
+            let mut labels = [const { Text::new() }; MENU_ITEMS];
+            let mut n = 0;
+            for item in items.split(|&b| b == b'|').take(MENU_ITEMS) {
+                labels[n].set(item);
+                n += 1;
+            }
+            self.request = Some(Request::Menu(alloc::boxed::Box::new(labels), n));
+        } else if let Some(p) = msg.strip_prefix(b"dock-add:") {
+            self.request = program_index(p).map(Request::DockAdd);
+        } else if let Some(p) = msg.strip_prefix(b"launch:") {
+            self.request = program_index(p).map(Request::Launch);
         }
         false
     }
@@ -805,6 +839,106 @@ fn over(d: u32, c: u32) -> u32 {
     let g = ((d >> 8) & 0xFF) * inv;
     let g = ((g + 1 + (g >> 8)) >> 8) << 8;
     (c & 0xFF_FFFF) + rb + g
+}
+
+// ---- Context menus (docs/u3-design.md) -----------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MenuAction {
+    NewWindow,
+    Open,
+    Remove,
+    Keep,
+    Quit,
+    /// A separator line.
+    Line,
+    /// Item `n` of an application's own menu (docs/u3-design.md).
+    App(usize),
+}
+
+impl MenuAction {
+    fn label(self) -> &'static str {
+        match self {
+            MenuAction::NewWindow => "New Window",
+            MenuAction::Open => "Open",
+            MenuAction::Remove => "Remove from Dock",
+            MenuAction::Keep => "Keep in Dock",
+            MenuAction::Quit => "Quit",
+            MenuAction::Line | MenuAction::App(_) => "",
+        }
+    }
+}
+
+/// What an application asked the window server for, besides drawing.
+enum Request {
+    /// A context menu of these items at the pointer.
+    Menu(alloc::boxed::Box<[Text; MENU_ITEMS]>, usize),
+    /// Keep this application in the dock.
+    DockAdd(usize),
+    /// Open this application.
+    Launch(usize),
+}
+
+/// The application whose program is `program`.
+fn program_index(program: &[u8]) -> Option<usize> {
+    CATALOG.iter().position(|c| c.1.as_bytes() == program)
+}
+
+/// What is under the pointer in the dock: an application's icon or a
+/// minimised window's thumbnail (docs/u3-design.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DockHit {
+    App(usize),
+    Window(usize),
+}
+
+/// Most items in one menu.
+const MENU_ITEMS: usize = 6;
+
+/// An open context menu: for application `prog`, at logical (x, y), `w`
+/// wide, its items, and the one under the pointer.
+struct Menu {
+    /// The window whose application asked for it, for an application's
+    /// own menu.
+    owner: Option<usize>,
+    /// Labels of `MenuAction::App` items.
+    labels: [Text; MENU_ITEMS],
+    prog: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    items: [MenuAction; MENU_ITEMS],
+    n: usize,
+    hover: Option<usize>,
+}
+
+impl Menu {
+    fn label(&self, k: usize) -> &str {
+        match self.items[k] {
+            MenuAction::App(_) => self.labels[k].as_str(),
+            a => a.label(),
+        }
+    }
+
+    fn separators(&self) -> [bool; MENU_ITEMS] {
+        core::array::from_fn(|k| self.items[k] == MenuAction::Line)
+    }
+
+    fn height(&self) -> usize {
+        zoo_abi::ui::menu_height(&self.separators()[..self.n])
+    }
+
+    /// The item at logical (px, py), if a choosable one.
+    fn item_at(&self, px: usize, py: usize) -> Option<usize> {
+        if px < self.x || px >= self.x + self.w {
+            return None;
+        }
+        let seps = self.separators();
+        (0..self.n).find(|&k| {
+            let top = zoo_abi::ui::menu_item_top(self.y, &seps[..self.n], k);
+            self.items[k] != MenuAction::Line && py >= top && py < top + MENU_ITEM_H
+        })
+    }
 }
 
 // ---- Animations (docs/u2d-design.md) ------------------------------------
@@ -1229,7 +1363,7 @@ struct Banner {
 struct Desktop {
     screen: Screen,
     /// Each window's cached image (docs/u2-compositor-design.md).
-    layers: [Layer; APPS],
+    layers: [Layer; WINDOWS],
     /// Scratch buffer for building layers (the render over white).
     scratch: Vec<u32>,
     /// The pointer is a hardware cursor: moving it needs no redraw
@@ -1255,14 +1389,14 @@ struct Desktop {
     /// Wallpaper colour per row, for the current appearance.
     wall: Vec<u32>,
     ramp: Vec<u8>,
-    apps: [App; APPS],
+    apps: [App; WINDOWS],
     /// Home directory handle; copies go to the Assistant.
     home: u64,
     focus: usize,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
-    wins: [(usize, usize, usize, usize); APPS],
+    wins: [(usize, usize, usize, usize); WINDOWS],
     /// Drawing order, back to front; the focused window is last.
-    order: [usize; APPS],
+    order: [usize; WINDOWS],
     /// Pointer position.
     px: usize,
     py: usize,
@@ -1276,7 +1410,7 @@ struct Desktop {
     /// The last press on a title bar: (tick, x, y), for double-clicks.
     last_click: (u64, usize, usize),
     /// A zoomed window's rectangle before zooming (docs/d9-design.md).
-    unzoomed: [Option<(usize, usize, usize, usize)>; APPS],
+    unzoomed: [Option<(usize, usize, usize, usize)>; WINDOWS],
     /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
     damage: [(usize, usize, usize, usize); MAX_DAMAGE],
     damaged: usize,
@@ -1290,16 +1424,25 @@ struct Desktop {
     /// Of each frame, the cycles spent showing it (copy or flush).
     shows: [u64; FRAME_SAMPLES],
     frame_count: usize,
-    /// The dock icon under the pointer (its name shows above it).
-    hover: Option<usize>,
+    /// What in the dock is under the pointer (its name shows above it).
+    hover: Option<DockHit>,
     /// Each window's running animation (docs/u2d-design.md).
-    anims: [Option<Anim>; APPS],
+    anims: [Option<Anim>; WINDOWS],
     /// Time-stamp-counter cycles per millisecond (calibrated at start).
     per_ms: u64,
     /// The time this frame is drawn for (all damaged areas alike).
     frame_now: u64,
     /// Shift is held: new animations run ten times slower.
     shift: bool,
+    /// Ctrl is held (Ctrl+N).
+    ctrl: bool,
+    /// Applications kept in the dock (shown even when not running).
+    pinned: [bool; PROGRAMS],
+    /// Minimised windows, in the order they went to the dock.
+    minis: Vec<usize>,
+    /// The open context menu, and whether the right button is held.
+    menu: Option<Menu>,
+    rheld: bool,
     /// The ZooOS mark's coverage, `PAW_SIZE` logical pixels square.
     paw: Vec<u8>,
     /// The dock hides itself (docs/u2e-design.md): how far below its
@@ -1420,14 +1563,61 @@ impl Desktop {
     }
 
     fn dock_rect(&self) -> (usize, usize, usize, usize) {
-        zoo_abi::ui::dock_rect(self.lw, self.lh, APPS)
+        zoo_abi::ui::dock_rect_with(
+            self.lw,
+            self.lh,
+            self.dock_entries().1.max(1),
+            self.minis.len(),
+        )
+    }
+
+    /// The applications in the dock, in order: kept ones and running ones
+    /// (docs/u3-design.md); and how many.
+    fn dock_entries(&self) -> ([usize; PROGRAMS], usize) {
+        let mut out = [0; PROGRAMS];
+        let mut n = 0;
+        for k in 0..PROGRAMS {
+            if self.pinned[k] || self.program_running(k) {
+                out[n] = k;
+                n += 1;
+            }
+        }
+        (out, n)
+    }
+
+    /// Where application `k`'s dock icon is (its top-left, logical), if it
+    /// is in the dock.
+    fn dock_pos(&self, k: usize) -> Option<(usize, usize)> {
+        let (e, n) = self.dock_entries();
+        let slot = e[..n].iter().position(|&p| p == k)?;
+        Some(zoo_abi::ui::dock_icon_with(
+            self.lw,
+            self.lh,
+            n,
+            self.minis.len(),
+            slot,
+        ))
+    }
+
+    /// Where minimised window `i`'s thumbnail is, if it is in the dock.
+    fn mini_pos(&self, i: usize) -> Option<(usize, usize)> {
+        let j = self.minis.iter().position(|&w| w == i)?;
+        let n = self.dock_entries().1.max(1);
+        Some(zoo_abi::ui::dock_mini(
+            self.lw,
+            self.lh,
+            n,
+            self.minis.len(),
+            j,
+        ))
     }
 
     fn damage_dock(&mut self) {
-        let (x, y, w, _) = self.dock_rect();
-        // With the label above an icon, down to the bottom edge (it slides).
+        let (_, y, _, _) = self.dock_rect();
+        // The whole band (its width changes with its entries), with the
+        // label above an icon, down to the bottom edge (it slides).
         let top = y.saturating_sub(40);
-        self.damage(x.saturating_sub(4), top, w + 8, self.lh - top);
+        self.damage(0, top, self.lw, self.lh - top);
     }
 
     /// The dock's current offset below its place, in whole logical pixels.
@@ -1449,7 +1639,7 @@ impl Desktop {
             .iter()
             .flatten()
             .any(|a| matches!(a.kind, AnimKind::Minimize | AnimKind::Restore));
-        let want = edge || genie || (self.dock_shown && over);
+        let want = edge || genie || self.menu.is_some() || (self.dock_shown && over);
         let ms = self.per_ms;
         if want {
             self.dock_hide_at = None;
@@ -1508,11 +1698,11 @@ impl Desktop {
             self.damage_window(self.focus);
             self.damage_window(i);
             self.damage_menu_bar();
-        } else if self.order[APPS - 1] != i {
+        } else if self.order[WINDOWS - 1] != i {
             self.damage_window(i);
         }
         self.focus = i;
-        let mut order = [0; APPS];
+        let mut order = [0; WINDOWS];
         let mut k = 0;
         for &j in self.order.iter().filter(|&&j| j != i) {
             order[k] = j;
@@ -1564,22 +1754,62 @@ impl Desktop {
         self.px + RESIZE_CORNER >= x + w && self.py + RESIZE_CORNER >= y + h
     }
 
+    /// What in the dock is under the pointer.
+    fn dock_hit(&self) -> Option<DockHit> {
+        if let Some(k) = self.dock_slot() {
+            return Some(DockHit::App(k));
+        }
+        if !self.dock_shown || self.dock_off > 1.0 {
+            return None;
+        }
+        self.minis.iter().copied().find_map(|i| {
+            let (x, y) = self.mini_pos(i)?;
+            (self.px >= x && self.px < x + DOCK_ICON && self.py >= y && self.py < y + DOCK_ICON)
+                .then_some(DockHit::Window(i))
+        })
+    }
+
     /// The dock icon under the pointer.
     fn dock_slot(&self) -> Option<usize> {
         if !self.dock_shown || self.dock_off > 1.0 {
             return None;
         }
         let (w, h) = (self.lw, self.lh);
-        (0..APPS).find(|&k| {
-            let (ix, iy) = zoo_abi::ui::dock_icon(w, h, APPS, k);
+        let _ = (w, h);
+        let (e, n) = self.dock_entries();
+        e[..n].iter().copied().find(|&k| {
+            let Some((ix, iy)) = self.dock_pos(k) else {
+                return false;
+            };
             self.px >= ix && self.px < ix + DOCK_ICON && self.py >= iy && self.py < iy + DOCK_ICON
         })
     }
 
-    /// A dock icon: opens a closed application, shows a minimised one, or
-    /// raises a running one.
-    fn dock_click(&mut self, i: usize) {
+    /// Whether any window of application `k` is open.
+    fn program_running(&self, k: usize) -> bool {
+        self.apps
+            .iter()
+            .any(|a| a.prog == k && !a.closed && a.running)
+    }
+
+    /// A dock icon (application `k`, docs/u3-design.md): raises its
+    /// frontmost window, or shows a minimised one, or opens its first
+    /// window when none is open.
+    fn dock_click(&mut self, k: usize) {
         self.damage_dock();
+        let open = |a: &App| a.prog == k && !a.closed;
+        if let Some(i) = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| open(&self.apps[i]) && self.apps[i].visible())
+        {
+            return self.set_focus(i);
+        }
+        let i = (0..WINDOWS)
+            .find(|&i| open(&self.apps[i]) && self.apps[i].minimized)
+            .unwrap_or(k);
         if self.apps[i].closed {
             let app = &mut self.apps[i];
             app.restarts = 0;
@@ -1592,11 +1822,367 @@ impl Desktop {
             self.damage_window(i);
             self.begin(i, AnimKind::Open);
         } else if self.apps[i].minimized {
-            self.apps[i].minimized = false;
-            zoo_rt::log!("PeacockHandler: showed {}", self.apps[i].label);
-            self.damage_window(i);
-            self.begin(i, AnimKind::Restore);
+            return self.restore(i);
         }
+        self.set_focus(i);
+    }
+
+    /// A minimised window comes back from its thumbnail (docs/u3-design.md).
+    fn restore(&mut self, i: usize) {
+        self.damage_dock();
+        // The genie starts from where its thumbnail is now.
+        self.begin(i, AnimKind::Restore);
+        self.minis.retain(|&w| w != i);
+        self.damage_dock();
+        self.apps[i].minimized = false;
+        zoo_rt::log!("PeacockHandler: showed {}", self.apps[i].label);
+        self.damage_window(i);
+        self.set_focus(i);
+    }
+
+    /// The right button went down: a context menu for a dock icon, or
+    /// none (an open one closes).
+    fn right_press(&mut self) {
+        if self.menu.is_some() {
+            self.close_menu();
+            return;
+        }
+        let Some(DockHit::App(k)) = self.dock_hit() else {
+            // On a window's content line: its application decides.
+            if let Some(i) = self.window_at(self.px, self.py) {
+                let line = (0..self.apps[i].count).find(|&k| {
+                    let top = zoo_abi::ui::line_top(self.wins[i], k);
+                    self.py >= top && self.py < top + LINE_H
+                });
+                if let Some(line) = line {
+                    self.set_focus(i);
+                    let mut l = Line::new();
+                    let _ = write!(l, "rclick:{}", line);
+                    let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                }
+            }
+            return;
+        };
+        let running = self.program_running(k);
+        let mut items = [MenuAction::Line; MENU_ITEMS];
+        let mut n = 0;
+        let mut add = |a: MenuAction| {
+            items[n] = a;
+            n += 1;
+        };
+        add(if running {
+            MenuAction::NewWindow
+        } else {
+            MenuAction::Open
+        });
+        add(MenuAction::Line);
+        add(if self.pinned[k] {
+            MenuAction::Remove
+        } else {
+            MenuAction::Keep
+        });
+        if running {
+            add(MenuAction::Quit);
+        }
+        let face = self.face(FaceId::Regular13);
+        let s = self.screen.s;
+        let w = items[..n]
+            .iter()
+            .map(|a| face.width(a.label()).div_ceil(s))
+            .max()
+            .unwrap_or(0)
+            .max(120)
+            + 40;
+        let (ix, iy) = self.dock_pos(k).unwrap_or((self.px, self.py));
+        let mut m = Menu {
+            owner: None,
+            labels: [const { Text::new() }; MENU_ITEMS],
+            prog: k,
+            x: 0,
+            y: 0,
+            w,
+            items,
+            n,
+            hover: None,
+        };
+        let h = m.height();
+        m.x = (ix + DOCK_ICON / 2)
+            .saturating_sub(w / 2)
+            .clamp(8, self.lw.saturating_sub(w + 8));
+        m.y = iy.saturating_sub(10 + h);
+        let mut names = Line::new();
+        for (j, a) in items[..n]
+            .iter()
+            .filter(|a| **a != MenuAction::Line)
+            .enumerate()
+        {
+            let _ = write!(names, "{}{}", if j > 0 { ", " } else { "" }, a.label());
+        }
+        zoo_rt::log!("PeacockHandler: menu {}: {}", CATALOG[k].0, names.as_str());
+        self.hover = None;
+        self.menu = Some(m);
+        self.damage_menu();
+        self.damage_dock();
+    }
+
+    /// The menu's area, with its shadow.
+    fn damage_menu(&mut self) {
+        if let Some(m) = &self.menu {
+            let (x, y, w, h) = (m.x, m.y, m.w, m.height());
+            self.damage(
+                x.saturating_sub(MARGIN),
+                y.saturating_sub(MARGIN),
+                w + 2 * MARGIN,
+                h + 2 * MARGIN,
+            );
+        }
+    }
+
+    fn close_menu(&mut self) {
+        self.damage_menu();
+        self.menu = None;
+    }
+
+    /// A left click while a menu is open: its item under the pointer, if
+    /// any, is done; the menu closes either way.
+    fn menu_click(&mut self) {
+        let Some(m) = &self.menu else {
+            return;
+        };
+        let pick = m.item_at(self.px, self.py);
+        let choice = pick.map(|k| m.items[k]);
+        let mut name = Line::new();
+        if let Some(k) = pick {
+            let _ = name.write_str(m.label(k));
+        }
+        let (prog, owner) = (m.prog, m.owner);
+        self.close_menu();
+        let Some(a) = choice else {
+            return;
+        };
+        zoo_rt::log!("PeacockHandler: menu chose {}", name.as_str());
+        if let (MenuAction::App(k), Some(i)) = (a, owner) {
+            let mut l = Line::new();
+            let _ = write!(l, "menu-choose:{}", k);
+            let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+            return;
+        }
+        let label = CATALOG[prog].0;
+        match a {
+            MenuAction::NewWindow => self.new_window_of(prog),
+            MenuAction::Open => self.dock_click(prog),
+            MenuAction::Remove => {
+                self.damage_dock();
+                self.pinned[prog] = false;
+                zoo_rt::log!("PeacockHandler: removed {} from the dock", label);
+                self.save_dock();
+            }
+            MenuAction::Keep => self.keep_in_dock(prog),
+            MenuAction::Quit => {
+                for i in 0..WINDOWS {
+                    if self.apps[i].prog == prog && !self.apps[i].closed {
+                        self.close_app(i);
+                    }
+                }
+                zoo_rt::log!("PeacockHandler: quit {}", label);
+            }
+            MenuAction::Line | MenuAction::App(_) => {}
+        }
+    }
+
+    fn keep_in_dock(&mut self, prog: usize) {
+        self.damage_dock();
+        self.pinned[prog] = true;
+        zoo_rt::log!("PeacockHandler: kept {} in the dock", CATALOG[prog].0);
+        self.save_dock();
+    }
+
+    /// The dock's kept applications, saved in `.dock` in the home folder
+    /// (docs/u3-design.md): their program names, comma-separated.
+    fn save_dock(&self) {
+        let mut l = Line::new();
+        let mut n = 0;
+        for (k, c) in CATALOG.iter().enumerate() {
+            if self.pinned[k] {
+                let _ = write!(l, "{}{}", if n > 0 { "," } else { "" }, c.1);
+                n += 1;
+            }
+        }
+        let _ = zoo_rt::file_create(self.home, DOCK_FILE);
+        let saved = zoo_rt::file_truncate(self.home, DOCK_FILE, 0)
+            .and_then(|()| zoo_rt::file_write(self.home, DOCK_FILE, 0, l.as_str().as_bytes()));
+        match saved {
+            Ok(_) => zoo_rt::log!("PeacockHandler: dock saved ({} kept)", n),
+            Err(e) => zoo_rt::log!("PeacockHandler: cannot save the dock: {}", e.name()),
+        }
+    }
+
+    /// The kept applications from `.dock`, if it exists.
+    fn load_dock(&mut self) {
+        let mut buf = [0u8; 256];
+        let Ok(n) = zoo_rt::file_read(self.home, DOCK_FILE, 0, &mut buf) else {
+            return;
+        };
+        self.pinned = [false; PROGRAMS];
+        for name in buf[..n].split(|&b| b == b',') {
+            if let Some(k) = program_index(name) {
+                self.pinned[k] = true;
+            }
+        }
+        let kept = self.pinned.iter().filter(|&&p| p).count();
+        zoo_rt::log!("PeacockHandler: dock loaded ({} kept)", kept);
+    }
+
+    /// Something an application asked for (docs/u3-design.md).
+    fn app_request(&mut self, i: usize, req: Request) {
+        match req {
+            Request::DockAdd(prog) => self.keep_in_dock(prog),
+            Request::Launch(prog) => self.dock_click(prog),
+            Request::Menu(labels, n) => {
+                if n == 0 || i != self.focus {
+                    return;
+                }
+                let s = self.screen.s;
+                let face = self.face(FaceId::Regular13);
+                let w = labels[..n]
+                    .iter()
+                    .map(|t| face.width(t.as_str()).div_ceil(s))
+                    .max()
+                    .unwrap_or(0)
+                    .max(120)
+                    + 40;
+                let mut m = Menu {
+                    owner: Some(i),
+                    labels: *labels,
+                    prog: self.apps[i].prog,
+                    x: 0,
+                    y: 0,
+                    w,
+                    items: core::array::from_fn(MenuAction::App),
+                    n,
+                    hover: None,
+                };
+                let h = m.height();
+                // Below and right of the pointer, kept on the screen.
+                m.x = self.px.min(self.lw.saturating_sub(w + 4));
+                m.y = (self.py + 2).min(self.lh.saturating_sub(h + 4));
+                let mut names = Line::new();
+                for k in 0..n {
+                    let _ = write!(names, "{}{}", if k > 0 { ", " } else { "" }, m.label(k));
+                }
+                zoo_rt::log!(
+                    "PeacockHandler: menu {}: {}",
+                    self.apps[i].label,
+                    names.as_str()
+                );
+                self.menu = Some(m);
+                self.damage_menu();
+            }
+        }
+    }
+
+    /// A context menu: a rounded panel with a shadow, items in a column,
+    /// the one under the pointer on a selection bar.
+    fn draw_menu(&mut self) {
+        let Some(m) = &self.menu else {
+            return;
+        };
+        let t = self.theme();
+        let (x, y, w, h) = (m.x, m.y, m.w, m.height());
+        let (items, n, hover) = (m.items, m.n, m.hover);
+        let labels: [Text; MENU_ITEMS] = core::array::from_fn(|k| {
+            let mut t = Text::new();
+            if k < n {
+                t.set(m.label(k).as_bytes());
+            }
+            t
+        });
+        if !self.screen.visible(
+            x.saturating_sub(MARGIN),
+            y.saturating_sub(MARGIN),
+            w + 2 * MARGIN,
+            h + 2 * MARGIN,
+        ) {
+            return;
+        }
+        self.screen
+            .shadow((x, y, w, h), t.shadow_blurred, &self.ramp);
+        self.screen
+            .round_rect(x, y, w, h, 8, t.tooltip, 255, [true; 4]);
+        self.screen.round_outline(x, y, w, h, 8, t.outline);
+        let face = self.face(FaceId::Regular13);
+        let seps: [bool; MENU_ITEMS] = core::array::from_fn(|k| items[k] == MenuAction::Line);
+        for (k, item) in items.iter().enumerate().take(n) {
+            let top = zoo_abi::ui::menu_item_top(y, &seps[..n], k);
+            if *item == MenuAction::Line {
+                self.screen.fill(x + 10, top + 4, w - 20, 1, t.separator);
+                continue;
+            }
+            let on = hover == Some(k);
+            if on {
+                self.screen.round_rect(
+                    x + 5,
+                    top,
+                    w - 10,
+                    MENU_ITEM_H,
+                    5,
+                    t.select,
+                    255,
+                    [true; 4],
+                );
+            }
+            let c = if on { t.select_text } else { t.tooltip_text };
+            self.screen
+                .text(&face, x + 16, top + 17, labels[k].as_str(), c, x + w - 8);
+        }
+    }
+
+    /// Ctrl+N: another window of the focused window's application.
+    fn new_window(&mut self) {
+        let prog = self.apps[self.focus].prog;
+        self.new_window_of(prog);
+    }
+
+    /// Another window of application `prog`, in a free slot, cascaded
+    /// from its frontmost window (docs/u3-design.md); its first window if
+    /// none is open.
+    fn new_window_of(&mut self, prog: usize) {
+        if !self.program_running(prog) {
+            return self.dock_click(prog);
+        }
+        let base = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| self.apps[i].prog == prog && self.apps[i].visible())
+            .unwrap_or(prog);
+        let Some(i) = (PROGRAMS..WINDOWS).find(|&i| self.apps[i].closed && self.anims[i].is_none())
+        else {
+            zoo_rt::log!("PeacockHandler: no room for another window");
+            return;
+        };
+        self.apps[i] = App::new(prog);
+        let (fx, fy, fw, fh) = self.wins[base];
+        let x = (fx + 32).min(self.lw.saturating_sub(fw + 8));
+        let y = (fy + 32)
+            .min(self.lh.saturating_sub(fh + 8))
+            .max(MENU_H + 8);
+        self.wins[i] = (x, y, fw, fh);
+        self.unzoomed[i] = None;
+        if !self.apps[i].start(self.home) {
+            zoo_rt::log!("PeacockHandler: cannot start {}", self.apps[i].program);
+            self.apps[i].closed = true;
+            return;
+        }
+        zoo_rt::log!(
+            "PeacockHandler: new window {} (window {})",
+            self.apps[i].label,
+            i
+        );
+        self.damage_window(i);
+        self.damage_dock();
+        self.begin(i, AnimKind::Open);
         self.set_focus(i);
     }
 
@@ -1635,12 +2221,17 @@ impl Desktop {
         }
         app.running = false;
         app.closed = true;
+        app.minimized = false;
         zoo_rt::log!("PeacockHandler: closed {}", app.label);
+        self.minis.retain(|&w| w != i);
         self.focus_another(i);
     }
 
     /// The yellow light: hides the window; the dock shows it again.
     fn minimize(&mut self, i: usize) {
+        self.damage_dock();
+        self.minis.push(i);
+        self.damage_dock();
         self.begin(i, AnimKind::Minimize);
         self.damage_window(i);
         self.damage_menu_bar();
@@ -1676,7 +2267,23 @@ impl Desktop {
             self.py = (self.py as isize - e.dy as isize).clamp(0, h as isize - 1) as usize;
         }
         let down = e.buttons & 1 != 0;
-        if down && !self.held {
+        let right = e.buttons & 2 != 0;
+        if right && !self.rheld {
+            self.right_press();
+        }
+        self.rheld = right;
+        if let Some(m) = &self.menu {
+            let hover = m.item_at(self.px, self.py);
+            if hover != m.hover {
+                self.damage_menu();
+                if let Some(m) = &mut self.menu {
+                    m.hover = hover;
+                }
+            }
+        }
+        if down && !self.held && self.menu.is_some() {
+            self.menu_click();
+        } else if down && !self.held {
             self.press();
         } else if down && let Some((i, ox, oy)) = self.resize {
             self.damage_window(i);
@@ -1730,7 +2337,7 @@ impl Desktop {
         }
         self.held = down;
         self.damage_pointer();
-        let hover = self.dock_slot();
+        let hover = self.dock_hit();
         if hover != self.hover {
             self.hover = hover;
             self.damage_dock();
@@ -1740,9 +2347,10 @@ impl Desktop {
 
     /// The left button went down.
     fn press(&mut self) {
-        if let Some(i) = self.dock_slot() {
-            self.dock_click(i);
-            return;
+        match self.dock_hit() {
+            Some(DockHit::App(k)) => return self.dock_click(k),
+            Some(DockHit::Window(i)) => return self.restore(i),
+            None => {}
         }
         if self.py < MENU_H {
             let mut clock = Line::new();
@@ -1817,7 +2425,7 @@ impl Desktop {
         }
         let start = cycles();
         let resizing = self.resize.map(|r| r.0);
-        for i in 0..APPS {
+        for i in 0..WINDOWS {
             if !self.apps[i].visible() || resizing == Some(i) {
                 continue;
             }
@@ -1894,7 +2502,7 @@ impl Desktop {
             let c = self.wall[y];
             self.screen.back[y * self.screen.w + cx0..y * self.screen.w + cx1].fill(c);
         }
-        for k in 0..APPS {
+        for k in 0..WINDOWS {
             let i = self.order[k];
             if let Some(a) = &self.anims[i] {
                 let l = a.snapshot.as_ref().unwrap_or(&self.layers[i]);
@@ -1926,6 +2534,7 @@ impl Desktop {
         self.draw_menu_bar();
         self.draw_banner();
         self.draw_dock();
+        self.draw_menu();
         if self.soft_pointer() {
             self.draw_pointer();
         }
@@ -1999,7 +2608,10 @@ impl Desktop {
         };
         // The dock icon (the genie's funnel ends in it).
         let icon: RectF = {
-            let (ix, iy) = zoo_abi::ui::dock_icon(self.lw, self.lh, APPS, i);
+            let (ix, iy) = self
+                .mini_pos(i)
+                .or_else(|| self.dock_pos(self.apps[i].prog))
+                .unwrap_or(zoo_abi::ui::dock_icon(self.lw, self.lh, 1, 0));
             let d = DOCK_ICON as f32;
             (ix as f32 + d * 0.1, iy as f32 + d * 0.1, d * 0.8, d * 0.8)
         };
@@ -2042,7 +2654,7 @@ impl Desktop {
     /// not at all).
     fn step_anims(&mut self) {
         let now = self.frame_now;
-        for i in 0..APPS {
+        for i in 0..WINDOWS {
             let Some(a) = self.anims[i].as_mut() else {
                 continue;
             };
@@ -2425,21 +3037,74 @@ impl Desktop {
         self.screen
             .round_rect(dx, dy, dw, dh, 18, t.dock_tint, t.dock_alpha, [true; 4]);
         self.screen.round_outline(dx, dy, dw, dh, 18, t.outline);
-        for k in 0..APPS {
-            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+        let _ = (sw, sh);
+        let (entries, n) = self.dock_entries();
+        for &k in &entries[..n] {
+            let Some((ix, iy)) = self.dock_pos(k) else {
+                continue;
+            };
             let iy = iy + off;
             self.draw_icon(k, ix, iy);
-            if self.apps[k].running {
+            if self.program_running(k) {
                 let c = t.bar_text;
                 self.screen
                     .disc(ix + DOCK_ICON / 2 - 2, iy + DOCK_ICON + 2, 4, c, c);
             }
         }
-        if let Some(k) = self.hover {
+        // Minimised windows, after a divider: each its window scaled into
+        // the slot, with a small badge in its application's colour.
+        if !self.minis.is_empty() {
+            let n = self.dock_entries().1.max(1);
+            let lx = zoo_abi::ui::dock_divider_x(sw, sh, n, self.minis.len());
+            let (_, dy0, _, dh0) = self.dock_rect();
+            self.screen
+                .fill(lx, dy0 + off + 12, 1, dh0 - 24, t.separator);
+            for j in 0..self.minis.len() {
+                let i = self.minis[j];
+                let Some((mx, my)) = self.mini_pos(i) else {
+                    continue;
+                };
+                let my = my + off;
+                let (_, _, ww, wh) = self.wins[i];
+                let d = DOCK_ICON as f32;
+                let k = (d / ww.max(1) as f32).min(d / wh.max(1) as f32) * 0.92;
+                let (tw, th) = (ww as f32 * k, wh as f32 * k);
+                let rect = (
+                    mx as f32 + (d - tw) / 2.0,
+                    my as f32 + (d - th) / 2.0,
+                    tw,
+                    th,
+                );
+                let (scw, clip, s) = (self.screen.w, self.screen.clip, self.screen.s);
+                composite_scaled(
+                    self.screen.back,
+                    scw,
+                    clip,
+                    s,
+                    &self.layers[i],
+                    (ww, wh),
+                    rect,
+                    1.0,
+                );
+                let badge = ICON[self.apps[i].prog];
+                let (bx, by) = (mx + DOCK_ICON - 16, my + DOCK_ICON - 16);
+                self.screen
+                    .round_rect(bx, by, 18, 18, 5, 0xFFFFFF, 255, [true; 4]);
+                self.screen
+                    .round_rect(bx + 2, by + 2, 14, 14, 4, badge, 255, [true; 4]);
+            }
+        }
+        if let Some(hit) = self.hover {
             let small = self.face(FaceId::Regular13);
-            let label = self.apps[k].label;
+            let (label, pos) = match hit {
+                DockHit::App(k) => (CATALOG[k].0, self.dock_pos(k)),
+                DockHit::Window(i) => (self.apps[i].title.as_str(), self.mini_pos(i)),
+            };
             let lw = small.width(label).div_ceil(self.screen.s) + 20;
-            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+            let Some((ix, iy)) = pos else {
+                return;
+            };
+            let iy = iy + off;
             let lx = (ix + DOCK_ICON / 2).saturating_sub(lw / 2);
             let ly = iy - 10 - 26;
             self.screen
@@ -2698,7 +3363,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         alloc::boxed::Box::leak(alloc::vec![0u32; dw * dh].into_boxed_slice())
     };
     let mut desk = Desktop {
-        layers: [const { Layer::new() }; APPS],
+        layers: [const { Layer::new() }; WINDOWS],
         scratch: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
@@ -2724,23 +3389,26 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         dark: false,
         wall: alloc::vec![0; dh],
         ramp: shadow_ramp(sc),
-        apps: [
-            App::new("Files", "files", true),
-            App::new("Crash Test", "crash-test", false),
-            App::new("Assistant", "assistant", true),
-            App::new("Notes", "notes", true),
-        ],
+        // Each application's first window, then free slots (closed).
+        apps: core::array::from_fn(|i| {
+            let mut a = App::new(i % PROGRAMS);
+            a.closed = i >= PROGRAMS;
+            a
+        }),
         home,
         focus: 0,
-        wins: zoo_abi::ui::initial_windows(w, h),
-        order: [3, 1, 2, 0],
+        wins: {
+            let first = zoo_abi::ui::initial_windows(w, h);
+            core::array::from_fn(|i| first[i % PROGRAMS])
+        },
+        order: [4, 5, 6, 7, 3, 1, 2, 0],
         px: w / 2,
         py: h / 2,
         held: false,
         drag: None,
         resize: None,
         last_click: (0, 0, 0),
-        unzoomed: [None; APPS],
+        unzoomed: [None; WINDOWS],
         damage: [(0, 0, 0, 0); MAX_DAMAGE],
         damaged: 0,
         full: true,
@@ -2750,10 +3418,15 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         shows: [0; FRAME_SAMPLES],
         frame_count: 0,
         hover: None,
-        anims: [const { None }; APPS],
+        anims: [const { None }; WINDOWS],
         per_ms: calibrate_ms(),
         frame_now: 0,
         shift: false,
+        ctrl: false,
+        pinned: [true; PROGRAMS],
+        minis: Vec::new(),
+        menu: None,
+        rheld: false,
         paw: paw_mask(PAW_SIZE * sc),
         dock_off: DOCK_HIDDEN,
         dock_shown: false,
@@ -2770,6 +3443,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             let _ = log("PeacockHandler: hardware cursor");
         }
     }
+    desk.load_dock();
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
@@ -2778,7 +3452,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
     }
     // The windows open with an animation (docs/u2d-design.md).
-    for i in 0..APPS {
+    for i in 0..WINDOWS {
         if desk.apps[i].visible() {
             desk.begin(i, AnimKind::Open);
         }
@@ -2803,9 +3477,16 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             if matches!(event.code, KeyCode::LShift | KeyCode::RShift) {
                 desk.shift = event.state == KeyState::Down;
             }
+            if matches!(event.code, KeyCode::LControl | KeyCode::RControl) {
+                desk.ctrl = event.state == KeyState::Down;
+            }
             match decoder.process_keyevent(event) {
                 Some(DecodedKey::Unicode('\t')) => {
                     desk.focus_next();
+                    dirty = true;
+                }
+                Some(DecodedKey::Unicode('\u{1b}')) if desk.menu.is_some() => {
+                    desk.close_menu();
                     dirty = true;
                 }
                 Some(DecodedKey::Unicode('\u{1b}')) => {
@@ -2851,6 +3532,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 Some(DecodedKey::RawKey(KeyCode::ArrowRight)) => desk.send_key(Key::Right),
                 Some(DecodedKey::Unicode('\n')) => desk.send_key(Key::Enter),
                 Some(DecodedKey::Unicode('\u{8}')) => desk.send_key(Key::Back),
+                // Ctrl+N: a new window of the focused application.
+                Some(DecodedKey::Unicode('n' | 'N')) if desk.ctrl => {
+                    desk.new_window();
+                    dirty = true;
+                }
                 Some(DecodedKey::Unicode(c)) if (' '..='~').contains(&c) => {
                     desk.send_key(Key::Char(c))
                 }
@@ -2882,7 +3568,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             while desk.apps[i].running {
                 match try_recv(desk.apps[i].chan, &mut msg) {
                     Ok(n) => {
-                        if desk.apps[i].apply(&msg[..n]) {
+                        let changed = desk.apps[i].apply(&msg[..n]);
+                        if let Some(req) = desk.apps[i].request.take() {
+                            desk.app_request(i, req);
+                            dirty = true;
+                        }
+                        if changed {
                             if core::mem::take(&mut desk.apps[i].title_changed) {
                                 desk.damage_window(i);
                                 // The menu bar names the focused app.

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2f section
-(version 0.62.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U3 section
+(version 0.63.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,35 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 3 results: windows, dock menus, Applications (version 0.63.0)
+
+Design: docs/u3-design.md.
+
+**New cases** (TCG, in the full run): all `OK`.
+
+| Case | Shows |
+| --- | --- |
+| `windows` | Ctrl+N: a second Files window 32 px down and right, focused; closing it leaves the first |
+| `dock-menu` | Files' dock menu with `New Window` highlighted; New Window opens window 4; Remove from Dock leaves a three-icon dock without Notes |
+| `dock-minis` | two minimised windows after the divider, each with its badge; a thumbnail click brings Files back |
+| `apps-folder` | Remove Notes; Files → Applications → right-click Notes → Add to Dock (`dock saved (4 kept)`); remove again, restart the desktop: `dock loaded (3 kept)` and no Notes in the dock |
+
+`animations` now restores the window through its thumbnail.
+
+**Negative controls**, each run once and then reverted:
+
+| Broken on purpose | Result |
+| --- | --- |
+| Ctrl+N does nothing | `FAIL windows` |
+| Remove from Dock logs but keeps the pin | ``FAIL dock-menu: screen 2-removed: Notes' yellow is still in the dock`` |
+| No divider or thumbnails drawn | ``FAIL dock-minis: screen 1-minis: no divider at x 1023`` |
+| `.dock` read but ignored | `FAIL apps-folder` (timeout: it logged `dock loaded (4 kept)`, and the case waits for `3 kept`) |
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 77 cases `OK`.
+`assistant-live` passes with `--accel whpx`, at `ZOO_OS BOOT
+version=0.63.0`. `cargo test -p xtask` (25 tests), clippy on `zoo-user`
+and `xtask`, and `cargo fmt --check`: clean.
 
 ## UI step 2f results: the ZooOS mark (version 0.62.0)
 
