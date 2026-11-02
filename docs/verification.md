@@ -56,7 +56,9 @@ which failed because the folder is `Music`.
 **Negative control:** `list` without the case matching → `FAIL
 assistant-any-case` (timeout: the log line never came).
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 90 cases `OK`.
+`wine-home-1`, `wine-home-2`, `assistant-live` and `everyday-model` are
+skipped under TCG, as before.
 
 ## Assistant step 3 results: the model in the everyday system (version 0.73.0)
 
