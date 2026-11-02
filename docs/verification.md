@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2c section
-(version 0.58.1) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2d section
+(version 0.59.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2d results: window animations (version 0.59.0)
+
+Design and the measurement table: docs/u2d-design.md.
+
+**New case `animations`** (`--accel whpx`), each animation's end line in
+range:
+
+| Animation | Frames | Time |
+| --- | --- | --- |
+| Close Crash Test | 19 | 180 ms |
+| Minimise Files | 34 | 328 ms |
+| Restore Files | 30 | 287 ms |
+| Open Crash Test | 24 | 229 ms |
+
+The final screenshot shows `Crash Test` focused at (1348, 524) and
+`Files` back at (503, 84). Frames during minimise and restore, three
+runs: median 0.95–1.41 M cycles, longest 17.5–23.3 M (a layer rebuild on
+refocus, §3 of the design).
+
+**Negative control:** zero-length animations → ``FAIL animations: `frames`
+1 outside 3..=10000`` (close Crash Test).
+
+**A visual check:** a mid-animation frame, from a temporary build with a
+4 s minimise (the edit was restored and compared with `cmp`), shows Files
+scaled down on its way to the dock.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 70 cases `OK`.
+`assistant-live` passes with `--accel whpx`, at `ZOO_OS BOOT
+version=0.59.0`. `cargo fmt --check`, plus clippy on `zoo-user` and
+`xtask`: clean.
 
 ## UI step 2c results: the pointer moves with a dragged window (version 0.58.1)
 
