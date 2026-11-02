@@ -156,6 +156,9 @@ const DOCK_HIDDEN: f32 = (DOCK_H + DOCK_BOTTOM + 4) as f32;
 const DOCK_SHOW_MS: u64 = 250;
 const DOCK_HIDE_MS: u64 = 300;
 const DOCK_HIDE_DELAY_MS: u64 = 400;
+/// The dock shows when the pointer is this close to the bottom edge
+/// (logical pixels).
+const DOCK_EDGE: usize = 6;
 
 /// Applications, in dock order; Notes is the last.
 const APPS: usize = 4;
@@ -1360,7 +1363,9 @@ impl Desktop {
     /// to or from it; hidden a moment after the pointer leaves.
     fn update_dock(&mut self, now: u64) {
         let (dx, dy, dw, _) = self.dock_rect();
-        let edge = self.py + 2 >= self.lh;
+        // The bottom few rows: a scaled QEMU window (or a fast hand) can
+        // stop the pointer a few pixels short of the very last row.
+        let edge = self.py + DOCK_EDGE >= self.lh;
         let over = self.px + 10 >= dx && self.px < dx + dw + 10 && self.py + 50 >= dy;
         let genie = self
             .anims

@@ -4054,8 +4054,9 @@ fn dock_autohide_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
         Action::Screenshot("1-hidden"),
-        // The bottom edge: the dock slides in.
-        p.to((SCREEN.0 / 2 - 200, SCREEN.1 - 1)),
+        // Near the bottom edge (4 pixels short, as a scaled QEMU window
+        // leaves it): the dock slides in.
+        p.to((SCREEN.0 / 2 - 200, SCREEN.1 - 5)),
         Action::WaitContains("PeacockHandler: dock shown".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-shown"),

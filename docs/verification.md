@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The U2e section
-(version 0.61.0) is the current state. Sections before it
+(version 0.61.1) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -59,6 +59,17 @@ dock is up), and `5-reopened` now checks that the dock hid.
 
 **Negative control:** a dock that never hides → ``FAIL dock-autohide``
 (no `dock hidden` within 60 s).
+
+**0.61.1, the reveal zone:**
+- **The bug:** the owner found the dock would not come back in a
+  maximised QEMU window. Its scaling stops the pointer a few rows short of
+  the last one, and the reveal zone was the last two rows.
+- **The fix:** it is now six rows (`DOCK_EDGE`).
+- **The test change:** `dock-autohide` reveals from 4 rows above the edge.
+- **Control:** the old two-row zone → `FAIL dock-autohide` (timeout).
+- **Checks run:** `dock-autohide`, `dock` and `animations` are `OK` under
+  `--accel whpx`. The full suite was not rerun for this one-constant
+  change.
 
 **Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 72 cases `OK`.
 `assistant-live` passes with `--accel whpx`, at `ZOO_OS BOOT
