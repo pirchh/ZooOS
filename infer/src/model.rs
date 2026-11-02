@@ -36,6 +36,13 @@ pub struct Config {
     pub vocab: usize,
 }
 
+/// Rotary frequencies for each pair in a head: `base^(-2i / head_dim)`.
+fn rope_freqs(c: &Config) -> Vec<f32> {
+    (0..c.head_dim / 2)
+        .map(|i| libm::powf(c.rope_base, -2.0 * i as f32 / c.head_dim as f32))
+        .collect()
+}
+
 struct Layer<'a> {
     attn_norm: Vec<f32>,
     q: TensorInfo<'a>,
@@ -57,6 +64,7 @@ pub struct Model<'a> {
     output: TensorInfo<'a>,
     out_norm: Vec<f32>,
     layers: Vec<Layer<'a>>,
+    freqs: Vec<f32>,
 }
 
 /// Per-conversation working memory: the key/value cache and scratch.
@@ -115,11 +123,10 @@ fn rmsnorm(out: &mut [f32], x: &[f32], weight: &[f32], eps: f32) {
 }
 
 /// Rotary position embedding, "NEOX" layout: pairs (i, i + half).
-fn rope(v: &mut [f32], head_dim: usize, pos: usize, base: f32) {
+fn rope(v: &mut [f32], head_dim: usize, pos: usize, freqs: &[f32]) {
     let half = head_dim / 2;
     for head in v.chunks_exact_mut(head_dim) {
-        for i in 0..half {
-            let freq = libm::powf(base, -2.0 * i as f32 / head_dim as f32);
+        for (i, &freq) in freqs.iter().enumerate().take(half) {
             let angle = pos as f32 * freq;
             let (s, c) = (libm::sinf(angle), libm::cosf(angle));
             let (a, b) = (head[i], head[i + half]);
@@ -211,6 +218,7 @@ impl<'a> Model<'a> {
             output,
             out_norm: small(g, "output_norm.weight", n_embd)?,
             layers,
+            freqs: rope_freqs(&cfg),
         })
     }
 
@@ -237,6 +245,18 @@ impl<'a> Model<'a> {
     /// Runs one token at position `st.pos`, appends it to the cache, and
     /// leaves next-token logits in `st.logits`.
     pub fn forward(&self, st: &mut State, token: u32) -> Result<(), ModelError> {
+        self.step(st, token, true)
+    }
+
+    /// As `forward`, without the next-token logits (`st.logits` is left
+    /// as it was): for prompt tokens whose scores are never read. The
+    /// output projection is the largest matrix, so this saves about a
+    /// quarter of the work (docs/a1-design.md).
+    pub fn feed(&self, st: &mut State, token: u32) -> Result<(), ModelError> {
+        self.step(st, token, false)
+    }
+
+    fn step(&self, st: &mut State, token: u32, logits: bool) -> Result<(), ModelError> {
         let c = &self.cfg;
         let (hd, kv_dim) = (c.head_dim, c.head_dim * c.n_head_kv);
         if token as usize >= c.vocab {
@@ -263,8 +283,8 @@ impl<'a> Model<'a> {
             for (a, b) in st.v.iter_mut().zip(&layer.v_bias) {
                 *a += b;
             }
-            rope(&mut st.q, hd, pos, c.rope_base);
-            rope(&mut st.k, hd, pos, c.rope_base);
+            rope(&mut st.q, hd, pos, &self.freqs);
+            rope(&mut st.k, hd, pos, &self.freqs);
             let base = l * st.max_ctx * kv_dim;
             st.k_cache[base + pos * kv_dim..base + (pos + 1) * kv_dim].copy_from_slice(&st.k);
             st.v_cache[base + pos * kv_dim..base + (pos + 1) * kv_dim].copy_from_slice(&st.v);
@@ -307,8 +327,10 @@ impl<'a> Model<'a> {
                 *x += d;
             }
         }
-        rmsnorm(&mut st.xb, &st.x, &self.out_norm, c.eps);
-        matvec(&self.output, &st.xb, &mut st.logits);
+        if logits {
+            rmsnorm(&mut st.xb, &st.x, &self.out_norm, c.eps);
+            matvec(&self.output, &st.xb, &mut st.logits);
+        }
         st.pos += 1;
         Ok(())
     }

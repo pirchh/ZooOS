@@ -77,8 +77,14 @@ fn main(start_handle: u64) -> u8 {
     );
     let ids = tok.encode(&chat::prompt(SYSTEM, prompt));
     let mut st = model.new_state(ids.len() + expected.len() + 2);
-    for &id in &ids {
-        if model.forward(&mut st, id).is_err() {
+    // Only the last prompt token's scores are read.
+    for (k, &id) in ids.iter().enumerate() {
+        let r = if k + 1 == ids.len() {
+            model.forward(&mut st, id)
+        } else {
+            model.feed(&mut st, id)
+        };
+        if r.is_err() {
             return 6;
         }
     }

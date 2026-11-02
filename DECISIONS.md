@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Assistant step 1: a faster model engine (2026-11-02)
+
+Design: docs/a1-design.md. Version 0.65.0.
+
+- Vector (`core::simd`) dot products in float, scores only for tokens
+  that are read, rotary frequencies precomputed: 2.0–2.7× faster in the
+  guest, with answers unchanged.
+- 8-bit integer activations (llama.cpp's way) would be about 25 % faster
+  again, but fail the agreed 0.02 logit check against the reference (0.21).
+  Not taken without the owner's say.
+
 ## UI steps 3f and 3g: Finder-style Files, the editor, icons (2026-11-02)
 
 Designs: docs/u3f-design.md, docs/u3g-design.md. Version 0.64.0.

@@ -132,7 +132,8 @@ impl<'m, 't> Assistant<'m, 't> {
             }) {
                 return Err(AssistError::Cancelled);
             }
-            model.forward(&mut st, id)?;
+            // The prefix's scores are never read.
+            model.feed(&mut st, id)?;
         }
         let tool_ids = TOOLS.map(|t| tok.encode(t.word()));
         let tool_first = core::array::from_fn(|i| tool_ids[i][0]);
@@ -190,7 +191,12 @@ impl<'m, 't> Assistant<'m, 't> {
             }) {
                 return Err(AssistError::Cancelled);
             }
-            self.model.forward(&mut self.st, id)?;
+            // Only the last request token's scores are read.
+            if k + 1 == ids.len() {
+                self.model.forward(&mut self.st, id)?;
+            } else {
+                self.model.feed(&mut self.st, id)?;
+            }
         }
         // Tool: best first-token score among the four words.
         let scores = self.tool_first.map(|id| self.st.logits[id as usize]);
@@ -199,8 +205,13 @@ impl<'m, 't> Assistant<'m, 't> {
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
         let tool = TOOLS[best];
-        for &id in &self.tool_ids[best].clone() {
-            self.model.forward(&mut self.st, id)?;
+        let word = self.tool_ids[best].clone();
+        for (k, &id) in word.iter().enumerate() {
+            if k + 1 == word.len() {
+                self.model.forward(&mut self.st, id)?;
+            } else {
+                self.model.feed(&mut self.st, id)?;
+            }
         }
         // Argument: path characters only, until the model would rather end
         // the line or the turn.
