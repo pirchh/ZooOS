@@ -129,6 +129,7 @@ and verification:
 | U2b | The monitor's own resolution in QEMU (host size through fw_cfg); 2× drawing for 4K screens (docs/u2b-design.md) | done 2026-11-01 |
 | U3 | Several windows per app (Ctrl+N); right-click menus on dock icons (New Window, Remove from / Keep in Dock, Quit); minimised windows after a divider; Files' Applications folder (Open, Add to Dock); dock pins saved in `.dock` (docs/u3-design.md) | done 2026-11-01 |
 | U3f | Finder-style Files: sidebar, icons, size column, double-click opens, New Folder / New Text File; Notes edits any file with coloured program text, Ctrl+S; rich content lines (colours, icons, caret, columns) (docs/u3f-design.md) | done 2026-11-02 |
+| N3 | Network app (connection, fetch a page by name or address, text shown) and a DNS client (docs/n3-design.md) | done 2026-11-02 |
 | N1 | Network device (virtio-net, polled), raw-frame syscalls, IPv4 stack in user space: ARP, ICMP, UDP, DHCP client (docs/n1-design.md) | done 2026-11-02 |
 | N2 | TCP client and an HTTP request to a host-side test server (docs/n2-design.md) | done 2026-11-02 |
 | A2 | The Assistant learns: request → command memory on disk, learned from answers and corrections; alike requests answered at once without the model (docs/a2-design.md) | done 2026-11-02 |

@@ -47,7 +47,7 @@ const LIGHTS: [(u32, u32); 3] = [
     (0x28C840, 0x1AAB29),
 ];
 /// Dock icon colours, indexed like the applications.
-const ICON: [u32; PROGRAMS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
+const ICON: [u32; PROGRAMS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342, 0x1FA67A];
 
 /// Largest supported screen, in logical pixels (a 2560x1440 monitor is
 /// used whole, at 1x; docs/u2b-design.md).
@@ -239,12 +239,13 @@ const DOCK_EDGE: usize = 6;
 const DOCK_FILE: &str = ".dock";
 
 /// Applications, in dock order; Notes is the last.
-const PROGRAMS: usize = 4;
+const PROGRAMS: usize = 5;
 const NOTES: usize = 3;
+const NETWORK: usize = 4;
 /// Window slots (docs/u3-design.md): the first `PROGRAMS` are each
 /// application's first window, in catalog order; the rest hold further
 /// windows (Ctrl+N).
-const WINDOWS: usize = 8;
+const WINDOWS: usize = 9;
 /// The applications, in dock order: (label, program, gets the home
 /// directory).
 const CATALOG: [(&str, &str, bool); PROGRAMS] = [
@@ -252,6 +253,7 @@ const CATALOG: [(&str, &str, bool); PROGRAMS] = [
     ("Crash Test", "crash-test", false),
     ("Assistant", "assistant", true),
     ("Notes", "notes", true),
+    ("Network", "network", false),
 ];
 /// Two presses within this many ticks (and 4 px) are a double-click.
 const DOUBLE_CLICK: u64 = 50;
@@ -1055,6 +1057,7 @@ fn app_icon(s: &mut Screen, k: usize, x: usize, y: usize, d: usize) {
         (0xB9B9C0, 0x6C6C73),
         (0xB497FF, 0x5A36E0),
         (0xFFFFFF, 0xECECEF),
+        (0x5DDBA8, 0x14946A),
     ];
     s.shade(x, y, d, d, colours[k], 255, tile);
     if k == 3 {
@@ -1094,6 +1097,18 @@ fn app_icon(s: &mut Screen, k: usize, x: usize, y: usize, d: usize) {
         match k {
             0 => rr(u, v, (0.2, 0.28, 0.52, 0.42), 0.04) || rr(u, v, (0.2, 0.34, 0.8, 0.76), 0.06),
             1 => v <= 0.78 && v >= 0.2 && (u - 0.5).abs() <= (v - 0.2) * 0.6,
+            // A globe: a ring, the equator, two parallels and a meridian.
+            4 => {
+                let (du, dv) = (u - 0.5, v - 0.5);
+                let r2 = du * du + dv * dv;
+                let ring = r2 <= 0.30 * 0.30 && r2 >= 0.255 * 0.255;
+                let inside = r2 < 0.255 * 0.255;
+                let line = |d: f32| d.abs() <= 0.022;
+                let meridian =
+                    (du * du / (0.12 * 0.12) + dv * dv / (0.28 * 0.28) - 1.0).abs() <= 0.16;
+                ring || (inside
+                    && (line(dv) || line(dv - 0.13) || line(dv + 0.13) || line(du) || meridian))
+            }
             _ => sparkle(u, v, 0.45, 0.54, 0.3) || sparkle(u, v, 0.74, 0.27, 0.11),
         }
     };
@@ -1101,6 +1116,8 @@ fn app_icon(s: &mut Screen, k: usize, x: usize, y: usize, d: usize) {
         (0xD6EBFF, 0xBFDDFB),
         (0xFFE066, 0xF5B400),
         (0xFFFFFF, 0xEDE6FF),
+        (0, 0),
+        (0xFFFFFF, 0xE2F7EE),
     ][k];
     let drop = (f / 36.0).max(0.5);
     s.shade(x, y, d, d, (0, 0), 70, move |u, v| glyph(u, v - drop));
@@ -3522,7 +3539,7 @@ impl Desktop {
                     .iter()
                     .any(|&(a, b)| rr(u, v, (a, b, a + 5.8, b + 5.8), 1.6))
             }),
-            b'0'..=b'3' => app_icon(s, (kind - b'0') as usize, x, y, 16),
+            b'0'..=b'4' => app_icon(s, (kind - b'0') as usize, x, y, 16),
             _ => {}
         }
     }
@@ -3947,7 +3964,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             let first = zoo_abi::ui::initial_windows(w, h);
             core::array::from_fn(|i| first[i % PROGRAMS])
         },
-        order: [4, 5, 6, 7, 3, 1, 2, 0],
+        order: [5, 6, 7, 8, 4, 3, 1, 2, 0],
         px: w / 2,
         py: h / 2,
         held: false,
@@ -3970,7 +3987,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         frame_now: 0,
         shift: false,
         ctrl: false,
-        pinned: [true; PROGRAMS],
+        // Network is in Applications, not the dock, at first.
+        pinned: core::array::from_fn(|k| k != NETWORK),
         minis: Vec::new(),
         menu: None,
         rheld: false,
@@ -3993,6 +4011,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     desk.load_dock();
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
+    desk.apps[NETWORK].closed = true;
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
         if !app.start(home) {
             zoo_rt::log!("PeacockHandler: cannot start {}", app.program);

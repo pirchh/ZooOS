@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Network step 3: the Network app and DNS (2026-11-02)
+
+Design: docs/n3-design.md. Version 0.68.0.
+
+- Network is a fifth application, in Applications but not in the dock at
+  first (so the dock the owner knows is unchanged); window slots 8 → 9.
+- DNS messages are pure functions in `zoo-abi`, unit-tested on the host;
+  guest tests stay hermetic (no DNS server on the isolated network).
+- Plain HTTP only for now; TLS is a separate, larger step.
+
 ## Network steps 1 and 2: a network device, IPv4, TCP (2026-11-02)
 
 Designs: docs/n1-design.md, docs/n2-design.md. Version 0.67.0.

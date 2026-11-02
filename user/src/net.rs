@@ -382,6 +382,73 @@ impl Stack {
     }
 }
 
+// ---- UDP and DNS (docs/n3-design.md) ---------------------------------
+
+impl Stack {
+    /// Sends `payload` to `ip`:`port` through the machine at `mac` and
+    /// waits up to `timeout` for one datagram back to our port; returns
+    /// it.
+    pub fn udp_ask(
+        &mut self,
+        mac: Mac,
+        ip: Ip,
+        port: u16,
+        payload: &[u8],
+        timeout: u64,
+    ) -> Option<Vec<u8>> {
+        let lport = 49152 + (ticks() % 16000) as u16;
+        let n = payload.len().min(NET_MAX_FRAME - 42);
+        self.frame[42..42 + n].copy_from_slice(&payload[..n]);
+        self.send_udp(mac, self.ip, ip, (lport, port), n).ok()?;
+        let p = self.wait_ip(timeout, |p, d| {
+            p.proto == PROTO_UDP
+                && p.src == ip
+                && d.len() >= 8
+                && be16(d, 0) == port
+                && be16(d, 2) == lport
+        })?;
+        Some(self.rx[p.start + 8..p.end].to_vec())
+    }
+
+    /// The IPv4 address of `name`, asked of the DNS server `dns` through
+    /// the machine at `mac`. A dotted address is returned as it is.
+    pub fn lookup(
+        &mut self,
+        mac: Mac,
+        dns: Ip,
+        name: &str,
+        timeout: u64,
+    ) -> Result<Ip, &'static str> {
+        if let Some(ip) = parse_ip(name) {
+            return Ok(ip);
+        }
+        let id = (ticks() as u16).wrapping_mul(40503) | 1;
+        let mut q = [0u8; 300];
+        let n = zoo_abi::dns::query(id, name, &mut q).ok_or("not a valid name")?;
+        for _ in 0..2 {
+            let Some(reply) = self.udp_ask(mac, dns, 53, &q[..n], timeout) else {
+                continue;
+            };
+            return zoo_abi::dns::answer(id, &reply).map_err(|e| match e {
+                zoo_abi::dns::DnsError::NoSuchName => "no such name",
+                zoo_abi::dns::DnsError::NoAddress => "no IPv4 address",
+                _ => "a bad answer",
+            });
+        }
+        Err("no answer from the DNS server")
+    }
+}
+
+/// `a.b.c.d`, if `text` is one.
+pub fn parse_ip(text: &str) -> Option<Ip> {
+    let mut ip = [0u8; 4];
+    let mut parts = text.split('.');
+    for b in &mut ip {
+        *b = parts.next()?.parse().ok()?;
+    }
+    parts.next().is_none().then_some(ip)
+}
+
 // ---- TCP (docs/n2-design.md) ------------------------------------------
 
 const PROTO_TCP: u8 = 6;
