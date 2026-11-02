@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The A1 section
-(version 0.65.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The A2 section
+(version 0.66.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,34 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Assistant step 2 results: the Assistant learns (version 0.66.0)
+
+Design: docs/a2-design.md.
+
+**New case `assistant-memory`** (TCG, no model needed): `OK`.
+- `where is my pancake recipe` → no model; `search pancake` typed next →
+  ``Assistant: learned `where is my pancake recipe` -> `search pancake` ``.
+- `where is the pancake recipe` → ``recalled `search pancake` (100% alike)``:
+  `1-recalled` shows `Assistant (remembered): search pancake` and the
+  result.
+- After a desktop restart, `pancake recipe where is it` →
+  ``recalled `search pancake` (80% alike)``; `make a folder called
+  Invoices` is not recalled and goes to the model (`2-after-restart`).
+
+**Negative control:** recall switched off (`RECALL_AT` = 101) →
+`FAIL assistant-memory` (timeout waiting for the recall).
+
+**Updated case:** `assistant-model` (and `assistant-live`) now expect the
+broker (pid 31) before the model service (pid 32): the Assistant asks its
+memory first. The first full run caught this
+(``got `ZOO_OS PROC start pid=31 name=otter-handler` while expecting
+`... elephant-handler` ``); after the fix `assistant-model` and
+`assistant` pass on TCG and `assistant-live` with `--accel whpx`
+(`ZOO_OS BOOT version=0.66.0`).
+
+**Full `cargo xtask verify --skip-model`** (TCG): 78 cases `OK`. The one
+`FAIL` was `assistant-model` (above), which was fixed and rerun alone.
 
 ## Assistant step 1 results: a faster model engine (version 0.65.0)
 

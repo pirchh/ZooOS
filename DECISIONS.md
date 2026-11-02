@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Assistant step 2: the Assistant learns from use (2026-11-02)
+
+Design: docs/a2-design.md. Version 0.66.0.
+
+- Learning is a memory of request → command pairs in the home folder
+  (`.assistant-memory`), not a change to the model: the base model stays
+  frozen, as the owner asked, and the memory is visible and editable.
+- It learns from answers that worked and from corrections (a command
+  typed after a request it could not answer well).
+- A request at least 75 % alike (shared words, filler dropped) is
+  answered from memory without the model; otherwise the model is asked.
+- The memory lives in OtterHandler, which already holds the home folder;
+  the model service still has no file access.
+
 ## Assistant step 1: a faster model engine (2026-11-02)
 
 Design: docs/a1-design.md. Version 0.65.0.

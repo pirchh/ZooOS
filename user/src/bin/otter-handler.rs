@@ -20,7 +20,8 @@ use alloc::vec::Vec;
 use core::fmt::Write as _;
 use zoo_rt::app::send_wait;
 use zoo_rt::{
-    DirEntry, Error, Handle, Line, dir_create, dir_list, dir_remove, dir_stat, file_read, recv,
+    DirEntry, Error, Handle, Line, dir_create, dir_list, dir_remove, dir_stat, file_create,
+    file_read, file_truncate, file_write, recv,
 };
 
 zoo_rt::entry2!(main);
@@ -29,6 +30,35 @@ const MAX_RESULTS: usize = 20;
 const SEARCH_BYTES: usize = 64 * 1024;
 const MAX_CREATE_DEPTH: usize = 8;
 const MAX_WALK_DEPTH: usize = 16;
+
+/// The assistant's memory of requests and the commands that answered them
+/// (docs/a2-design.md): `request<TAB>command` lines, newest last.
+const MEMORY: &str = ".assistant-memory";
+/// Largest memory file kept; the oldest pairs go first.
+const MEMORY_BYTES: usize = 16 * 1024;
+/// Words that do not change what a request means.
+const FILLER: [&str; 14] = [
+    "a", "an", "the", "my", "please", "me", "i", "to", "for", "of", "can", "you", "could", "would",
+];
+
+/// A request's words, lower-cased, without punctuation or filler.
+fn words(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '/' || c == '.' || c == '-'))
+        .map(|w| w.trim_matches('.').to_ascii_lowercase())
+        .filter(|w| !w.is_empty() && !FILLER.contains(&w.as_str()))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// How alike two requests are: shared words over all words, in percent.
+fn likeness(a: &[String], b: &[String]) -> usize {
+    let shared = a.iter().filter(|w| b.contains(w)).count();
+    let all = a.len() + b.len() - shared;
+    (shared * 100).checked_div(all).unwrap_or(0)
+}
 
 struct Otter {
     chan: Handle,
@@ -138,8 +168,81 @@ impl Otter {
             "plan" => self.create(clean(arg)?, false),
             "create" => self.create(clean(arg)?, true),
             "undo" if arg.is_empty() => self.undo(),
+            "remember" => self.remember(arg),
+            "recall" => self.recall(arg),
             _ => Err("unknown tool"),
         }
+    }
+
+    /// The memory file's text (empty if there is none yet).
+    fn memory(&self) -> Result<Vec<u8>, &'static str> {
+        let mut text = alloc::vec![0u8; MEMORY_BYTES];
+        let mut len = 0;
+        while len < text.len() {
+            match file_read(self.home, MEMORY, len as u64, &mut text[len..]) {
+                Ok(0) | Err(Error::NotFound) => break,
+                Ok(n) => len += n,
+                Err(e) => return Err(reason(e)),
+            }
+        }
+        text.truncate(len);
+        Ok(text)
+    }
+
+    /// `remember <request>\t<command>`: keeps the pair, replacing an
+    /// earlier pair for the same request.
+    fn remember(&mut self, arg: &str) -> Result<(), &'static str> {
+        let (request, command) = arg.split_once('\t').ok_or("expected request and command")?;
+        let (request, command) = (request.trim(), command.trim());
+        let key = words(request);
+        if key.is_empty() || command.is_empty() || request.contains('\n') || command.contains('\n')
+        {
+            return Err("nothing to remember");
+        }
+        let old = self.memory()?;
+        let mut text = String::new();
+        for line in core::str::from_utf8(&old).unwrap_or("").lines() {
+            let same = line.split_once('\t').is_some_and(|(r, _)| words(r) == key);
+            if !same && !line.is_empty() {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        let _ = writeln!(text, "{}\t{}", request, command);
+        // Over the limit: drop the oldest lines.
+        while text.len() > MEMORY_BYTES {
+            let cut = text.find('\n').map_or(text.len(), |i| i + 1);
+            text.drain(..cut);
+        }
+        let _ = file_create(self.home, MEMORY);
+        file_truncate(self.home, MEMORY, 0)
+            .and_then(|()| file_write(self.home, MEMORY, 0, text.as_bytes()).map(|_| ()))
+            .map_err(reason)?;
+        zoo_rt::log!("OtterHandler: remembered `{}` -> `{}`", request, command);
+        Ok(())
+    }
+
+    /// `recall <request>`: the remembered command for the most alike
+    /// request, as `| <likeness> <command>`, if any is alike at all.
+    fn recall(&mut self, request: &str) -> Result<(), &'static str> {
+        let key = words(request);
+        let text = self.memory()?;
+        let mut best: Option<(usize, &str)> = None;
+        for line in core::str::from_utf8(&text).unwrap_or("").lines() {
+            let Some((r, c)) = line.split_once('\t') else {
+                continue;
+            };
+            let score = likeness(&key, &words(r));
+            // Ties go to the newer pair.
+            if score > 0 && best.is_none_or(|(b, _)| score >= b) {
+                best = Some((score, c));
+            }
+        }
+        if let Some((score, command)) = best {
+            self.line(format_args!("{} {}", score, command))
+                .map_err(|_| "reply failed")?;
+        }
+        Ok(())
     }
 
     fn entries(&self, path: &str) -> Result<Vec<DirEntry>, Error> {

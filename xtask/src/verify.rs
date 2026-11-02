@@ -742,6 +742,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "assistant-memory",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: assistant_memory_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the Assistant learns: a request it could not answer, then the command typed for it, is remembered; the same request in other words is answered from memory, also after a desktop restart; an unrelated request is not",
+            interaction: Some(assistant_memory_steps()),
+            screen_checks: vec![
+                ("1-recalled", check_recalled),
+                ("2-after-restart", check_recalled_again),
+            ],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -1841,7 +1857,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: model_image.clone(),
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_model_expectation(&normal, false),
+            expectation: assistant_model_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
             purpose: "the model works on a request while the desktop stays usable; Backspace cancels it",
@@ -1857,7 +1873,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: model_image.clone(),
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_model_expectation(&normal, true),
+            expectation: assistant_model_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
             purpose: "requests in words: the model picks the tool, the broker runs it (needs --accel; too slow under TCG)",
@@ -2347,7 +2363,7 @@ fn check_assistant_transcript(img: &screen::Image) -> Result<String, String> {
 
 /// Desktop start, the model service (pid 14) and, for the live case, the
 /// broker (pid 15); then a clean exit.
-fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation {
+fn assistant_model_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
         "ZOO_OS SHELL line=desktop",
@@ -2357,25 +2373,23 @@ fn assistant_model_expectation(normal: &Expectation, live: bool) -> Expectation 
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
         "ZOO_OS PROC start pid=30 name=assistant",
-        "ZOO_OS PROC start pid=31 name=elephant-handler",
+        // The broker first (the Assistant asks its memory), then the model
+        // (docs/a2-design.md).
+        "ZOO_OS PROC start pid=31 name=otter-handler",
+        "ZOO_OS PROC start pid=32 name=elephant-handler",
     ]);
-    if live {
-        e.then(&["ZOO_OS PROC start pid=32 name=otter-handler"]);
-    }
     e.then(&[
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
     ]);
-    let mut exits = vec![
+    let exits = vec![
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
         "ZOO_OS PROC exit pid=30 name=assistant code=0",
-        "ZOO_OS PROC exit pid=31 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
+        "ZOO_OS PROC exit pid=32 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ];
-    if live {
-        exits.push("ZOO_OS PROC exit pid=32 name=otter-handler code=0");
-    }
     e.then_any_order(&exits);
     e.clone()
 }
@@ -2402,7 +2416,7 @@ fn assistant_model_steps() -> Interaction {
     steps.extend([
         Action::Keys(typed("find my pancake recipe")),
         Action::WaitFor(
-            "[31:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
+            "[32:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
         ),
         Action::Settle(QUIET),
         // While the model computes: move to Files and down two entries.
@@ -2411,7 +2425,7 @@ fn assistant_model_steps() -> Interaction {
         Action::Screenshot("1-busy"),
         // Back to the Assistant (Files -> Crash Test -> Assistant) and cancel.
         Action::Keys(vec!["tab", "tab", "backspace"]),
-        Action::WaitFor("[31:elephant-handler] ElephantHandler: request cancelled".into()),
+        Action::WaitFor("[32:elephant-handler] ElephantHandler: request cancelled".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-cancelled"),
     ]);
@@ -2424,12 +2438,12 @@ fn assistant_live_steps() -> Interaction {
     steps.extend([
         Action::Keys(typed("Find my pancake recipe")),
         Action::WaitFor(
-            "[31:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+            "[32:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
         Action::Settle(QUIET),
         Action::Keys(typed("Make a folder called Projects/2026")),
         Action::WaitFor(
-            "[31:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
+            "[32:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
         ),
         Action::Settle(QUIET),
         Action::Keys(vec!["y"]),
@@ -4196,6 +4210,119 @@ fn check_new_folder(img: &screen::Image) -> Result<String, String> {
     let at = selected(img, "untitled folder", true)?;
     content(img, "Home/Documents")?;
     Ok(format!("`untitled folder` made and selected at {at:?}"))
+}
+
+/// The `assistant-memory` case: the desktop runs twice; each run starts
+/// the broker and the model service (which reports no model).
+fn assistant_memory_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    for base in [26, 33] {
+        let pid = |k: usize| base + k;
+        let lines = [
+            "ZOO_OS SHELL line=desktop".to_string(),
+            format!("ZOO_OS PROC start pid={} name=zookeeper", pid(0)),
+            format!("ZOO_OS PROC start pid={} name=peacock-handler", pid(1)),
+            format!(
+                "ZOO_OS DISPLAY acquired pid={} name=peacock-handler",
+                pid(1)
+            ),
+            format!("ZOO_OS PROC start pid={} name=files", pid(2)),
+            format!("ZOO_OS PROC start pid={} name=crash-test", pid(3)),
+            format!("ZOO_OS PROC start pid={} name=assistant", pid(4)),
+            format!("ZOO_OS PROC start pid={} name=otter-handler", pid(5)),
+            format!("ZOO_OS PROC start pid={} name=elephant-handler", pid(6)),
+            format!(
+                "ZOO_OS PROC exit pid={} name=peacock-handler code=0",
+                pid(1)
+            ),
+            format!("ZOO_OS DISPLAY released pid={}", pid(1)),
+        ];
+        e.then(&lines.iter().map(String::as_str).collect::<Vec<_>>());
+        let exits = [
+            format!("ZOO_OS PROC exit pid={} name=files code=0", pid(2)),
+            format!("ZOO_OS PROC exit pid={} name=crash-test code=0", pid(3)),
+            format!("ZOO_OS PROC exit pid={} name=assistant code=0", pid(4)),
+            format!("ZOO_OS PROC exit pid={} name=otter-handler code=0", pid(5)),
+            format!(
+                "ZOO_OS PROC exit pid={} name=elephant-handler code=0",
+                pid(6)
+            ),
+            format!("ZOO_OS PROC exit pid={} name=zookeeper code=0", pid(0)),
+        ];
+        e.then_any_order(&exits.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    e
+}
+
+fn assistant_memory_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Assistant.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // Not answered (no model in this image) ...
+    steps.push(Action::Keys(typed("where is my pancake recipe")));
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC start pid=32 name=elephant-handler".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // ... so the command typed next is its answer.
+    steps.push(Action::Keys(typed("search pancake")));
+    steps.push(Action::WaitContains(
+        "Assistant: learned `where is my pancake recipe` -> `search pancake`".into(),
+    ));
+    // The same request in other words: from memory.
+    steps.push(Action::Keys(typed("where is the pancake recipe")));
+    steps.push(Action::WaitContains(
+        "Assistant: recalled `search pancake` (100% alike)".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("1-recalled"));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0".into(),
+    ));
+    // A new desktop: the memory is on disk.
+    steps.push(Action::Keys(typed("desktop")));
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC start pid=37 name=assistant".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("pancake recipe where is it")));
+    steps.push(Action::WaitContains(
+        "Assistant: recalled `search pancake` (80% alike)".into(),
+    ));
+    // Unrelated: not from memory, so the model is asked.
+    steps.push(Action::Keys(typed("make a folder called Invoices")));
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC start pid=39 name=elephant-handler".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("2-after-restart"));
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=34".into()));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn check_recalled(img: &screen::Image) -> Result<String, String> {
+    let at = content(img, "Assistant (remembered): search pancake")?;
+    let found = content(img, "  Documents/recipes/pancakes.txt")?;
+    Ok(format!(
+        "answered from memory at {at:?}, with the search result at {found:?}"
+    ))
+}
+
+fn check_recalled_again(img: &screen::Image) -> Result<String, String> {
+    let at = content(img, "Assistant (remembered): search pancake")?;
+    content(img, "  Documents/recipes/pancakes.txt")?;
+    let model = content(img, "The model is not installed; type a command instead.")?;
+    no_content(img, "Assistant (remembered): make")?;
+    Ok(format!(
+        "after a restart, answered from memory at {at:?}; the unrelated request went to the model ({model:?})"
+    ))
 }
 
 /// The `apps-folder` case: the desktop runs twice.
