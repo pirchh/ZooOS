@@ -913,6 +913,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "gpu-drag-cursor",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: menu_clock.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "while a window is dragged the pointer is drawn in the frame with it (the host cursor hidden); after the drag the hardware cursor is back",
+            interaction: Some(drag_cursor_steps()),
+            screen_checks: vec![
+                ("1-dragging", check_drag_pointer_drawn),
+                ("2-released", check_drag_pointer_gone),
+            ],
+        },
+        Case {
             name: "gpu-1440",
             mode: Mode::Normal,
             custom_image: None,
@@ -2814,6 +2830,64 @@ fn tablet_steps() -> Interaction {
 
 /// A 2560x1440 host: the desktop at 1x over the whole screen, laid out for
 /// that size, and a tablet click on Crash Test's close light closes it.
+/// Where the drag in `gpu-drag-cursor` leaves the pointer: Files' title
+/// bar (right of its title), moved by (120, 60).
+fn drag_cursor_end() -> (usize, usize) {
+    let (x, y) = title_bar(FILES_WIN);
+    (x + 120, y + 60)
+}
+
+fn drag_cursor_steps() -> Interaction {
+    let mut steps = start_desktop();
+    let (x, y) = title_bar(FILES_WIN);
+    steps.extend([
+        Action::WaitSeen("PeacockHandler: hardware cursor".into()),
+        abs_at((x, y)),
+        Action::Button(true),
+        abs_at((x + 40, y + 20)),
+        abs_at((x + 80, y + 40)),
+        abs_at(drag_cursor_end()),
+        Action::WaitContains("PeacockHandler: pointer drawn in the frame".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-dragging"),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: moved Files to".into()),
+        Action::WaitContains("PeacockHandler: pointer hardware".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-released"),
+    ]);
+    Interaction { steps }
+}
+
+/// The arrow at (x, y): white outline left of the hot spot, black inside.
+fn arrow_at(img: &screen::Image, (x, y): (usize, usize)) -> bool {
+    let bright = |p: Option<[u8; 3]>| p.is_some_and(|p| p.iter().all(|&v| v >= 230));
+    let dark = |p: Option<[u8; 3]>| p.is_some_and(|p| p.iter().all(|&v| v <= 25));
+    bright(img.pixel(x - 1, y + 6)) && dark(img.pixel(x + 2, y + 6))
+}
+
+fn check_drag_pointer_drawn(img: &screen::Image) -> Result<String, String> {
+    let at = drag_cursor_end();
+    if !arrow_at(img, at) {
+        return Err(format!("mid-drag, no arrow drawn in the frame at {at:?}"));
+    }
+    Ok(format!(
+        "mid-drag: the arrow is in the frame at {at:?}, with the window"
+    ))
+}
+
+fn check_drag_pointer_gone(img: &screen::Image) -> Result<String, String> {
+    let at = drag_cursor_end();
+    if arrow_at(img, at) {
+        return Err(format!(
+            "after the drag, an arrow is still drawn in the frame at {at:?}"
+        ));
+    }
+    Ok(format!(
+        "after the drag: no arrow in the frame at {at:?} (the hardware cursor is back)"
+    ))
+}
+
 fn q1440_steps() -> Interaction {
     let (sw, sh) = (2560, 1440);
     let crash = zui::initial_windows(sw, sh)[CRASH_WIN];
