@@ -7,8 +7,12 @@ the dock "does not go away" and chose auto-hide, as in macOS's
 ## 1. Behaviour
 
 - **At start:** the dock is hidden below the screen's bottom edge.
-- **Revealing it:** the pointer at the bottom edge (the last two logical
-  rows) slides it in over 250 ms, slowing as it arrives.
+- **Revealing it:** the pointer near the bottom edge (the last six
+  logical rows, `DOCK_EDGE`) slides it in over 250 ms, slowing as it
+  arrives.
+  - It was the last two rows until 0.61.1. The owner found the dock would
+    not come back in a maximised QEMU window, whose scaling stops the
+    pointer a few rows short of the last one.
 - **While it is in use:** it stays while the pointer is over it, or over
   the label above its icons.
 - **Leaving it:** 400 ms after the pointer leaves, it slides out over
