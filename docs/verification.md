@@ -72,7 +72,10 @@ that is 75% alike.
 
 `assistant-memory` (the A2 case) still passes.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 92 cases `OK`.
+The four accelerator-only cases were skipped.
+- clippy with `-D warnings` (kernel, `zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
 
 ## Stage 0 results: filesystem and Notes fixes (version 0.74.0)
 
