@@ -53,6 +53,27 @@ fn words(text: &str) -> Vec<String> {
     out
 }
 
+/// Names a request or command uses: its words, also split at `/`.
+fn names(text: &str) -> Vec<String> {
+    words(text)
+        .iter()
+        .flat_map(|w| w.split('/'))
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Whether a remembered `command` fits `request`: every name its argument
+/// took from the remembered request must be in the new request too, so
+/// "make a folder called Receipts" never recalls `create Invoices` (B8).
+fn names_agree(remembered: &str, command: &str, request: &str) -> bool {
+    let arg = command.split_once(' ').map_or("", |(_, a)| a);
+    let (old, new) = (names(remembered), names(request));
+    names(arg)
+        .iter()
+        .all(|n| !old.contains(n) || new.contains(n))
+}
+
 /// How alike two requests are: shared words over all words, in percent.
 fn likeness(a: &[String], b: &[String]) -> usize {
     let shared = a.iter().filter(|w| b.contains(w)).count();
@@ -63,6 +84,9 @@ fn likeness(a: &[String], b: &[String]) -> usize {
 struct Otter {
     chan: Handle,
     home: Handle,
+    /// The last request found nothing (a search without matches): it
+    /// finishes with `none`, so the Assistant does not learn it (B3).
+    empty: bool,
     /// Folders the last `create` made, in creation order.
     journal: Vec<String>,
 }
@@ -74,6 +98,7 @@ fn main(chan: u64, home: u64) -> u8 {
     let mut otter = Otter {
         chan,
         home,
+        empty: false,
         journal: Vec::new(),
     };
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
@@ -92,6 +117,7 @@ fn main(chan: u64, home: u64) -> u8 {
         if req == "quit" {
             return 0;
         }
+        otter.empty = false;
         let result = otter.handle(req);
         if otter.finish(result).is_err() {
             return 4;
@@ -153,6 +179,7 @@ impl Otter {
     fn finish(&self, result: Result<(), &str>) -> Result<(), Error> {
         let mut l = Line::new();
         let _ = match result {
+            Ok(()) if self.empty => l.write_str("none"),
             Ok(()) => l.write_str("ok"),
             Err(why) => write!(l, "err {}", why),
         };
@@ -233,6 +260,14 @@ impl Otter {
                 continue;
             };
             let score = likeness(&key, &words(r));
+            if score > 0 && !names_agree(r, c, request) {
+                zoo_rt::log!(
+                    "OtterHandler: `{}` names other things than `{}`",
+                    c,
+                    request
+                );
+                continue;
+            }
             // Ties go to the newer pair.
             if score > 0 && best.is_none_or(|(b, _)| score >= b) {
                 best = Some((score, c));
@@ -321,7 +356,7 @@ impl Otter {
         sent.map_err(|_| "reply failed")
     }
 
-    fn search(&self, text: &str) -> Result<(), &'static str> {
+    fn search(&mut self, text: &str) -> Result<(), &'static str> {
         if text.is_empty() {
             return Err("nothing to search for");
         }
@@ -342,6 +377,7 @@ impl Otter {
             .map_err(|_| "reply failed")?;
         }
         if found.is_empty() {
+            self.empty = true;
             self.line(format_args!("no matches"))
                 .map_err(|_| "reply failed")?;
         }

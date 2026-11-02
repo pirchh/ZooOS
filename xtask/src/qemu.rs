@@ -452,6 +452,9 @@ pub enum Action {
     /// Like `WaitFor`, but the line only has to contain this text (for
     /// lines with timestamps).
     WaitContains(String),
+    /// Fails the case if any line so far contains this text: for something
+    /// that must not have happened (put a `Settle` before it).
+    NeverSeen(String),
     /// Press and release these QEMU qcodes, one at a time.
     Keys(Vec<&'static str>),
     /// Wait until the serial log has not grown for this long (the guest has
@@ -644,6 +647,13 @@ pub fn run_case(
                 Action::WaitSeen(part) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
                     find_line_containing(complete, 0, part).is_some()
+                }
+                Action::NeverSeen(part) => {
+                    if find_line_containing(&text, 0, part).is_some() {
+                        harness_error = Some(format!("`{part}` appeared, and must not"));
+                        break;
+                    }
+                    true
                 }
                 Action::WaitGap(part, min, max) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];

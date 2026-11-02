@@ -30,6 +30,14 @@ const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 const COMMANDS: [&str; 5] = ["search", "list", "inspect", "create", "undo"];
+/// Commands the memory may hold and replay (B4): never `undo`, and never
+/// anything that is not a command (`remember`, `quit`, ...). `create`
+/// still asks first.
+const RECALLABLE: [&str; 4] = ["search", "list", "inspect", "create"];
+
+fn recallable(command: &str) -> bool {
+    RECALLABLE.contains(&command.split(' ').next().unwrap_or(""))
+}
 const HINT: &str = "Ask in words, or type search/list/inspect/create/undo.";
 /// A remembered request at least this alike (percent of shared words)
 /// is answered from memory, without the model (docs/a2-design.md).
@@ -166,7 +174,9 @@ impl App {
                 self.status = String::from(HINT);
                 self.say("Not created.");
                 // The choice was wrong: a command typed next answers it.
-                self.unanswered = self.request.take();
+                if let Some(r) = self.request.take() {
+                    self.unanswered = Some(r);
+                }
             }
             (Mode::Confirm(_), _) => {}
             (Mode::Typing, Key::Char(c)) if self.input.len() < MAX_INPUT => self.input.push(c),
@@ -215,7 +225,9 @@ impl App {
         } else if self.broker(text) {
             self.learn(text);
         } else {
-            self.unanswered = self.request.take();
+            if let Some(r) = self.request.take() {
+                self.unanswered = Some(r);
+            }
         }
     }
 
@@ -224,6 +236,9 @@ impl App {
         let Some(request) = self.request.take() else {
             return;
         };
+        if !recallable(command) {
+            return;
+        }
         let msg = alloc::format!("remember {}\t{}", request, command);
         let quiet = self.lines.len();
         if self.broker(&msg) {
@@ -261,11 +276,20 @@ impl App {
         let Some((score, cmd)) = best.filter(|(s, _)| *s >= RECALL_AT) else {
             return false;
         };
+        // The memory file is in home, which other programs can write:
+        // only replay what the memory may hold (B4).
+        if !recallable(&cmd) || cmd.contains(['\t', '\n']) {
+            zoo_rt::log!("Assistant: ignored remembered `{}`", cmd);
+            return false;
+        }
         zoo_rt::log!("Assistant: recalled `{}` ({}% alike)", cmd, score);
         let mut l = String::from("Assistant (remembered): ");
         l.push_str(&cmd);
         self.say(&l);
+        // Not learned again; a command typed next corrects it (B3).
+        let request = self.request.take();
         self.command(&cmd);
+        self.unanswered = request;
         true
     }
 
@@ -315,6 +339,9 @@ impl App {
                 self.say(&l);
             } else if line == "ok" {
                 return true;
+            } else if line == "none" {
+                // It ran but found nothing: not an answer to learn (B3).
+                return false;
             } else {
                 let mut l = String::from("Error: ");
                 l.push_str(line.strip_prefix("err ").unwrap_or(line));
@@ -379,7 +406,9 @@ impl App {
             self.command(&cmd);
         } else {
             // Not answered: a command typed next answers it.
-            self.unanswered = self.request.take();
+            if let Some(r) = self.request.take() {
+                self.unanswered = Some(r);
+            }
             let why = msg.strip_prefix("err ").unwrap_or(msg);
             let line = match why {
                 "cancelled" => String::from("Cancelled."),

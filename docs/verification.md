@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The Stage 0
-section (version 0.74.0) is the current state. Sections before it
+memory section (version 0.75.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,38 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 0 results: the memory (version 0.75.0)
+
+Design: docs/s0-design.md (B3, B4, B8).
+
+**New case `memory-guard`:** `OK`. Its log:
+
+```
+[30:assistant] Assistant: ignored remembered `undo`
+[30:assistant] Assistant: learned `make a new project folder for work called Invoices` -> `create Invoices`
+[31:otter-handler] OtterHandler: `create Invoices` names other things than `make a new project folder for work called Receipts`
+```
+
+The test also checks two things that must not happen:
+- ``learned `find my tax papers` `` never appears, although `search
+  taxes` ran (it found nothing);
+- `Assistant: recalled` never appears.
+
+| Fix removed (negative control) | Result |
+| --- | --- |
+| B4: no `recallable` check on recall | `FAIL memory-guard`; the log shows ``Assistant: recalled `undo` (100% alike)``: the planted line ran |
+| B3: `none` treated as `ok` | `FAIL memory-guard` (harness error): ``Assistant: learned `find my tax papers` `` appeared |
+| B8: no `names_agree` | `FAIL memory-guard`; the log shows ``Assistant: recalled `create Invoices` (75% alike)`` for Receipts |
+
+The first B8 test used "make a folder called Receipts", which is only 60%
+alike to the Invoices request. That is below the 75% recall threshold, so
+the old code would not have recalled it either. The test now uses a pair
+that is 75% alike.
+
+`assistant-memory` (the A2 case) still passes.
+
+FULL_SUITE_RESULT
 
 ## Stage 0 results: filesystem and Notes fixes (version 0.74.0)
 
