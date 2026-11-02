@@ -14,6 +14,7 @@ pub mod app;
 pub mod exception;
 pub mod fsproto;
 mod heap;
+pub mod net;
 pub mod thread;
 pub mod vm;
 

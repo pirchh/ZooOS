@@ -99,6 +99,8 @@ enum Object {
     Block,
     /// Shared memory pages (docs/f1-design.md).
     Shm(Arc<ShmPages>),
+    /// The network device (docs/n1-design.md).
+    Net,
 }
 
 /// Pages several processes can map. Each handle and each mapping holds a
@@ -506,6 +508,8 @@ struct Scheduler {
     kstack_used: [bool; KSTACK_SLOTS],
     /// Pid of the process that owns the display and keyboard.
     display_owner: Option<u64>,
+    /// The process holding the network device (docs/n1-design.md).
+    net_owner: Option<u64>,
     /// The kernel's end of the current desktop session's control channel,
     /// with that session's Zookeeper pid.
     control: Option<(u64, HandleEntry)>,
@@ -570,6 +574,7 @@ pub fn init() {
             zombies: Vec::new(),
             kstack_used: [false; KSTACK_SLOTS],
             display_owner: None,
+            net_owner: None,
             control: None,
             supervisor: None,
             prefer_user: true,
@@ -1130,6 +1135,10 @@ impl Scheduler {
             .collect();
         for k in borrowers {
             self.finish(k, ExitStatus::Killed);
+        }
+        if self.net_owner == Some(pid) {
+            self.net_owner = None;
+            kprintln!("ZOO_OS INFO net released pid={}", pid);
         }
         if self.display_owner == Some(pid) {
             self.display_owner = None;
@@ -7633,6 +7642,79 @@ impl Scheduler {
                     Err(virtio_blk::BlockError::OutOfRange) => err(Error::Inval),
                     Err(virtio_blk::BlockError::NoDevice) => err(Error::NotFound),
                     Err(_) => err(Error::Fault),
+                }
+            }
+            sys::NET_ATTACH => {
+                // One holder at a time, as with the display; a later step
+                // gives it to a network service (docs/n1-design.md).
+                if crate::virtio_net::mac().is_none() {
+                    return err(Error::NotFound);
+                }
+                let me = self.task(i).pid;
+                if let Some(owner) = self.net_owner
+                    && owner != me
+                    && self
+                        .tasks
+                        .iter()
+                        .flatten()
+                        .any(|t| t.pid == owner && t.state != State::Exited)
+                {
+                    return err(Error::Busy);
+                }
+                match self.proc(i).insert(HandleEntry {
+                    object: Object::Net,
+                    rights: RIGHT_SEND | RIGHT_RECV,
+                }) {
+                    Some(h) => {
+                        self.net_owner = Some(me);
+                        kprintln!("ZOO_OS INFO net attached pid={}", me);
+                        Outcome::Ret(h as i64)
+                    }
+                    None => err(Error::NoMem),
+                }
+            }
+            sys::NET_SEND | sys::NET_RECV | sys::NET_MAC => {
+                // a1 = network handle; a2/a3 = frame buffer.
+                match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Net,
+                        ..
+                    }) => {}
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                }
+                if number == sys::NET_MAC {
+                    let mac = crate::virtio_net::mac().unwrap_or_default();
+                    let v = mac
+                        .iter()
+                        .enumerate()
+                        .fold(0u64, |v, (k, &b)| v | u64::from(b) << (8 * k));
+                    return Outcome::Ret(v as i64);
+                }
+                let recv = number == sys::NET_RECV;
+                if a3 > zoo_abi::NET_MAX_FRAME as u64 && !recv {
+                    return err(Error::Inval);
+                }
+                let len = a3.min(zoo_abi::NET_MAX_FRAME as u64);
+                if !ok(a2, len, recv) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped user range of `len` bytes in
+                // the active address space (writable when receiving).
+                let buf = unsafe { core::slice::from_raw_parts_mut(a2 as *mut u8, len as usize) };
+                if recv {
+                    match crate::virtio_net::recv(mem, buf) {
+                        Ok(Some(n)) => Outcome::Ret(n as i64),
+                        Ok(None) => err(Error::Again),
+                        Err(_) => err(Error::NotFound),
+                    }
+                } else {
+                    match crate::virtio_net::send(mem, buf) {
+                        Ok(()) => Outcome::Ret(0),
+                        Err(crate::virtio_net::NetError::TooLong) => err(Error::Inval),
+                        Err(crate::virtio_net::NetError::NoDevice) => err(Error::NotFound),
+                        Err(crate::virtio_net::NetError::Timeout) => err(Error::Fault),
+                    }
                 }
             }
             sys::LOG_ATTACH => {

@@ -137,3 +137,15 @@ zoo-infer = { path = "../infer" }
 pc-keyboard = "=0.9.0"
 # The user heap allocator (grown with `mem_alloc`), as in the kernel.
 linked_list_allocator = { version = "=0.10.6", default-features = false, features = ["use_spin"] }
+
+[[bin]]
+name = "snowgoose-test"
+path = "src/bin/snowgoose-test.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "gyrfalcon-test"
+path = "src/bin/gyrfalcon-test.rs"
+test = false
+bench = false

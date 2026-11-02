@@ -94,6 +94,33 @@ pub fn set_display(d: Display) {
     );
 }
 
+/// The network the next machine gets (docs/n1-design.md).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Net {
+    /// No network device.
+    None = 0,
+    /// QEMU's user network, cut off from the host and the internet
+    /// (`restrict=on`): its DHCP server and gateway answer, nothing else.
+    Isolated = 1,
+    /// QEMU's user network with outgoing connections (for `run`).
+    Open = 2,
+}
+
+static NET: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// A host port QEMU forwards the guest's 10.0.2.100:80 to (0: none;
+/// docs/n2-design.md).
+static GUESTFWD: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+/// Forwards the guest's TCP connections to 10.0.2.100:80 to host port
+/// `port` on 127.0.0.1 (even on the isolated network).
+pub fn set_guestfwd(port: Option<u16>) {
+    GUESTFWD.store(port.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn set_net(net: Net) {
+    NET.store(net as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The USB devices the next machine gets.
 pub fn set_usb(usb: Usb) {
     USB.store(usb as u8, std::sync::atomic::Ordering::Relaxed);
@@ -185,8 +212,6 @@ fn machine_args(
         format!("if=none,id=data,format=raw,file={}", opt_path(data)?),
         "-device".into(),
         "virtio-blk-pci,drive=data,disable-modern=on".into(),
-        "-nic".into(),
-        "none".into(),
         "-monitor".into(),
         "none".into(),
         "-no-reboot".into(),
@@ -216,6 +241,27 @@ fn machine_args(
         "VGA,xres=1920,yres=1080,edid=on".into()
     };
     args.extend(["-vga".into(), "none".into(), "-device".into(), device]);
+    // The network: legacy virtio (the kernel's driver), no boot ROM.
+    let net = NET.load(std::sync::atomic::Ordering::Relaxed);
+    if net == Net::None as u8 {
+        args.extend(["-nic".into(), "none".into()]);
+    } else {
+        let restrict = if net == Net::Isolated as u8 {
+            ",restrict=on"
+        } else {
+            ""
+        };
+        let fwd = match GUESTFWD.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => String::new(),
+            port => format!(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:{port}"),
+        };
+        args.extend([
+            "-netdev".into(),
+            format!("user,id=net0{restrict}{fwd}"),
+            "-device".into(),
+            "virtio-net-pci,netdev=net0,disable-modern=on,romfile=".into(),
+        ]);
+    }
     let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
     if usb == Usb::Direct as u8 {
         args.extend([
@@ -298,6 +344,8 @@ pub fn run_interactive(
     );
     // A tablet: the pointer follows the host's exactly, without a grab.
     set_usb(Usb::Tablet);
+    // A network (docs/n1-design.md).
+    set_net(Net::Open);
     // A virtio GPU: updates shown when flushed, and a hardware cursor that
     // the host draws (docs/gpu1-design.md).
     set_display(Display::VirtioVga);

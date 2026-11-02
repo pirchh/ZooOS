@@ -1243,6 +1243,137 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "net-ping",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run snowgoose-test",
+                    "ZOO_OS PROC start pid=26 name=snowgoose-test",
+                    "ZOO_OS PROC exit pid=26 name=snowgoose-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "network: virtio-net, then DHCP, ARP and three pings of the gateway on QEMU's isolated user network",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run snowgoose-test")),
+                    Action::WaitContains("net: DHCP offer 10.0.2.15 from 10.0.2.2".into()),
+                    // The isolated network gives no router or DNS server.
+                    Action::WaitContains(
+                        "SnowGooseTest: address 10.0.2.15 mask 255.255.255.0 gateway 0.0.0.0".into(),
+                    ),
+                    Action::WaitContains(
+                        "SnowGooseTest: no router given; using the DHCP server 10.0.2.2".into(),
+                    ),
+                    Action::WaitContains("SnowGooseTest: gateway 10.0.2.2 is at ".into()),
+                    Action::WaitContains("SnowGooseTest: ping 10.0.2.2 seq 3: reply within ".into()),
+                    Action::WaitContains("SnowGooseTest: network ok".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=snowgoose-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "net-open",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run snowgoose-test",
+                    "ZOO_OS PROC start pid=26 name=snowgoose-test",
+                    "ZOO_OS PROC exit pid=26 name=snowgoose-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "network, unrestricted: DHCP gives the router and DNS server too; ARP and pings of the router (QEMU answers them itself, so no internet is needed)",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run snowgoose-test")),
+                    Action::WaitContains(
+                        "SnowGooseTest: address 10.0.2.15 mask 255.255.255.0 gateway 10.0.2.2 dns 10.0.2.3"
+                            .into(),
+                    ),
+                    Action::WaitContains("SnowGooseTest: ping 10.0.2.2 seq 3: reply within ".into()),
+                    Action::WaitContains("SnowGooseTest: network ok".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=snowgoose-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "net-http",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run gyrfalcon-test",
+                    "ZOO_OS PROC start pid=26 name=gyrfalcon-test",
+                    "ZOO_OS PROC exit pid=26 name=gyrfalcon-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "TCP: a connection to a test server on the host (forwarded to 10.0.2.100:80 on the isolated network), an HTTP request, the whole answer, and a close",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run gyrfalcon-test")),
+                    Action::WaitContains("GyrfalconTest: connected to 10.0.2.100:80".into()),
+                    Action::WaitContains(format!(
+                        "status `HTTP/1.0 200 OK`, body `{TEST_BODY}`"
+                    )),
+                    Action::WaitContains("GyrfalconTest: http ok".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=gyrfalcon-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "snowgoose-no-net",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run snowgoose-test",
+                    "ZOO_OS PROC start pid=26 name=snowgoose-test",
+                    "ZOO_OS PROC exit pid=26 name=snowgoose-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout,
+            // No network device: the name does not start with `net-`.
+            want: "unexpected-marker",
+            purpose: "negative: without a network device SnowGooseTest must fail (exit 2), not pass",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run snowgoose-test")),
+                    Action::WaitContains("SnowGooseTest: no network device".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "file-speed",
             mode: Mode::Normal,
             custom_image: None,
@@ -2040,6 +2171,15 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         };
         qemu::set_usb(c.usb);
+        // `net-` cases get an isolated network, `net-open` the open one
+        // (docs/n1-design.md).
+        qemu::set_net(if c.name == "net-open" {
+            qemu::Net::Open
+        } else if c.name.starts_with("net-") {
+            qemu::Net::Isolated
+        } else {
+            qemu::Net::None
+        });
         // `gpu-` cases run on `virtio-vga`; the rest on plain VGA, the
         // real-hardware path (docs/gpu1-design.md).
         qemu::set_display(if c.name.starts_with("gpu-") {
@@ -2055,6 +2195,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         } else {
             None
         });
+        // `net-http`: a small HTTP server on the host, which the guest
+        // reaches at 10.0.2.100:80 (docs/n2-design.md).
+        let server = if c.name == "net-http" {
+            Some(TestServer::start()?)
+        } else {
+            None
+        };
+        qemu::set_guestfwd(server.as_ref().map(|s| s.port));
         let r = qemu::run_case(
             root,
             tools,
@@ -2067,7 +2215,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             },
             c.interaction.as_ref(),
             &data,
-        )?;
+        );
+        qemu::set_guestfwd(None);
+        if let Some(server) = server {
+            let served = server.stop();
+            println!("[verify] test server answered {served} request(s)");
+        }
+        let r = r?;
         // A case's own disk is not needed after it (shared disks are kept
         // for the next boot).
         if matches!(c.disk, Disk::Fresh) {
@@ -4323,6 +4477,73 @@ fn check_recalled_again(img: &screen::Image) -> Result<String, String> {
     Ok(format!(
         "after a restart, answered from memory at {at:?}; the unrelated request went to the model ({model:?})"
     ))
+}
+
+/// The body the `net-http` test server sends; PuffinTest checks it.
+const TEST_BODY: &str = "Hello from the host, ZooOS!";
+
+/// A one-thread HTTP server on 127.0.0.1 for the `net-http` case: it
+/// answers every request with `TEST_BODY` until stopped (bounded waits:
+/// accept polls every 20 ms, reads time out after 5 s).
+struct TestServer {
+    port: u16,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<usize>,
+}
+
+impl TestServer {
+    fn start() -> Result<TestServer, String> {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("test server: cannot listen: {e}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("test server: {e}"))?
+            .port();
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("test server: {e}"))?;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::spawn(move || {
+            let mut served = 0;
+            while !flag.load(Ordering::Relaxed) {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                };
+                let _ = conn.set_nonblocking(false);
+                let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match conn.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                if req.starts_with(b"GET ") {
+                    let reply = format!(
+                        "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                        TEST_BODY.len(),
+                        TEST_BODY
+                    );
+                    let _ = conn.write_all(reply.as_bytes());
+                    served += 1;
+                }
+                let _ = conn.shutdown(std::net::Shutdown::Both);
+            }
+            served
+        });
+        Ok(TestServer { port, stop, thread })
+    }
+
+    /// Stops the server; returns how many requests it answered.
+    fn stop(self) -> usize {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.thread.join().unwrap_or(0)
+    }
 }
 
 /// The `apps-folder` case: the desktop runs twice.

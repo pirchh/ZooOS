@@ -43,6 +43,7 @@ mod shell;
 mod trap;
 mod virtio_blk;
 mod virtio_gpu;
+mod virtio_net;
 mod xhci;
 
 use bootloader_api::config::{BootloaderConfig, Mapping};
@@ -198,6 +199,19 @@ fn run(mut mem: memory::Memory) -> ! {
     // A USB controller, if there is one (docs/h1-design.md).
     if memory::with(xhci::init).is_none() {
         kprintln!("ZOO_OS INFO usb none");
+    }
+    // A network device, if QEMU has one (docs/n1-design.md).
+    match memory::with(virtio_net::init) {
+        Some(m) => kprintln!(
+            "ZOO_OS INFO net virtio-net mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            m[0],
+            m[1],
+            m[2],
+            m[3],
+            m[4],
+            m[5]
+        ),
+        None => kprintln!("ZOO_OS INFO net none"),
     }
     // A virtio GPU, if QEMU has one (docs/gpu1-design.md); it logs itself.
     let _ = memory::with(virtio_gpu::init);

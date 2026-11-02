@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The A2 section
-(version 0.66.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The N1/N2 section
+(version 0.67.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Network steps 1 and 2 results: virtio-net, IPv4, TCP (version 0.67.0)
+
+Designs: docs/n1-design.md, docs/n2-design.md.
+
+| Case | Network | Result |
+| --- | --- | --- |
+| `net-ping` | isolated (`restrict=on`) | `OK`: DHCP offer `10.0.2.15` from `10.0.2.2`; no router given, so the DHCP server is used; its MAC `52:55:0a:00:02:02`; three ping replies |
+| `net-open` | unrestricted | `OK`: the lease names gateway `10.0.2.2` and DNS `10.0.2.3`; three ping replies |
+| `net-http` | isolated + `guestfwd` to a harness server | `OK`: connected to `10.0.2.100:80`; ``92 bytes, status `HTTP/1.0 200 OK`, body `Hello from the host, ZooOS!` ``; the server answered 1 request |
+| `snowgoose-no-net` (negative) | none | rejected as intended: ``got `... snowgoose-test code=2` `` |
+
+**Negative controls**, each run once and then reverted:
+
+| Broken on purpose | Result |
+| --- | --- |
+| The driver never returns a received frame | `FAIL net-ping` (`DHCP failed: no DHCP offer`, exit 4) |
+| No server behind 10.0.2.100:80 | `FAIL net-http` (`cannot connect to 10.0.2.100:80: connection refused`, exit 6) |
+
+**Found while testing:**
+- **The isolated network sends no router or DNS server** (the first run
+  said gateway `0.0.0.0`). The checks now use the DHCP server's address.
+- **`tern-test` and `puffin-test` were already C programs.** The first
+  full run failed `fast-boot`, `args-clock` and `timer-rate` because the
+  new Rust programs replaced them, so the new ones were renamed.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 83 cases `OK`.
+`assistant-live` passes with `--accel whpx` at `ZOO_OS BOOT
+version=0.67.0`. `cargo test -p xtask` (25 tests), clippy on the kernel
+(normal and `fast-boot`), `zoo-user` and `xtask`, and `cargo fmt --check`:
+clean.
 
 ## Assistant step 2 results: the Assistant learns (version 0.66.0)
 
