@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 3: windows, dock menus, Applications (2026-11-01)
+
+Design: docs/u3-design.md.
+
+- Window slots are separate from applications (8 slots, 4 apps); each
+  window is its own process. Version 0.63.0.
+- Apps get context menus through a small text protocol (`rclick:`,
+  `menu:`, `menu-choose:`, `dock-add:`, `launch:`) rather than drawing
+  menus themselves, so every menu looks the same and closes the same way.
+- Files' Applications folder is virtual (the list of apps), placed last
+  in Home so existing folder positions are unchanged.
+- The dock's kept apps are saved in `.dock` in the home folder; no file
+  means every app is kept.
+- The owner reordered the overnight work (2026-11-01 23:15): the
+  assistant's learning and speed pass comes before networking.
+
 ## UI step 2f: the ZooOS mark (2026-11-01)
 
 Design: docs/u2f-design.md.
@@ -1104,4 +1120,3 @@ document interrupt, DMA and ownership boundaries.
 - https://doc.rust-lang.org/rustc/platform-support/x86_64-unknown-none.html
 
 These references justify the starting direction, not a tested local toolchain.
-
