@@ -887,6 +887,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "gpu-fast-drag",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: menu_clock.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "a fast drag: 400 tablet moves back to back while dragging Files; events must not queue up behind the frames",
+            interaction: Some(fast_drag_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "gpu-tablet",
             mode: Mode::Normal,
             custom_image: None,
@@ -2712,6 +2725,42 @@ fn abs_at((x, y): (usize, usize)) -> Action {
     Action::MouseAbs(to(x, SCREEN.0), to(y, SCREEN.1))
 }
 
+/// Drags Files with 400 tablet positions sent back to back (a fast hand
+/// on a high-rate mouse), then checks how long events waited.
+fn fast_drag_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen("PeacockHandler: hardware cursor".into()));
+    let (tx, ty) = title_bar(FILES_WIN);
+    steps.push(abs_at((tx, ty)));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: frames".into()));
+    steps.push(Action::Button(true));
+    let to = |x: usize, n: usize| ((x * 0x7FFF + (n - 1) / 2) / (n - 1)) as u32;
+    let mut points = Vec::new();
+    for k in 0..400usize {
+        // Out and back twice: 0..600 px right, 0..300 px down.
+        let t = k % 200;
+        let d = if t < 100 { t } else { 200 - t };
+        points.push((to(tx + 6 * d, SCREEN.0), to(ty + 3 * d, SCREEN.1)));
+    }
+    steps.push(Action::MouseAbsBurst(points));
+    steps.push(Action::Button(false));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: moved Files to".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: frames".into(),
+        vec![("frames", 1, 1_000_000)],
+    ));
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: input wait".into(),
+        vec![("input wait", 100, 100_000), ("longest", 0, 1_000_000)],
+    ));
+    Interaction { steps }
+}
+
 fn tablet_steps() -> Interaction {
     tablet_steps_with(false)
 }
@@ -3553,17 +3602,17 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     ))
 }
 
-const BLACK: [u8; 3] = [0, 0, 0];
-const WHITE: [u8; 3] = [255, 255, 255];
-
 fn check_pointer(img: &screen::Image) -> Result<String, String> {
     let (x, y) = (SCREEN.0 / 2, SCREEN.1 / 2);
-    // The arrow's tip and left edge are white, its inside black (row 6,
-    // columns 1-5), and nothing is drawn left of the tip.
-    let edge = img.pixel(x, y + 6);
-    let inner = img.pixel(x + 3, y + 6);
-    let left = img.pixel(x - 2, y + 6);
-    if edge != Some(WHITE) || inner != Some(BLACK) || left == Some(BLACK) {
+    // Six rows below the tip: the white outline just left of the hot spot,
+    // the black inside to its right, and no dark arrow further left (only
+    // a faint shadow, docs/u2-compositor-design.md §6).
+    let edge = img.pixel(x - 1, y + 6);
+    let inner = img.pixel(x + 2, y + 6);
+    let left = img.pixel(x - 4, y + 6);
+    let bright = |p: Option<[u8; 3]>| p.is_some_and(|p| p.iter().all(|&v| v >= 230));
+    let dark = |p: Option<[u8; 3]>| p.is_some_and(|p| p.iter().all(|&v| v <= 25));
+    if !bright(edge) || !dark(inner) || dark(left) {
         return Err(format!(
             "no pointer at ({x}, {y}): edge {edge:?}, inside {inner:?}, left of it {left:?}"
         ));
