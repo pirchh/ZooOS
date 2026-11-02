@@ -20,17 +20,18 @@ pub mod mark {
     /// function, macro, dim.
     pub const ROLES: &[u8] = b"0kscntfmd";
     /// Icons: folder, document, code document; sidebar symbols home,
-    /// documents, music, photos, applications; `0`-`3` an application.
-    pub const ICONS: &[u8] = b"FDCHOMPA0123";
+    /// documents, music, photos, applications; `0`-`4` an application.
+    pub const ICONS: &[u8] = b"FDCHOMPA01234";
 }
 
 /// The applications, in dock order: (label, program). Files lists them in
 /// its Applications folder (docs/u3-design.md).
-pub const APPLICATIONS: [(&str, &str); 4] = [
+pub const APPLICATIONS: [(&str, &str); 5] = [
     ("Files", "files"),
     ("Crash Test", "crash-test"),
     ("Assistant", "assistant"),
     ("Notes", "notes"),
+    ("Network", "network"),
 ];
 
 /// Context menus (docs/u3-design.md): an item's height, a separator's,
@@ -85,10 +86,10 @@ pub const DOCK_BOTTOM: usize = 8;
 pub const DOCK_H: usize = DOCK_ICON + 2 * DOCK_PAD + 6;
 pub const DOCK_AREA: usize = DOCK_H + DOCK_BOTTOM + 24;
 
-/// Where the four applications' windows start: Files on the left, the
-/// Assistant and Crash Test on the right, Notes (opened from the dock) in
-/// the middle. Proportional, with space between them.
-pub fn initial_windows(w: usize, h: usize) -> [(usize, usize, usize, usize); 4] {
+/// Where the applications' first windows start: Files on the left, the
+/// Assistant and Crash Test on the right, Notes and Network (opened later)
+/// in the middle. Proportional, with space between them.
+pub fn initial_windows(w: usize, h: usize) -> [(usize, usize, usize, usize); 5] {
     let top = MENU_H + 40;
     let usable = h.saturating_sub(top + DOCK_AREA);
     let right_x = w * 52 / 100;
@@ -103,6 +104,12 @@ pub fn initial_windows(w: usize, h: usize) -> [(usize, usize, usize, usize); 4] 
             top + usable * 12 / 100,
             w * 36 / 100,
             usable * 58 / 100,
+        ),
+        (
+            w * 30 / 100,
+            top + usable * 8 / 100,
+            w * 40 / 100,
+            usable * 62 / 100,
         ),
     ]
 }

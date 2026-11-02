@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 23] = [
+pub const USER_PROGRAMS: [&str; 24] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -35,6 +35,7 @@ pub const USER_PROGRAMS: [&str; 23] = [
     "bowhead-test",
     "snowgoose-test",
     "gyrfalcon-test",
+    "network",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).

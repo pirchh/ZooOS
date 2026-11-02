@@ -1346,6 +1346,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "net-app",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: network_app_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the Network app: opened from Files' Applications, it connects (DHCP, gateway) and fetches http://10.0.2.100/ from the harness's server, showing its text",
+            interaction: Some(network_app_steps()),
+            screen_checks: vec![("1-fetched", check_network_app)],
+        },
+        Case {
             name: "snowgoose-no-net",
             mode: Mode::Normal,
             custom_image: None,
@@ -2197,7 +2210,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         });
         // `net-http`: a small HTTP server on the host, which the guest
         // reaches at 10.0.2.100:80 (docs/n2-design.md).
-        let server = if c.name == "net-http" {
+        let server = if c.name == "net-http" || c.name == "net-app" {
             Some(TestServer::start()?)
         } else {
             None
@@ -4484,7 +4497,7 @@ const TEST_BODY: &str = "Hello from the host, ZooOS!";
 
 /// A one-thread HTTP server on 127.0.0.1 for the `net-http` case: it
 /// answers every request with `TEST_BODY` until stopped (bounded waits:
-/// accept polls every 20 ms, reads time out after 5 s).
+/// accept polls every 20 ms, reads every 200 ms, both until stopped).
 struct TestServer {
     port: u16,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -4513,14 +4526,24 @@ impl TestServer {
                     std::thread::sleep(Duration::from_millis(20));
                     continue;
                 };
+                // QEMU opens this connection when it starts (`guestfwd`
+                // targets are character devices), long before the guest
+                // sends anything: wait until the case ends, 200 ms at a
+                // time.
                 let _ = conn.set_nonblocking(false);
-                let _ = conn.set_read_timeout(Some(Duration::from_secs(5)));
+                let _ = conn.set_read_timeout(Some(Duration::from_millis(200)));
                 let mut req = Vec::new();
                 let mut buf = [0u8; 1024];
-                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") && !flag.load(Ordering::Relaxed) {
                     match conn.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break,
                         Ok(n) => req.extend_from_slice(&buf[..n]),
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(_) => break,
                     }
                 }
                 if req.starts_with(b"GET ") {
@@ -4544,6 +4567,75 @@ impl TestServer {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.thread.join().unwrap_or(0)
     }
+}
+
+/// The `net-app` case: Network (pid 31) opens and lasts to the end.
+fn network_app_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=network",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=31 name=network code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
+fn network_app_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files has the focus: Applications (last in Home), then Network
+    // (the fifth application), opened with Enter.
+    steps.push(Action::Keys(vec!["down"; 16]));
+    steps.push(Action::Keys(vec!["ret"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["down"; 4]));
+    steps.push(Action::Keys(vec!["ret"]));
+    steps.extend([
+        Action::WaitFor("ZOO_OS PROC start pid=31 name=network".into()),
+        Action::WaitContains("Network: connected 10.0.2.15 via 10.0.2.2".into()),
+        Action::Settle(QUIET),
+    ]);
+    // Network has the focus: an address, and Enter.
+    steps.push(Action::Keys(typed("10.0.2.100")));
+    steps.extend([
+        Action::WaitContains(
+            "Network: fetched http://10.0.2.100/ (10.0.2.100): 92 bytes, `HTTP/1.0 200 OK`".into(),
+        ),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-fetched"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_network_app(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "Network", true)?;
+    let body = content(img, TEST_BODY)?;
+    let status = ui(
+        img,
+        FaceId::Regular13,
+        "Connected  10.0.2.15",
+        LIGHT.syntax[5],
+        LIGHT.content,
+    )?;
+    content(img, "Address: 10.0.2.100")?;
+    Ok(format!(
+        "`Network` focused {t:?}; `Connected  10.0.2.15` {status:?}; the server's text {body:?}"
+    ))
 }
 
 /// The `apps-folder` case: the desktop runs twice.
@@ -4947,7 +5039,7 @@ fn dock_menu_steps() -> Interaction {
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: menu chose New Window".into()),
-        Action::WaitContains("PeacockHandler: new window Files (window 4)".into()),
+        Action::WaitContains("PeacockHandler: new window Files (window 5)".into()),
         // Notes: Remove from Dock.
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
         Action::Settle(DOCK_SLIDE),
@@ -5037,7 +5129,7 @@ fn windows_steps() -> Interaction {
         Action::Key("ctrl", true),
         Action::Keys(vec!["n"]),
         Action::Key("ctrl", false),
-        Action::WaitContains("PeacockHandler: new window Files (window 4)".into()),
+        Action::WaitContains("PeacockHandler: new window Files (window 5)".into()),
         Action::WaitContains("PeacockHandler: animation open Files".into()),
         Action::Settle(QUIET),
         Action::Screenshot("1-two"),

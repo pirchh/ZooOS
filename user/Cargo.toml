@@ -149,3 +149,9 @@ name = "gyrfalcon-test"
 path = "src/bin/gyrfalcon-test.rs"
 test = false
 bench = false
+
+[[bin]]
+name = "network"
+path = "src/bin/network.rs"
+test = false
+bench = false

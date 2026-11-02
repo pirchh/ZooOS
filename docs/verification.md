@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The N1/N2 section
-(version 0.67.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The N3 section
+(version 0.68.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,39 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Network step 3 results: the Network app and DNS (version 0.68.0)
+
+Design: docs/n3-design.md.
+
+**New case `net-app`** (TCG): `OK`.
+- Files → Applications → Network.
+- `Network: connected 10.0.2.15 via 10.0.2.2`.
+- `10.0.2.100` typed → ``fetched http://10.0.2.100/ (10.0.2.100): 92
+  bytes, `HTTP/1.0 200 OK` ``.
+- `1-fetched`: `Network` focused, `Connected  10.0.2.15` in the function
+  colour, and `Hello from the host, ZooOS!` in the window.
+
+**Negative control:** no server behind 10.0.2.100 → `FAIL net-app` (the
+fetch never succeeds; timeout).
+
+**A bug found while testing.** The first runs fetched 0 bytes, and the
+server logged a connection that sent nothing. QEMU's `guestfwd` target is
+a character device that QEMU connects when it starts, and the server gave
+up after 5 s, before the desktop was up. It now waits, 200 ms at a time,
+until the case ends. `net-http` still passes.
+
+**DNS:** `cargo test -p zoo-abi`: 13 passed. That includes the query
+bytes, a reply through a CNAME, and the rejections (wrong id, NXDOMAIN,
+server error, cut-off reply, no address).
+
+**Updated:** `dock-menu` and `windows` expect the new window in slot 5
+(five apps now).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 84 cases `OK`.
+`assistant-live` passes with `--accel whpx` at `ZOO_OS BOOT
+version=0.68.0`. `cargo test -p xtask` (25), clippy on `zoo-user` and
+`xtask`, and `cargo fmt --check`: clean.
 
 ## Network steps 1 and 2 results: virtio-net, IPv4, TCP (version 0.67.0)
 
