@@ -803,6 +803,12 @@ struct Desktop {
     hw_cursor: bool,
     /// The hardware cursor has moved since it was last told.
     cursor_moved: bool,
+    /// The hardware cursor is hidden: the pointer is drawn in the frame
+    /// (during a drag or resize).
+    cursor_hidden: bool,
+    /// `cursor_hidden` changed: hide or show the hardware cursor after the
+    /// next frame, so the pointer is never missing from the screen.
+    cursor_switch: bool,
     /// The tick of the last frame (frame pacing).
     last_frame_tick: u64,
     /// The pointer image (`pointer_image`).
@@ -937,10 +943,17 @@ impl Desktop {
         );
     }
 
+    /// The pointer is drawn in the frame: no hardware cursor, or it is
+    /// hidden during a drag.
+    fn soft_pointer(&self) -> bool {
+        !self.hw_cursor || self.cursor_hidden
+    }
+
     fn damage_pointer(&mut self) {
         if self.hw_cursor {
             self.cursor_moved = true;
-        } else {
+        }
+        if self.soft_pointer() {
             self.damage(
                 self.px.saturating_sub(POINTER_HOT),
                 self.py.saturating_sub(POINTER_HOT),
@@ -1185,6 +1198,17 @@ impl Desktop {
                 y
             );
         }
+        // While a window is dragged or resized, the pointer is drawn in
+        // the same frame as the window, so it stays exactly where the
+        // window was grabbed; the host's cursor, which would run ahead of
+        // the window by a display refresh or two, is hidden meanwhile
+        // (docs/u2c-design.md).
+        let grabbing = self.drag.is_some() || self.resize.is_some();
+        if self.hw_cursor && grabbing != self.cursor_hidden {
+            self.damage_pointer();
+            self.cursor_hidden = grabbing;
+            self.cursor_switch = true;
+        }
         self.held = down;
         self.damage_pointer();
         let hover = self.dock_slot();
@@ -1363,7 +1387,7 @@ impl Desktop {
         self.draw_menu_bar();
         self.draw_banner();
         self.draw_dock();
-        if !self.hw_cursor {
+        if self.soft_pointer() {
             self.draw_pointer();
         }
     }
@@ -1837,13 +1861,36 @@ impl Desktop {
 
     /// The pointer as a hardware-cursor image (0xAARRGGBB, not
     /// premultiplied): `self.pointer` in the cursor's 64x64 frame.
-    fn cursor_image(&self) -> [u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE] {
-        let mut img = [0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE];
+    /// (On the heap: 16 KiB is too much for the window server's stack.)
+    fn cursor_image(&self) -> Vec<u32> {
+        let mut img = alloc::vec![0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE];
         let pw = POINTER_W * self.screen.s;
         for (r, row) in self.pointer.chunks(pw).enumerate() {
             img[r * zoo_abi::CURSOR_SIZE..r * zoo_abi::CURSOR_SIZE + pw].copy_from_slice(row);
         }
         img
+    }
+
+    /// Hides the hardware cursor (an empty image) or shows the arrow again,
+    /// at the pointer.
+    fn apply_cursor(&mut self) {
+        let s = self.screen.s;
+        let at = (self.px * s, self.py * s);
+        let hot = (POINTER_HOT * s, POINTER_HOT * s);
+        let image = if self.cursor_hidden {
+            alloc::vec![0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE]
+        } else {
+            self.cursor_image()
+        };
+        let _ = zoo_rt::cursor_set(&image, hot, at);
+        zoo_rt::log!(
+            "PeacockHandler: pointer {}",
+            if self.cursor_hidden {
+                "drawn in the frame"
+            } else {
+                "hardware"
+            }
+        );
     }
 
     /// The pointer image blended over the screen, its hot spot at the
@@ -2011,6 +2058,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         scratch: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
+        cursor_hidden: false,
+        cursor_switch: false,
         last_frame_tick: u64::MAX,
         pointer: pointer_image(sc),
         lw: w,
@@ -2219,6 +2268,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         } else if pending {
             desk.render();
             desk.last_frame_tick = zoo_rt::ticks();
+            if core::mem::take(&mut desk.cursor_switch) {
+                desk.apply_cursor();
+            }
         } else {
             // Until input, a message from an application, or the next
             // second (the clock); docs/u1b-design.md.

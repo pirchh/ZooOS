@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2b section
-(version 0.58.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2c section
+(version 0.58.1) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,35 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2c results: the pointer moves with a dragged window (version 0.58.1)
+
+Design: docs/u2c-design.md.
+
+**New case `gpu-drag-cursor`** (`--accel whpx`): `OK`.
+- `1-dragging`: ``mid-drag: the arrow is in the frame at (839, 136),
+  with the window``.
+- `2-released`: ``after the drag: no arrow in the frame at (839, 136)
+  (the hardware cursor is back)``.
+
+**Negative control:** the pointer never drawn in the frame during drags
+→ ``FAIL gpu-drag-cursor``: no ``PeacockHandler: pointer drawn in the
+frame`` line within 60 s.
+
+**Found during the work:**
+- The first version crashed the window server when a drag began: a stack
+  overflow from two 16 KiB cursor images, `fault=page-fault access=write
+  cause=not-present addr=0x00007fffffeffac8`. Both now live on the heap.
+- The first version of the case ended with a click on Crash Test's close
+  light, which the dragged Files window now covered. That step was
+  removed.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 69 cases `OK`.
+`assistant-live` passes with `--accel whpx`. The owner tried the change
+in a session and approved it.
+
+**Other checks:** `cargo fmt --check`, plus clippy on `zoo-user` and
+`xtask`: clean.
 
 ## UI step 2b results: the monitor's resolution, 2x for 4K (version 0.58.0)
 

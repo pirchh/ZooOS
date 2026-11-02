@@ -121,6 +121,7 @@ and verification:
 | U1b | Input reaches the window server at once instead of at the next 10 ms tick (docs/u1b-design.md) | done 2026-11-01 |
 | U1c | USB input by MSI-X/MSI interrupt; USB tablet for `run` (absolute pointer, no grab) (docs/u1c-design.md) | done 2026-11-01 |
 | U2a | Compositor: cached window layers, partial-line content updates, merged damage, direct GPU drawing; drags 3–4× cheaper (docs/u2-compositor-design.md) | done 2026-11-01 |
+| U2c | The pointer drawn in the frame during drags, so a dragged window stays under it (docs/u2c-design.md) | done 2026-11-01 |
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U2b | The monitor's own resolution in QEMU (host size through fw_cfg); 2× drawing for 4K screens (docs/u2b-design.md) | done 2026-11-01 |
 | U3 | Finder-style Files; restyled Notes and Assistant | proposed |

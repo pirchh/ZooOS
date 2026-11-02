@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2c: the pointer moves with a dragged window (2026-11-01)
+
+Design: docs/u2c-design.md.
+
+- During a drag or resize the hardware cursor is hidden and the arrow is
+  drawn in the frame with the window, so they move together. The owner
+  approved this after trying it. At other times the hardware cursor stays,
+  for instant pointer movement.
+- Version 0.58.1.
+
 ## UI step 2b: the monitor's own resolution, and 2x for 4K (2026-11-01)
 
 Design: docs/u2b-design.md.
