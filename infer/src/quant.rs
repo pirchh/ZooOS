@@ -1,6 +1,8 @@
 //! Tensor element formats used by the model: F32, Q4_0 and Q8_0 (GGML
 //! block quantization, 32 values per block with one f16 scale).
 
+use core::simd::prelude::*;
+
 /// GGML type ids.
 pub const TYPE_F32: u32 = 0;
 pub const TYPE_Q4_0: u32 = 2;
@@ -59,31 +61,28 @@ pub fn dot(ty: u32, row: &[u8], x: &[f32]) -> f32 {
             .map(|(b, &xv)| f32::from_le_bytes(*b) * xv)
             .sum(),
         TYPE_Q4_0 => {
-            let mut total = 0.0f32;
+            let mut total = f32x16::splat(0.0);
             let blocks = row.as_chunks::<Q4_0_BYTES>().0;
             for (b, xs) in blocks.iter().zip(x.as_chunks::<BLOCK>().0) {
-                let mut acc = 0.0f32;
-                for j in 0..16 {
-                    let q = b[2 + j];
-                    let lo = (q & 0x0F) as i32 - 8;
-                    let hi = (q >> 4) as i32 - 8;
-                    acc += lo as f32 * xs[j] + hi as f32 * xs[j + 16];
-                }
-                total += acc * scale(b);
+                let q = u8x16::from_slice(&b[2..18]);
+                let eight = i8x16::splat(8);
+                let lo = ((q & u8x16::splat(0x0F)).cast::<i8>() - eight).cast::<f32>();
+                let hi = ((q >> 4).cast::<i8>() - eight).cast::<f32>();
+                let acc = lo * f32x16::from_slice(&xs[..16]) + hi * f32x16::from_slice(&xs[16..]);
+                total += acc * f32x16::splat(scale(b));
             }
-            total
+            total.reduce_sum()
         }
         TYPE_Q8_0 => {
-            let mut total = 0.0f32;
+            let mut total = f32x16::splat(0.0);
             let blocks = row.as_chunks::<Q8_0_BYTES>().0;
             for (b, xs) in blocks.iter().zip(x.as_chunks::<BLOCK>().0) {
-                let mut acc = 0.0f32;
-                for (q, &xv) in b[2..].iter().zip(xs) {
-                    acc += (*q as i8) as f32 * xv;
-                }
-                total += acc * scale(b);
+                let w0 = u8x16::from_slice(&b[2..18]).cast::<i8>().cast::<f32>();
+                let w1 = u8x16::from_slice(&b[18..34]).cast::<i8>().cast::<f32>();
+                let acc = w0 * f32x16::from_slice(&xs[..16]) + w1 * f32x16::from_slice(&xs[16..]);
+                total += acc * f32x16::splat(scale(b));
             }
-            total
+            total.reduce_sum()
         }
         _ => 0.0,
     }

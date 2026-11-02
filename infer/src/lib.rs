@@ -3,6 +3,9 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+// Integer dot products in vectors (docs/a1-design.md): `core::simd` is
+// safe code; the pinned nightly provides it.
+#![feature(portable_simd)]
 
 extern crate alloc;
 

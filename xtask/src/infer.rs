@@ -74,10 +74,13 @@ pub fn run_with_system(
     let prompt_ids = tok.encode(&chat::prompt(system, user));
     let mut st = model.new_state(prompt_ids.len() + max_new + 1);
     let t0 = Instant::now();
-    for &id in &prompt_ids {
-        model
-            .forward(&mut st, id)
-            .map_err(|e| format!("forward: {e:?}"))?;
+    for (k, &id) in prompt_ids.iter().enumerate() {
+        if k + 1 == prompt_ids.len() {
+            model.forward(&mut st, id)
+        } else {
+            model.feed(&mut st, id)
+        }
+        .map_err(|e| format!("forward: {e:?}"))?;
     }
     let prefill_secs = t0.elapsed().as_secs_f64();
     let mut idx: Vec<usize> = (0..st.logits.len()).collect();

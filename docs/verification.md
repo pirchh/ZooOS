@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U3f section
-(version 0.64.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The A1 section
+(version 0.65.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,26 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Assistant step 1 results: a faster model engine (version 0.65.0)
+
+Design: docs/a1-design.md (all timing tables are there).
+
+| Check | Result |
+| --- | --- |
+| `cargo xtask infer-check` (NumPy reference, 5 prompts) | `PASS`: same tokens; top-5 logits within 0.00006 |
+| `cargo xtask assist-check` (8 requests) | `PASS`: same tools, arguments and margins as before |
+| `cargo test -p zoo-infer` | 10 passed |
+| `inference`, `--accel whpx` | `OK`: tokens match the host engine exactly; prefill 437 → 164 ticks, generation 116 → 58 ticks |
+| `assistant-live`, `--accel whpx` | `OK`: system prompt 922 → 340 ticks; requests 1155 → 437 and 369 → 151 ticks |
+
+**The integer-activation variant** was measured (prefill 16.7 tok/s,
+generation 12.3 tok/s on the host) and **rejected by `infer-check`**
+(``top-5 logit max diff 0.21225``, limit 0.02), so it is not used.
+
+The full TCG suite was not rerun for this change: it touches only
+`zoo-infer` and the model service, whose cases are the two above. It runs
+with the next step (A2).
 
 ## UI steps 3f and 3g results: Finder-style Files, the editor, icons (version 0.64.0)
 

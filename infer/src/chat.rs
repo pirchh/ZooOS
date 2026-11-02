@@ -31,8 +31,13 @@ pub fn generate(
     max_new: usize,
     mut on_token: impl FnMut(u32) -> bool,
 ) -> Result<Vec<u32>, ModelError> {
-    for &id in prompt_ids {
-        model.forward(st, id)?;
+    // Only the last prompt token's scores are read.
+    for (k, &id) in prompt_ids.iter().enumerate() {
+        if k + 1 == prompt_ids.len() {
+            model.forward(st, id)?;
+        } else {
+            model.feed(st, id)?;
+        }
     }
     let mut out = Vec::new();
     for _ in 0..max_new {
