@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2d genie section
-(version 0.60.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2e section
+(version 0.61.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2e results: the dock hides itself (version 0.61.0)
+
+Design: docs/u2e-design.md.
+
+**New case `dock-autohide`** (`--accel whpx`): `OK`.
+- `1-hidden`: wallpaper where the dock would be.
+- `2-shown`: after `dock shown` at the bottom edge, running dots under
+  the first three apps.
+- `3-hidden-again`: after `dock hidden`, wallpaper again.
+
+**Updated cases:** `dock`, `animations`, `notes-1`, `notes-cursor` and
+`genie` all pass with the dock revealed at the bottom edge before each
+icon click. `dock` gained `4-dock-reopened` (the running dot while the
+dock is up), and `5-reopened` now checks that the dock hid.
+
+**Negative control:** a dock that never hides → ``FAIL dock-autohide``
+(no `dock hidden` within 60 s).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 72 cases `OK`.
+`assistant-live` passes with `--accel whpx`, at `ZOO_OS BOOT
+version=0.61.0`. clippy on `zoo-user` and `xtask`, and `cargo fmt
+--check`: clean.
 
 ## UI step 2d results, the genie (version 0.60.0)
 

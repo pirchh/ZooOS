@@ -123,6 +123,7 @@ and verification:
 | U2a | Compositor: cached window layers, partial-line content updates, merged damage, direct GPU drawing; drags 3–4× cheaper (docs/u2-compositor-design.md) | done 2026-11-01 |
 | U2c | The pointer drawn in the frame during drags, so a dragged window stays under it (docs/u2c-design.md) | done 2026-11-01 |
 | U2d | Window animations: open, close, minimise to the dock, restore; a cycle-counter animation clock (docs/u2d-design.md) | done 2026-11-01 |
+| U2e | The dock hides itself (auto-hide; shown at the bottom edge and during a genie) (docs/u2e-design.md) | done 2026-11-01 |
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U2b | The monitor's own resolution in QEMU (host size through fw_cfg); 2× drawing for 4K screens (docs/u2b-design.md) | done 2026-11-01 |
 | U3 | Finder-style Files; restyled Notes and Assistant | proposed |
