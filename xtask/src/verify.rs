@@ -695,6 +695,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-two", check_two_files), ("2-one", check_one_files)],
         },
         Case {
+            name: "dock-menu",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: dock_menu_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "right-click menus on dock icons: New Window opens another Files window; Remove from Dock takes Notes out of the dock",
+            interaction: Some(dock_menu_steps()),
+            screen_checks: vec![("1-menu", check_dock_menu), ("2-removed", check_notes_removed)],
+        },
+        Case {
             name: "logo",
             mode: Mode::Normal,
             custom_image: None,
@@ -3931,6 +3944,32 @@ fn check_restored(img: &screen::Image) -> Result<String, String> {
 
 /// Crash Test is closed (it ends normally and is not restarted), then
 /// started again from the dock.
+/// The `dock-menu` case: a second Files process (pid 31) starts and lasts
+/// to the end.
+fn dock_menu_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=files",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=31 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
 /// The `windows` case: a second Files process (pid 31) starts and ends.
 fn windows_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
@@ -4073,6 +4112,114 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     dock_hidden(img)?;
     Ok(format!(
         "Crash Test reopened and focused: title {t:?}, text {body:?}; the dock hidden again"
+    ))
+}
+
+/// The centre of item `k` of the context menu for dock icon `slot` (of 4),
+/// the items' separators being `seps` (docs/u3-design.md).
+fn menu_item(slot: usize, seps: &[bool], k: usize) -> (usize, usize) {
+    let (ix, iy) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, slot);
+    let top = iy - 10 - zui::menu_height(seps);
+    // Right of the labels (they start 16 px into a menu at least 160 wide,
+    // centred on the icon), so the pointer does not cover them.
+    (
+        ix + zui::DOCK_ICON / 2 + 50,
+        zui::menu_item_top(top, seps, k) + zui::MENU_ITEM_H / 2,
+    )
+}
+
+fn dock_menu_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    // Files is running: New Window, Remove from Dock, Quit.
+    let files = [false, true, false, false];
+    // Notes is not: Open, Remove from Dock.
+    let notes = [false, true, false];
+    steps.extend([
+        p.to((dock_centre(0).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        p.to(dock_centre(0)),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains(
+            "PeacockHandler: menu Files: New Window, Remove from Dock, Quit".into(),
+        ),
+        // Onto New Window: it lights up.
+        p.to(menu_item(0, &files, 0)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-menu"),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: menu chose New Window".into()),
+        Action::WaitContains("PeacockHandler: new window Files (window 4)".into()),
+        // Notes: Remove from Dock.
+        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        p.to(dock_centre(3)),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains("PeacockHandler: menu Notes: Open, Remove from Dock".into()),
+        p.to(menu_item(3, &notes, 2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: removed Notes from the dock".into()),
+        // Back to the bottom edge, so the dock stays up for the picture.
+        p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-removed"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_dock_menu(img: &screen::Image) -> Result<String, String> {
+    let on = ui(
+        img,
+        FaceId::Regular13,
+        "New Window",
+        LIGHT.select_text,
+        LIGHT.select,
+    )?;
+    let remove = ui(
+        img,
+        FaceId::Regular13,
+        "Remove from Dock",
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )?;
+    let quit = ui(
+        img,
+        FaceId::Regular13,
+        "Quit",
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )?;
+    Ok(format!(
+        "the Files menu: `New Window` highlighted at {on:?}, `Remove from Dock` at {remove:?}, `Quit` at {quit:?}"
+    ))
+}
+
+/// Notes is out of the dock: three icons, and none of Notes' yellow on
+/// the row through their middles.
+fn check_notes_removed(img: &screen::Image) -> Result<String, String> {
+    let (x, y, w, _) = zui::dock_rect(SCREEN.0, SCREEN.1, 3);
+    let row = y + zui::DOCK_PAD + zui::DOCK_ICON / 2;
+    let yellow = [0xF5, 0xC3, 0x42];
+    if (x..x + w).any(|px| img.pixel(px, row) == Some(yellow)) {
+        return Err("Notes' yellow is still in the dock".into());
+    }
+    // The dock is up: Files' running dot, in the three-icon layout.
+    let (fx, fy) = zui::dock_icon(SCREEN.0, SCREEN.1, 3, 0);
+    let c = LIGHT.bar_text;
+    if img.pixel(fx + zui::DOCK_ICON / 2 - 1, fy + zui::DOCK_ICON + 3)
+        != Some([(c >> 16) as u8, (c >> 8) as u8, c as u8])
+    {
+        return Err("the three-icon dock is not shown (no running dot under Files)".into());
+    }
+    Ok(format!(
+        "the dock without Notes: no Notes yellow on row {row} between x {x} and {}",
+        x + w
     ))
 }
 

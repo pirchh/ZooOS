@@ -2,6 +2,30 @@
 //! the verifier so tests click where things are drawn. Rectangles are
 //! (x, y, width, height) in pixels; a window's includes its title bar.
 
+/// Context menus (docs/u3-design.md): an item's height, a separator's,
+/// and the padding above the first item and below the last.
+pub const MENU_ITEM_H: usize = 24;
+pub const MENU_SEP_H: usize = 9;
+pub const MENU_PAD: usize = 6;
+
+/// A context menu's height for items where `true` marks a separator.
+pub fn menu_height(separators: &[bool]) -> usize {
+    2 * MENU_PAD
+        + separators
+            .iter()
+            .map(|&sep| if sep { MENU_SEP_H } else { MENU_ITEM_H })
+            .sum::<usize>()
+}
+
+/// The top of item `k` in a menu whose top is at `top`.
+pub fn menu_item_top(top: usize, separators: &[bool], k: usize) -> usize {
+    top + MENU_PAD
+        + separators[..k]
+            .iter()
+            .map(|&sep| if sep { MENU_SEP_H } else { MENU_ITEM_H })
+            .sum::<usize>()
+}
+
 /// The menu bar's height.
 pub const MENU_H: usize = 26;
 /// A window's title bar.
