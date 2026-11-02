@@ -128,7 +128,8 @@ and verification:
 | U2 | Dock: magnification, launch animation, icon artwork | proposed |
 | U2b | The monitor's own resolution in QEMU (host size through fw_cfg); 2× drawing for 4K screens (docs/u2b-design.md) | done 2026-11-01 |
 | U3 | Several windows per app (Ctrl+N); right-click menus on dock icons (New Window, Remove from / Keep in Dock, Quit); minimised windows after a divider; Files' Applications folder (Open, Add to Dock); dock pins saved in `.dock` (docs/u3-design.md) | done 2026-11-01 |
-| U3f | Finder-style Files (sidebar, icons, new folders); restyled Notes and Assistant | proposed |
+| U3f | Finder-style Files: sidebar, icons, size column, double-click opens, New Folder / New Text File; Notes edits any file with coloured program text, Ctrl+S; rich content lines (colours, icons, caret, columns) (docs/u3f-design.md) | done 2026-11-02 |
+| U3g | Dock and app icons with depth: lit gradient tiles, rims, soft shadows, shadowed symbols, cached per scale (docs/u3g-design.md) | done 2026-11-02 |
 | U4 | Menus that open, Command-key shortcuts, animated window moves, saved appearance | proposed |
 | GPU1 | virtio-gpu (via `virtio-vga`) for the desktop: flushed updates and a hardware cursor the host draws; used by `run` (docs/gpu1-design.md) | done 2026-11-01 |
 | U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; cursor planes on real GPUs (per GPU family) | proposed |

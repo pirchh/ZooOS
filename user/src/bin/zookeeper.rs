@@ -435,7 +435,7 @@ fn check_directories() -> Result<(), u8> {
         ),
         (
             "inspect Documents",
-            &["| Documents: folder, 2 entries", "ok"],
+            &["| Documents: folder, 3 entries", "ok"],
         ),
         (
             "plan Projects/2026",

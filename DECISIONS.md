@@ -150,6 +150,27 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI steps 3f and 3g: Finder-style Files, the editor, icons (2026-11-02)
+
+Designs: docs/u3f-design.md, docs/u3g-design.md. Version 0.64.0.
+
+- Apps style their lines with a few control characters (colour roles,
+  icons, a caret, a right column) instead of drawing: the window server
+  still draws everything, in the system's colours and both appearances.
+- Clicks reach apps (`click:`, `dclick:`, `sclick:`, `rclick:none`), and
+  windows can have a sidebar drawn with their frame.
+- Notes became the text editor: it opens files Files sends it and
+  colours program text by extension (Xcode's colours). Inter stays the
+  font: a monospaced font would be a new download, which needs the
+  owner's approval.
+- Files keeps its title and its location line (`Home/Documents`), so the
+  window is still found by the same name; folders lose their `/`.
+- Icons are drawn from shape descriptions at the screen's scale (no image
+  files); dock icons are cached as premultiplied images because the dock
+  is drawn in every frame of its slide.
+- A sample program, `Documents/zoo.rs`, is in the seed home folder to show
+  the colours; the boot self-check now expects 3 entries in Documents.
+
 ## UI step 3: windows, dock menus, Applications (2026-11-01)
 
 Design: docs/u3-design.md.

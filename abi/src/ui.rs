@@ -2,6 +2,28 @@
 //! the verifier so tests click where things are drawn. Rectangles are
 //! (x, y, width, height) in pixels; a window's includes its title bar.
 
+/// A window's sidebar width, when its application has one
+/// (docs/u3f-design.md).
+pub const SIDEBAR_W: usize = 180;
+
+/// Bytes an application puts in a content line (docs/u3f-design.md).
+pub mod mark {
+    /// Followed by a role byte (`ROLES`): the text after it in that colour.
+    pub const COLOUR: char = '\u{1}';
+    /// Followed by an icon byte, at the start of a line: a 16-px icon.
+    pub const ICON: char = '\u{2}';
+    /// The text cursor, drawn as a bar here.
+    pub const CARET: char = '\u{3}';
+    /// The rest of the line, right-aligned and dim.
+    pub const RIGHT: char = '\t';
+    /// Colour roles: text, keyword, string, comment, number, type,
+    /// function, macro, dim.
+    pub const ROLES: &[u8] = b"0kscntfmd";
+    /// Icons: folder, document, code document; sidebar symbols home,
+    /// documents, music, photos, applications; `0`-`3` an application.
+    pub const ICONS: &[u8] = b"FDCHOMPA0123";
+}
+
 /// The applications, in dock order: (label, program). Files lists them in
 /// its Applications folder (docs/u3-design.md).
 pub const APPLICATIONS: [(&str, &str); 4] = [
@@ -185,6 +207,14 @@ pub struct Palette {
     pub shadow_blurred: u8,
     pub tooltip: u32,
     pub tooltip_text: u32,
+    /// A window's sidebar (docs/u3f-design.md) and its selected item.
+    pub sidebar: u32,
+    pub sidebar_select: u32,
+    /// Sidebar symbols.
+    pub accent: u32,
+    /// Syntax colours, by role: keyword, string, comment, number, type,
+    /// function, macro (docs/u3f-design.md).
+    pub syntax: [u32; 7],
 }
 
 pub const LIGHT: Palette = Palette {
@@ -214,6 +244,12 @@ pub const LIGHT: Palette = Palette {
     shadow_blurred: 36,
     tooltip: 0xEDEDED,
     tooltip_text: 0x1D1D1F,
+    sidebar: 0xF0F0F2,
+    sidebar_select: 0xDCDCE0,
+    accent: 0x007AFF,
+    syntax: [
+        0x9B2393, 0xC41A16, 0x5D6C79, 0x1C00CF, 0x0B4F79, 0x326D74, 0x643820,
+    ],
 };
 
 pub const DARK: Palette = Palette {
@@ -243,6 +279,12 @@ pub const DARK: Palette = Palette {
     shadow_blurred: 70,
     tooltip: 0x3A3A3C,
     tooltip_text: 0xF5F5F7,
+    sidebar: 0x262628,
+    sidebar_select: 0x3A3A3D,
+    accent: 0x0A84FF,
+    syntax: [
+        0xFF7AB2, 0xFF8170, 0x7F8C98, 0xD9C97C, 0x6BDFFF, 0x67B7A4, 0xFD8F3F,
+    ],
 };
 
 /// The menu bar's colour: the appearance's tint over the wallpaper's top.
