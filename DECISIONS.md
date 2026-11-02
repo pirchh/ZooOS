@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2h: the launch bounce (2026-11-02)
+
+Design: docs/u2h-design.md. Version 0.71.0 (with U4b).
+
+- Two hops over 640 ms when an app is asked to open; not for the windows
+  the desktop opens at start-up. The dock stays up while an icon hops.
+
+## UI step 4b: kept appearance, word wrap (2026-11-02)
+
+Design: docs/u4b-design.md. Version 0.71.0.
+
+- The appearance lives in `.appearance` in the home folder, next to
+  `.dock`; only the user's switch writes it.
+- Notes breaks lines after the last space within 72 characters.
+
 ## UI step 4a: menus that open (2026-11-02)
 
 Design: docs/u4a-design.md. Version 0.70.0.

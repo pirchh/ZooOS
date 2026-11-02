@@ -552,7 +552,15 @@ fn visual(text: &[u8], mut f: impl FnMut(usize, usize, usize, bool)) {
         };
         let mut a = s;
         loop {
-            let b = (a + WRAP).min(shown_end);
+            // At most `WRAP` characters, broken after the last space in
+            // them when there is one (docs/u4b-design.md).
+            let mut b = (a + WRAP).min(shown_end);
+            if b < shown_end
+                && let Some(sp) = text[a..b].iter().rposition(|&c| c == b' ')
+                && sp > 0
+            {
+                b = a + sp + 1;
+            }
             let last = b == shown_end;
             // A cursor on the hidden CR shows at the line's end.
             f(k, a, if last { end.max(b) } else { b }, last);

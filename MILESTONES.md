@@ -125,7 +125,8 @@ and verification:
 | U2d | Window animations: open, close, minimise to the dock, restore; a cycle-counter animation clock (docs/u2d-design.md) | done 2026-11-01 |
 | U2e | The dock hides itself (auto-hide; shown at the bottom edge and during a genie) (docs/u2e-design.md) | done 2026-11-01 |
 | U2f | The ZooOS mark: the soft paw, an anti-aliased vector mask (docs/u2f-design.md) | done 2026-11-01 |
-| U2 | Dock: launch animation (magnification: U2g; icon artwork: U3g) | proposed |
+| U2 | Dock (magnification: U2g; launch bounce: U2h; icon artwork: U3g) | done |
+| U2h | The launch bounce: an opening app's dock icon hops twice (docs/u2h-design.md) | done 2026-11-02 |
 | U2g | Dock magnification: icons swell along a bell curve around the pointer, the hovered one stays under it, sharp from an 84 px cache (docs/u2g-design.md) | done 2026-11-02 |
 | U2b | The monitor's own resolution in QEMU (host size through fw_cfg); 2× drawing for 4K screens (docs/u2b-design.md) | done 2026-11-01 |
 | U3 | Several windows per app (Ctrl+N); right-click menus on dock icons (New Window, Remove from / Keep in Dock, Quit); minimised windows after a divider; Files' Applications folder (Open, Add to Dock); dock pins saved in `.dock` (docs/u3-design.md) | done 2026-11-01 |
@@ -136,7 +137,8 @@ and verification:
 | A2 | The Assistant learns: request → command memory on disk, learned from answers and corrections; alike requests answered at once without the model (docs/a2-design.md) | done 2026-11-02 |
 | A1 | Faster model engine: vector dot products, no unread scores, precomputed rotary frequencies; 2.0–2.7× in the guest, answers unchanged (docs/a1-design.md) | done 2026-11-02 |
 | U3g | Dock and app icons with depth: lit gradient tiles, rims, soft shadows, shadowed symbols, cached per scale (docs/u3g-design.md) | done 2026-11-02 |
-| U4 | Animated window moves, saved appearance (menus and shortcuts: U4a) | proposed |
+| U4 | Animated window moves (menus and shortcuts: U4a; saved appearance: U4b) | proposed |
+| U4b | The appearance kept across restarts; Notes wraps between words (docs/u4b-design.md) | done 2026-11-02 |
 | U4a | Menus that open from the menu bar (ZooOS, app, File, Edit, View, Window, Help), sliding between them, Ctrl+W / Ctrl+M (docs/u4a-design.md) | done 2026-11-02 |
 | GPU1 | virtio-gpu (via `virtio-vga`) for the desktop: flushed updates and a hardware cursor the host draws; used by `run` (docs/gpu1-design.md) | done 2026-11-01 |
 | U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; cursor planes on real GPUs (per GPU family) | proposed |

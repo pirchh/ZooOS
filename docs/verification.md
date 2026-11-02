@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U4a section
-(version 0.70.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U4b/U2h section
+(version 0.71.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI steps 4b and 2h results: kept appearance, word wrap, launch bounce (version 0.71.0)
+
+Designs: docs/u4b-design.md, docs/u2h-design.md.
+
+| Case | Result |
+| --- | --- |
+| `appearance-saved` (new) | `OK`: F8 → `appearance saved`; after a desktop restart `[32:peacock-handler] … appearance dark`; Files' title in dark colours |
+| `finder` (updated) | `OK`: `"Badger"` found whole in the string colour, the long line now wrapping between words |
+| `dock-bounce` (new) | `OK`: Notes opened from the dock with Shift; about 1.2 s in, its yellow band 14 px above the icon's resting top; `animation bounce Notes: frames 46 time 6403 ms` |
+
+**Negative controls**, each run once and then reverted:
+
+| Broken on purpose | Result |
+| --- | --- |
+| `.appearance` never read | `FAIL appearance-saved` (timeout) |
+| The old mid-word wrap | ``FAIL finder: … `"Badger"` not on screen`` |
+| No hop drawn | ``FAIL dock-bounce: … 0 yellow pixels on row 992`` |
+
+The first `dock-bounce` run caught the icon in the air, but its sample row
+fell on the thin line under the yellow band, so the row was moved up (the
+pixel column was read to choose it).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 88 cases `OK`
+(87 before the bounce, then 88 with it). `assistant-live` passes with
+`--accel whpx` at `ZOO_OS BOOT version=0.71.0`. `cargo test -p xtask`
+(25), clippy on `zoo-user` and `xtask`, and `cargo fmt --check`: clean.
 
 ## UI step 4a results: menus that open (version 0.70.0)
 

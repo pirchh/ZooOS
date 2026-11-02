@@ -790,6 +790,51 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "appearance-saved",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: apps_folder_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the appearance is kept: switched to dark, the desktop restarted, it starts dark",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        Action::Keys(vec!["f8"]),
+                        Action::WaitContains("PeacockHandler: appearance saved".into()),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+                        Action::WaitFor("ZOO_OS PROC exit pid=26 name=zookeeper code=0".into()),
+                        Action::Keys(typed("desktop")),
+                        Action::WaitContains("[32:peacock-handler] PeacockHandler: appearance dark".into()),
+                        Action::WaitFor("ZOO_OS PROC start pid=35 name=assistant".into()),
+                        Action::Settle(QUIET),
+                        Action::Screenshot("1-dark-again"),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=32".into()),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-dark-again", check_dark_again)],
+        },
+        Case {
+            name: "dock-bounce",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: notes_window_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the launch bounce: Notes opened from the dock in slow motion (Shift); its icon is caught in the air, then the bounce ends",
+            interaction: Some(dock_bounce_steps()),
+            screen_checks: vec![("1-in-the-air", check_bounce)],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -4386,6 +4431,8 @@ fn check_code_colours(img: &screen::Image) -> Result<String, String> {
     for (text, c, role) in [
         ("struct", k[0], "keyword"),
         ("\"Peacock\"", k[1], "string"),
+        // Whole: the long line wraps between words (docs/u4b-design.md).
+        ("\"Badger\"", k[1], "string after a word wrap"),
         (
             "// A small program, to show Notes' colours.",
             k[2],
@@ -5091,6 +5138,58 @@ fn check_menu_after(img: &screen::Image) -> Result<String, String> {
     )?;
     Ok(format!(
         "dark appearance; the Assistant minimised; `Files` focused at {files:?}"
+    ))
+}
+
+fn check_dark_again(img: &screen::Image) -> Result<String, String> {
+    let d = &zui::DARK;
+    let t = ui(img, FaceId::Medium13, "Files", d.title_text, d.title)?;
+    no_title(img, "Files", true)?;
+    Ok(format!(
+        "after a restart the desktop is dark: `Files` title in dark colours at {t:?}"
+    ))
+}
+
+fn dock_bounce_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        p.to(dock_centre(3)),
+        // Shift held: 6.4 s instead of 0.64 s.
+        Action::Key("shift", true),
+        Action::Button(true),
+        Action::Button(false),
+        Action::Key("shift", false),
+        Action::WaitContains("PeacockHandler: opened Notes".into()),
+        // Off the icons (no magnification); the dock stays while it hops.
+        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+        // About 1.2 s in: near the top of the first hop.
+        Action::Settle(QUIET),
+        Action::Screenshot("1-in-the-air"),
+        animation_done("bounce Notes", 20, (6000, 8000)),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Notes' icon in the air: its yellow band is on a row above the icon's
+/// resting top, where at rest there is only wallpaper.
+fn check_bounce(img: &screen::Image) -> Result<String, String> {
+    let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, 3);
+    let row = y - 14;
+    let found = (x..x + zui::DOCK_ICON)
+        .filter(|&px| notes_yellow(img.pixel(px, row)))
+        .count();
+    if found < zui::DOCK_ICON / 2 {
+        return Err(format!(
+            "Notes' icon is not in the air: {found} yellow pixels on row {row}, 14 px above its resting top"
+        ));
+    }
+    Ok(format!(
+        "Notes' icon in the air: its yellow band on row {row}, above its resting top ({found} pixels)"
     ))
 }
 
