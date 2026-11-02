@@ -708,6 +708,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-menu", check_dock_menu), ("2-removed", check_notes_removed)],
         },
         Case {
+            name: "apps-folder",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: apps_folder_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "Files' Applications folder: Add to Dock puts Notes back after Remove from Dock; the dock's pins are saved and load again after a desktop restart",
+            interaction: Some(apps_folder_steps()),
+            screen_checks: vec![
+                ("1-folder", check_apps_folder),
+                ("2-pinned", check_notes_back),
+                ("3-reloaded", check_notes_removed),
+            ],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -3980,6 +3997,137 @@ fn dock_menu_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
+}
+
+/// The `apps-folder` case: the desktop runs twice.
+fn apps_folder_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    for base in [26, 31] {
+        let (z, p, f, c, a) = (base, base + 1, base + 2, base + 3, base + 4);
+        e.then(&[
+            "ZOO_OS SHELL line=desktop",
+            &format!("ZOO_OS PROC start pid={z} name=zookeeper"),
+            &format!("ZOO_OS PROC start pid={p} name=peacock-handler"),
+            &format!("ZOO_OS DISPLAY acquired pid={p} name=peacock-handler"),
+            &format!("ZOO_OS PROC start pid={f} name=files"),
+            &format!("ZOO_OS PROC start pid={c} name=crash-test"),
+            &format!("ZOO_OS PROC start pid={a} name=assistant"),
+            &format!("ZOO_OS PROC exit pid={p} name=peacock-handler code=0"),
+            &format!("ZOO_OS DISPLAY released pid={p}"),
+        ]);
+        e.then_any_order(&[
+            &format!("ZOO_OS PROC exit pid={f} name=files code=0"),
+            &format!("ZOO_OS PROC exit pid={c} name=crash-test code=0"),
+            &format!("ZOO_OS PROC exit pid={a} name=assistant code=0"),
+            &format!("ZOO_OS PROC exit pid={z} name=zookeeper code=0"),
+        ]);
+    }
+    e
+}
+
+/// Removes Notes (dock slot 3 of 4) through its dock menu.
+fn remove_notes(p: &mut Ptr) -> Vec<Action> {
+    let notes = [false, true, false];
+    vec![
+        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        p.to(dock_centre(3)),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains("PeacockHandler: menu Notes: Open, Remove from Dock".into()),
+        p.to(menu_item(3, &notes, 2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: removed Notes from the dock".into()),
+        Action::WaitContains("PeacockHandler: dock saved (3 kept)".into()),
+    ]
+}
+
+/// The centre-left of Files' content line `k` (first window).
+fn files_line(k: usize) -> (usize, usize) {
+    let w = win(FILES_WIN);
+    (w.0 + 60, zui::line_top(w, k) + zui::LINE_H / 2)
+}
+
+fn apps_folder_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend(remove_notes(&mut p));
+    // Files has the focus: to the last line of home, Applications, and in.
+    steps.push(Action::Keys(vec!["down"; 16]));
+    steps.extend([
+        Action::Keys(vec!["ret"]),
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-folder"),
+        // Right-click Notes (the fourth application): Open, Add to Dock.
+        p.to(files_line(4)),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains("PeacockHandler: menu Files: Open, Add to Dock".into()),
+    ]);
+    let (x, y) = files_line(4);
+    let seps = [false, false];
+    steps.extend([
+        p.to((
+            x + 90,
+            zui::menu_item_top(y + 2, &seps, 1) + zui::MENU_ITEM_H / 2,
+        )),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: menu chose Add to Dock".into()),
+        Action::WaitContains("PeacockHandler: kept Notes in the dock".into()),
+        Action::WaitContains("PeacockHandler: dock saved (4 kept)".into()),
+        p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-pinned"),
+    ]);
+    // Out again, then a new desktop: the saved pins come back.
+    steps.extend(remove_notes(&mut p));
+    steps.extend([
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+        Action::Settle(QUIET),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+        Action::WaitFor("ZOO_OS PROC exit pid=26 name=zookeeper code=0".into()),
+        Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
+        Action::WaitContains("PeacockHandler: dock loaded (3 kept)".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=35 name=assistant".into()),
+        Action::Settle(QUIET),
+        p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        Action::Settle(QUIET),
+        Action::Screenshot("3-reloaded"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=32".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Files shows the Applications folder: its location, and Notes listed.
+fn check_apps_folder(img: &screen::Image) -> Result<String, String> {
+    let place = content(img, "Home/Applications")?;
+    let notes = content(img, "Notes")?;
+    selected(img, "Files", true)?;
+    Ok(format!(
+        "Files in Applications: `Home/Applications` at {place:?}, `Notes` at {notes:?}"
+    ))
+}
+
+/// Notes is back in the dock: the four-icon dock, Notes' yellow in it.
+fn check_notes_back(img: &screen::Image) -> Result<String, String> {
+    let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, 3);
+    let (cx, cy) = (x + zui::DOCK_ICON / 2, y + zui::DOCK_ICON / 2);
+    let yellow = [0xF5, 0xC3, 0x42];
+    let found = (y..y + zui::DOCK_ICON)
+        .any(|py| (x..x + zui::DOCK_ICON).any(|px| img.pixel(px, py) == Some(yellow)));
+    if !found {
+        return Err(format!(
+            "no Notes yellow in the fourth dock slot around ({cx}, {cy})"
+        ));
+    }
+    Ok(format!("Notes back in the dock, in slot 4 at ({x}, {y})"))
 }
 
 /// The `windows` case: a second Files process (pid 31) starts and ends.

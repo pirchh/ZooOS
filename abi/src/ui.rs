@@ -2,6 +2,15 @@
 //! the verifier so tests click where things are drawn. Rectangles are
 //! (x, y, width, height) in pixels; a window's includes its title bar.
 
+/// The applications, in dock order: (label, program). Files lists them in
+/// its Applications folder (docs/u3-design.md).
+pub const APPLICATIONS: [(&str, &str); 4] = [
+    ("Files", "files"),
+    ("Crash Test", "crash-test"),
+    ("Assistant", "assistant"),
+    ("Notes", "notes"),
+];
+
 /// Context menus (docs/u3-design.md): an item's height, a separator's,
 /// and the padding above the first item and below the last.
 pub const MENU_ITEM_H: usize = 24;

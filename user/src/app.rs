@@ -110,4 +110,50 @@ impl Window {
     pub fn show(&self) -> Result<(), Error> {
         send_wait(self.h, b"show")
     }
+
+    /// Shows a context menu of `items` at the pointer (docs/u3-design.md);
+    /// the choice comes back as `menu-choose:<index>`.
+    pub fn menu(&self, items: &[&str]) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = l.write_str("menu:");
+        for (k, item) in items.iter().enumerate() {
+            let _ = write!(l, "{}{}", if k > 0 { "|" } else { "" }, item);
+        }
+        self.send_line(&l)
+    }
+
+    /// Asks for application `program` to be kept in the dock.
+    pub fn dock_add(&self, program: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "dock-add:{}", program);
+        self.send_line(&l)
+    }
+
+    /// Asks for application `program` to be opened.
+    pub fn launch(&self, program: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "launch:{}", program);
+        self.send_line(&l)
+    }
+}
+
+/// A message from the window server other than a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// The right button went down on content line `n`.
+    RightClick(usize),
+    /// Item `n` of the menu this application asked for was chosen.
+    MenuChoose(usize),
+}
+
+impl Event {
+    pub fn parse(msg: &[u8]) -> Option<Event> {
+        let num = |s: &[u8]| core::str::from_utf8(s).ok()?.parse().ok();
+        if let Some(n) = msg.strip_prefix(b"rclick:") {
+            return num(n).map(Event::RightClick);
+        }
+        msg.strip_prefix(b"menu-choose:")
+            .and_then(num)
+            .map(Event::MenuChoose)
+    }
 }

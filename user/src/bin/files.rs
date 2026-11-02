@@ -6,8 +6,9 @@
 #![no_main]
 
 use core::fmt::Write as _;
+use zoo_abi::ui::APPLICATIONS;
 use zoo_abi::{DirEntry, MAX_DIR_NAME, MAX_MESSAGE};
-use zoo_rt::app::{Key, MAX_LINES, Window};
+use zoo_rt::app::{Event, Key, MAX_LINES, Window};
 use zoo_rt::{Error, Line, dir_list, file_read, recv};
 
 zoo_rt::entry2!(main);
@@ -24,7 +25,14 @@ struct Entry {
     len: usize,
     dir: bool,
     size: u64,
+    /// In the Applications folder: the application (an index into
+    /// `APPLICATIONS`).
+    app: Option<usize>,
 }
+
+/// The Applications folder at the end of Home (docs/u3-design.md): not on
+/// disk, it lists the applications.
+const APPS_FOLDER: &str = "Applications";
 
 impl Entry {
     fn name(&self) -> &str {
@@ -78,6 +86,8 @@ fn main(channel: u64, home: u64) -> u8 {
     // The file being previewed (an index into `entries`).
     let mut preview: Option<usize> = None;
     let mut buf = [0u8; MAX_MESSAGE];
+    // The application whose context menu is open.
+    let mut menu_app: Option<usize> = None;
     loop {
         let shown = match preview {
             Some(i) => draw_preview(&win, home, &place, &entries[i]),
@@ -91,6 +101,33 @@ fn main(channel: u64, home: u64) -> u8 {
             Err(Error::PeerClosed) => return 0,
             Err(_) => return 4,
         };
+        match Event::parse(&buf[..n]) {
+            // Right-click on an application: Open, Add to Dock.
+            Some(Event::RightClick(line)) => {
+                menu_app = line
+                    .checked_sub(1)
+                    .and_then(|k| entries.get(k))
+                    .and_then(|e| e.as_ref())
+                    .and_then(|e| e.app);
+                if menu_app.is_some() {
+                    selected = line - 1;
+                    let _ = win.menu(&["Open", "Add to Dock"]);
+                }
+                continue;
+            }
+            Some(Event::MenuChoose(k)) => {
+                if let Some(a) = menu_app.take() {
+                    let program = APPLICATIONS[a].1;
+                    let _ = if k == 0 {
+                        win.launch(program)
+                    } else {
+                        win.dock_add(program)
+                    };
+                }
+                continue;
+            }
+            None => {}
+        }
         match (Key::parse(&buf[..n]), preview) {
             (Some(Key::Back), Some(_)) => preview = None,
             (_, Some(_)) => {}
@@ -98,7 +135,9 @@ fn main(channel: u64, home: u64) -> u8 {
             (Some(Key::Down), None) if selected + 1 < count => selected += 1,
             (Some(Key::Enter), None) => {
                 if let Some(Some(e)) = entries.get(selected) {
-                    if !e.dir {
+                    if let Some(a) = e.app {
+                        let _ = win.launch(APPLICATIONS[a].1);
+                    } else if !e.dir {
                         preview = Some(selected);
                     } else if place.enter(e.name()) {
                         count = list(home, place.as_str(), &mut entries);
@@ -125,8 +164,28 @@ fn main(channel: u64, home: u64) -> u8 {
     }
 }
 
+fn named(name: &str, dir: bool, app: Option<usize>) -> Entry {
+    let mut e = Entry {
+        name: [0; MAX_DIR_NAME],
+        len: name.len().min(MAX_DIR_NAME),
+        dir,
+        size: 0,
+        app,
+    };
+    e.name[..e.len].copy_from_slice(&name.as_bytes()[..e.len]);
+    e
+}
+
 /// Fills `entries` with the folder at `path`; returns how many.
 fn list(home: u64, path: &str, entries: &mut [Option<Entry>]) -> usize {
+    if path == APPS_FOLDER {
+        for (k, e) in entries.iter_mut().enumerate() {
+            *e = APPLICATIONS
+                .get(k)
+                .map(|&(label, _)| named(label, false, Some(k)));
+        }
+        return APPLICATIONS.len().min(entries.len());
+    }
     let mut count = 0;
     let mut index = 0u64;
     while count < entries.len() {
@@ -149,7 +208,13 @@ fn list(home: u64, path: &str, entries: &mut [Option<Entry>]) -> usize {
             len,
             dir: e.is_dir(),
             size: e.size,
+            app: None,
         });
+        count += 1;
+    }
+    // Home ends with the Applications folder.
+    if path.is_empty() && count < entries.len() {
+        entries[count] = Some(named(APPS_FOLDER, true, None));
         count += 1;
     }
     for e in &mut entries[count..] {
@@ -187,7 +252,9 @@ fn draw_list(
     for (i, e) in entries.iter().enumerate() {
         if let Some(e) = e {
             let mut l = Line::new();
-            if e.dir {
+            if e.app.is_some() {
+                let _ = l.write_str(e.name());
+            } else if e.dir {
                 let _ = write!(l, "{}/", e.name());
             } else {
                 let _ = write!(l, "{} ({} bytes)", e.name(), e.size);

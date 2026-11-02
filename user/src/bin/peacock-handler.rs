@@ -235,6 +235,9 @@ const DOCK_HIDE_DELAY_MS: u64 = 400;
 /// (logical pixels).
 const DOCK_EDGE: usize = 6;
 
+/// Where the dock's kept applications are saved, in the home folder.
+const DOCK_FILE: &str = ".dock";
+
 /// Applications, in dock order; Notes is the last.
 const PROGRAMS: usize = 4;
 const NOTES: usize = 3;
@@ -320,6 +323,8 @@ struct App {
     lines: [Text; MAX_LINES],
     count: usize,
     selected: Option<usize>,
+    /// A request waiting to be handled (`Request`).
+    request: Option<Request>,
 }
 
 impl App {
@@ -342,6 +347,7 @@ impl App {
             lines: [const { Text::new() }; MAX_LINES],
             count: 0,
             selected: None,
+            request: None,
         }
     }
 
@@ -428,6 +434,18 @@ impl App {
             }
         } else if msg == b"show" {
             return true;
+        } else if let Some(items) = msg.strip_prefix(b"menu:") {
+            let mut labels = [const { Text::new() }; MENU_ITEMS];
+            let mut n = 0;
+            for item in items.split(|&b| b == b'|').take(MENU_ITEMS) {
+                labels[n].set(item);
+                n += 1;
+            }
+            self.request = Some(Request::Menu(alloc::boxed::Box::new(labels), n));
+        } else if let Some(p) = msg.strip_prefix(b"dock-add:") {
+            self.request = program_index(p).map(Request::DockAdd);
+        } else if let Some(p) = msg.strip_prefix(b"launch:") {
+            self.request = program_index(p).map(Request::Launch);
         }
         false
     }
@@ -834,6 +852,8 @@ enum MenuAction {
     Quit,
     /// A separator line.
     Line,
+    /// Item `n` of an application's own menu (docs/u3-design.md).
+    App(usize),
 }
 
 impl MenuAction {
@@ -844,9 +864,24 @@ impl MenuAction {
             MenuAction::Remove => "Remove from Dock",
             MenuAction::Keep => "Keep in Dock",
             MenuAction::Quit => "Quit",
-            MenuAction::Line => "",
+            MenuAction::Line | MenuAction::App(_) => "",
         }
     }
+}
+
+/// What an application asked the window server for, besides drawing.
+enum Request {
+    /// A context menu of these items at the pointer.
+    Menu(alloc::boxed::Box<[Text; MENU_ITEMS]>, usize),
+    /// Keep this application in the dock.
+    DockAdd(usize),
+    /// Open this application.
+    Launch(usize),
+}
+
+/// The application whose program is `program`.
+fn program_index(program: &[u8]) -> Option<usize> {
+    CATALOG.iter().position(|c| c.1.as_bytes() == program)
 }
 
 /// What is under the pointer in the dock: an application's icon or a
@@ -863,6 +898,11 @@ const MENU_ITEMS: usize = 6;
 /// An open context menu: for application `prog`, at logical (x, y), `w`
 /// wide, its items, and the one under the pointer.
 struct Menu {
+    /// The window whose application asked for it, for an application's
+    /// own menu.
+    owner: Option<usize>,
+    /// Labels of `MenuAction::App` items.
+    labels: [Text; MENU_ITEMS],
     prog: usize,
     x: usize,
     y: usize,
@@ -873,6 +913,13 @@ struct Menu {
 }
 
 impl Menu {
+    fn label(&self, k: usize) -> &str {
+        match self.items[k] {
+            MenuAction::App(_) => self.labels[k].as_str(),
+            a => a.label(),
+        }
+    }
+
     fn separators(&self) -> [bool; MENU_ITEMS] {
         core::array::from_fn(|k| self.items[k] == MenuAction::Line)
     }
@@ -1801,6 +1848,19 @@ impl Desktop {
             return;
         }
         let Some(DockHit::App(k)) = self.dock_hit() else {
+            // On a window's content line: its application decides.
+            if let Some(i) = self.window_at(self.px, self.py) {
+                let line = (0..self.apps[i].count).find(|&k| {
+                    let top = zoo_abi::ui::line_top(self.wins[i], k);
+                    self.py >= top && self.py < top + LINE_H
+                });
+                if let Some(line) = line {
+                    self.set_focus(i);
+                    let mut l = Line::new();
+                    let _ = write!(l, "rclick:{}", line);
+                    let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                }
+            }
             return;
         };
         let running = self.program_running(k);
@@ -1835,6 +1895,8 @@ impl Desktop {
             + 40;
         let (ix, iy) = self.dock_pos(k).unwrap_or((self.px, self.py));
         let mut m = Menu {
+            owner: None,
+            labels: [const { Text::new() }; MENU_ITEMS],
             prog: k,
             x: 0,
             y: 0,
@@ -1887,13 +1949,24 @@ impl Desktop {
         let Some(m) = &self.menu else {
             return;
         };
-        let choice = m.item_at(self.px, self.py).map(|k| m.items[k]);
-        let prog = m.prog;
+        let pick = m.item_at(self.px, self.py);
+        let choice = pick.map(|k| m.items[k]);
+        let mut name = Line::new();
+        if let Some(k) = pick {
+            let _ = name.write_str(m.label(k));
+        }
+        let (prog, owner) = (m.prog, m.owner);
         self.close_menu();
         let Some(a) = choice else {
             return;
         };
-        zoo_rt::log!("PeacockHandler: menu chose {}", a.label());
+        zoo_rt::log!("PeacockHandler: menu chose {}", name.as_str());
+        if let (MenuAction::App(k), Some(i)) = (a, owner) {
+            let mut l = Line::new();
+            let _ = write!(l, "menu-choose:{}", k);
+            let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+            return;
+        }
         let label = CATALOG[prog].0;
         match a {
             MenuAction::NewWindow => self.new_window_of(prog),
@@ -1902,12 +1975,9 @@ impl Desktop {
                 self.damage_dock();
                 self.pinned[prog] = false;
                 zoo_rt::log!("PeacockHandler: removed {} from the dock", label);
+                self.save_dock();
             }
-            MenuAction::Keep => {
-                self.damage_dock();
-                self.pinned[prog] = true;
-                zoo_rt::log!("PeacockHandler: kept {} in the dock", label);
-            }
+            MenuAction::Keep => self.keep_in_dock(prog),
             MenuAction::Quit => {
                 for i in 0..WINDOWS {
                     if self.apps[i].prog == prog && !self.apps[i].closed {
@@ -1916,7 +1986,98 @@ impl Desktop {
                 }
                 zoo_rt::log!("PeacockHandler: quit {}", label);
             }
-            MenuAction::Line => {}
+            MenuAction::Line | MenuAction::App(_) => {}
+        }
+    }
+
+    fn keep_in_dock(&mut self, prog: usize) {
+        self.damage_dock();
+        self.pinned[prog] = true;
+        zoo_rt::log!("PeacockHandler: kept {} in the dock", CATALOG[prog].0);
+        self.save_dock();
+    }
+
+    /// The dock's kept applications, saved in `.dock` in the home folder
+    /// (docs/u3-design.md): their program names, comma-separated.
+    fn save_dock(&self) {
+        let mut l = Line::new();
+        let mut n = 0;
+        for (k, c) in CATALOG.iter().enumerate() {
+            if self.pinned[k] {
+                let _ = write!(l, "{}{}", if n > 0 { "," } else { "" }, c.1);
+                n += 1;
+            }
+        }
+        let _ = zoo_rt::file_create(self.home, DOCK_FILE);
+        let saved = zoo_rt::file_truncate(self.home, DOCK_FILE, 0)
+            .and_then(|()| zoo_rt::file_write(self.home, DOCK_FILE, 0, l.as_str().as_bytes()));
+        match saved {
+            Ok(_) => zoo_rt::log!("PeacockHandler: dock saved ({} kept)", n),
+            Err(e) => zoo_rt::log!("PeacockHandler: cannot save the dock: {}", e.name()),
+        }
+    }
+
+    /// The kept applications from `.dock`, if it exists.
+    fn load_dock(&mut self) {
+        let mut buf = [0u8; 256];
+        let Ok(n) = zoo_rt::file_read(self.home, DOCK_FILE, 0, &mut buf) else {
+            return;
+        };
+        self.pinned = [false; PROGRAMS];
+        for name in buf[..n].split(|&b| b == b',') {
+            if let Some(k) = program_index(name) {
+                self.pinned[k] = true;
+            }
+        }
+        let kept = self.pinned.iter().filter(|&&p| p).count();
+        zoo_rt::log!("PeacockHandler: dock loaded ({} kept)", kept);
+    }
+
+    /// Something an application asked for (docs/u3-design.md).
+    fn app_request(&mut self, i: usize, req: Request) {
+        match req {
+            Request::DockAdd(prog) => self.keep_in_dock(prog),
+            Request::Launch(prog) => self.dock_click(prog),
+            Request::Menu(labels, n) => {
+                if n == 0 || i != self.focus {
+                    return;
+                }
+                let s = self.screen.s;
+                let face = self.face(FaceId::Regular13);
+                let w = labels[..n]
+                    .iter()
+                    .map(|t| face.width(t.as_str()).div_ceil(s))
+                    .max()
+                    .unwrap_or(0)
+                    .max(120)
+                    + 40;
+                let mut m = Menu {
+                    owner: Some(i),
+                    labels: *labels,
+                    prog: self.apps[i].prog,
+                    x: 0,
+                    y: 0,
+                    w,
+                    items: core::array::from_fn(MenuAction::App),
+                    n,
+                    hover: None,
+                };
+                let h = m.height();
+                // Below and right of the pointer, kept on the screen.
+                m.x = self.px.min(self.lw.saturating_sub(w + 4));
+                m.y = (self.py + 2).min(self.lh.saturating_sub(h + 4));
+                let mut names = Line::new();
+                for k in 0..n {
+                    let _ = write!(names, "{}{}", if k > 0 { ", " } else { "" }, m.label(k));
+                }
+                zoo_rt::log!(
+                    "PeacockHandler: menu {}: {}",
+                    self.apps[i].label,
+                    names.as_str()
+                );
+                self.menu = Some(m);
+                self.damage_menu();
+            }
         }
     }
 
@@ -1929,6 +2090,13 @@ impl Desktop {
         let t = self.theme();
         let (x, y, w, h) = (m.x, m.y, m.w, m.height());
         let (items, n, hover) = (m.items, m.n, m.hover);
+        let labels: [Text; MENU_ITEMS] = core::array::from_fn(|k| {
+            let mut t = Text::new();
+            if k < n {
+                t.set(m.label(k).as_bytes());
+            }
+            t
+        });
         if !self.screen.visible(
             x.saturating_sub(MARGIN),
             y.saturating_sub(MARGIN),
@@ -1965,7 +2133,7 @@ impl Desktop {
             }
             let c = if on { t.select_text } else { t.tooltip_text };
             self.screen
-                .text(&face, x + 16, top + 17, item.label(), c, x + w - 8);
+                .text(&face, x + 16, top + 17, labels[k].as_str(), c, x + w - 8);
         }
     }
 
@@ -3275,6 +3443,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             let _ = log("PeacockHandler: hardware cursor");
         }
     }
+    desk.load_dock();
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
@@ -3399,7 +3568,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             while desk.apps[i].running {
                 match try_recv(desk.apps[i].chan, &mut msg) {
                     Ok(n) => {
-                        if desk.apps[i].apply(&msg[..n]) {
+                        let changed = desk.apps[i].apply(&msg[..n]);
+                        if let Some(req) = desk.apps[i].request.take() {
+                            desk.app_request(i, req);
+                            dirty = true;
+                        }
+                        if changed {
                             if core::mem::take(&mut desk.apps[i].title_changed) {
                                 desk.damage_window(i);
                                 // The menu bar names the focused app.
