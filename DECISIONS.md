@@ -150,6 +150,19 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2b: the monitor's own resolution, and 2x for 4K (2026-11-01)
+
+Design: docs/u2b-design.md.
+
+- The owner's main monitor measured 2560×1440, not 4K. `xtask run` passes
+  the host monitor's size, when larger than 1920×1080, through QEMU
+  fw_cfg (`opt/zooos/display`), which the kernel reads only after finding
+  QEMU's virtio GPU.
+- The window server draws at 2x from 3200×1800 up, with logical layout and
+  device-pixel drawing (2x Inter faces in the atlas). The logical limit
+  rose to 2560×1600, so a 1440p monitor is used whole at 1x.
+- Version 0.58.0.
+
 ## UI step 2a follow-up: pacing and the pointer (2026-11-01, 0.57.1)
 
 - Frames are paced to at most one a timer tick (100 a second) during

@@ -53,6 +53,39 @@ pub enum Display {
 
 static VIRTIO_DISPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// A screen size passed to a virtio GPU guest through fw_cfg
+/// (`opt/zooos/display`, docs/u2b-design.md): width << 32 | height, 0 for
+/// none.
+static DISPLAY_SIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The screen size the next virtio GPU machine asks for, if any.
+pub fn set_display_size(size: Option<(u32, u32)>) {
+    let v = size.map_or(0, |(w, h)| u64::from(w) << 32 | u64::from(h));
+    DISPLAY_SIZE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The host's primary monitor in physical pixels (Windows only).
+#[cfg(windows)]
+pub fn host_screen() -> Option<(u32, u32)> {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SetProcessDPIAware() -> i32;
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+    // SAFETY: plain Win32 calls without pointers. Declaring this process
+    // DPI-aware makes the metrics physical pixels instead of scaled ones.
+    let (w, h) = unsafe {
+        SetProcessDPIAware();
+        (GetSystemMetrics(0), GetSystemMetrics(1))
+    };
+    (w > 0 && h > 0).then_some((w as u32, h as u32))
+}
+
+#[cfg(not(windows))]
+pub fn host_screen() -> Option<(u32, u32)> {
+    None
+}
+
 /// The display device the next machine gets.
 pub fn set_display(d: Display) {
     VIRTIO_DISPLAY.store(
@@ -168,17 +201,21 @@ fn machine_args(
     }
     // A display whose preferred mode (in its EDID) is 1920x1080, the mode
     // the firmware then starts in (docs/u1-design.md).
-    let device = if VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
-        "virtio-vga,xres=1920,yres=1080,edid=on"
+    let virtio = VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed);
+    let size = DISPLAY_SIZE.load(std::sync::atomic::Ordering::Relaxed);
+    let device = if virtio && size != 0 {
+        let (w, h) = (size >> 32, size & 0xFFFF_FFFF);
+        args.extend([
+            "-fw_cfg".into(),
+            format!("name=opt/zooos/display,string={w}x{h}"),
+        ]);
+        format!("virtio-vga,xres={w},yres={h},edid=on")
+    } else if virtio {
+        "virtio-vga,xres=1920,yres=1080,edid=on".into()
     } else {
-        "VGA,xres=1920,yres=1080,edid=on"
+        "VGA,xres=1920,yres=1080,edid=on".into()
     };
-    args.extend([
-        "-vga".into(),
-        "none".into(),
-        "-device".into(),
-        device.into(),
-    ]);
+    args.extend(["-vga".into(), "none".into(), "-device".into(), device]);
     let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
     if usb == Usb::Direct as u8 {
         args.extend([
@@ -264,7 +301,22 @@ pub fn run_interactive(
     // A virtio GPU: updates shown when flushed, and a hardware cursor that
     // the host draws (docs/gpu1-design.md).
     set_display(Display::VirtioVga);
+    // A monitor larger than 1920x1080: a screen of its size, so full
+    // screen (Ctrl+Alt+F) is one guest pixel per monitor pixel. From
+    // 3200x1800 up it is drawn at 2x (docs/u2b-design.md). QEMU scales its
+    // window to fit otherwise.
+    let host = host_screen().filter(|&(w, h)| w > 1920 || h > 1080);
+    set_display_size(host);
+    if let Some((w, h)) = host {
+        let scale = if w >= 3200 && h >= 1800 { 2 } else { 1 };
+        println!(
+            "[run] host monitor {w}x{h}: a {w}x{h} screen at {scale}x (one-to-one in full screen, Ctrl+Alt+F)"
+        );
+    }
     let mut args = machine_args(tools, image, &vars, false, &data)?;
+    if host.is_some() {
+        args.extend(["-display", "gtk,zoom-to-fit=on"].map(OsString::from));
+    }
     args.extend(["-serial", "stdio"].map(OsString::from));
     write_cmdline(&dir, qemu, &args);
     println!(

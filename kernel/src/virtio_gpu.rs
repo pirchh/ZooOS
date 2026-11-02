@@ -77,12 +77,27 @@ const SLOTS: usize = 4;
 const SLOT: usize = 512;
 /// Bounded wait for the device (iterations of a status read).
 const SPINS: u64 = 200_000_000;
-/// The largest screen used (the window server's own limit).
-const MAX_W: u32 = 1920;
-const MAX_H: u32 = 1200;
+/// The largest screen used: the window server's limit (1920 x 1200
+/// logical) at 2x.
+const MAX_W: u32 = 3840;
+const MAX_H: u32 = 2400;
 /// The smallest screen used: the desktop's design size.
 const MIN_W: u32 = 1920;
 const MIN_H: u32 = 1080;
+/// Without a size from the host, at most this (the preferred mode is a
+/// QEMU window's size, which only says how large the window is now).
+const DEFAULT_MAX: (u32, u32) = (1920, 1200);
+
+/// A screen size the host asked for with `-fw_cfg name=opt/zooos/display,
+/// string=WxH` (docs/u2b-design.md): `xtask run` passes the host monitor's
+/// size, so a 4K monitor gets a 4K screen drawn at 2x.
+fn host_size() -> Option<(u32, u32)> {
+    let mut buf = [0u8; 32];
+    let n = crate::fw_cfg::read_file("opt/zooos/display", &mut buf)?;
+    let text = core::str::from_utf8(&buf[..n]).ok()?.trim();
+    let (w, h) = text.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
 
 fn pci_read(dev: u8, func: u8, off: u8) -> u32 {
     let addr = 0x8000_0000 | u32::from(dev) << 11 | u32::from(func) << 8 | u32::from(off & 0xFC);
@@ -329,10 +344,17 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
             (w, h) = (p[2], p[3]);
         }
     }
-    // At least the desktop's design size: QEMU's GTK window reports its
-    // own size as the preferred mode, 640x480 before any guest mode is
-    // set (docs/gpu1-design.md). At most the window server's limit.
-    let (w, h) = (w.clamp(MIN_W, MAX_W), h.clamp(MIN_H, MAX_H));
+    // The host's size if it gave one. Otherwise the preferred mode, at
+    // least the desktop's design size (QEMU's GTK window reports its own
+    // size as the preferred mode, 640x480 before any guest mode is set,
+    // docs/gpu1-design.md) and at most 1920x1200.
+    let (w, h) = match host_size() {
+        Some((hw, hh)) => {
+            kprintln!("ZOO_OS INFO gpu host size {}x{}", hw, hh);
+            (hw.clamp(MIN_W, MAX_W), hh.clamp(MIN_H, MAX_H))
+        }
+        None => (w.clamp(MIN_W, DEFAULT_MAX.0), h.clamp(MIN_H, DEFAULT_MAX.1)),
+    };
     let bytes = (w as usize) * (h as usize) * 4;
     let screen = mem.frames.allocate_contiguous(bytes.div_ceil(4096))?;
     let cursor = mem

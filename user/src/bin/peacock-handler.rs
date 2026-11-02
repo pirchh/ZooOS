@@ -49,10 +49,10 @@ const LIGHTS: [(u32, u32); 3] = [
 /// Dock icon colours, indexed like the applications.
 const ICON: [u32; APPS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
 
-/// Largest supported screen; the back buffer lives in `.bss`.
-const MAX_W: usize = 1920;
-const MAX_H: usize = 1200;
-static mut BACK: [u32; MAX_W * MAX_H] = [0; MAX_W * MAX_H];
+/// Largest supported screen, in logical pixels (a 2560x1440 monitor is
+/// used whole, at 1x; docs/u2b-design.md).
+const MAX_W: usize = 2560;
+const MAX_H: usize = 1600;
 
 /// Times one application may be restarted after crashing.
 const APP_RESTARTS: u32 = 3;
@@ -103,17 +103,19 @@ fn arrow_at(x: f32, y: f32) -> (bool, f32) {
 /// The pointer image (0xAARRGGBB, not premultiplied), `POINTER_W` x
 /// `POINTER_H`: a black arrow, a white outline and a soft shadow below,
 /// each pixel sampled 4 x 4 times for smooth edges.
-fn pointer_image() -> [u32; POINTER_W * POINTER_H] {
-    let mut img = [0u32; POINTER_W * POINTER_H];
+fn pointer_image(scale: usize) -> Vec<u32> {
+    let (pw, ph) = (POINTER_W * scale, POINTER_H * scale);
+    let mut img = alloc::vec![0u32; pw * ph];
+    let sc = scale as f32;
     let edge2 = ARROW_EDGE * ARROW_EDGE;
-    for r in 0..POINTER_H {
-        for c in 0..POINTER_W {
+    for r in 0..ph {
+        for c in 0..pw {
             // Summed over the 16 samples: alpha, and white (premultiplied).
             let (mut a, mut white) = (0.0f32, 0.0f32);
             for sy in 0..4 {
                 for sx in 0..4 {
-                    let x = c as f32 + (sx as f32 + 0.5) / 4.0 - POINTER_HOT as f32;
-                    let y = r as f32 + (sy as f32 + 0.5) / 4.0 - POINTER_HOT as f32;
+                    let x = (c as f32 + (sx as f32 + 0.5) / 4.0) / sc - POINTER_HOT as f32;
+                    let y = (r as f32 + (sy as f32 + 0.5) / 4.0) / sc - POINTER_HOT as f32;
                     let (inside, d2) = arrow_at(x, y);
                     if inside {
                         a += 1.0;
@@ -140,7 +142,7 @@ fn pointer_image() -> [u32; POINTER_W * POINTER_H] {
             if a > 0.0 {
                 let alpha = (a / 16.0 * 255.0 + 0.5) as u32;
                 let grey = (white / a * 255.0 + 0.5) as u32;
-                img[r * POINTER_W + c] = (alpha.min(255) << 24) | (grey.min(255) * 0x01_0101);
+                img[r * pw + c] = (alpha.min(255) << 24) | (grey.min(255) * 0x01_0101);
             }
         }
     }
@@ -356,11 +358,13 @@ fn corner_coverage(r: usize, dx: usize, dy: usize) -> u8 {
     }
 }
 
-/// Smooth falloff over `2 * SHADOW` steps: 255 inside, 0 outside.
-fn shadow_ramp() -> [u8; 2 * SHADOW] {
-    let mut r = [0u8; 2 * SHADOW];
+/// Smooth falloff over `2 * SHADOW * scale` device steps: 255 inside, 0
+/// outside.
+fn shadow_ramp(scale: usize) -> Vec<u8> {
+    let n = 2 * SHADOW * scale;
+    let mut r = alloc::vec![0u8; n];
     for (k, v) in r.iter_mut().enumerate() {
-        let t = (k as f32 + 0.5) / (2 * SHADOW) as f32;
+        let t = (k as f32 + 0.5) / n as f32;
         let s = 1.0 - t * t * (3.0 - 2.0 * t);
         *v = (s * 255.0 + 0.5) as u8;
     }
@@ -368,8 +372,13 @@ fn shadow_ramp() -> [u8; 2 * SHADOW] {
 }
 
 struct Screen {
+    /// Size in device pixels.
     w: usize,
     h: usize,
+    /// Device pixels per logical pixel (1, or 2 on 4K screens,
+    /// docs/u2b-design.md). Drawing calls take logical coordinates;
+    /// `clip`, `back` and `present` are in device pixels.
+    s: usize,
     stride: usize,
     fb: *mut u32,
     bgr: bool,
@@ -379,19 +388,30 @@ struct Screen {
     /// before the flush, so no copy is needed for whole frames).
     direct: bool,
     back: &'static mut [u32],
-    /// Drawing is limited to this rectangle (x0, y0, x1, y1), exclusive.
+    /// Drawing is limited to this rectangle (x0, y0, x1, y1), exclusive,
+    /// in device pixels.
     clip: (usize, usize, usize, usize),
 }
 
 impl Screen {
-    /// True if rectangle (x, y, w, h) reaches into the clip rectangle:
-    /// shapes that do not are skipped (docs/u1-design.md §4).
+    /// True if logical rectangle (x, y, w, h) reaches into the clip
+    /// rectangle: shapes that do not are skipped (docs/u1-design.md §4).
     fn visible(&self, x: usize, y: usize, w: usize, h: usize) -> bool {
+        let s = self.s;
+        self.visible_dev(x * s, y * s, w * s, h * s)
+    }
+
+    fn visible_dev(&self, x: usize, y: usize, w: usize, h: usize) -> bool {
         let (cx0, cy0, cx1, cy1) = self.clip;
         x < cx1 && y < cy1 && x + w > cx0 && y + h > cy0
     }
 
     fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32) {
+        let s = self.s;
+        self.fill_dev(x * s, y * s, w * s, h * s, c);
+    }
+
+    fn fill_dev(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32) {
         let (cx0, cy0, cx1, cy1) = self.clip;
         let (x0, y0, x1, y1) = (x.max(cx0), y.max(cy0), (x + w).min(cx1), (y + h).min(cy1));
         if x0 >= x1 || y0 >= y1 {
@@ -402,8 +422,8 @@ impl Screen {
         }
     }
 
-    /// Blends `c` over the pixel at (x, y) by `a` (0..=255).
-    fn blend_px(&mut self, x: usize, y: usize, c: u32, a: u8) {
+    /// Blends `c` over the device pixel at (x, y) by `a` (0..=255).
+    fn blend_dev(&mut self, x: usize, y: usize, c: u32, a: u8) {
         let (cx0, cy0, cx1, cy1) = self.clip;
         if a != 0 && x >= cx0 && x < cx1 && y >= cy0 && y < cy1 {
             let p = &mut self.back[y * self.w + x];
@@ -411,8 +431,8 @@ impl Screen {
         }
     }
 
-    /// Blends `c` over a rectangle by `a`.
-    fn tint(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32, a: u8) {
+    /// Blends `c` over a device rectangle by `a`.
+    fn tint_dev(&mut self, x: usize, y: usize, w: usize, h: usize, c: u32, a: u8) {
         let (cx0, cy0, cx1, cy1) = self.clip;
         let (x0, y0, x1, y1) = (x.max(cx0), y.max(cy0), (x + w).min(cx1), (y + h).min(cy1));
         if x0 >= x1 {
@@ -427,6 +447,7 @@ impl Screen {
 
     /// A rounded rectangle, anti-aliased, blended by `a`; `corners` says
     /// which are round: top-left, top-right, bottom-left, bottom-right.
+    /// Logical coordinates; corners are computed at device resolution.
     #[allow(clippy::too_many_arguments)]
     fn round_rect(
         &mut self,
@@ -439,7 +460,9 @@ impl Screen {
         a: u8,
         corners: [bool; 4],
     ) {
-        if !self.visible(x, y, w, h) {
+        let s = self.s;
+        let (x, y, w, h, r) = (x * s, y * s, w * s, h * s, r * s);
+        if !self.visible_dev(x, y, w, h) {
             return;
         }
         let r = r.min(w / 2).min(h / 2);
@@ -450,9 +473,9 @@ impl Screen {
             let (top, bottom) = (row < r, row >= h - r);
             if !top && !bottom {
                 if a == 255 {
-                    self.fill(x, y + row, w, 1, c);
+                    self.fill_dev(x, y + row, w, 1, c);
                 } else {
-                    self.tint(x, y + row, w, 1, c, a);
+                    self.tint_dev(x, y + row, w, 1, c, a);
                 }
                 continue;
             }
@@ -471,22 +494,25 @@ impl Screen {
                     255
                 };
                 let cov = ((u32::from(cov) * u32::from(a) + 127) / 255) as u8;
-                self.blend_px(x + col, y + row, c, cov);
+                self.blend_dev(x + col, y + row, c, cov);
             }
         }
     }
 
-    /// A one-pixel anti-aliased outline of a rounded rectangle.
+    /// A one-device-pixel anti-aliased outline of a rounded rectangle
+    /// (logical coordinates).
     fn round_outline(&mut self, x: usize, y: usize, w: usize, h: usize, r: usize, c: u32) {
-        if !self.visible(x, y, w, h) {
+        let s = self.s;
+        let (x, y, w, h, r) = (x * s, y * s, w * s, h * s, r * s);
+        if !self.visible_dev(x, y, w, h) {
             return;
         }
         let r = r.min(w / 2).min(h / 2);
         // Straight edges.
-        self.fill(x + r, y, w - 2 * r, 1, c);
-        self.fill(x + r, y + h - 1, w - 2 * r, 1, c);
-        self.fill(x, y + r, 1, h - 2 * r, c);
-        self.fill(x + w - 1, y + r, 1, h - 2 * r, c);
+        self.fill_dev(x + r, y, w - 2 * r, 1, c);
+        self.fill_dev(x + r, y + h - 1, w - 2 * r, 1, c);
+        self.fill_dev(x, y + r, 1, h - 2 * r, c);
+        self.fill_dev(x + w - 1, y + r, 1, h - 2 * r, c);
         // Corners: the ring between radius r and r - 1.
         for dy in 0..r {
             for dx in 0..r {
@@ -506,21 +532,28 @@ impl Screen {
                     (x + dx, y + h - 1 - dy),
                     (x + w - 1 - dx, y + h - 1 - dy),
                 ] {
-                    self.blend_px(px, py, c, cov);
+                    self.blend_dev(px, py, c, cov);
                 }
             }
         }
     }
 
-    /// A filled anti-aliased disc of diameter `d` with its top-left at
-    /// (x, y), and a rim colour on its outermost pixel ring.
+    /// A filled anti-aliased disc of logical diameter `d` with its top-left
+    /// at (x, y), and a rim colour on its outermost device-pixel ring.
     fn disc(&mut self, x: usize, y: usize, d: usize, fill: u32, rim: u32) {
-        if !self.visible(x, y, d, d) {
+        let s = self.s;
+        self.disc_part(x * s, y * s, d * s, fill, rim, 0);
+    }
+
+    /// `disc` in device pixels, drawing only columns from `from` on (the
+    /// right part of the disc when `from` > 0).
+    fn disc_part(&mut self, x: usize, y: usize, d: usize, fill: u32, rim: u32, from: usize) {
+        if !self.visible_dev(x, y, d, d) {
             return;
         }
         let r = d / 2;
         for dy in 0..d {
-            for dx in 0..d {
+            for dx in from..d {
                 // Mirror into the top-left quarter.
                 let (qx, qy) = (dx.min(d - 1 - dx), dy.min(d - 1 - dy));
                 let outer = corner_coverage(r, qx, qy);
@@ -532,20 +565,22 @@ impl Screen {
                 } else {
                     0
                 };
-                self.blend_px(x + dx, y + dy, rim, outer);
-                self.blend_px(x + dx, y + dy, fill, inner);
+                self.blend_dev(x + dx, y + dy, rim, outer);
+                self.blend_dev(x + dx, y + dy, fill, inner);
             }
         }
     }
 
-    /// A soft shadow of black under the rectangle, `a` at its strongest,
-    /// drawn only outside the rectangle itself (which covers the rest).
-    fn shadow(&mut self, rect: (usize, usize, usize, usize), a: u8, ramp: &[u8; 2 * SHADOW]) {
-        let (wx, wy, ww, wh) = rect;
+    /// A soft shadow of black under the logical rectangle, `a` at its
+    /// strongest, drawn only outside the rectangle itself (which covers the
+    /// rest). `ramp` has `2 * SHADOW * s` steps.
+    fn shadow(&mut self, rect: (usize, usize, usize, usize), a: u8, ramp: &[u8]) {
+        let sc = self.s;
+        let (wx, wy, ww, wh) = (rect.0 * sc, rect.1 * sc, rect.2 * sc, rect.3 * sc);
         // The shadow's rectangle: the window's, moved down.
-        let (sx0, sy0) = (wx as isize, (wy + SHADOW_DROP) as isize);
+        let (sx0, sy0) = (wx as isize, (wy + SHADOW_DROP * sc) as isize);
         let (sx1, sy1) = (sx0 + ww as isize, sy0 + wh as isize);
-        let s = SHADOW as isize;
+        let s = (SHADOW * sc) as isize;
         // How strong at distance d outside an edge (negative: inside).
         let f = |d: isize| -> u32 {
             let k = d + s;
@@ -582,21 +617,29 @@ impl Screen {
         }
     }
 
-    /// Draws `text` in `face` with its baseline at `y`, starting at `x`,
-    /// clipped at `max_x`; returns where it ended.
+    /// Draws `text` in `face` (already the face for this scale) with its
+    /// baseline at logical `y`, starting at `x`, clipped at `max_x`;
+    /// returns where it ended (logical).
     fn text(&mut self, face: &Face, x: usize, y: usize, text: &str, c: u32, max_x: usize) -> usize {
-        if !self.visible(x, y.saturating_sub(20), max_x.saturating_sub(x), 28) {
-            return x + face.width(text);
+        let s = self.s;
+        let (dx, dy, dmax) = (x * s, y * s, max_x * s);
+        if !self.visible_dev(
+            dx,
+            dy.saturating_sub(20 * s),
+            dmax.saturating_sub(dx),
+            28 * s,
+        ) {
+            return x + face.width(text).div_ceil(s);
         }
-        let end = face.draw(text, x as i32, y as i32, max_x as i32, |px, py, cov| {
+        let end = face.draw(text, dx as i32, dy as i32, dmax as i32, |px, py, cov| {
             if px >= 0 && py >= 0 {
-                self.blend_px(px as usize, py as usize, c, cov);
+                self.blend_dev(px as usize, py as usize, c, cov);
             }
         });
-        end.max(0) as usize
+        (end.max(0) as usize).div_ceil(s)
     }
 
-    /// Copies rectangle (x0, y0, x1, y1) of the back buffer to the
+    /// Copies device rectangle (x0, y0, x1, y1) of the back buffer to the
     /// framebuffer. Called after every damaged rectangle is drawn, so the
     /// screen only shows complete frames.
     fn present(&mut self, (x0, y0, x1, y1): (usize, usize, usize, usize)) {
@@ -763,12 +806,15 @@ struct Desktop {
     /// The tick of the last frame (frame pacing).
     last_frame_tick: u64,
     /// The pointer image (`pointer_image`).
-    pointer: [u32; POINTER_W * POINTER_H],
+    pointer: Vec<u32>,
+    /// Logical screen size: layout and the pointer use it.
+    lw: usize,
+    lh: usize,
     atlas: Atlas<'static>,
     dark: bool,
     /// Wallpaper colour per row, for the current appearance.
-    wall: [u32; MAX_H],
-    ramp: [u8; 2 * SHADOW],
+    wall: Vec<u32>,
+    ramp: Vec<u8>,
     apps: [App; APPS],
     /// Home directory handle; copies go to the Assistant.
     home: u64,
@@ -811,7 +857,9 @@ struct Desktop {
 
 impl Desktop {
     fn face(&self, id: FaceId) -> Face<'static> {
-        self.atlas.face(id).expect("checked at start-up")
+        self.atlas
+            .face(id.scaled(self.screen.s))
+            .expect("checked at start-up")
     }
 
     fn theme(&self) -> &'static Theme {
@@ -834,6 +882,8 @@ impl Desktop {
 
     /// Marks rectangle (x, y, w, h) for redrawing.
     fn damage(&mut self, x: usize, y: usize, w: usize, h: usize) {
+        let sc = self.screen.s;
+        let (x, y, w, h) = (x * sc, y * sc, w * sc, h * sc);
         let r = (
             x.min(self.screen.w),
             y.min(self.screen.h),
@@ -901,11 +951,11 @@ impl Desktop {
     }
 
     fn damage_menu_bar(&mut self) {
-        self.damage(0, 0, self.screen.w, MENU_H);
+        self.damage(0, 0, self.lw, MENU_H);
     }
 
     fn dock_rect(&self) -> (usize, usize, usize, usize) {
-        zoo_abi::ui::dock_rect(self.screen.w, self.screen.h, APPS)
+        zoo_abi::ui::dock_rect(self.lw, self.lh, APPS)
     }
 
     fn damage_dock(&mut self) {
@@ -915,12 +965,7 @@ impl Desktop {
     }
 
     fn banner_rect(&self) -> (usize, usize, usize, usize) {
-        (
-            self.screen.w - 16 - BANNER_W,
-            MENU_H + 10,
-            BANNER_W,
-            BANNER_H,
-        )
+        (self.lw - 16 - BANNER_W, MENU_H + 10, BANNER_W, BANNER_H)
     }
 
     fn damage_banner(&mut self) {
@@ -981,7 +1026,7 @@ impl Desktop {
             }
             None => {
                 self.unzoomed[i] = Some(self.wins[i]);
-                self.wins[i] = zoo_abi::ui::zoomed(self.screen.w, self.screen.h);
+                self.wins[i] = zoo_abi::ui::zoomed(self.lw, self.lh);
                 zoo_rt::log!("PeacockHandler: zoomed {}", self.apps[i].label);
             }
         }
@@ -996,7 +1041,7 @@ impl Desktop {
 
     /// The dock icon under the pointer.
     fn dock_slot(&self) -> Option<usize> {
-        let (w, h) = (self.screen.w, self.screen.h);
+        let (w, h) = (self.lw, self.lh);
         (0..APPS).find(|&k| {
             let (ix, iy) = zoo_abi::ui::dock_icon(w, h, APPS, k);
             self.px >= ix && self.px < ix + DOCK_ICON && self.py >= iy && self.py < iy + DOCK_ICON
@@ -1085,7 +1130,7 @@ impl Desktop {
 
     /// Applies one mouse event; true if the screen changed.
     fn mouse(&mut self, e: MouseEvent) -> bool {
-        let (w, h) = (self.screen.w, self.screen.h);
+        let (w, h) = (self.lw, self.lh);
         self.damage_pointer();
         if e.buttons & zoo_abi::MOUSE_ABSOLUTE != 0 {
             // A tablet: a position across the screen, rounded to a pixel.
@@ -1159,8 +1204,11 @@ impl Desktop {
         if self.py < MENU_H {
             let mut clock = Line::new();
             write_clock(&mut clock);
-            let cw = self.face(FaceId::Regular13).width(clock.as_str());
-            let (sx, sy) = zoo_abi::ui::appearance_switch(self.screen.w, cw);
+            let cw = self
+                .face(FaceId::Regular13)
+                .width(clock.as_str())
+                .div_ceil(self.screen.s);
+            let (sx, sy) = zoo_abi::ui::appearance_switch(self.lw, cw);
             if self.px.abs_diff(sx) <= 9 && self.py.abs_diff(sy) <= 9 {
                 self.set_appearance(!self.dark);
             }
@@ -1324,7 +1372,8 @@ impl Desktop {
     /// white, which gives each pixel's colour (premultiplied) and alpha.
     fn build_layer(&mut self, i: usize) {
         let (x, y, w, h) = self.wins[i];
-        let (lw, lh) = (w + 2 * MARGIN, h + 2 * MARGIN);
+        let sc = self.screen.s;
+        let (lw, lh) = ((w + 2 * MARGIN) * sc, (h + 2 * MARGIN) * sc);
         let n = lw * lh;
         let mut black = core::mem::take(&mut self.layers[i].buf);
         let mut white = core::mem::take(&mut self.scratch);
@@ -1421,17 +1470,19 @@ impl Desktop {
     fn refresh_content(&mut self, i: usize) {
         let (x, y, w, h) = self.wins[i];
         let (lw, lh) = (self.layers[i].w, self.layers[i].h);
-        if (lw, lh) != (w + 2 * MARGIN, h + 2 * MARGIN) {
+        let sc = self.screen.s;
+        if (lw, lh) != ((w + 2 * MARGIN) * sc, (h + 2 * MARGIN) * sc) {
             return self.build_layer(i);
         }
         self.wins[i] = (MARGIN, MARGIN, w, h);
         let (cx, _, cw, _) = self.content_rect(i);
+        let (cx, cw) = (cx * sc, cw * sc);
         let mut scratch = core::mem::take(&mut self.scratch);
         // Every pixel used is drawn first; old contents do not matter.
         scratch.resize(lw * lh, 0);
         let pending = core::mem::take(&mut self.layers[i].pending);
         for &(y0, y1) in &pending {
-            let (r0, r1) = (MARGIN + y0, MARGIN + y1);
+            let (r0, r1) = ((MARGIN + y0) * sc, (MARGIN + y1) * sc);
             self.draw_window_clipped(i, &mut scratch, lw, lh, (cx, r0, cx + cw, r1));
             let l = &mut self.layers[i];
             for row in r0..r1 {
@@ -1488,7 +1539,11 @@ impl Desktop {
             return;
         }
         let (x, y, _, _) = self.wins[i];
-        let (ox, oy) = (x as isize - MARGIN as isize, y as isize - MARGIN as isize);
+        let sc = self.screen.s as isize;
+        let (ox, oy) = (
+            (x as isize - MARGIN as isize) * sc,
+            (y as isize - MARGIN as isize) * sc,
+        );
         let (cx0, cy0, cx1, cy1) = self.screen.clip;
         let ly0 = (cy0 as isize - oy).max(0) as usize;
         let ly1 = (cy1 as isize - oy).clamp(0, l.h as isize) as usize;
@@ -1522,8 +1577,8 @@ impl Desktop {
 
     fn draw_menu_bar(&mut self) {
         let t = self.theme();
-        let w = self.screen.w;
-        if self.screen.clip.1 >= MENU_H {
+        let w = self.lw;
+        if self.screen.clip.1 >= MENU_H * self.screen.s {
             return;
         }
         self.screen.fill(0, 0, w, MENU_H, zoo_abi::ui::bar_color(t));
@@ -1538,7 +1593,7 @@ impl Desktop {
         }
         let mut clock = Line::new();
         write_clock(&mut clock);
-        let cw = regular.width(clock.as_str());
+        let cw = regular.width(clock.as_str()).div_ceil(self.screen.s);
         self.screen
             .text(&regular, w - 16 - cw, base, clock.as_str(), t.bar_text, w);
         // The appearance switch: a disc, half filled.
@@ -1548,12 +1603,13 @@ impl Desktop {
         self.screen
             .disc(bx + 2, by + 2, 10, zoo_abi::ui::bar_color(t), t.bar_text);
         // The right half filled: dark shown as filled.
-        for dy in 0..10 {
-            for dx in 5..10 {
-                let (qx, qy) = (dx.min(9 - dx), dy.min(9 - dy));
-                let c = corner_coverage(5, qx, qy);
-                self.screen
-                    .blend_px(bx + 2 + dx, by + 2 + dy, t.bar_text, c);
+        let sc = self.screen.s;
+        let (d, x0, y0) = (10 * sc, (bx + 2) * sc, (by + 2) * sc);
+        for dy in 0..d {
+            for dx in d / 2..d {
+                let (qx, qy) = (dx.min(d - 1 - dx), dy.min(d - 1 - dy));
+                let c = corner_coverage(d / 2, qx, qy);
+                self.screen.blend_dev(x0 + dx, y0 + dy, t.bar_text, c);
             }
         }
     }
@@ -1573,15 +1629,18 @@ impl Desktop {
         let focused = i == self.focus;
         let (x, y, w, h) = self.wins[i];
         let (cx0, cy0, cx1, cy1) = self.screen.clip;
-        if x + w + MARGIN <= cx0 || x >= cx1 + MARGIN || y + h + MARGIN <= cy0 || y >= cy1 + MARGIN
+        let s = self.screen.s;
+        if (x + w + MARGIN) * s <= cx0
+            || x * s >= cx1 + MARGIN * s
+            || (y + h + MARGIN) * s <= cy0
+            || y * s >= cy1 + MARGIN * s
         {
             return;
         }
-        let ramp = self.ramp;
         self.screen.shadow(
             (x, y, w, h),
             if focused { t.shadow } else { t.shadow_blurred },
-            &ramp,
+            &self.ramp,
         );
         let all = [true; 4];
         self.screen
@@ -1612,7 +1671,7 @@ impl Desktop {
         let medium = self.face(FaceId::Medium13);
         let regular = self.face(FaceId::Regular13);
         let app = &self.apps[i];
-        let tw = medium.width(app.title.as_str());
+        let tw = medium.width(app.title.as_str()).div_ceil(self.screen.s);
         let lights_end = x + zoo_abi::ui::LIGHT_X + 2 * zoo_abi::ui::LIGHT_GAP + 16;
         let tx = (x + w.saturating_sub(tw) / 2).max(lights_end);
         let tc = if focused {
@@ -1675,8 +1734,8 @@ impl Desktop {
         ) {
             return;
         }
-        let ramp = self.ramp;
-        self.screen.shadow((x, y, w, h), t.shadow_blurred, &ramp);
+        self.screen
+            .shadow((x, y, w, h), t.shadow_blurred, &self.ramp);
         self.screen
             .round_rect(x, y, w, h, 12, t.banner, 255, [true; 4]);
         self.screen.round_outline(x, y, w, h, 12, t.outline);
@@ -1690,7 +1749,7 @@ impl Desktop {
 
     fn draw_dock(&mut self) {
         let t = self.theme();
-        let (sw, sh) = (self.screen.w, self.screen.h);
+        let (sw, sh) = (self.lw, self.lh);
         let (dx, dy, dw, dh) = self.dock_rect();
         // With the name shown above an icon.
         if !self.screen.visible(dx, dy.saturating_sub(40), dw, dh + 40) {
@@ -1711,7 +1770,7 @@ impl Desktop {
         if let Some(k) = self.hover {
             let small = self.face(FaceId::Regular13);
             let label = self.apps[k].label;
-            let lw = small.width(label) + 20;
+            let lw = small.width(label).div_ceil(self.screen.s) + 20;
             let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
             let lx = (ix + DOCK_ICON / 2).saturating_sub(lw / 2);
             let ly = iy - 10 - 26;
@@ -1780,9 +1839,9 @@ impl Desktop {
     /// premultiplied): `self.pointer` in the cursor's 64x64 frame.
     fn cursor_image(&self) -> [u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE] {
         let mut img = [0u32; zoo_abi::CURSOR_SIZE * zoo_abi::CURSOR_SIZE];
-        for r in 0..POINTER_H {
-            img[r * zoo_abi::CURSOR_SIZE..r * zoo_abi::CURSOR_SIZE + POINTER_W]
-                .copy_from_slice(&self.pointer[r * POINTER_W..(r + 1) * POINTER_W]);
+        let pw = POINTER_W * self.screen.s;
+        for (r, row) in self.pointer.chunks(pw).enumerate() {
+            img[r * zoo_abi::CURSOR_SIZE..r * zoo_abi::CURSOR_SIZE + pw].copy_from_slice(row);
         }
         img
     }
@@ -1790,17 +1849,18 @@ impl Desktop {
     /// The pointer image blended over the screen, its hot spot at the
     /// pointer.
     fn draw_pointer(&mut self) {
+        let sc = self.screen.s;
         let (x0, y0) = (
-            self.px as isize - POINTER_HOT as isize,
-            self.py as isize - POINTER_HOT as isize,
+            ((self.px as isize) - POINTER_HOT as isize) * sc as isize,
+            ((self.py as isize) - POINTER_HOT as isize) * sc as isize,
         );
-        for r in 0..POINTER_H {
-            for c in 0..POINTER_W {
-                let p = self.pointer[r * POINTER_W + c];
+        let pw = POINTER_W * sc;
+        for (r, row) in self.pointer.chunks(pw).enumerate() {
+            for (c, &p) in row.iter().enumerate() {
                 let (x, y) = (x0 + c as isize, y0 + r as isize);
                 if p >> 24 != 0 && x >= 0 && y >= 0 {
                     self.screen
-                        .blend_px(x as usize, y as usize, p & 0xFF_FFFF, (p >> 24) as u8);
+                        .blend_dev(x as usize, y as usize, p & 0xFF_FFFF, (p >> 24) as u8);
                 }
             }
         }
@@ -1897,20 +1957,29 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         let _ = log("PeacockHandler: the font atlas lacks a face");
         return 4;
     }
-    // A screen larger than the back buffer: the desktop uses its top-left
-    // part and the rest is painted once (docs/usb-boot.md).
-    let (w, h) = (full_w.min(MAX_W), full_h.min(MAX_H));
-    if (w, h) != (full_w, full_h) {
+    // 4K-class screens are drawn at 2x: the same layout with twice the
+    // pixels in each direction, like a Retina display (docs/u2b-design.md).
+    let sc = if full_w >= 3200 && full_h >= 1800 {
+        2
+    } else {
+        1
+    };
+    // The logical size, at most MAX_W x MAX_H, and the device area used.
+    let (w, h) = ((full_w / sc).min(MAX_W), (full_h / sc).min(MAX_H));
+    let (dw, dh) = (w * sc, h * sc);
+    // A screen larger than that: the desktop uses its top-left part and
+    // the rest is painted once (docs/usb-boot.md).
+    if (dw, dh) != (full_w, full_h) {
         zoo_rt::log!(
             "PeacockHandler: display {}x{}: using {}x{}",
             full_w,
             full_h,
-            w,
-            h
+            dw,
+            dh
         );
         let fb = info.base as *mut u32;
         for y in 0..full_h {
-            let from = if y < h { w } else { 0 };
+            let from = if y < dh { dw } else { 0 };
             for x in from..full_w {
                 // SAFETY: (x, y) is inside the mapped framebuffer
                 // (`stride * height` pixels of 4 bytes).
@@ -1918,22 +1987,24 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             }
         }
     } else {
-        zoo_rt::log!("PeacockHandler: display {}x{} acquired", w, h);
+        zoo_rt::log!("PeacockHandler: display {}x{} acquired", dw, dh);
+    }
+    if sc > 1 {
+        zoo_rt::log!("PeacockHandler: {}x scale, {}x{} logical", sc, w, h);
     }
     // A display that shows changes only when flushed, as wide as its
     // stride: draw into it directly (docs/u2-compositor-design.md).
     let direct = info.flags & zoo_abi::DISPLAY_FLUSH_NEEDED != 0
-        && info.stride as usize == w
-        && (w, h) == (full_w, full_h);
+        && info.stride as usize == dw
+        && (dw, dh) == (full_w, full_h);
     let back: &'static mut [u32] = if direct {
         // SAFETY: the kernel mapped `stride * height` pixels of 4 bytes at
         // `base` for this process alone (`display_acquire`), and the
         // mapping lasts as long as the process.
-        unsafe { core::slice::from_raw_parts_mut(info.base as *mut u32, w * h) }
+        unsafe { core::slice::from_raw_parts_mut(info.base as *mut u32, dw * dh) }
     } else {
-        // SAFETY: this process is single-threaded and this is the only
-        // place a reference to the back buffer is created.
-        unsafe { &mut *core::ptr::addr_of_mut!(BACK) }
+        // The back buffer, for the life of the process.
+        alloc::boxed::Box::leak(alloc::vec![0u32; dw * dh].into_boxed_slice())
     };
     let mut desk = Desktop {
         layers: [const { Layer::new() }; APPS],
@@ -1941,22 +2012,25 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         hw_cursor: false,
         cursor_moved: false,
         last_frame_tick: u64::MAX,
-        pointer: pointer_image(),
+        pointer: pointer_image(sc),
+        lw: w,
+        lh: h,
         screen: Screen {
-            w,
-            h,
+            w: dw,
+            h: dh,
+            s: sc,
             stride: info.stride as usize,
             fb: info.base as *mut u32,
             bgr: info.format == FORMAT_BGR,
             flush: info.flags & zoo_abi::DISPLAY_FLUSH_NEEDED != 0,
             direct,
-            back: &mut back[..w * h],
-            clip: (0, 0, w, h),
+            back: &mut back[..dw * dh],
+            clip: (0, 0, dw, dh),
         },
         atlas,
         dark: false,
-        wall: [0; MAX_H],
-        ramp: shadow_ramp(),
+        wall: alloc::vec![0; dh],
+        ramp: shadow_ramp(sc),
         apps: [
             App::new("Files", "files", true),
             App::new("Crash Test", "crash-test", false),
@@ -1988,7 +2062,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     desk.set_appearance(false);
     if info.flags & zoo_abi::DISPLAY_HW_CURSOR != 0 {
         let image = desk.cursor_image();
-        if zoo_rt::cursor_set(&image, (POINTER_HOT, POINTER_HOT), (desk.px, desk.py)).is_ok() {
+        let at = (desk.px * sc, desk.py * sc);
+        if zoo_rt::cursor_set(&image, (POINTER_HOT * sc, POINTER_HOT * sc), at).is_ok() {
             desk.hw_cursor = true;
             let _ = log("PeacockHandler: hardware cursor");
         }
@@ -2085,7 +2160,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
         if desk.cursor_moved {
             desk.cursor_moved = false;
-            let _ = zoo_rt::cursor_move(desk.px, desk.py);
+            let s = desk.screen.s;
+            let _ = zoo_rt::cursor_move(desk.px * s, desk.py * s);
         }
 
         // Applications.

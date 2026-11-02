@@ -879,7 +879,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: frames_gpu,
+            expectation: frames_gpu.clone(),
             timeout: s.timeout * 2,
             want: "pass",
             purpose: "frame cost on the virtio GPU, flushes included: full repaints on every pointer move (numbers meaningful with --accel)",
@@ -898,6 +898,45 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "a fast drag: 400 tablet moves back to back while dragging Files; events must not queue up behind the frames",
             interaction: Some(fast_drag_steps()),
             screen_checks: vec![],
+        },
+        Case {
+            name: "gpu-hidpi-frames",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: frames_gpu.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "frame cost at 2x on a 3840x2160 screen: full repaints, a window drag, content updates (numbers meaningful with --accel)",
+            interaction: Some(gpu_frames_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "gpu-1440",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: tablet.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the owner's monitor: a 2560x1440 host size through fw_cfg, the desktop at 1x over all of it, an exact click",
+            interaction: Some(q1440_steps()),
+            screen_checks: vec![("1-1440", check_1440)],
+        },
+        Case {
+            name: "gpu-hidpi",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::Tablet,
+            expectation: tablet.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "a 3840x2160 screen (the host size through fw_cfg) drawn at 2x: 26 px text where 13 px was, clicks exact in logical pixels",
+            interaction: Some(hidpi_steps()),
+            screen_checks: vec![("1-hidpi", check_hidpi)],
         },
         Case {
             name: "gpu-tablet",
@@ -921,7 +960,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: big_screen,
             timeout: s.timeout,
             want: "pass",
-            purpose: "a screen wider than 1920: the desktop uses its top-left 1920x1200 part instead of refusing it",
+            purpose: "a 2560x1600 screen: the desktop uses all of it at 1x (docs/u2b-design.md)",
             interaction: Some(Interaction {
                 steps: {
                     let mut steps = start_desktop();
@@ -1830,6 +1869,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             qemu::Display::VirtioVga
         } else {
             qemu::Display::Vga
+        });
+        // `gpu-hidpi` cases: a 4K screen, drawn at 2x (docs/u2b-design.md).
+        qemu::set_display_size(if c.name.starts_with("gpu-hidpi") {
+            Some((3840, 2160))
+        } else if c.name == "gpu-1440" {
+            Some((2560, 1440))
+        } else {
+            None
         });
         let r = qemu::run_case(
             root,
@@ -2765,6 +2812,103 @@ fn tablet_steps() -> Interaction {
     tablet_steps_with(false)
 }
 
+/// A 2560x1440 host: the desktop at 1x over the whole screen, laid out for
+/// that size, and a tablet click on Crash Test's close light closes it.
+fn q1440_steps() -> Interaction {
+    let (sw, sh) = (2560, 1440);
+    let crash = zui::initial_windows(sw, sh)[CRASH_WIN];
+    let (lx, ly) = zui::light_centre(crash, 0);
+    let to = |v: usize, n: usize| ((v * 0x7FFF + (n - 1) / 2) / (n - 1)) as u32;
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::WaitSeen("ZOO_OS INFO gpu host size 2560x1440".into()),
+        Action::WaitSeen("ZOO_OS INFO gpu scanout 2560x1440 hardware-cursor".into()),
+        Action::WaitSeen("PeacockHandler: display 2560x1440 acquired".into()),
+        Action::MouseAbs(to(lx, sw), to(ly, sh)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: closed Crash Test".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-1440"),
+    ]);
+    Interaction { steps }
+}
+
+fn check_1440(img: &screen::Image) -> Result<String, String> {
+    if (img.width, img.height) != (2560, 1440) {
+        return Err(format!(
+            "screen {}x{}, expected 2560x1440",
+            img.width, img.height
+        ));
+    }
+    let t = title(img, "Files", true)?;
+    let want = title_pen(zui::initial_windows(2560, 1440)[FILES_WIN], "Files");
+    if t != want {
+        return Err(format!(
+            "`Files` title at {t:?}, expected {want:?} (the 2560x1440 layout)"
+        ));
+    }
+    no_title(img, "Crash Test", false)?;
+    Ok(format!(
+        "2560x1440 at 1x: `Files` at {t:?}; Crash Test closed"
+    ))
+}
+
+/// At 2x: the host size arrives, the window server draws 2x, and a tablet
+/// click on Crash Test's close light (in logical pixels; the tablet's
+/// range covers the whole screen either way) closes it.
+fn hidpi_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::WaitSeen("ZOO_OS INFO gpu host size 3840x2160".into()),
+        Action::WaitSeen("ZOO_OS INFO gpu scanout 3840x2160 hardware-cursor".into()),
+        Action::WaitSeen("PeacockHandler: 2x scale, 1920x1080 logical".into()),
+        abs_at(zui::light_centre(win(CRASH_WIN), 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: closed Crash Test".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-hidpi"),
+    ]);
+    Interaction { steps }
+}
+
+/// The desktop at 2x: the 3840x2160 screenshot has the 26 px faces where
+/// the 13 px ones would be, and not the 13 px ones.
+fn check_hidpi(img: &screen::Image) -> Result<String, String> {
+    if (img.width, img.height) != (3840, 2160) {
+        return Err(format!(
+            "screen {}x{}, expected 3840x2160",
+            img.width, img.height
+        ));
+    }
+    let (fg, bg) = title_colours(true);
+    let t = ui(img, FaceId::Medium26, "Files", fg, bg)?;
+    let home = ui(img, FaceId::Regular26, "Home", LIGHT.text, LIGHT.content)?;
+    let bar = ui(
+        img,
+        FaceId::SemiBold26,
+        "Files",
+        LIGHT.bar_text,
+        zui::bar_color(&LIGHT),
+    )?;
+    if screen::find_ui(img, FaceId::Medium13, "Files", fg, bg).is_some() {
+        return Err("a 13 px `Files` title at 2x".into());
+    }
+    // The 1x layout, doubled.
+    let want = title_pen(win(FILES_WIN), "Files");
+    if t.0.abs_diff(2 * want.0) > 4 || t.1.abs_diff(2 * want.1) > 4 {
+        return Err(format!(
+            "2x `Files` title at {t:?}, expected near {:?}",
+            (2 * want.0, 2 * want.1)
+        ));
+    }
+    no_title(img, "Crash Test", false)?;
+    Ok(format!(
+        "2x: title `Files` at {t:?}, `Home` at {home:?}, menu bar `Files` at {bar:?}; Crash Test closed"
+    ))
+}
+
 /// The tablet case's steps; `gpu`: on a virtio GPU with a hardware cursor,
 /// where the sweep redraws nothing.
 fn tablet_steps_with(gpu: bool) -> Interaction {
@@ -2998,17 +3142,20 @@ fn check_big_screen(img: &screen::Image) -> Result<String, String> {
             img.width, img.height
         ));
     }
-    let report = check_desktop_started(img)?;
-    // Right of the desktop: painted black once.
-    let outside = img.pixel(img.width - 2, 10);
-    if outside != Some([0, 0, 0]) {
+    let bar = menu_app(img, "Files")?;
+    let t = title(img, "Files", true)?;
+    // The menu bar reaches the right edge and the wallpaper the bottom
+    // right corner: the whole screen is the desktop.
+    let c = zui::bar_color(&LIGHT);
+    let edge = img.pixel(img.width - 2, 2);
+    let corner = img.pixel(img.width - 2, img.height - 2);
+    if edge != Some([(c >> 16) as u8, (c >> 8) as u8, c as u8]) || corner == Some([0, 0, 0]) {
         return Err(format!(
-            "outside the desktop at ({}, 10): {outside:?}",
-            img.width - 2
+            "not the whole screen: menu bar at the right edge {edge:?}, bottom-right corner {corner:?}"
         ));
     }
     Ok(format!(
-        "{}x{} screen: {report}; the area right of x=1920 is black",
+        "{}x{} screen used whole: menu bar `Files` at {bar:?}, title at {t:?}, menu bar to the right edge",
         img.width, img.height
     ))
 }

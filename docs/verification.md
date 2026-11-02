@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2a section
-(version 0.57.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2b section
+(version 0.58.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,42 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2b results: the monitor's resolution, 2x for 4K (version 0.58.0)
+
+Design and measurements: docs/u2b-design.md. Also recorded here: 0.57.1
+(pirchh/ZooOS#65), frame pacing and the new pointer, whose full verify
+was `PASS` with 65 cases `OK`.
+
+**New cases** (all with `--accel whpx`):
+
+| Case | Result |
+| --- | --- |
+| `gpu-hidpi` | `OK`: `gpu host size 3840x2160`, `2x scale, 1920x1080 logical`. A tablet click on the close light closes Crash Test. The screenshot has 26 px text with the title at (1006, 168), twice its 1x (503, 84), and no 13 px title. |
+| `gpu-1440` | `OK`: the owner's 2560×1440 at 1x. The `Files` title is at (676, 84), as the 2560×1440 layout puts it. |
+| `gpu-hidpi-frames` | `OK`: see the measurements in docs/u2b-design.md §5 |
+| `big-screen` | `OK`: a 2560×1600 screen is now used whole |
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 68 cases `OK`.
+Then with `--accel whpx`: `assistant-live` 31.1 s, `wine-home-1` 62.7 s,
+`wine-home-2` 11.1 s, all `OK`, with `ZOO_OS BOOT version=0.58.0`.
+
+**Other checks:**
+- `cargo test -p xtask --locked`: 25 passed, including the atlas test
+  over all eight faces.
+- clippy `-D warnings`: kernel (both modes), `zoo-abi`, `zoo-user` and
+  `xtask`, all clean.
+- `cargo fmt --all --check`: clean.
+
+**Negative control:** the window server never chooses 2x → ``FAIL
+gpu-hidpi`` (a timeout waiting for the 2x marker and the click on the 2x
+layout). The first attempt at this control did not apply its edit
+(rustfmt had wrapped the line) and so passed. It was redone, and failed
+as it should.
+
+**The host:** `xtask run` on the owner's PC, with no `host monitor` line,
+showed that the primary monitor is not 4K. `EnumDisplaySettings` gives
+`DISPLAY1 2560x1440 @ 59Hz`.
 
 ## UI step 2a results: a compositor in the window server (version 0.57.0)
 

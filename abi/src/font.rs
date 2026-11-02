@@ -34,14 +34,37 @@ pub enum FaceId {
     SemiBold13 = 2,
     /// Small labels: Regular, 11 px.
     Regular11 = 3,
+    /// The same four at twice the size, for 2x screens (docs/u2b-design.md).
+    Regular26 = 4,
+    Medium26 = 5,
+    SemiBold26 = 6,
+    Regular22 = 7,
+}
+
+impl FaceId {
+    /// This face for a screen drawn at `scale` (1 or 2) device pixels per
+    /// logical pixel.
+    pub fn scaled(self, scale: usize) -> FaceId {
+        match (self, scale) {
+            (FaceId::Regular13, 2) => FaceId::Regular26,
+            (FaceId::Medium13, 2) => FaceId::Medium26,
+            (FaceId::SemiBold13, 2) => FaceId::SemiBold26,
+            (FaceId::Regular11, 2) => FaceId::Regular22,
+            (f, _) => f,
+        }
+    }
 }
 
 /// Faces `xtask` puts in the atlas: (face, file, pixel size).
-pub const FACES: [(FaceId, &str, u16); 4] = [
+pub const FACES: [(FaceId, &str, u16); 8] = [
     (FaceId::Regular13, "Inter-Regular.ttf", 13),
     (FaceId::Medium13, "Inter-Medium.ttf", 13),
     (FaceId::SemiBold13, "Inter-SemiBold.ttf", 13),
     (FaceId::Regular11, "Inter-Regular.ttf", 11),
+    (FaceId::Regular26, "Inter-Regular.ttf", 26),
+    (FaceId::Medium26, "Inter-Medium.ttf", 26),
+    (FaceId::SemiBold26, "Inter-SemiBold.ttf", 26),
+    (FaceId::Regular22, "Inter-Regular.ttf", 22),
 ];
 
 fn u16_at(d: &[u8], at: usize) -> Option<u16> {
