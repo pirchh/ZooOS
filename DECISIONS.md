@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Assistant step 2b: names in any letter case (2026-11-02)
+
+Version 0.73.1.
+
+- Found by the owner testing: "where is my music" → the model chose
+  `list music`, and the folder is `Music`, so it failed with "not found".
+- OtterHandler's `list`, `inspect`, `plan` and `create` now take each
+  name that exists only in another letter case as the name on disk, as
+  macOS does (``OtterHandler: `music` is `Music` ``). Names that match
+  nothing, or more than one entry, stay as written. The disk itself stays
+  case-sensitive; only the Assistant's tools match loosely.
+
 ## Assistant step 3: the model in the everyday system (2026-11-02)
 
 Design: docs/a3-design.md. Version 0.73.0.
