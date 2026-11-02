@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2g section
-(version 0.69.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U4a section
+(version 0.70.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,32 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 4a results: menus that open (version 0.70.0)
+
+Design: docs/u4a-design.md.
+
+**New case `menu-bar`** (TCG): `OK`.
+- `menu bar Window: Minimize, Zoom, Files, Crash Test, Assistant`.
+- `1-window-menu`: `Minimize` (234, 51) with `Ctrl+M` (372, 51) on its
+  line, `Crash Test` (250, 132), `Assistant` highlighted (250, 156).
+- Then `brought Assistant forward`; File, then slid to View
+  (`menu bar View: Dark Appearance`); `appearance dark`; Ctrl+M minimised
+  the Assistant.
+- `2-after`: dark titles, no Assistant title, `Files` focused.
+
+**Negative control:** titles that ignore clicks → `FAIL menu-bar`
+(timeout).
+
+**First-run fixes:**
+- the ✓ printed as `???` in the ASCII log, so the log leaves it out;
+- space-indented labels sat at fractional positions the check could not
+  match, so the ✓ has its own column.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 86 cases `OK`.
+`assistant-live` passes with `--accel whpx` at `ZOO_OS BOOT
+version=0.70.0`. `cargo test -p xtask` (25), clippy on `zoo-user` and
+`xtask`, and `cargo fmt --check`: clean.
 
 ## UI step 2g results: dock magnification (version 0.69.0)
 

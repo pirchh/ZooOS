@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 4a: menus that open (2026-11-02)
+
+Design: docs/u4a-design.md. Version 0.70.0.
+
+- The menu bar's menus reuse the context-menu machinery (one `Menu`
+  type), so they look and close the same way.
+- Ctrl stands in for the Mac's Command key: Ctrl+N/W/M are the window
+  server's; other Ctrl+letters stay with apps (Notes' Ctrl+S, Files'
+  Ctrl+O).
+- Edit's items are shown dim until there is a clipboard, rather than
+  hidden, so the menu bar reads as the owner expects from macOS.
+
 ## UI step 2g: dock magnification (2026-11-02)
 
 Design: docs/u2g-design.md. Version 0.69.0.

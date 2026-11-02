@@ -235,6 +235,14 @@ const DOCK_HIDE_DELAY_MS: u64 = 400;
 /// (logical pixels).
 const DOCK_EDGE: usize = 6;
 
+/// The About and Keyboard Shortcuts notes (docs/u4a-design.md).
+const ABOUT: &str = concat!(
+    "ZooOS ",
+    env!("CARGO_PKG_VERSION"),
+    ", a Rust operating system."
+);
+const SHORTCUTS: &str = "Ctrl+N new window, Ctrl+W close, Ctrl+M minimise.";
+
 /// Where the dock's kept applications are saved, in the home folder.
 const DOCK_FILE: &str = ".dock";
 
@@ -975,6 +983,17 @@ enum MenuAction {
     Line,
     /// Item `n` of an application's own menu (docs/u3-design.md).
     App(usize),
+    // Menu-bar menus (docs/u4a-design.md).
+    Close,
+    Minimize,
+    Zoom,
+    /// Bring window `i` forward (restoring it if minimised).
+    Focus(usize),
+    Appearance,
+    About,
+    Shortcuts,
+    /// Shown dim; not choosable.
+    Disabled,
 }
 
 impl MenuAction {
@@ -985,10 +1004,19 @@ impl MenuAction {
             MenuAction::Remove => "Remove from Dock",
             MenuAction::Keep => "Keep in Dock",
             MenuAction::Quit => "Quit",
-            MenuAction::Line | MenuAction::App(_) => "",
+            MenuAction::Close => "Close Window\tCtrl+W",
+            MenuAction::Minimize => "Minimize\tCtrl+M",
+            MenuAction::Zoom => "Zoom",
+            MenuAction::About => "About ZooOS",
+            MenuAction::Shortcuts => "Keyboard Shortcuts",
+            _ => "",
         }
     }
 }
+
+/// The menu bar's titles (docs/u4a-design.md): the ZooOS mark, the
+/// focused application's name, then `MENUS`.
+const BAR_TITLES: usize = 2 + MENUS.len();
 
 /// What an application asked the window server for, besides drawing.
 enum Request {
@@ -1185,7 +1213,7 @@ enum DockHit {
 }
 
 /// Most items in one menu.
-const MENU_ITEMS: usize = 6;
+const MENU_ITEMS: usize = 16;
 
 /// An open context menu: for application `prog`, at logical (x, y), `w`
 /// wide, its items, and the one under the pointer.
@@ -1202,14 +1230,16 @@ struct Menu {
     items: [MenuAction; MENU_ITEMS],
     n: usize,
     hover: Option<usize>,
+    /// The menu-bar title it hangs from, if it is a menu-bar menu.
+    bar: Option<usize>,
 }
 
 impl Menu {
     fn label(&self, k: usize) -> &str {
-        match self.items[k] {
-            MenuAction::App(_) => self.labels[k].as_str(),
-            a => a.label(),
+        if self.labels[k].len > 0 {
+            return self.labels[k].as_str();
         }
+        self.items[k].label()
     }
 
     fn separators(&self) -> [bool; MENU_ITEMS] {
@@ -1228,7 +1258,9 @@ impl Menu {
         let seps = self.separators();
         (0..self.n).find(|&k| {
             let top = zoo_abi::ui::menu_item_top(self.y, &seps[..self.n], k);
-            self.items[k] != MenuAction::Line && py >= top && py < top + MENU_ITEM_H
+            !matches!(self.items[k], MenuAction::Line | MenuAction::Disabled)
+                && py >= top
+                && py < top + MENU_ITEM_H
         })
     }
 }
@@ -2063,6 +2095,20 @@ impl Desktop {
         }
     }
 
+    /// Shows a notification banner.
+    fn notify(&mut self, title: &'static str, text: &str) {
+        let mut body = Line::new();
+        let _ = body.write_str(text);
+        self.damage_banner();
+        self.banner = Some(Banner {
+            title,
+            body,
+            until: zoo_rt::ticks() + BANNER_TICKS,
+        });
+        self.damage_banner();
+        zoo_rt::log!("PeacockHandler: banner {}: {}", title, text);
+    }
+
     fn banner_rect(&self) -> (usize, usize, usize, usize) {
         (self.lw - 16 - BANNER_W, MENU_H + 10, BANNER_W, BANNER_H)
     }
@@ -2293,6 +2339,7 @@ impl Desktop {
             items,
             n,
             hover: None,
+            bar: None,
         };
         let h = m.height();
         m.x = (ix + DOCK_ICON / 2)
@@ -2338,6 +2385,16 @@ impl Desktop {
         let Some(m) = &self.menu else {
             return;
         };
+        // On the menu bar: another title opens its menu; the open one's
+        // title closes it.
+        if let Some(t) = self.bar_title_at() {
+            if m.bar == Some(t) {
+                self.close_menu();
+            } else {
+                self.open_bar_menu(t);
+            }
+            return;
+        }
         let pick = m.item_at(self.px, self.py);
         let choice = pick.map(|k| m.items[k]);
         let mut name = Line::new();
@@ -2377,7 +2434,36 @@ impl Desktop {
                 }
                 zoo_rt::log!("PeacockHandler: quit {}", label);
             }
-            MenuAction::Line | MenuAction::App(_) => {}
+            MenuAction::Close => {
+                let i = self.focus;
+                if self.apps[i].visible() {
+                    self.close_app(i);
+                }
+            }
+            MenuAction::Minimize => {
+                let i = self.focus;
+                if self.apps[i].visible() {
+                    self.minimize(i);
+                }
+            }
+            MenuAction::Zoom => {
+                let i = self.focus;
+                if self.apps[i].visible() {
+                    self.toggle_zoom(i);
+                }
+            }
+            MenuAction::Focus(i) => {
+                if self.apps[i].minimized {
+                    self.restore(i);
+                } else {
+                    self.set_focus(i);
+                }
+                zoo_rt::log!("PeacockHandler: brought {} forward", self.apps[i].label);
+            }
+            MenuAction::Appearance => self.set_appearance(!self.dark),
+            MenuAction::About => self.notify("About ZooOS", ABOUT),
+            MenuAction::Shortcuts => self.notify("Keyboard Shortcuts", SHORTCUTS),
+            MenuAction::Line | MenuAction::App(_) | MenuAction::Disabled => {}
         }
     }
 
@@ -2470,6 +2556,7 @@ impl Desktop {
                     items: core::array::from_fn(MenuAction::App),
                     n,
                     hover: None,
+                    bar: None,
                 };
                 let h = m.height();
                 // Below and right of the pointer, kept on the screen.
@@ -2540,10 +2627,239 @@ impl Desktop {
                     [true; 4],
                 );
             }
-            let c = if on { t.select_text } else { t.tooltip_text };
-            self.screen
-                .text(&face, x + 16, top + 17, labels[k].as_str(), c, x + w - 8);
+            let c = if on {
+                t.select_text
+            } else if *item == MenuAction::Disabled {
+                t.text_dim
+            } else {
+                t.tooltip_text
+            };
+            let (label, keys) = labels[k]
+                .as_str()
+                .split_once('\t')
+                .unwrap_or((labels[k].as_str(), ""));
+            // Windows in the Window menu: a column for the check mark on
+            // the focused one.
+            let mut lx = x + 16;
+            if let MenuAction::Focus(i) = *item {
+                if i == self.focus && self.apps[i].visible() {
+                    self.screen
+                        .text(&face, lx, top + 17, "\u{2713}", c, x + w - 8);
+                }
+                lx += 16;
+            }
+            self.screen.text(&face, lx, top + 17, label, c, x + w - 8);
+            if !keys.is_empty() {
+                let kw = face.width(keys).div_ceil(self.screen.s);
+                let kc = if on { t.select_text } else { t.text_dim };
+                self.screen
+                    .text(&face, x + w - 14 - kw, top + 17, keys, kc, x + w - 8);
+            }
         }
+    }
+
+    /// Each menu-bar title's span, logical x (docs/u4a-design.md): the
+    /// ZooOS mark, the application name, then `MENUS`, as drawn.
+    fn bar_titles(&self) -> [(usize, usize); BAR_TITLES] {
+        let s = self.screen.s;
+        let bold = self.face(FaceId::SemiBold13);
+        let regular = self.face(FaceId::Regular13);
+        let mut out = [(0, 0); BAR_TITLES];
+        out[0] = (PAW_AT.0 - 4, PAW_AT.0 + PAW_SIZE + 4);
+        let name = self.bar_name();
+        let mut x = 40;
+        let end = x + bold.width(name).div_ceil(s);
+        out[1] = (x - 8, end + 8);
+        x = end + 22;
+        for (k, m) in MENUS.iter().enumerate() {
+            let end = x + regular.width(m).div_ceil(s);
+            out[2 + k] = (x - 8, end + 8);
+            x = end + 20;
+        }
+        out
+    }
+
+    /// The application name in the menu bar.
+    fn bar_name(&self) -> &'static str {
+        let app = &self.apps[self.focus];
+        if app.visible() { app.label } else { "Finder" }
+    }
+
+    /// The menu-bar title under the pointer, if any.
+    fn bar_title_at(&self) -> Option<usize> {
+        if self.py >= MENU_H {
+            return None;
+        }
+        self.bar_titles()
+            .iter()
+            .position(|&(a, b)| self.px >= a && self.px < b)
+    }
+
+    /// Opens menu-bar menu `t` (docs/u4a-design.md).
+    fn open_bar_menu(&mut self, t: usize) {
+        if self.menu.is_some() {
+            self.close_menu();
+        }
+        let mut items = [MenuAction::Line; MENU_ITEMS];
+        let mut labels: [Text; MENU_ITEMS] = core::array::from_fn(|_| Text::new());
+        let mut n = 0;
+        let mut add = |a: MenuAction, label: &str| {
+            if n < MENU_ITEMS {
+                items[n] = a;
+                labels[n].set(label.as_bytes());
+                n += 1;
+            }
+        };
+        let focus = self.focus;
+        let app = self.bar_name();
+        let has_window = self.apps[focus].visible();
+        let dark = self.dark;
+        match t {
+            0 => {
+                add(MenuAction::About, "");
+                add(MenuAction::Line, "");
+                add(
+                    MenuAction::Appearance,
+                    if dark {
+                        "Light Appearance"
+                    } else {
+                        "Dark Appearance"
+                    },
+                );
+            }
+            1 => {
+                let mut l = Line::new();
+                let _ = write!(l, "Quit {}", app);
+                add(
+                    if has_window {
+                        MenuAction::Quit
+                    } else {
+                        MenuAction::Disabled
+                    },
+                    l.as_str(),
+                );
+            }
+            2 => {
+                add(
+                    if has_window {
+                        MenuAction::NewWindow
+                    } else {
+                        MenuAction::Disabled
+                    },
+                    "New Window\tCtrl+N",
+                );
+                add(
+                    if has_window {
+                        MenuAction::Close
+                    } else {
+                        MenuAction::Disabled
+                    },
+                    "",
+                );
+            }
+            3 => {
+                for label in ["Undo", "Cut", "Copy", "Paste"] {
+                    add(MenuAction::Disabled, label);
+                }
+            }
+            4 => add(
+                MenuAction::Appearance,
+                if dark {
+                    "Light Appearance"
+                } else {
+                    "Dark Appearance"
+                },
+            ),
+            5 => {
+                add(
+                    if has_window {
+                        MenuAction::Minimize
+                    } else {
+                        MenuAction::Disabled
+                    },
+                    "",
+                );
+                add(
+                    if has_window {
+                        MenuAction::Zoom
+                    } else {
+                        MenuAction::Disabled
+                    },
+                    "",
+                );
+                add(MenuAction::Line, "");
+                for (i, a) in self.apps.iter().enumerate() {
+                    if a.closed || !a.running {
+                        continue;
+                    }
+                    // The check mark is drawn in its own column.
+                    let mut l = Line::new();
+                    let _ = l.write_str(a.title.as_str());
+                    if a.minimized {
+                        let _ = l.write_str(" (minimized)");
+                    }
+                    add(MenuAction::Focus(i), l.as_str());
+                }
+            }
+            _ => add(MenuAction::Shortcuts, ""),
+        }
+        if n > 0 && items[n - 1] == MenuAction::Line {
+            n -= 1;
+        }
+        // Labels for the actions that name themselves.
+        for k in 0..n {
+            if labels[k].len == 0 {
+                labels[k].set(items[k].label().as_bytes());
+            }
+        }
+        let face = self.face(FaceId::Regular13);
+        let sc = self.screen.s;
+        let w = labels[..n]
+            .iter()
+            .map(|l| {
+                let (a, b) = l.as_str().split_once('\t').unwrap_or((l.as_str(), ""));
+                face.width(a).div_ceil(sc) + face.width(b).div_ceil(sc) + 30
+            })
+            .max()
+            .unwrap_or(0)
+            .max(180)
+            + 30;
+        let (tx, _) = self.bar_titles()[t];
+        let m = Menu {
+            owner: None,
+            labels,
+            prog: self.apps[focus].prog,
+            x: tx.min(self.lw.saturating_sub(w + 4)),
+            y: MENU_H + 2,
+            w,
+            items,
+            n,
+            hover: None,
+            bar: Some(t),
+        };
+        let mut names = Line::new();
+        for k in 0..m.n {
+            if m.items[k] != MenuAction::Line {
+                // The log is ASCII: the check mark is left out.
+                let name = m.label(k).split('\t').next().unwrap_or("");
+                let name = name.trim().trim_start_matches('\u{2713}').trim();
+                let _ = write!(
+                    names,
+                    "{}{}",
+                    if names.as_str().is_empty() { "" } else { ", " },
+                    name
+                );
+            }
+        }
+        let title = match t {
+            0 => "ZooOS",
+            1 => app,
+            k => MENUS[k - 2],
+        };
+        zoo_rt::log!("PeacockHandler: menu bar {}: {}", title, names.as_str());
+        self.menu = Some(m);
+        self.damage_menu();
+        self.damage_menu_bar();
     }
 
     /// Ctrl+N: another window of the focused window's application.
@@ -2683,6 +2999,14 @@ impl Desktop {
             self.right_press();
         }
         self.rheld = right;
+        if let Some(Menu {
+            bar: Some(open), ..
+        }) = self.menu
+            && let Some(t) = self.bar_title_at()
+            && t != open
+        {
+            self.open_bar_menu(t);
+        }
         if let Some(m) = &self.menu {
             let hover = m.item_at(self.px, self.py);
             if hover != m.hover {
@@ -2762,6 +3086,9 @@ impl Desktop {
             Some(DockHit::App(k)) => return self.dock_click(k),
             Some(DockHit::Window(i)) => return self.restore(i),
             None => {}
+        }
+        if let Some(t) = self.bar_title_at() {
+            return self.open_bar_menu(t);
         }
         if self.py < MENU_H {
             let mut clock = Line::new();
@@ -3308,6 +3635,12 @@ impl Desktop {
         self.draw_paw(PAW_AT.0, PAW_AT.1, t.bar_text);
         let app = &self.apps[self.focus];
         let name = if app.visible() { app.label } else { "Finder" };
+        // The open menu's title: a rounded highlight behind it.
+        if let Some(Menu { bar: Some(k), .. }) = self.menu {
+            let (a, b) = self.bar_titles()[k];
+            self.screen
+                .round_rect(a, 3, b - a, MENU_H - 6, 5, t.bar_text, 40, [true; 4]);
+        }
         let mut x = self.screen.text(&bold, 40, base, name, t.bar_text, w / 2) + 22;
         for m in MENUS {
             x = self.screen.text(&regular, x, base, m, t.bar_text, w / 2) + 20;
@@ -4246,6 +4579,17 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                     if c == 'n' {
                         desk.new_window();
                         dirty = true;
+                    } else if c == 'w' || c == 'm' {
+                        // As the Window menu (docs/u4a-design.md).
+                        let i = desk.focus;
+                        if desk.apps[i].visible() {
+                            if c == 'w' {
+                                desk.close_app(i);
+                            } else {
+                                desk.minimize(i);
+                            }
+                            dirty = true;
+                        }
                     } else {
                         desk.send_key(Key::Ctrl(c));
                     }
