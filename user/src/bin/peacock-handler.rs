@@ -243,6 +243,9 @@ const ABOUT: &str = concat!(
 );
 const SHORTCUTS: &str = "Ctrl+N new window, Ctrl+W close, Ctrl+M minimise.";
 
+/// Where the appearance is kept, in the home folder.
+const APPEARANCE_FILE: &str = ".appearance";
+
 /// Where the dock's kept applications are saved, in the home folder.
 const DOCK_FILE: &str = ".dock";
 
@@ -1058,6 +1061,10 @@ const MAG_ICON: usize = 84;
 const MAG_REACH: f32 = 150.0;
 const MAG_MS: u64 = 140;
 
+/// The launch bounce: its length, and how high the first hop goes.
+const BOUNCE_MS: u64 = 640;
+const BOUNCE_HIGH: f32 = 24.0;
+
 /// Bilinear blend of four premultiplied pixels (fx, fy in 0..1); the
 /// result is premultiplied too, so each channel stays at most its alpha.
 fn bilerp(a: u32, b: u32, c: u32, d: u32, fx: f32, fy: f32) -> u32 {
@@ -1787,6 +1794,9 @@ struct Desktop {
     mag_x: usize,
     /// The previous frame's time (for easing the magnification).
     frame_prev: u64,
+    /// Launch bounces (docs/u2h-design.md): per application, its start
+    /// and length (cycles) and the frames drawn so far.
+    bounce: [Option<(u64, u64, u32)>; PROGRAMS],
     dock_hide_at: Option<u64>,
     banner: Option<Banner>,
 }
@@ -1814,6 +1824,31 @@ impl Desktop {
             l.dirty = true;
         }
         zoo_rt::log!("PeacockHandler: appearance {}", t.name);
+    }
+
+    /// The user switched the appearance: show it and keep it in
+    /// `.appearance` in the home folder (docs/u4b-design.md).
+    fn change_appearance(&mut self, dark: bool) {
+        self.set_appearance(dark);
+        let name = self.theme().name.as_bytes();
+        let _ = zoo_rt::file_create(self.home, APPEARANCE_FILE);
+        let saved = zoo_rt::file_truncate(self.home, APPEARANCE_FILE, 0)
+            .and_then(|()| zoo_rt::file_write(self.home, APPEARANCE_FILE, 0, name));
+        match saved {
+            Ok(_) => zoo_rt::log!("PeacockHandler: appearance saved"),
+            Err(e) => zoo_rt::log!("PeacockHandler: cannot save the appearance: {}", e.name()),
+        }
+    }
+
+    /// The appearance kept in `.appearance`, if there is one.
+    fn load_appearance(&mut self) {
+        let mut buf = [0u8; 16];
+        if let Ok(n) = zoo_rt::file_read(self.home, APPEARANCE_FILE, 0, &mut buf)
+            && buf[..n] == *b"dark"
+            && !self.dark
+        {
+            self.set_appearance(true);
+        }
     }
 
     /// Marks rectangle (x, y, w, h) for redrawing.
@@ -2004,6 +2039,21 @@ impl Desktop {
         (out, (left, right))
     }
 
+    /// How high application `k`'s icon is in its launch bounce: two hops,
+    /// the second smaller (docs/u2h-design.md).
+    fn bounce_height(&self, k: usize) -> f32 {
+        let Some((start, dur, _)) = self.bounce[k] else {
+            return 0.0;
+        };
+        let t = (self.frame_now.saturating_sub(start) as f32 / dur.max(1) as f32).min(1.0);
+        let (p, h) = if t < 0.58 {
+            (t / 0.58, BOUNCE_HIGH)
+        } else {
+            ((t - 0.58) / 0.42, BOUNCE_HIGH * 0.4)
+        };
+        h * 4.0 * p * (1.0 - p)
+    }
+
     fn damage_dock(&mut self) {
         let (_, y, _, _) = self.dock_rect();
         // The whole band (its width changes with its entries), with the
@@ -2031,7 +2081,8 @@ impl Desktop {
             .iter()
             .flatten()
             .any(|a| matches!(a.kind, AnimKind::Minimize | AnimKind::Restore));
-        let want = edge || genie || self.menu.is_some() || (self.dock_shown && over);
+        let bouncing = self.bounce.iter().any(Option::is_some);
+        let want = edge || genie || bouncing || self.menu.is_some() || (self.dock_shown && over);
         let ms = self.per_ms;
         if want {
             self.dock_hide_at = None;
@@ -2075,6 +2126,24 @@ impl Desktop {
             self.damage_dock();
         }
         self.frame_prev = now;
+        // Launch bounces: drawn every frame until done.
+        for k in 0..PROGRAMS {
+            let Some((start, dur, frames)) = self.bounce[k] else {
+                continue;
+            };
+            self.damage_dock();
+            if now.saturating_sub(start) >= dur {
+                self.bounce[k] = None;
+                zoo_rt::log!(
+                    "PeacockHandler: animation bounce {}: frames {} time {} ms",
+                    CATALOG[k].0,
+                    frames,
+                    now.saturating_sub(start) / ms.max(1)
+                );
+            } else {
+                self.bounce[k] = Some((start, dur, frames + 1));
+            }
+        }
         if let Some((from, to, start, dur)) = self.dock_slide {
             self.damage_dock();
             let t = (now.saturating_sub(start) as f32 / dur.max(1) as f32).min(1.0);
@@ -2251,6 +2320,9 @@ impl Desktop {
             zoo_rt::log!("PeacockHandler: opened {}", app.label);
             self.damage_window(i);
             self.begin(i, AnimKind::Open);
+            // Its dock icon hops as it opens, as on a Mac.
+            let slow = if self.shift { 10 } else { 1 };
+            self.bounce[k] = Some((self.frame_now, BOUNCE_MS * self.per_ms * slow, 0));
         } else if self.apps[i].minimized {
             return self.restore(i);
         }
@@ -2460,7 +2532,7 @@ impl Desktop {
                 }
                 zoo_rt::log!("PeacockHandler: brought {} forward", self.apps[i].label);
             }
-            MenuAction::Appearance => self.set_appearance(!self.dark),
+            MenuAction::Appearance => self.change_appearance(!self.dark),
             MenuAction::About => self.notify("About ZooOS", ABOUT),
             MenuAction::Shortcuts => self.notify("Keyboard Shortcuts", SHORTCUTS),
             MenuAction::Line | MenuAction::App(_) | MenuAction::Disabled => {}
@@ -3099,7 +3171,7 @@ impl Desktop {
                 .div_ceil(self.screen.s);
             let (sx, sy) = zoo_abi::ui::appearance_switch(self.lw, cw);
             if self.px.abs_diff(sx) <= 9 && self.py.abs_diff(sy) <= 9 {
-                self.set_appearance(!self.dark);
+                self.change_appearance(!self.dark);
             }
             return;
         }
@@ -4037,7 +4109,8 @@ impl Desktop {
             let Some(&(ix, size)) = items.get(slot) else {
                 continue;
             };
-            self.draw_icon(k, ix, bottom - size, size);
+            let hop = self.bounce_height(k);
+            self.draw_icon(k, ix, bottom - size - hop, size);
             if self.program_running(k) {
                 let c = t.bar_text;
                 let cx = (ix + size / 2.0) as usize;
@@ -4465,6 +4538,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         mag: 0.0,
         mag_x: 0,
         frame_prev: 0,
+        bounce: [None; PROGRAMS],
         dock_hide_at: None,
         banner: None,
     };
@@ -4478,6 +4552,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
     }
     desk.load_dock();
+    desk.load_appearance();
     // Notes opens from the dock (docs/d4-design.md).
     desk.apps[NOTES].closed = true;
     desk.apps[NETWORK].closed = true;
@@ -4530,7 +4605,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 }
                 // The appearance (docs/u1-design.md).
                 Some(DecodedKey::RawKey(KeyCode::F8)) => {
-                    desk.set_appearance(!desk.dark);
+                    desk.change_appearance(!desk.dark);
                     dirty = true;
                 }
                 // Test keys for frame timing (docs/d2-design.md §3-4).
