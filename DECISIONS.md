@@ -150,6 +150,19 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2d: window animations (2026-11-01)
+
+Design: docs/u2d-design.md.
+
+- An animation clock from the time-stamp counter, calibrated against the
+  tick at start. Frames come at the U2a pacing rate (about 100 a second)
+  while anything animates.
+- Open, close, minimise and restore animate a window's rectangle and
+  opacity, drawing its layer scaled bilinearly. Closing and minimising
+  windows draw from a snapshot.
+- The frame report now includes the longest frame.
+- Version 0.59.0.
+
 ## UI step 2c: the pointer moves with a dragged window (2026-11-01)
 
 Design: docs/u2c-design.md.

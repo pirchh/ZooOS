@@ -675,6 +675,7 @@ impl Screen {
 /// its shadow, from (x - MARGIN, y - MARGIN), premultiplied by alpha, with
 /// alpha in the top byte. Rebuilt only when the window's look changes;
 /// moving a window only composites it again.
+#[derive(Clone)]
 struct Layer {
     buf: Vec<u32>,
     w: usize,
@@ -717,6 +718,204 @@ fn over(d: u32, c: u32) -> u32 {
     let g = ((d >> 8) & 0xFF) * inv;
     let g = ((g + 1 + (g >> 8)) >> 8) << 8;
     (c & 0xFF_FFFF) + rb + g
+}
+
+// ---- Animations (docs/u2d-design.md) ------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AnimKind {
+    Open,
+    Close,
+    Minimize,
+    Restore,
+}
+
+impl AnimKind {
+    fn name(self) -> &'static str {
+        match self {
+            AnimKind::Open => "open",
+            AnimKind::Close => "close",
+            AnimKind::Minimize => "minimize",
+            AnimKind::Restore => "restore",
+        }
+    }
+
+    /// How long it runs, in milliseconds.
+    fn millis(self) -> u64 {
+        match self {
+            AnimKind::Open => 220,
+            AnimKind::Close => 180,
+            AnimKind::Minimize => 320,
+            AnimKind::Restore => 280,
+        }
+    }
+
+    /// Progress (0..=1) for time `t` (0..=1): things arriving slow down
+    /// at the end, things leaving speed up, the dock trip does both.
+    fn ease(self, t: f32) -> f32 {
+        match self {
+            AnimKind::Open => 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t),
+            AnimKind::Close => t * t * t,
+            AnimKind::Minimize | AnimKind::Restore => {
+                if t < 0.5 {
+                    4.0 * t * t * t
+                } else {
+                    let u = 2.0 - 2.0 * t;
+                    1.0 - u * u * u / 2.0
+                }
+            }
+        }
+    }
+}
+
+/// A logical rectangle with fractional position and size.
+type RectF = (f32, f32, f32, f32);
+
+/// One window's animation: its rectangle and opacity move from `from`/`a0`
+/// to `to`/`a1` along the kind's easing curve.
+struct Anim {
+    kind: AnimKind,
+    /// Start, and length, in time-stamp-counter cycles.
+    start: u64,
+    dur: u64,
+    from: RectF,
+    to: RectF,
+    a0: f32,
+    a1: f32,
+    /// The window's image for a closing or minimising window, taken when
+    /// the animation starts (the window itself is gone by then); opening
+    /// and restoring windows use their live layer.
+    snapshot: Option<Layer>,
+    /// The window's logical size when its layer was built.
+    size: (usize, usize),
+    /// The logical area the last frame drew (damaged by the next).
+    last: (usize, usize, usize, usize),
+    frames: u32,
+}
+
+impl Anim {
+    /// The rectangle and opacity at time `now`, and whether it has ended.
+    fn at(&self, now: u64) -> (RectF, f32, bool) {
+        let t = if self.dur == 0 {
+            1.0
+        } else {
+            (now.saturating_sub(self.start) as f32 / self.dur as f32).min(1.0)
+        };
+        let e = self.kind.ease(t);
+        let l = |a: f32, b: f32| a + (b - a) * e;
+        let (f, g) = (self.from, self.to);
+        (
+            (l(f.0, g.0), l(f.1, g.1), l(f.2, g.2), l(f.3, g.3)),
+            l(self.a0, self.a1),
+            t >= 1.0,
+        )
+    }
+}
+
+fn floor(x: f32) -> f32 {
+    let i = x as i32 as f32;
+    if i > x { i - 1.0 } else { i }
+}
+
+fn ceil(x: f32) -> f32 {
+    let i = x as i32 as f32;
+    if i < x { i + 1.0 } else { i }
+}
+
+/// The logical area (x, y, w, h) a window layer covers when the window
+/// (of logical `size`) is drawn at `rect`.
+fn layer_bounds(rect: RectF, size: (usize, usize)) -> (usize, usize, usize, usize) {
+    let kx = rect.2 / size.0.max(1) as f32;
+    let ky = rect.3 / size.1.max(1) as f32;
+    let m = MARGIN as f32;
+    let x0 = floor(rect.0 - m * kx).max(0.0);
+    let y0 = floor(rect.1 - m * ky).max(0.0);
+    let x1 = ceil(rect.0 + rect.2 + m * kx) + 1.0;
+    let y1 = ceil(rect.1 + rect.3 + m * ky) + 1.0;
+    (
+        x0 as usize,
+        y0 as usize,
+        (x1 - x0).max(0.0) as usize,
+        (y1 - y0).max(0.0) as usize,
+    )
+}
+
+/// `a` to `b` by `f` (0..=255), for premultiplied pixels: red and blue,
+/// and alpha and green, two channels at a time in 16-bit lanes.
+fn lerp_px(a: u32, b: u32, f: u32) -> u32 {
+    let g = 256 - f;
+    let rb = (((a & 0x00FF_00FF) * g + (b & 0x00FF_00FF) * f) >> 8) & 0x00FF_00FF;
+    let ag = ((((a >> 8) & 0x00FF_00FF) * g + ((b >> 8) & 0x00FF_00FF) * f) >> 8) & 0x00FF_00FF;
+    rb | (ag << 8)
+}
+
+/// A premultiplied pixel scaled by `k` (0..=256).
+fn fade_px(p: u32, k: u32) -> u32 {
+    let rb = (((p & 0x00FF_00FF) * k) >> 8) & 0x00FF_00FF;
+    let ag = ((((p >> 8) & 0x00FF_00FF) * k) >> 8) & 0x00FF_00FF;
+    rb | (ag << 8)
+}
+
+/// Layer `l`, built for a window of logical `size`, composited over `back`
+/// (device pixels, `sw` wide, within `clip`) with the window scaled into
+/// logical `rect`, at drawing scale `s`, faded to `alpha` (0..=1).
+/// Sampled bilinearly; outside the layer counts as transparent, so its
+/// edges stay smooth while it shrinks.
+#[allow(clippy::too_many_arguments)]
+fn composite_scaled(
+    back: &mut [u32],
+    sw: usize,
+    clip: (usize, usize, usize, usize),
+    s: usize,
+    l: &Layer,
+    size: (usize, usize),
+    rect: RectF,
+    alpha: f32,
+) {
+    if l.w == 0 || rect.2 < 1.0 || rect.3 < 1.0 || alpha <= 0.0 {
+        return;
+    }
+    let sf = s as f32;
+    // Source to screen, in device pixels: the same ratio as logically.
+    let fx = rect.2 / size.0.max(1) as f32;
+    let fy = rect.3 / size.1.max(1) as f32;
+    let ox = (rect.0 - MARGIN as f32 * fx) * sf;
+    let oy = (rect.1 - MARGIN as f32 * fy) * sf;
+    let (cx0, cy0, cx1, cy1) = clip;
+    let x0 = (ox.max(0.0) as usize).max(cx0);
+    let y0 = (oy.max(0.0) as usize).max(cy0);
+    let x1 = ((ox + l.w as f32 * fx).max(0.0) as usize + 1).min(cx1);
+    let y1 = ((oy + l.h as f32 * fy).max(0.0) as usize + 1).min(cy1);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    let k = (alpha.min(1.0) * 256.0) as u32;
+    let (lw, lh) = (l.w as i64, l.h as i64);
+    let px = |x: i64, y: i64| -> u32 {
+        if x < 0 || y < 0 || x >= lw || y >= lh {
+            0
+        } else {
+            l.buf[y as usize * l.w + x as usize]
+        }
+    };
+    // Source coordinates in 16.16 fixed point, at pixel centres.
+    let step = (65536.0 / fx) as i64;
+    let u0 = (((x0 as f32 + 0.5 - ox) / fx - 0.5) * 65536.0) as i64;
+    for dy in y0..y1 {
+        let v = (((dy as f32 + 0.5 - oy) / fy - 0.5) * 65536.0) as i64;
+        let (vi, vf) = (v >> 16, ((v >> 8) & 0xFF) as u32);
+        let mut u = u0;
+        for d in &mut back[dy * sw + x0..dy * sw + x1] {
+            let (ui, uf) = (u >> 16, ((u >> 8) & 0xFF) as u32);
+            u += step;
+            let top = lerp_px(px(ui, vi), px(ui + 1, vi), uf);
+            let bottom = lerp_px(px(ui, vi + 1), px(ui + 1, vi + 1), uf);
+            let p = lerp_px(top, bottom, vf);
+            if p != 0 {
+                *d = over(*d, if k >= 256 { p } else { fade_px(p, k) });
+            }
+        }
+    }
 }
 
 const WEEKDAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
@@ -765,6 +964,16 @@ fn write_clock(out: &mut Line) {
 }
 
 /// The CPU's time-stamp counter.
+/// Time-stamp-counter cycles per millisecond, measured over three timer
+/// ticks (10 ms each) from a tick boundary.
+fn calibrate_ms() -> u64 {
+    let t0 = zoo_rt::ticks();
+    while zoo_rt::ticks() == t0 {}
+    let (c0, t1) = (cycles(), zoo_rt::ticks());
+    while zoo_rt::ticks() < t1 + 3 {}
+    (cycles().wrapping_sub(c0) / 30).max(1)
+}
+
 fn cycles() -> u64 {
     // SAFETY: `rdtsc` only reads the counter; user mode may run it (the
     // kernel does not set CR4.TSD).
@@ -858,6 +1067,12 @@ struct Desktop {
     frame_count: usize,
     /// The dock icon under the pointer (its name shows above it).
     hover: Option<usize>,
+    /// Each window's running animation (docs/u2d-design.md).
+    anims: [Option<Anim>; APPS],
+    /// Time-stamp-counter cycles per millisecond (calibrated at start).
+    per_ms: u64,
+    /// The time this frame is drawn for (all damaged areas alike).
+    frame_now: u64,
     banner: Option<Banner>,
 }
 
@@ -1075,10 +1290,12 @@ impl Desktop {
             app.closed = false;
             zoo_rt::log!("PeacockHandler: opened {}", app.label);
             self.damage_window(i);
+            self.begin(i, AnimKind::Open);
         } else if self.apps[i].minimized {
             self.apps[i].minimized = false;
             zoo_rt::log!("PeacockHandler: showed {}", self.apps[i].label);
             self.damage_window(i);
+            self.begin(i, AnimKind::Restore);
         }
         self.set_focus(i);
     }
@@ -1100,6 +1317,7 @@ impl Desktop {
     /// The red light: ends the application without restarting it and
     /// hides its window.
     fn close_app(&mut self, i: usize) {
+        self.begin(i, AnimKind::Close);
         self.damage_window(i);
         self.damage_menu_bar();
         self.damage_dock();
@@ -1123,6 +1341,7 @@ impl Desktop {
 
     /// The yellow light: hides the window; the dock shows it again.
     fn minimize(&mut self, i: usize) {
+        self.begin(i, AnimKind::Minimize);
         self.damage_window(i);
         self.damage_menu_bar();
         self.apps[i].minimized = true;
@@ -1278,6 +1497,8 @@ impl Desktop {
         if self.always_full {
             self.full = true;
         }
+        self.frame_now = cycles();
+        self.step_anims();
         let (w, h) = (self.screen.w, self.screen.h);
         let screen = (0, 0, w, h);
         let mut rects = self.damage;
@@ -1341,12 +1562,13 @@ impl Desktop {
         p[..n].sort_unstable();
         sh[..n].sort_unstable();
         zoo_rt::log!(
-            "PeacockHandler: frames {} mode {} median {} cycles {} px (showing {})",
+            "PeacockHandler: frames {} mode {} median {} cycles {} px (showing {}, longest {})",
             self.frame_count,
             if self.always_full { "full" } else { "damage" },
             if n > 0 { c[n / 2] } else { 0 },
             if n > 0 { p[n / 2] } else { 0 },
-            if n > 0 { sh[n / 2] } else { 0 }
+            if n > 0 { sh[n / 2] } else { 0 },
+            if n > 0 { c[n - 1] } else { 0 }
         );
         self.frame_count = 0;
         if let Ok([n, sum, max]) = zoo_rt::input_latency() {
@@ -1373,6 +1595,13 @@ impl Desktop {
         }
         for k in 0..APPS {
             let i = self.order[k];
+            if let Some(a) = &self.anims[i] {
+                let (rect, alpha, _) = a.at(self.frame_now);
+                let l = a.snapshot.as_ref().unwrap_or(&self.layers[i]);
+                let (sw, clip, s) = (self.screen.w, self.screen.clip, self.screen.s);
+                composite_scaled(self.screen.back, sw, clip, s, l, a.size, rect, alpha);
+                continue;
+            }
             if !self.apps[i].visible() {
                 continue;
             }
@@ -1442,6 +1671,99 @@ impl Desktop {
         l.dirty = false;
         l.content_dirty = false;
         l.pending.clear();
+    }
+
+    /// Starts animation `kind` for window `i` (docs/u2d-design.md). A
+    /// closing or minimising window's image is kept for it.
+    fn begin(&mut self, i: usize, kind: AnimKind) {
+        let (x, y, w, h) = self.wins[i];
+        let win: RectF = (x as f32, y as f32, w as f32, h as f32);
+        // Slightly smaller, about the same centre.
+        let shrink = |k: f32| -> RectF {
+            (
+                win.0 + win.2 * (1.0 - k) / 2.0,
+                win.1 + win.3 * (1.0 - k) / 2.0,
+                win.2 * k,
+                win.3 * k,
+            )
+        };
+        // The dock icon, with the window's proportions.
+        let icon: RectF = {
+            let (ix, iy) = zoo_abi::ui::dock_icon(self.lw, self.lh, APPS, i);
+            let d = DOCK_ICON as f32;
+            let ih = d * win.3 / win.2.max(1.0);
+            (ix as f32, iy as f32 + (d - ih) / 2.0, d, ih)
+        };
+        let (from, to, a0, a1) = match kind {
+            AnimKind::Open => (shrink(0.92), win, 0.0, 1.0),
+            AnimKind::Close => (win, shrink(0.92), 1.0, 0.0),
+            AnimKind::Minimize => (win, icon, 1.0, 0.25),
+            AnimKind::Restore => (icon, win, 0.25, 1.0),
+        };
+        let snapshot = match kind {
+            AnimKind::Close | AnimKind::Minimize => {
+                if self.layers[i].dirty {
+                    self.build_layer(i);
+                }
+                Some(self.layers[i].clone())
+            }
+            _ => None,
+        };
+        // An animation it replaces still has an area on screen to clean.
+        let last = self.anims[i]
+            .as_ref()
+            .map_or(layer_bounds(from, (w, h)), |a| a.last);
+        self.anims[i] = Some(Anim {
+            kind,
+            start: cycles(),
+            dur: kind.millis() * self.per_ms,
+            from,
+            to,
+            a0,
+            a1,
+            snapshot,
+            size: (w, h),
+            last,
+            frames: 0,
+        });
+    }
+
+    /// Damages where each animation drew last and where it draws now, and
+    /// ends the finished ones (they are drawn normally from then on, or
+    /// not at all).
+    fn step_anims(&mut self) {
+        let now = self.frame_now;
+        for i in 0..APPS {
+            let Some(a) = self.anims[i].as_mut() else {
+                continue;
+            };
+            let (rect, _, done) = a.at(now);
+            let (last, size, kind, start) = (a.last, a.size, a.kind, a.start);
+            let bounds = layer_bounds(rect, size);
+            a.last = bounds;
+            a.frames += 1;
+            let frames = a.frames;
+            self.damage(last.0, last.1, last.2, last.3);
+            self.damage(bounds.0, bounds.1, bounds.2, bounds.3);
+            if done {
+                self.anims[i] = None;
+                if self.apps[i].visible() {
+                    self.damage_window_area(i);
+                }
+                zoo_rt::log!(
+                    "PeacockHandler: animation {} {}: frames {} time {} ms",
+                    kind.name(),
+                    self.apps[i].label,
+                    frames,
+                    now.saturating_sub(start) / self.per_ms.max(1)
+                );
+            }
+        }
+    }
+
+    /// Whether any animation runs.
+    fn animating(&self) -> bool {
+        self.anims.iter().any(Option::is_some)
     }
 
     /// Window `i`'s content area (x, y, w, h): below the title bar, inside
@@ -2106,6 +2428,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         shows: [0; FRAME_SAMPLES],
         frame_count: 0,
         hover: None,
+        anims: [const { None }; APPS],
+        per_ms: calibrate_ms(),
+        frame_now: 0,
         banner: None,
     };
     desk.set_appearance(false);
@@ -2122,6 +2447,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     for app in desk.apps.iter_mut().filter(|a| !a.closed) {
         if !app.start(home) {
             zoo_rt::log!("PeacockHandler: cannot start {}", app.program);
+        }
+    }
+    // The windows open with an animation (docs/u2d-design.md).
+    for i in 0..APPS {
+        if desk.apps[i].visible() {
+            desk.begin(i, AnimKind::Open);
         }
     }
     desk.render();
@@ -2257,7 +2588,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
 
         // Damage still waiting from a paced frame counts too.
-        let pending = dirty || desk.damaged > 0 || desk.full;
+        let pending = dirty || desk.damaged > 0 || desk.full || desk.animating();
         if pending && zoo_rt::ticks() == desk.last_frame_tick {
             // A frame already went out this tick: during continuous motion
             // at most one frame a tick (100 a second), everything that

@@ -680,6 +680,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-content", check_content_moved), ("2-full", check_full_repaint)],
         },
         Case {
+            name: "animations",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: dock.clone(),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "window animations: close, minimize, restore and open each run for their length over several frames, then the desktop is as without them",
+            interaction: Some(animation_steps()),
+            screen_checks: vec![("1-after", check_after_animations)],
+        },
+        Case {
             name: "frames",
             mode: Mode::Normal,
             custom_image: None,
@@ -2700,6 +2713,76 @@ fn start_desktop() -> Vec<Action> {
         Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
         Action::Settle(QUIET),
     ]
+}
+
+/// An animation's end line: at least `min_frames` frames, and lasting
+/// `ms` give or take (docs/u2d-design.md).
+fn animation_done(what: &str, min_frames: u64, ms: (u64, u64)) -> Action {
+    Action::WaitNumbers(
+        format!("PeacockHandler: animation {what}:"),
+        vec![("frames", min_frames, 10_000), ("time", ms.0, ms.1)],
+    )
+}
+
+fn animation_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        // Crash Test's red light: it closes.
+        p.to(zui::light_centre(win(CRASH_WIN), 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: closed Crash Test".into()),
+        animation_done("close Crash Test", 3, (170, 1500)),
+        // Frame costs from here (F11 reports and restarts them).
+        Action::Keys(vec!["f11"]),
+        Action::WaitContains("PeacockHandler: frames".into()),
+        // Files' yellow light: it goes to the dock.
+        p.to(zui::light_centre(win(FILES_WIN), 1)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: minimized Files".into()),
+        animation_done("minimize Files", 3, (310, 1500)),
+        // Its dock icon: it comes back.
+        p.to(dock_centre(0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: showed Files".into()),
+        animation_done("restore Files", 3, (270, 1500)),
+        // The frames of the minimize and restore animations.
+        Action::Keys(vec!["f11"]),
+        Action::WaitNumbers(
+            "PeacockHandler: frames".into(),
+            vec![("frames", 6, 100_000)],
+        ),
+        // Crash Test's dock icon: it opens again.
+        p.to(dock_centre(1)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: opened Crash Test".into()),
+        animation_done("open Crash Test", 3, (210, 1500)),
+        p.to(inside(FILES_WIN)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-after"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// After the animations: Crash Test (opened last) focused, Files back in
+/// place, nothing left over from the animations (the comparison with a
+/// full repaint is the `redraw` case's job).
+fn check_after_animations(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "Crash Test", true)?;
+    let files = title(img, "Files", false)?;
+    let want = title_pen(win(FILES_WIN), "Files");
+    if files != want {
+        return Err(format!("`Files` title at {files:?}, expected {want:?}"));
+    }
+    Ok(format!(
+        "`Crash Test` focused at {t:?}; `Files` back at {files:?}"
+    ))
 }
 
 fn redraw_steps() -> Interaction {
