@@ -835,6 +835,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-in-the-air", check_bounce)],
         },
         Case {
+            name: "files-manage",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "Files manages files: Rename (typed in place), Move to Trash, the Trash in the sidebar, Put Back",
+            interaction: Some(files_manage_steps()),
+            screen_checks: vec![("1-trash", check_trash)],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -5190,6 +5203,87 @@ fn check_bounce(img: &screen::Image) -> Result<String, String> {
     }
     Ok(format!(
         "Notes' icon in the air: its yellow band on row {row}, above its resting top ({found} pixels)"
+    ))
+}
+
+/// Opens the context menu on Files' content line `line` and chooses item
+/// `k` of `n` (no separators).
+fn files_menu(p: &mut Ptr, line: usize, menu: &str, n: usize, k: usize) -> Vec<Action> {
+    let (x, y) = finder_line(line);
+    let seps = vec![false; n];
+    vec![
+        p.to((x, y)),
+        Action::RightButton(true),
+        Action::RightButton(false),
+        Action::WaitContains(format!("PeacockHandler: menu Files: {menu}")),
+        p.to((
+            x + 130,
+            zui::menu_item_top(y + 2, &seps, k) + zui::MENU_ITEM_H / 2,
+        )),
+        Action::Button(true),
+        Action::Button(false),
+    ]
+}
+
+fn files_manage_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        p.to(files_side(2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: showing Home/Documents".into()),
+    ]);
+    // notes.txt: Rename, the name cleared and typed.
+    steps.extend(files_menu(
+        &mut p,
+        1,
+        "Open in Notes, Quick Look, Rename, Move to Trash",
+        4,
+        2,
+    ));
+    // The keys only once renaming has begun (a test types faster than
+    // the menu's answer reaches Files).
+    steps.push(Action::WaitContains("Files: renaming notes.txt".into()));
+    steps.push(Action::Keys(vec!["backspace"; 9]));
+    steps.push(Action::Keys(typed("shopping.txt")));
+    steps.push(Action::WaitContains(
+        "Files: renamed Documents/notes.txt to Documents/shopping.txt".into(),
+    ));
+    // recipes (first now): Move to Trash.
+    steps.extend(files_menu(
+        &mut p,
+        1,
+        "Open, New Folder, Rename, Move to Trash",
+        4,
+        3,
+    ));
+    steps.extend([
+        Action::WaitContains("Files: moved Documents/recipes to the Trash".into()),
+        p.to(files_side(6)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: showing Home/.Trash".into()),
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-trash"),
+    ]);
+    // Put Back: into Home.
+    steps.extend(files_menu(&mut p, 1, "Put Back", 1, 0));
+    steps.extend([
+        Action::WaitContains("Files: put recipes back in Home".into()),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_trash(img: &screen::Image) -> Result<String, String> {
+    let place = content(img, "Trash")?;
+    let item = selected(img, "recipes", true)?;
+    no_content(img, "Home/.Trash")?;
+    Ok(format!(
+        "the Trash: its location `Trash` at {place:?}, `recipes` in it at {item:?}"
     ))
 }
 

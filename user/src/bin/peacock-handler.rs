@@ -4045,6 +4045,15 @@ impl Desktop {
                 let hill = v <= 12.1 && v >= 6.0 + (u - 6.5).abs() * 1.1 && u >= 2.4;
                 frame || hill || circle(u, v, 11.0, 6.6, 1.5)
             }),
+            b'T' => s.shape(x, y, 16, 16, sym, |u, v| {
+                // A bin: the lid and its handle, the body with two grooves.
+                let lid =
+                    rr(u, v, (2.0, 3.0, 14.0, 4.6), 0.6) || rr(u, v, (6.0, 1.2, 10.0, 3.2), 0.6);
+                let body =
+                    rr(u, v, (3.6, 5.6, 12.4, 15.0), 1.4) && !rr(u, v, (4.9, 5.6, 11.1, 13.7), 0.6);
+                let grooves = (6.9..=7.7).contains(&u) || (8.3..=9.1).contains(&u);
+                lid || body || (grooves && (7.0..=12.5).contains(&v))
+            }),
             b'A' => s.shape(x, y, 16, 16, sym, |u, v| {
                 // Applications: four rounded squares.
                 [(1.5, 1.5), (8.7, 1.5), (1.5, 8.7), (8.7, 8.7)]

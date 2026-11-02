@@ -12,7 +12,9 @@ use core::fmt::Write as _;
 use zoo_abi::ui::{APPLICATIONS, mark};
 use zoo_abi::{DirEntry, MAX_DIR_NAME, MAX_MESSAGE};
 use zoo_rt::app::{Event, Key, MAX_LINES, Window};
-use zoo_rt::{Error, Line, dir_create, dir_list, file_create, file_read, recv};
+use zoo_rt::{Error, Line, dir_create, dir_list, file_create, file_read, recv, rename};
+extern crate alloc;
+use alloc::string::String;
 
 zoo_rt::entry2!(main);
 
@@ -27,14 +29,19 @@ const PREVIEW: usize = 1024;
 /// disk, it lists the applications.
 const APPS_FOLDER: &str = "Applications";
 
+/// The Trash (docs/u3h-design.md): a hidden folder in home, so moving
+/// there is a rename, and nothing is lost until it is emptied.
+const TRASH: &str = ".Trash";
+
 /// The sidebar: (label, icon, place); the first is a heading.
-const PLACES: [(&str, u8, &str); 6] = [
+const PLACES: [(&str, u8, &str); 7] = [
     ("Favourites", 0, ""),
     ("Home", b'H', ""),
     ("Documents", b'O', "Documents"),
     ("Music", b'M', "Music"),
     ("Photos", b'P', "Photos"),
     ("Applications", b'A', APPS_FOLDER),
+    ("Trash", b'T', TRASH),
 ];
 
 struct Entry {
@@ -113,6 +120,8 @@ struct Browser {
     /// The file being previewed (an index into `entries`).
     preview: Option<usize>,
     menu: Option<Target>,
+    /// Entry being renamed, and the name typed so far.
+    renaming: Option<(usize, String)>,
 }
 
 fn main(channel: u64, home: u64) -> u8 {
@@ -125,6 +134,7 @@ fn main(channel: u64, home: u64) -> u8 {
         selected: 0,
         preview: None,
         menu: None,
+        renaming: None,
     };
     b.relist();
     let mut buf = [0u8; MAX_MESSAGE];
@@ -147,6 +157,23 @@ fn main(channel: u64, home: u64) -> u8 {
         if b.preview.is_some() {
             if key == Key::Back {
                 b.preview = None;
+            }
+            continue;
+        }
+        if let Some((k, name)) = b.renaming.as_mut() {
+            match key {
+                Key::Char(c) if !c.is_control() && c != '/' && name.len() < MAX_DIR_NAME => {
+                    name.push(c)
+                }
+                Key::Back => {
+                    name.pop();
+                }
+                Key::Enter => {
+                    let (k, name) = (*k, core::mem::take(name));
+                    b.renaming = None;
+                    b.rename_to(k, &name);
+                }
+                _ => {}
             }
             continue;
         }
@@ -249,7 +276,88 @@ impl Browser {
     }
 
     fn writable(&self) -> bool {
-        self.place.as_str() != APPS_FOLDER
+        self.place.as_str() != APPS_FOLDER && !self.in_trash()
+    }
+
+    fn in_trash(&self) -> bool {
+        self.place.as_str() == TRASH
+    }
+
+    /// Starts renaming entry `k`: its line becomes an editable name.
+    fn start_rename(&mut self, k: usize) {
+        if let Some(Some(e)) = self.entries.get(k) {
+            self.selected = k;
+            zoo_rt::log!("Files: renaming {}", e.name());
+            self.renaming = Some((k, String::from(e.name())));
+        }
+    }
+
+    /// Renames entry `k` to `name` (in the same folder).
+    fn rename_to(&mut self, k: usize, name: &str) {
+        let name = name.trim();
+        let Some(from) = self.path_of(k) else { return };
+        if name.is_empty() || name.starts_with('.') {
+            return;
+        }
+        let mut to = self.place;
+        if !to.enter(name) || to.as_str() == from.as_str() {
+            return;
+        }
+        match rename(self.home, from.as_str(), to.as_str()) {
+            Ok(()) => {
+                zoo_rt::log!("Files: renamed {} to {}", from.as_str(), to.as_str());
+                self.select_named(name);
+            }
+            Err(e) => zoo_rt::log!("Files: cannot rename {}: {}", from.as_str(), e.name()),
+        }
+    }
+
+    /// Moves entry `k` into the Trash (a free name there).
+    fn move_to_trash(&mut self, k: usize) {
+        let Some(from) = self.path_of(k) else { return };
+        let Some(Some(e)) = self.entries.get(k) else {
+            return;
+        };
+        let name = String::from(e.name());
+        let _ = dir_create(self.home, TRASH);
+        let mut to = Line::new();
+        for n in 1..100 {
+            to = Line::new();
+            let _ = core::fmt::Write::write_fmt(&mut to, format_args!("{}/{}", TRASH, name));
+            if n > 1 {
+                let _ = core::fmt::Write::write_fmt(&mut to, format_args!(" {}", n));
+            }
+            if zoo_rt::dir_stat(self.home, to.as_str()).is_err() {
+                break;
+            }
+        }
+        match rename(self.home, from.as_str(), to.as_str()) {
+            Ok(()) => {
+                zoo_rt::log!("Files: moved {} to the Trash", from.as_str());
+                self.relist();
+            }
+            Err(e) => zoo_rt::log!(
+                "Files: cannot move {} to the Trash: {}",
+                from.as_str(),
+                e.name()
+            ),
+        }
+    }
+
+    /// Moves entry `k` of the Trash back to Home.
+    fn put_back(&mut self, k: usize) {
+        let Some(from) = self.path_of(k) else { return };
+        let Some(Some(e)) = self.entries.get(k) else {
+            return;
+        };
+        let name = String::from(e.name());
+        match rename(self.home, from.as_str(), &name) {
+            Ok(()) => {
+                zoo_rt::log!("Files: put {} back in Home", name);
+                self.relist();
+            }
+            Err(err) => zoo_rt::log!("Files: cannot put {} back: {}", name, err.name()),
+        }
     }
 
     fn new_folder(&mut self) {
@@ -326,8 +434,17 @@ impl Browser {
                 self.selected = k;
                 let (target, items): (Target, &[&str]) = match (e.app, e.dir) {
                     (Some(a), _) => (Target::App(a), &["Open", "Add to Dock"]),
-                    (None, true) => (Target::Folder(k), &["Open", "New Folder"]),
-                    (None, false) => (Target::File(k), &["Open in Notes", "Quick Look"]),
+                    (None, true) if self.in_trash() => (Target::Folder(k), &["Put Back"]),
+                    (None, false) if self.in_trash() => (Target::File(k), &["Put Back"]),
+                    (None, true) if e.name() == APPS_FOLDER => (Target::Folder(k), &["Open"]),
+                    (None, true) => (
+                        Target::Folder(k),
+                        &["Open", "New Folder", "Rename", "Move to Trash"],
+                    ),
+                    (None, false) => (
+                        Target::File(k),
+                        &["Open in Notes", "Quick Look", "Rename", "Move to Trash"],
+                    ),
                 };
                 self.menu = Some(target);
                 let _ = win.menu(items);
@@ -345,7 +462,12 @@ impl Browser {
                 (Some(Target::App(a)), _) => {
                     let _ = win.dock_add(APPLICATIONS[a].1);
                 }
+                (Some(Target::Folder(k) | Target::File(k)), 0) if self.in_trash() => {
+                    self.put_back(k)
+                }
                 (Some(Target::Folder(k) | Target::File(k)), 0) => self.open(win, k),
+                (Some(Target::Folder(k) | Target::File(k)), 2) => self.start_rename(k),
+                (Some(Target::Folder(k) | Target::File(k)), 3) => self.move_to_trash(k),
                 (Some(Target::Folder(_)), _) | (Some(Target::Empty), 0) => self.new_folder(),
                 (Some(Target::File(k)), _) => self.preview = Some(k),
                 (Some(Target::Empty), _) => self.new_text_file(win),
@@ -359,7 +481,16 @@ impl Browser {
         self.draw_sidebar(win)?;
         match self.preview {
             Some(k) => draw_preview(win, self.home, &self.place, &self.entries[k]),
-            None => draw_list(win, &self.place, &self.entries[..self.count], self.selected),
+            None => {
+                draw_list(win, &self.place, &self.entries[..self.count], self.selected)?;
+                if let Some((k, name)) = &self.renaming {
+                    let mut l = Line::new();
+                    let _ = write!(l, "{}F{}{}", mark::ICON, name, mark::CARET);
+                    win.line(1 + k, l.as_str())?;
+                    win.show()?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -443,9 +574,13 @@ fn list(home: u64, path: &str, entries: &mut [Option<Entry>]) -> usize {
 
 fn location(place: &Place, file: Option<&str>) -> Line {
     let mut l = Line::new();
-    let _ = l.write_str("Home");
-    if place.len > 0 {
-        let _ = write!(l, "/{}", place.as_str());
+    if let Some(rest) = place.as_str().strip_prefix(TRASH) {
+        let _ = write!(l, "Trash{}", rest);
+    } else {
+        let _ = l.write_str("Home");
+        if place.len > 0 {
+            let _ = write!(l, "/{}", place.as_str());
+        }
     }
     if let Some(f) = file {
         let _ = write!(l, "/{}", f);

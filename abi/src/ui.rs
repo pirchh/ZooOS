@@ -20,8 +20,9 @@ pub mod mark {
     /// function, macro, dim.
     pub const ROLES: &[u8] = b"0kscntfmd";
     /// Icons: folder, document, code document; sidebar symbols home,
-    /// documents, music, photos, applications; `0`-`4` an application.
-    pub const ICONS: &[u8] = b"FDCHOMPA01234";
+    /// documents, music, photos, applications, the Trash; `0`-`4` an
+    /// application.
+    pub const ICONS: &[u8] = b"FDCHOMPAT01234";
 }
 
 /// The applications, in dock order: (label, program). Files lists them in

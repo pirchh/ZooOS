@@ -150,6 +150,14 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 3h: Rename and the Trash (2026-11-02)
+
+Design: docs/u3h-design.md. Version 0.72.0.
+
+- The Trash is a hidden `.Trash` folder in home; moving there is a rename,
+  so nothing Files does deletes data. Emptying the Trash is left for a
+  later step.
+
 ## UI step 2h: the launch bounce (2026-11-02)
 
 Design: docs/u2h-design.md. Version 0.71.0 (with U4b).
