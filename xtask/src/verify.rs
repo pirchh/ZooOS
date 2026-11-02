@@ -14,6 +14,8 @@ use zoo_abi::ui::{self as zui, LIGHT};
 
 /// Wait this long for quiet serial output before a screenshot.
 const QUIET: Duration = Duration::from_millis(1200);
+/// Long enough for the auto-hidden dock to slide in (docs/u2e-design.md).
+const DOCK_SLIDE: Duration = Duration::from_millis(500);
 
 /// Must equal the kernel crate version, which the kernel prints at boot.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -678,6 +680,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "content updates redrawn in place in a window's layer: after Files' selection moves, the screen equals a full repaint from scratch",
             interaction: Some(redraw_content_steps()),
             screen_checks: vec![("1-content", check_content_moved), ("2-full", check_full_repaint)],
+        },
+        Case {
+            name: "dock-autohide",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the dock hides itself: hidden at start, slides in at the bottom edge, slides out after the pointer leaves",
+            interaction: Some(dock_autohide_steps()),
+            screen_checks: vec![
+                ("1-hidden", check_dock_hidden),
+                ("2-shown", check_dock_revealed),
+                ("3-hidden-again", check_dock_hidden),
+            ],
         },
         Case {
             name: "animations",
@@ -1517,6 +1536,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     let mut p = Ptr::start();
                     steps.extend([
                         // The Notes icon, then up into its window.
+                        // The dock hides itself: reveal it at the bottom edge first.
+                        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+                        Action::Settle(DOCK_SLIDE),
                         p.to(dock_centre(3)),
                         Action::Button(true),
                         Action::Button(false),
@@ -1652,7 +1674,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 ("1-dock", check_dock_shown),
                 ("2-closed", check_closed),
                 ("3-dock-closed", check_dock_closed),
-                ("4-reopened", check_reopened),
+                ("4-dock-reopened", check_dock_reopened),
+                ("5-reopened", check_reopened),
             ],
         },
         Case {
@@ -2757,6 +2780,9 @@ fn animation_steps() -> Interaction {
         Action::WaitContains("PeacockHandler: minimized Files".into()),
         animation_done("minimize Files", 3, (310, 1500)),
         // Its dock icon: it comes back.
+        // The dock hides itself: reveal it at the bottom edge first.
+        p.to((dock_centre(0).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
         p.to(dock_centre(0)),
         Action::Button(true),
         Action::Button(false),
@@ -2769,6 +2795,9 @@ fn animation_steps() -> Interaction {
             vec![("frames", 6, 100_000)],
         ),
         // Crash Test's dock icon: it opens again.
+        // The dock hides itself: reveal it at the bottom edge first.
+        p.to((dock_centre(1).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
         p.to(dock_centre(1)),
         Action::Button(true),
         Action::Button(false),
@@ -3634,6 +3663,9 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
     let mut p = Ptr::start();
     steps.extend([
         // The Notes icon in the dock.
+        // The dock hides itself: reveal it at the bottom edge first.
+        p.to((dock_centre(3).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
         p.to(dock_centre(3)),
         Action::Button(true),
         Action::Button(false),
@@ -3900,6 +3932,9 @@ fn dock_steps() -> Interaction {
     let close = zui::light_centre(win(CRASH_WIN), 0);
     steps.extend([
         // Onto the Files icon: its name shows above it.
+        // The dock hides itself: reveal it at the bottom edge first.
+        p.to((dock_centre(0).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
         p.to(dock_centre(0)),
         Action::Settle(QUIET),
         Action::Screenshot("1-dock"),
@@ -3911,16 +3946,22 @@ fn dock_steps() -> Interaction {
         Action::Settle(QUIET),
         Action::Screenshot("2-closed"),
         // The Crash Test icon.
+        // The dock hides itself: reveal it at the bottom edge first.
+        p.to((dock_centre(1).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
         p.to(dock_centre(1)),
         Action::Settle(QUIET),
         Action::Screenshot("3-dock-closed"),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: opened Crash Test".into()),
-        // Away from the dock.
-        p.to(inside(FILES_WIN)),
         Action::Settle(QUIET),
-        Action::Screenshot("4-reopened"),
+        Action::Screenshot("4-dock-reopened"),
+        // Away from the dock: it hides.
+        p.to(inside(FILES_WIN)),
+        Action::WaitContains("PeacockHandler: dock hidden".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("5-reopened"),
         Action::Keys(vec!["esc"]),
         Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
     ]);
@@ -3967,12 +4008,66 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     let body = content(img, "This window is a crash test.")?;
     no_title(img, "Files", true)?;
     no_tooltip(img, "Crash Test")?;
+    dock_hidden(img)?;
+    Ok(format!(
+        "Crash Test reopened and focused: title {t:?}, text {body:?}; the dock hidden again"
+    ))
+}
+
+/// Just after reopening, the dock still up: a running dot under Crash Test.
+fn check_dock_reopened(img: &screen::Image) -> Result<String, String> {
     if !dock_dot(img, 1) {
         return Err("no running dot under Crash Test".into());
     }
-    Ok(format!(
-        "Crash Test reopened and focused: title {t:?}, text {body:?}, running dot back"
-    ))
+    Ok("the dock still up: a running dot under Crash Test again".into())
+}
+
+/// The dock is hidden: wallpaper where its middle would be.
+fn dock_hidden(img: &screen::Image) -> Result<(), String> {
+    let (x, y, w, h) = zui::dock_rect(SCREEN.0, SCREEN.1, 4);
+    let (cx, cy) = (x + w / 2, y + h / 2);
+    let p = img.pixel(cx, cy);
+    if p != Some(wallpaper(cy)) {
+        return Err(format!(
+            "the dock should be hidden: {p:?} at {:?}, wallpaper is {:?}",
+            (cx, cy),
+            wallpaper(cy)
+        ));
+    }
+    Ok(())
+}
+
+fn check_dock_hidden(img: &screen::Image) -> Result<String, String> {
+    dock_hidden(img)?;
+    Ok("the dock hidden: wallpaper where it would be".into())
+}
+
+fn check_dock_revealed(img: &screen::Image) -> Result<String, String> {
+    if !dock_dot(img, 0) || !dock_dot(img, 1) || !dock_dot(img, 2) || dock_dot(img, 3) {
+        return Err("revealed dock: running dots should mark the first three apps".into());
+    }
+    Ok("the dock revealed at the bottom edge: running dots under the first three apps".into())
+}
+
+fn dock_autohide_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        Action::Screenshot("1-hidden"),
+        // The bottom edge: the dock slides in.
+        p.to((SCREEN.0 / 2 - 200, SCREEN.1 - 1)),
+        Action::WaitContains("PeacockHandler: dock shown".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-shown"),
+        // Away: it slides out again.
+        p.to(inside(FILES_WIN)),
+        Action::WaitContains("PeacockHandler: dock hidden".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("3-hidden-again"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
 }
 
 fn check_pointer(img: &screen::Image) -> Result<String, String> {

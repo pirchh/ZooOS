@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2e: the dock hides itself (2026-11-01)
+
+Design: docs/u2e-design.md.
+
+- At the owner's choice, the dock is auto-hidden. It slides in at the
+  bottom edge and out 400 ms after the pointer leaves, and it shows during
+  a genie.
+- Verify cases reveal the dock at the bottom edge before clicking an icon,
+  as a person would.
+- Version 0.61.0.
+
 ## UI step 2d follow-up: the genie (2026-11-01, 0.60.0)
 
 - At the owner's request ("doesn't look as much like mac"), minimise and

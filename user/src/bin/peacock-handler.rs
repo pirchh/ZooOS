@@ -26,8 +26,8 @@ use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1};
 use zoo_abi::font::{Atlas, Face, FaceId, blend};
 use zoo_abi::ui::{
-    BASELINE, DARK, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H, Palette as Theme, RADIUS,
-    RESIZE_CORNER, TEXT_X, TITLE_H,
+    BASELINE, DARK, DOCK_BOTTOM, DOCK_H, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H,
+    Palette as Theme, RADIUS, RESIZE_CORNER, TEXT_X, TITLE_H,
 };
 use zoo_abi::{CLOCK_REALTIME, FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
@@ -148,6 +148,15 @@ fn pointer_image(scale: usize) -> Vec<u32> {
     }
     img
 }
+/// The dock's offset when hidden: below the screen's bottom edge, with
+/// its outline (docs/u2e-design.md).
+const DOCK_HIDDEN: f32 = (DOCK_H + DOCK_BOTTOM + 4) as f32;
+/// The dock slides in this fast, out this fast, and hides this long after
+/// the pointer leaves it (milliseconds).
+const DOCK_SHOW_MS: u64 = 250;
+const DOCK_HIDE_MS: u64 = 300;
+const DOCK_HIDE_DELAY_MS: u64 = 400;
+
 /// Applications, in dock order; Notes is the last.
 const APPS: usize = 4;
 const NOTES: usize = 3;
@@ -1213,6 +1222,14 @@ struct Desktop {
     frame_now: u64,
     /// Shift is held: new animations run ten times slower.
     shift: bool,
+    /// The dock hides itself (docs/u2e-design.md): how far below its
+    /// place it is now (0 shown, `DOCK_HIDDEN` gone), whether it is meant
+    /// to be shown, its slide (from, to, start, length), and when it hides
+    /// after the pointer left it.
+    dock_off: f32,
+    dock_shown: bool,
+    dock_slide: Option<(f32, f32, u64, u64)>,
+    dock_hide_at: Option<u64>,
     banner: Option<Banner>,
 }
 
@@ -1327,9 +1344,67 @@ impl Desktop {
     }
 
     fn damage_dock(&mut self) {
-        let (x, y, w, h) = self.dock_rect();
-        // With the label above an icon.
-        self.damage(x, y.saturating_sub(40), w, h + 40);
+        let (x, y, w, _) = self.dock_rect();
+        // With the label above an icon, down to the bottom edge (it slides).
+        let top = y.saturating_sub(40);
+        self.damage(x.saturating_sub(4), top, w + 8, self.lh - top);
+    }
+
+    /// The dock's current offset below its place, in whole logical pixels.
+    fn dock_shift(&self) -> usize {
+        (self.dock_off + 0.5) as usize
+    }
+
+    /// Shows or hides the dock (docs/u2e-design.md): shown while the
+    /// pointer is at the bottom edge or over the dock, or a window genies
+    /// to or from it; hidden a moment after the pointer leaves.
+    fn update_dock(&mut self, now: u64) {
+        let (dx, dy, dw, _) = self.dock_rect();
+        let edge = self.py + 2 >= self.lh;
+        let over = self.px + 10 >= dx && self.px < dx + dw + 10 && self.py + 50 >= dy;
+        let genie = self
+            .anims
+            .iter()
+            .flatten()
+            .any(|a| matches!(a.kind, AnimKind::Minimize | AnimKind::Restore));
+        let want = edge || genie || (self.dock_shown && over);
+        let ms = self.per_ms;
+        if want {
+            self.dock_hide_at = None;
+            if !self.dock_shown {
+                self.dock_shown = true;
+                self.dock_slide = Some((self.dock_off, 0.0, now, DOCK_SHOW_MS * ms));
+            }
+        } else if self.dock_shown {
+            match self.dock_hide_at {
+                None => self.dock_hide_at = Some(now + DOCK_HIDE_DELAY_MS * ms),
+                Some(t) if now >= t => {
+                    self.dock_hide_at = None;
+                    self.dock_shown = false;
+                    self.dock_slide = Some((self.dock_off, DOCK_HIDDEN, now, DOCK_HIDE_MS * ms));
+                    self.hover = None;
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some((from, to, start, dur)) = self.dock_slide {
+            self.damage_dock();
+            let t = (now.saturating_sub(start) as f32 / dur.max(1) as f32).min(1.0);
+            // In: slowing at the end; out: speeding away.
+            let e = if to < from {
+                1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
+            } else {
+                t * t
+            };
+            self.dock_off = from + (to - from) * e;
+            if t >= 1.0 {
+                self.dock_slide = None;
+                zoo_rt::log!(
+                    "PeacockHandler: dock {}",
+                    if self.dock_shown { "shown" } else { "hidden" }
+                );
+            }
+        }
     }
 
     fn banner_rect(&self) -> (usize, usize, usize, usize) {
@@ -1409,6 +1484,9 @@ impl Desktop {
 
     /// The dock icon under the pointer.
     fn dock_slot(&self) -> Option<usize> {
+        if !self.dock_shown || self.dock_off > 1.0 {
+            return None;
+        }
         let (w, h) = (self.lw, self.lh);
         (0..APPS).find(|&k| {
             let (ix, iy) = zoo_abi::ui::dock_icon(w, h, APPS, k);
@@ -1639,6 +1717,7 @@ impl Desktop {
         }
         self.frame_now = cycles();
         self.step_anims();
+        self.update_dock(self.frame_now);
         let (w, h) = (self.screen.w, self.screen.h);
         let screen = (0, 0, w, h);
         let mut rects = self.damage;
@@ -1912,6 +1991,8 @@ impl Desktop {
     /// Whether any animation runs.
     fn animating(&self) -> bool {
         self.anims.iter().any(Option::is_some)
+            || self.dock_slide.is_some()
+            || self.dock_hide_at.is_some()
     }
 
     /// Window `i`'s content area (x, y, w, h): below the title bar, inside
@@ -2244,7 +2325,12 @@ impl Desktop {
     fn draw_dock(&mut self) {
         let t = self.theme();
         let (sw, sh) = (self.lw, self.lh);
+        let off = self.dock_shift();
+        if off as f32 >= DOCK_HIDDEN {
+            return;
+        }
         let (dx, dy, dw, dh) = self.dock_rect();
+        let dy = dy + off;
         // With the name shown above an icon.
         if !self.screen.visible(dx, dy.saturating_sub(40), dw, dh + 40) {
             return;
@@ -2254,6 +2340,7 @@ impl Desktop {
         self.screen.round_outline(dx, dy, dw, dh, 18, t.outline);
         for k in 0..APPS {
             let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+            let iy = iy + off;
             self.draw_icon(k, ix, iy);
             if self.apps[k].running {
                 let c = t.bar_text;
@@ -2580,6 +2667,10 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         per_ms: calibrate_ms(),
         frame_now: 0,
         shift: false,
+        dock_off: DOCK_HIDDEN,
+        dock_shown: false,
+        dock_slide: None,
+        dock_hide_at: None,
         banner: None,
     };
     desk.set_appearance(false);
