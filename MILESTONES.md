@@ -136,7 +136,8 @@ and verification:
 | A2 | The Assistant learns: request → command memory on disk, learned from answers and corrections; alike requests answered at once without the model (docs/a2-design.md) | done 2026-11-02 |
 | A1 | Faster model engine: vector dot products, no unread scores, precomputed rotary frequencies; 2.0–2.7× in the guest, answers unchanged (docs/a1-design.md) | done 2026-11-02 |
 | U3g | Dock and app icons with depth: lit gradient tiles, rims, soft shadows, shadowed symbols, cached per scale (docs/u3g-design.md) | done 2026-11-02 |
-| U4 | Menus that open, Command-key shortcuts, animated window moves, saved appearance | proposed |
+| U4 | Animated window moves, saved appearance (menus and shortcuts: U4a) | proposed |
+| U4a | Menus that open from the menu bar (ZooOS, app, File, Edit, View, Window, Help), sliding between them, Ctrl+W / Ctrl+M (docs/u4a-design.md) | done 2026-11-02 |
 | GPU1 | virtio-gpu (via `virtio-vga`) for the desktop: flushed updates and a hardware cursor the host draws; used by `run` (docs/gpu1-design.md) | done 2026-11-01 |
 | U5 | Pointer feel on real hardware: acceleration curve tuned on a real mouse; cursor planes on real GPUs (per GPU family) | proposed |
 

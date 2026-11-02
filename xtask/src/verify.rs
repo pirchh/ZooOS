@@ -774,6 +774,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "menu-bar",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "menus that open from the menu bar: Window lists the windows and brings one forward; sliding across the bar switches menus; View switches the appearance; Ctrl+M minimises",
+            interaction: Some(menu_bar_steps()),
+            screen_checks: vec![
+                ("1-window-menu", check_window_menu),
+                ("2-after", check_menu_after),
+            ],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -4937,6 +4953,145 @@ fn check_settled(img: &screen::Image) -> Result<String, String> {
         return Err("settled dock: dots not back at their places".into());
     }
     Ok("pointer below the icons: they are back at their size and places".into())
+}
+
+/// Menu-bar title `k`'s span (0 the mark, 1 the application name, then
+/// File, Edit, View, Window, Help), as PeacockHandler lays them out with
+/// application `app` focused (docs/u4a-design.md).
+fn bar_title(app: &str, k: usize) -> (usize, usize) {
+    let mut x = 40;
+    let end = x + screen::ui_width(FaceId::SemiBold13, app);
+    if k == 1 {
+        return (x - 8, end + 8);
+    }
+    x = end + 22;
+    for (j, m) in ["File", "Edit", "View", "Window", "Help"]
+        .iter()
+        .enumerate()
+    {
+        let end = x + screen::ui_width(FaceId::Regular13, m);
+        if j + 2 == k {
+            return (x - 8, end + 8);
+        }
+        x = end + 20;
+    }
+    (5, 31)
+}
+
+fn bar_centre(app: &str, k: usize) -> (usize, usize) {
+    let (a, b) = bar_title(app, k);
+    ((a + b) / 2, zui::MENU_H / 2)
+}
+
+/// A point on item `k` of the menu hanging from bar title `t` (separators
+/// as `seps` says).
+fn bar_item(app: &str, t: usize, seps: &[bool], k: usize) -> (usize, usize) {
+    let (a, _) = bar_title(app, t);
+    // Right of the labels, so the pointer does not cover them.
+    (
+        a + 170,
+        zui::menu_item_top(zui::MENU_H + 2, seps, k) + zui::MENU_ITEM_H / 2,
+    )
+}
+
+fn menu_bar_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    // Minimize, Zoom, a line, then the windows.
+    let window_seps = [false, false, true, false, false, false];
+    steps.extend([
+        p.to(bar_centre("Files", 5)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains(
+            "PeacockHandler: menu bar Window: Minimize, Zoom, Files, Crash Test, Assistant".into(),
+        ),
+        p.to(bar_item("Files", 5, &window_seps, 5)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-window-menu"),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: brought Assistant forward".into()),
+        // File's menu, then along the bar to View: the menus switch.
+        p.to(bar_centre("Assistant", 2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: menu bar File: New Window, Close Window".into()),
+        p.to(bar_centre("Assistant", 4)),
+        Action::WaitContains("PeacockHandler: menu bar View: Dark Appearance".into()),
+        p.to(bar_item("Assistant", 4, &[false], 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: appearance dark".into()),
+        // Ctrl+M: the Assistant to the dock.
+        Action::Key("ctrl", true),
+        Action::Keys(vec!["m"]),
+        Action::Key("ctrl", false),
+        Action::WaitContains("PeacockHandler: animation minimize Assistant".into()),
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-after"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_window_menu(img: &screen::Image) -> Result<String, String> {
+    let min = ui(
+        img,
+        FaceId::Regular13,
+        "Minimize",
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )?;
+    let keys = ui(
+        img,
+        FaceId::Regular13,
+        "Ctrl+M",
+        LIGHT.text_dim,
+        LIGHT.tooltip,
+    )?;
+    let crash = ui(
+        img,
+        FaceId::Regular13,
+        "Crash Test",
+        LIGHT.tooltip_text,
+        LIGHT.tooltip,
+    )?;
+    // The pointer is on the Assistant item: highlighted.
+    let on = ui(
+        img,
+        FaceId::Regular13,
+        "Assistant",
+        LIGHT.select_text,
+        LIGHT.select,
+    )?;
+    if keys.1 != min.1 || keys.0 <= min.0 {
+        return Err(format!(
+            "`Ctrl+M` at {keys:?} should be right of `Minimize` at {min:?}, on its line"
+        ));
+    }
+    Ok(format!(
+        "the Window menu: `Minimize` {min:?} with `Ctrl+M` {keys:?}, `Crash Test` {crash:?}, `Assistant` highlighted {on:?}"
+    ))
+}
+
+fn check_menu_after(img: &screen::Image) -> Result<String, String> {
+    let d = &zui::DARK;
+    // Dark appearance, the Assistant gone to the dock, Files focused again.
+    let files = ui(img, FaceId::Medium13, "Files", d.title_text, d.title)?;
+    no_ui(img, FaceId::Medium13, "Assistant", d.title_text, d.title)?;
+    no_ui(
+        img,
+        FaceId::Medium13,
+        "Assistant",
+        d.title_text_blurred,
+        d.title_blurred,
+    )?;
+    Ok(format!(
+        "dark appearance; the Assistant minimised; `Files` focused at {files:?}"
+    ))
 }
 
 /// Whether one of `dots` is under x (within 6 px).
