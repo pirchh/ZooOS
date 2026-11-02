@@ -409,15 +409,18 @@ pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, S
 /// initrd that also holds the model and `test/elephant.txt` (the prompt and
 /// the token ids the host engine produced for it). Kept separate so the
 /// other cases do not carry 430 MB each.
+/// Image `mode` with the assistant's model added to its initial filesystem
+/// (docs/m5c2-design.md; for the everyday image, docs/a3-design.md).
 pub fn build_model_image(
     root: &Path,
     tools: &Tools,
+    mode: Mode,
     model: &[u8],
     prompt: &str,
     expected: &[u32],
 ) -> Result<PathBuf, String> {
-    let normal = build(root, tools, Mode::Normal)?;
-    let _ = normal;
+    let plain = build(root, tools, mode)?;
+    let _ = plain;
     let base = initrd(root, tools)?;
     let mut archive =
         std::fs::read(&base).map_err(|e| format!("cannot read {}: {e}", base.display()))?;
@@ -448,7 +451,7 @@ pub fn build_model_image(
         .map(|e| e.map_err(|e| format!("model initrd self-check failed: {e:?}")))
         .collect::<Result<Vec<_>, _>>()?
         .len();
-    let out_dir = root.join("build").join("normal-model");
+    let out_dir = root.join("build").join(format!("{}-model", mode.name()));
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let initrd_path = out_dir.join("initrd-model.tar");
@@ -456,11 +459,11 @@ pub fn build_model_image(
         .map_err(|e| format!("cannot write {}: {e}", initrd_path.display()))?;
     let elf = root
         .join("target")
-        .join(format!("kernel-{}", Mode::Normal.name()))
+        .join(format!("kernel-{}", mode.name()))
         .join(KERNEL_TARGET)
         .join("release")
         .join(KERNEL_PACKAGE);
-    let img = out_dir.join("zoo-os-normal-model-uefi.img");
+    let img = out_dir.join(format!("zoo-os-{}-model-uefi.img", mode.name()));
     bootloader::UefiBoot::new(&elf)
         .set_ramdisk(&initrd_path)
         .create_disk_image(&img)

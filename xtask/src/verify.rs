@@ -254,6 +254,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         ]);
         e
     };
+    // A3: the everyday system with the model built in; the Assistant asks
+    // its memory (the broker) and then the model (docs/a3-design.md).
+    let mut everyday_model = expect(Mode::FastBoot, &fast_head[..fast_head.len() - 2]);
+    everyday_model.then(&[
+        "ZOO_OS PROC start pid=10 name=otter-handler",
+        "ZOO_OS PROC start pid=11 name=elephant-handler",
+        "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=6",
+    ]);
+    everyday_model.then_any_order(&[
+        "ZOO_OS PROC exit pid=7 name=files code=0",
+        "ZOO_OS PROC exit pid=8 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=9 name=assistant code=0",
+        "ZOO_OS PROC exit pid=10 name=otter-handler code=0",
+        "ZOO_OS PROC exit pid=11 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
+    ]);
     let mut fast_boot = fast_boot_desktop_exits(Mode::FastBoot);
     fast_boot.then(&[
         "ZOO_OS SHELL line=run tern-test fast",
@@ -313,13 +330,25 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 r.text,
                 crate::infer::ids(&r.output_ids)
             );
-            Some(image::build_model_image(
-                root,
-                tools,
-                &data,
-                crate::infer::GUEST_PROMPT,
-                &r.output_ids,
-            )?)
+            Some((
+                image::build_model_image(
+                    root,
+                    tools,
+                    image::Mode::Normal,
+                    &data,
+                    crate::infer::GUEST_PROMPT,
+                    &r.output_ids,
+                )?,
+                // The everyday image as `run` boots it (docs/a3-design.md).
+                image::build_model_image(
+                    root,
+                    tools,
+                    image::Mode::FastBoot,
+                    &data,
+                    crate::infer::GUEST_PROMPT,
+                    &r.output_ids,
+                )?,
+            ))
         }
         Err(e) if s.skip_model => {
             println!(
@@ -2088,7 +2117,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "assistant-model",
             mode: Mode::Normal,
-            custom_image: model_image.clone(),
+            custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: assistant_model_expectation(&normal),
@@ -2104,7 +2133,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "assistant-live",
             mode: Mode::Normal,
-            custom_image: model_image.clone(),
+            custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: assistant_model_expectation(&normal),
@@ -2115,9 +2144,37 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-live", check_live)],
         },
         Case {
+            name: "everyday-model",
+            mode: Mode::FastBoot,
+            custom_image: model_image.as_ref().map(|m| m.1.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: everyday_model,
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "the everyday image (as `run` boots it) with the model built in: straight to the desktop, and the Assistant answers a request in words",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::Settle(QUIET),
+                    // Files -> Crash Test -> Assistant.
+                    Action::Keys(vec!["tab", "tab"]),
+                    Action::Settle(QUIET),
+                    Action::Keys(typed("Find my pancake recipe")),
+                    Action::WaitFor(
+                        "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+                    ),
+                    Action::Settle(QUIET),
+                    Action::Keys(vec!["esc"]),
+                    Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "inference",
             mode: Mode::Normal,
-            custom_image: model_image.clone(),
+            custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: inference,
@@ -2196,7 +2253,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if s.only.as_ref().is_some_and(|o| o != c.name) {
             continue;
         }
-        let model_case = matches!(c.name, "inference" | "assistant-model" | "assistant-live");
+        let model_case = matches!(
+            c.name,
+            "inference" | "assistant-model" | "assistant-live" | "everyday-model"
+        );
         if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
@@ -2229,8 +2289,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // The live model, and Wine creating its 167 MB prefix in the home
         // folder (over 8 minutes under TCG, 67-77 s with WHPX; the second
         // boot needs the first's disk), run with an accelerator only.
-        if matches!(c.name, "assistant-live" | "wine-home-1" | "wine-home-2")
-            && qemu::accel() == "tcg"
+        if matches!(
+            c.name,
+            "assistant-live" | "everyday-model" | "wine-home-1" | "wine-home-2"
+        ) && qemu::accel() == "tcg"
         {
             let line = format!(
                 "SKIP  {:<22} not run: needs a hardware accelerator (--accel whpx or kvm)\n",

@@ -84,7 +84,22 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             // step, on a device they choose (docs/usb-boot.md).
             opts.reject_all()?;
             let tools = config::Tools::resolve_build_only();
-            let img = image::build(&root, &tools, image::Mode::FastBoot)?;
+            // The model too, when it is there (docs/a3-design.md).
+            let img = match infer::load_model(&root) {
+                Ok(data) if !opts.no_model => {
+                    let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
+                    println!("[usb-image] with the Assistant's model (--no-model to leave it out)");
+                    image::build_model_image(
+                        &root,
+                        &tools,
+                        image::Mode::FastBoot,
+                        &data,
+                        infer::GUEST_PROMPT,
+                        &r.output_ids,
+                    )?
+                }
+                _ => image::build(&root, &tools, image::Mode::FastBoot)?,
+            };
             let dir = root.join("build").join("usb");
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -142,6 +157,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 let img = image::build_model_image(
                     &root,
                     &tools,
+                    image::Mode::Normal,
                     &data,
                     infer::GUEST_PROMPT,
                     &r.output_ids,
@@ -153,6 +169,31 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     &img,
                     opts.timeout,
                 );
+            }
+            // The everyday system has the Assistant's model built in when it
+            // is in tools/models/ (docs/a3-design.md); `--no-model` leaves
+            // it out.
+            if mode == image::Mode::FastBoot && !opts.no_model {
+                match infer::load_model(&root) {
+                    Ok(data) => {
+                        let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
+                        let img = image::build_model_image(
+                            &root,
+                            &tools,
+                            mode,
+                            &data,
+                            infer::GUEST_PROMPT,
+                            &r.output_ids,
+                        )?;
+                        println!(
+                            "[run] the Assistant's model is built in (--no-model to leave it out)"
+                        );
+                        return qemu::run_interactive(&root, &tools, mode, &img, opts.timeout);
+                    }
+                    Err(e) => println!(
+                        "[run] no model ({e}); the Assistant will answer typed commands only"
+                    ),
+                }
             }
             let img = image::build(&root, &tools, mode)?;
             qemu::run_interactive(&root, &tools, mode, &img, opts.timeout)
@@ -207,7 +248,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let tools = config::Tools::resolve_build_only();
             let data = infer::load_model(&root)?;
             let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
-            image::build_model_image(&root, &tools, &data, infer::GUEST_PROMPT, &r.output_ids)?;
+            image::build_model_image(
+                &root,
+                &tools,
+                image::Mode::Normal,
+                &data,
+                infer::GUEST_PROMPT,
+                &r.output_ids,
+            )?;
             println!("expected output ids: {}", infer::ids(&r.output_ids));
             Ok(ExitCode::SUCCESS)
         }
@@ -257,6 +305,8 @@ struct Options {
     accel: Option<String>,
     skip_model: bool,
     model: bool,
+    /// `run` and `usb-image`: leave the Assistant's model out.
+    no_model: bool,
     case: Option<String>,
     system_file: Option<String>,
 }
@@ -276,6 +326,7 @@ impl Options {
                 "--panic" => o.panic = true,
                 "--skip-model" => o.skip_model = true,
                 "--model" => o.model = true,
+                "--no-model" => o.no_model = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
