@@ -708,6 +708,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-menu", check_dock_menu), ("2-removed", check_notes_removed)],
         },
         Case {
+            name: "dock-minis",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "minimised windows sit after a divider in the dock, one thumbnail each; a thumbnail's click restores that window",
+            interaction: Some(dock_minis_steps()),
+            screen_checks: vec![("1-minis", check_dock_minis), ("2-back", check_files_back)],
+        },
+        Case {
             name: "logo",
             mode: Mode::Normal,
             custom_image: None,
@@ -2828,11 +2841,10 @@ fn animation_steps() -> Interaction {
         Action::Button(false),
         Action::WaitContains("PeacockHandler: minimized Files".into()),
         animation_done("minimize Files", 3, (310, 1500)),
-        // Its dock icon: it comes back.
-        // The dock hides itself: reveal it at the bottom edge first.
-        p.to((dock_centre(0).0, SCREEN.1 - 1)),
+        // Its thumbnail, after the dock's divider: it comes back.
+        p.to((mini_centre(1, 0).0, SCREEN.1 - 1)),
         Action::Settle(DOCK_SLIDE),
-        p.to(dock_centre(0)),
+        p.to(mini_centre(1, 0)),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: showed Files".into()),
@@ -4112,6 +4124,85 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     dock_hidden(img)?;
     Ok(format!(
         "Crash Test reopened and focused: title {t:?}, text {body:?}; the dock hidden again"
+    ))
+}
+
+/// The centre of minimised window `j`'s thumbnail, with `minis` of them,
+/// in a dock of all four applications.
+fn mini_centre(minis: usize, j: usize) -> (usize, usize) {
+    let (x, y) = zui::dock_mini(SCREEN.0, SCREEN.1, 4, minis, j);
+    (x + zui::DOCK_ICON / 2, y + zui::DOCK_ICON / 2)
+}
+
+fn dock_minis_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        p.to(zui::light_centre(win(FILES_WIN), 1)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: animation minimize Files".into()),
+        p.to(zui::light_centre(win(ASSISTANT_WIN), 1)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: animation minimize Assistant".into()),
+        // The dock up (the pointer at the bottom edge; it may still be up
+        // from the genie).
+        p.to((SCREEN.0 / 2 - 300, SCREEN.1 - 1)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-minis"),
+        // Files' thumbnail (the first): Files comes back, the Assistant
+        // stays in the dock.
+        p.to(mini_centre(2, 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: showed Files".into()),
+        Action::WaitContains("PeacockHandler: animation restore Files".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-back"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// The divider line after the four applications, then two thumbnails
+/// with their applications' badges: Files' blue first, the Assistant's
+/// violet second.
+fn check_dock_minis(img: &screen::Image) -> Result<String, String> {
+    let rgb = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8];
+    let (_, y, _, h) = zui::dock_rect_with(SCREEN.0, SCREEN.1, 4, 2);
+    let lx = zui::dock_divider_x(SCREEN.0, SCREEN.1, 4, 2);
+    if img.pixel(lx, y + h / 2) != Some(rgb(LIGHT.separator)) {
+        return Err(format!(
+            "no divider at x {lx}: {:?}",
+            img.pixel(lx, y + h / 2)
+        ));
+    }
+    for (j, (c, name)) in [(0x3B8EEA, "Files"), (0x7A5AF8, "Assistant")]
+        .into_iter()
+        .enumerate()
+    {
+        let (mx, my) = zui::dock_mini(SCREEN.0, SCREEN.1, 4, 2, j);
+        let badge = (mx + zui::DOCK_ICON - 7, my + zui::DOCK_ICON - 7);
+        if img.pixel(badge.0, badge.1) != Some(rgb(c)) {
+            return Err(format!(
+                "thumbnail {j} should carry {name}'s badge at {badge:?}: {:?}",
+                img.pixel(badge.0, badge.1)
+            ));
+        }
+    }
+    Ok(format!(
+        "the divider at x {lx}, then thumbnails of Files and the Assistant with their badges"
+    ))
+}
+
+fn check_files_back(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "Files", true)?;
+    no_title(img, "Assistant", false)?;
+    no_title(img, "Assistant", true)?;
+    Ok(format!(
+        "Files back and focused at {t:?}; the Assistant still in the dock"
     ))
 }
 
