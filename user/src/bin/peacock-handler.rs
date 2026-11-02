@@ -64,6 +64,81 @@ const MAX_DAMAGE: usize = 12;
 const POINTER_W: usize = 18;
 const POINTER_H: usize = 24;
 const POINTER_HOT: usize = 2;
+/// The ZooOS mark (the owner's choice "A, the soft paw", docs/u2f-design.md),
+/// in a 100-unit design box: a rounded main pad (cubic curves) and four
+/// oval toe beans, the outer ones tilted out.
+const PAW_PAD: [[(f32, f32); 4]; 6] = [
+    [(30.0, 70.0), (30.0, 55.0), (40.0, 48.0), (50.0, 48.0)],
+    [(50.0, 48.0), (60.0, 48.0), (70.0, 55.0), (70.0, 70.0)],
+    [(70.0, 70.0), (70.0, 80.0), (62.0, 86.0), (56.0, 84.0)],
+    [(56.0, 84.0), (53.0, 83.0), (52.0, 82.0), (50.0, 82.0)],
+    [(50.0, 82.0), (48.0, 82.0), (47.0, 83.0), (44.0, 84.0)],
+    [(44.0, 84.0), (38.0, 86.0), (30.0, 80.0), (30.0, 70.0)],
+];
+/// Toes: centre, radii, and the tilt as (cos, sin) of its angle (-25°,
+/// -8°, 8°, 25°; positive turns clockwise on screen).
+/// A point or pair in design units.
+type Pt = (f32, f32);
+const PAW_TOES: [(Pt, Pt, Pt); 4] = [
+    ((23.0, 47.0), (7.0, 9.5), (0.906_308, -0.422_618)),
+    ((38.0, 30.0), (7.5, 10.5), (0.990_268, -0.139_173)),
+    ((62.0, 30.0), (7.5, 10.5), (0.990_268, 0.139_173)),
+    ((77.0, 47.0), (7.0, 9.5), (0.906_308, 0.422_618)),
+];
+/// The part of the design box the mark is drawn from (x, y, side).
+const PAW_VIEW: (f32, f32, f32) = (14.0, 18.0, 72.0);
+/// Its size in the menu bar, and where, in logical pixels.
+const PAW_SIZE: usize = 18;
+const PAW_AT: (usize, usize) = (9, 4);
+
+/// The paw's coverage mask, `side` x `side` device pixels, 4 x 4 samples
+/// a pixel (docs/u2f-design.md).
+fn paw_mask(side: usize) -> Vec<u8> {
+    // The main pad as a polygon: each curve in 12 steps.
+    let mut pad: Vec<(f32, f32)> = Vec::new();
+    for c in PAW_PAD {
+        for k in 0..12 {
+            let t = k as f32 / 12.0;
+            let u = 1.0 - t;
+            let b = [u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t];
+            let x = b[0] * c[0].0 + b[1] * c[1].0 + b[2] * c[2].0 + b[3] * c[3].0;
+            let y = b[0] * c[0].1 + b[1] * c[1].1 + b[2] * c[2].1 + b[3] * c[3].1;
+            pad.push((x, y));
+        }
+    }
+    let inside = |x: f32, y: f32| -> bool {
+        let mut odd = false;
+        for k in 0..pad.len() {
+            let (ax, ay) = pad[k];
+            let (bx, by) = pad[(k + 1) % pad.len()];
+            if (ay > y) != (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay) {
+                odd = !odd;
+            }
+        }
+        odd || PAW_TOES.iter().any(|&((cx, cy), (rx, ry), (c, s))| {
+            let (dx, dy) = (x - cx, y - cy);
+            let (u, v) = (c * dx + s * dy, -s * dx + c * dy);
+            (u / rx) * (u / rx) + (v / ry) * (v / ry) <= 1.0
+        })
+    };
+    let (vx, vy, vs) = PAW_VIEW;
+    let mut mask = alloc::vec![0u8; side * side];
+    for r in 0..side {
+        for c in 0..side {
+            let mut n = 0u32;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let x = vx + (c as f32 + (sx as f32 + 0.5) / 4.0) / side as f32 * vs;
+                    let y = vy + (r as f32 + (sy as f32 + 0.5) / 4.0) / side as f32 * vs;
+                    n += u32::from(inside(x, y));
+                }
+            }
+            mask[r * side + c] = (n * 255 / 16) as u8;
+        }
+    }
+    mask
+}
+
 /// The arrow's outline in pointer units, tip at (0, 0): the left edge
 /// straight down, a notch, the tail slanting down and right, the wing back
 /// up to the tip (the shape of the macOS arrow).
@@ -1225,6 +1300,8 @@ struct Desktop {
     frame_now: u64,
     /// Shift is held: new animations run ten times slower.
     shift: bool,
+    /// The ZooOS mark's coverage, `PAW_SIZE` logical pixels square.
+    paw: Vec<u8>,
     /// The dock hides itself (docs/u2e-design.md): how far below its
     /// place it is now (0 shown, `DOCK_HIDDEN` gone), whether it is meant
     /// to be shown, its slide (from, to, start, length), and when it hides
@@ -2164,7 +2241,7 @@ impl Desktop {
         self.screen.fill(0, 0, w, MENU_H, zoo_abi::ui::bar_color(t));
         let (bold, regular) = (self.face(FaceId::SemiBold13), self.face(FaceId::Regular13));
         let base = 18;
-        self.draw_paw(18, 13, t.bar_text);
+        self.draw_paw(PAW_AT.0, PAW_AT.1, t.bar_text);
         let app = &self.apps[self.focus];
         let name = if app.visible() { app.label } else { "Finder" };
         let mut x = self.screen.text(&bold, 40, base, name, t.bar_text, w / 2) + 22;
@@ -2194,13 +2271,18 @@ impl Desktop {
         }
     }
 
-    /// A small paw print: the ZooOS mark.
-    fn draw_paw(&mut self, cx: usize, cy: usize, c: u32) {
-        let s = &mut self.screen;
-        s.disc(cx - 4, cy - 1, 9, c, c);
-        for (dx, dy) in [(-7isize, -5isize), (-3, -9), (2, -9), (6, -5)] {
-            let (x, y) = ((cx as isize + dx - 2) as usize, (cy as isize + dy) as usize);
-            s.disc(x, y, 5, c, c);
+    /// The ZooOS mark (the soft paw) with its box's top-left at logical
+    /// (x, y), from the mask made at start-up.
+    fn draw_paw(&mut self, x: usize, y: usize, c: u32) {
+        let s = self.screen.s;
+        let side = PAW_SIZE * s;
+        for r in 0..side {
+            for k in 0..side {
+                let a = self.paw[r * side + k];
+                if a != 0 {
+                    self.screen.blend_dev(x * s + k, y * s + r, c, a);
+                }
+            }
         }
     }
 
@@ -2672,6 +2754,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         per_ms: calibrate_ms(),
         frame_now: 0,
         shift: false,
+        paw: paw_mask(PAW_SIZE * sc),
         dock_off: DOCK_HIDDEN,
         dock_shown: false,
         dock_slide: None,

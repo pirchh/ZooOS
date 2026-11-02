@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2f: the ZooOS mark (2026-11-01)
+
+Design: docs/u2f-design.md.
+
+- The owner chose logo A, the soft paw, from four directions shown as
+  images. It is drawn from a coverage mask computed at start-up (vector
+  shape, 16 samples a pixel), at 1x and 2x.
+- The assistant work (speed, the model in the everyday image, learning)
+  comes after the UI polish pass, as the owner confirmed.
+- Version 0.62.0.
+
 ## UI step 2e: the dock hides itself (2026-11-01)
 
 Design: docs/u2e-design.md.

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U2e section
-(version 0.61.1) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2f section
+(version 0.62.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,22 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2f results: the ZooOS mark (version 0.62.0)
+
+Design: docs/u2f-design.md.
+
+**New case `logo`** (`--accel whpx`): `OK`. ``the soft paw: main pad filled
+at (18, 16), gap between the upper toes at (18, 7)``. `gpu-hidpi` checks
+the same points at 2x, (36, 32) and (36, 14): `OK`.
+
+**Negative control:** the old disc mark → ``FAIL logo: ... toe gap (18, 7)
+is Some([53, 55, 57]) (want [223, 233, 241])``.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 73 cases `OK`.
+`assistant-live` passes with `--accel whpx`, at `ZOO_OS BOOT
+version=0.62.0`. clippy on `zoo-user` and `xtask`, and `cargo fmt
+--check`: clean.
 
 ## UI step 2e results: the dock hides itself (version 0.61.0)
 

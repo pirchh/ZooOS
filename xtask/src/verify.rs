@@ -682,6 +682,29 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-content", check_content_moved), ("2-full", check_full_repaint)],
         },
         Case {
+            name: "logo",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "the ZooOS mark in the menu bar is the soft paw: a filled main pad, a gap between the two upper toes",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    steps.extend([
+                        Action::Screenshot("1-logo"),
+                        Action::Keys(vec!["esc"]),
+                        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+                    ]);
+                    steps
+                },
+            }),
+            screen_checks: vec![("1-logo", check_logo)],
+        },
+        Case {
             name: "dock-autohide",
             mode: Mode::Normal,
             custom_image: None,
@@ -3159,8 +3182,9 @@ fn check_hidpi(img: &screen::Image) -> Result<String, String> {
         ));
     }
     no_title(img, "Crash Test", false)?;
+    let logo = logo_at(img, 2)?;
     Ok(format!(
-        "2x: title `Files` at {t:?}, `Home` at {home:?}, menu bar `Files` at {bar:?}; Crash Test closed"
+        "2x: title `Files` at {t:?}, `Home` at {home:?}, menu bar `Files` at {bar:?}; Crash Test closed; {logo}"
     ))
 }
 
@@ -4012,6 +4036,30 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     Ok(format!(
         "Crash Test reopened and focused: title {t:?}, text {body:?}; the dock hidden again"
     ))
+}
+
+/// The soft paw at `scale`: the middle of its main pad is in the menu-bar
+/// text colour, the gap between its two upper toes in the bar colour (the
+/// old mark had a toe there).
+fn logo_at(img: &screen::Image, scale: usize) -> Result<String, String> {
+    let rgb = |c: u32| [(c >> 16) as u8, (c >> 8) as u8, c as u8];
+    let (ink, bar) = (rgb(LIGHT.bar_text), rgb(zui::bar_color(&LIGHT)));
+    // Design units (50, 66) and (50, 30) in the 18-pixel box at (9, 4).
+    let pad = (18 * scale, 16 * scale);
+    let gap = (18 * scale, 7 * scale);
+    let (p, g) = (img.pixel(pad.0, pad.1), img.pixel(gap.0, gap.1));
+    if p != Some(ink) || g != Some(bar) {
+        return Err(format!(
+            "not the soft paw: main pad {pad:?} is {p:?} (want {ink:?}), toe gap {gap:?} is {g:?} (want {bar:?})"
+        ));
+    }
+    Ok(format!(
+        "the soft paw: main pad filled at {pad:?}, gap between the upper toes at {gap:?}"
+    ))
+}
+
+fn check_logo(img: &screen::Image) -> Result<String, String> {
+    logo_at(img, 1)
 }
 
 /// Just after reopening, the dock still up: a running dot under Crash Test.
