@@ -47,7 +47,7 @@ const LIGHTS: [(u32, u32); 3] = [
     (0x28C840, 0x1AAB29),
 ];
 /// Dock icon colours, indexed like the applications.
-const ICON: [u32; APPS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
+const ICON: [u32; PROGRAMS] = [0x3B8EEA, 0x8E8E93, 0x7A5AF8, 0xF5C342];
 
 /// Largest supported screen, in logical pixels (a 2560x1440 monitor is
 /// used whole, at 1x; docs/u2b-design.md).
@@ -236,8 +236,20 @@ const DOCK_HIDE_DELAY_MS: u64 = 400;
 const DOCK_EDGE: usize = 6;
 
 /// Applications, in dock order; Notes is the last.
-const APPS: usize = 4;
+const PROGRAMS: usize = 4;
 const NOTES: usize = 3;
+/// Window slots (docs/u3-design.md): the first `PROGRAMS` are each
+/// application's first window, in catalog order; the rest hold further
+/// windows (Ctrl+N).
+const WINDOWS: usize = 8;
+/// The applications, in dock order: (label, program, gets the home
+/// directory).
+const CATALOG: [(&str, &str, bool); PROGRAMS] = [
+    ("Files", "files", true),
+    ("Crash Test", "crash-test", false),
+    ("Assistant", "assistant", true),
+    ("Notes", "notes", true),
+];
 /// Two presses within this many ticks (and 4 px) are a double-click.
 const DOUBLE_CLICK: u64 = 50;
 const MIN_W: usize = 240;
@@ -288,6 +300,8 @@ struct App {
     program: &'static str,
     /// Gets a copy of the home directory handle as its second handle.
     wants_home: bool,
+    /// Its application, an index into `CATALOG` (and the dock).
+    prog: usize,
     chan: u64,
     process: u64,
     running: bool,
@@ -309,11 +323,13 @@ struct App {
 }
 
 impl App {
-    const fn new(label: &'static str, program: &'static str, wants_home: bool) -> App {
+    const fn new(prog: usize) -> App {
+        let (label, program, wants_home) = CATALOG[prog];
         App {
             label,
             program,
             wants_home,
+            prog,
             chan: 0,
             process: 0,
             running: false,
@@ -1229,7 +1245,7 @@ struct Banner {
 struct Desktop {
     screen: Screen,
     /// Each window's cached image (docs/u2-compositor-design.md).
-    layers: [Layer; APPS],
+    layers: [Layer; WINDOWS],
     /// Scratch buffer for building layers (the render over white).
     scratch: Vec<u32>,
     /// The pointer is a hardware cursor: moving it needs no redraw
@@ -1255,14 +1271,14 @@ struct Desktop {
     /// Wallpaper colour per row, for the current appearance.
     wall: Vec<u32>,
     ramp: Vec<u8>,
-    apps: [App; APPS],
+    apps: [App; WINDOWS],
     /// Home directory handle; copies go to the Assistant.
     home: u64,
     focus: usize,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
-    wins: [(usize, usize, usize, usize); APPS],
+    wins: [(usize, usize, usize, usize); WINDOWS],
     /// Drawing order, back to front; the focused window is last.
-    order: [usize; APPS],
+    order: [usize; WINDOWS],
     /// Pointer position.
     px: usize,
     py: usize,
@@ -1276,7 +1292,7 @@ struct Desktop {
     /// The last press on a title bar: (tick, x, y), for double-clicks.
     last_click: (u64, usize, usize),
     /// A zoomed window's rectangle before zooming (docs/d9-design.md).
-    unzoomed: [Option<(usize, usize, usize, usize)>; APPS],
+    unzoomed: [Option<(usize, usize, usize, usize)>; WINDOWS],
     /// Areas to redraw (x0, y0, x1, y1); `full` overrides them.
     damage: [(usize, usize, usize, usize); MAX_DAMAGE],
     damaged: usize,
@@ -1293,13 +1309,15 @@ struct Desktop {
     /// The dock icon under the pointer (its name shows above it).
     hover: Option<usize>,
     /// Each window's running animation (docs/u2d-design.md).
-    anims: [Option<Anim>; APPS],
+    anims: [Option<Anim>; WINDOWS],
     /// Time-stamp-counter cycles per millisecond (calibrated at start).
     per_ms: u64,
     /// The time this frame is drawn for (all damaged areas alike).
     frame_now: u64,
     /// Shift is held: new animations run ten times slower.
     shift: bool,
+    /// Ctrl is held (Ctrl+N).
+    ctrl: bool,
     /// The ZooOS mark's coverage, `PAW_SIZE` logical pixels square.
     paw: Vec<u8>,
     /// The dock hides itself (docs/u2e-design.md): how far below its
@@ -1420,7 +1438,7 @@ impl Desktop {
     }
 
     fn dock_rect(&self) -> (usize, usize, usize, usize) {
-        zoo_abi::ui::dock_rect(self.lw, self.lh, APPS)
+        zoo_abi::ui::dock_rect(self.lw, self.lh, PROGRAMS)
     }
 
     fn damage_dock(&mut self) {
@@ -1508,11 +1526,11 @@ impl Desktop {
             self.damage_window(self.focus);
             self.damage_window(i);
             self.damage_menu_bar();
-        } else if self.order[APPS - 1] != i {
+        } else if self.order[WINDOWS - 1] != i {
             self.damage_window(i);
         }
         self.focus = i;
-        let mut order = [0; APPS];
+        let mut order = [0; WINDOWS];
         let mut k = 0;
         for &j in self.order.iter().filter(|&&j| j != i) {
             order[k] = j;
@@ -1570,16 +1588,37 @@ impl Desktop {
             return None;
         }
         let (w, h) = (self.lw, self.lh);
-        (0..APPS).find(|&k| {
-            let (ix, iy) = zoo_abi::ui::dock_icon(w, h, APPS, k);
+        (0..PROGRAMS).find(|&k| {
+            let (ix, iy) = zoo_abi::ui::dock_icon(w, h, PROGRAMS, k);
             self.px >= ix && self.px < ix + DOCK_ICON && self.py >= iy && self.py < iy + DOCK_ICON
         })
     }
 
-    /// A dock icon: opens a closed application, shows a minimised one, or
-    /// raises a running one.
-    fn dock_click(&mut self, i: usize) {
+    /// Whether any window of application `k` is open.
+    fn program_running(&self, k: usize) -> bool {
+        self.apps
+            .iter()
+            .any(|a| a.prog == k && !a.closed && a.running)
+    }
+
+    /// A dock icon (application `k`, docs/u3-design.md): raises its
+    /// frontmost window, or shows a minimised one, or opens its first
+    /// window when none is open.
+    fn dock_click(&mut self, k: usize) {
         self.damage_dock();
+        let open = |a: &App| a.prog == k && !a.closed;
+        if let Some(i) = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| open(&self.apps[i]) && self.apps[i].visible())
+        {
+            return self.set_focus(i);
+        }
+        let i = (0..WINDOWS)
+            .find(|&i| open(&self.apps[i]) && self.apps[i].minimized)
+            .unwrap_or(k);
         if self.apps[i].closed {
             let app = &mut self.apps[i];
             app.restarts = 0;
@@ -1597,6 +1636,39 @@ impl Desktop {
             self.damage_window(i);
             self.begin(i, AnimKind::Restore);
         }
+        self.set_focus(i);
+    }
+
+    /// Ctrl+N: another window of the focused window's application, in a
+    /// free slot, cascaded from the focused window (docs/u3-design.md).
+    fn new_window(&mut self) {
+        let prog = self.apps[self.focus].prog;
+        let Some(i) = (PROGRAMS..WINDOWS).find(|&i| self.apps[i].closed && self.anims[i].is_none())
+        else {
+            zoo_rt::log!("PeacockHandler: no room for another window");
+            return;
+        };
+        self.apps[i] = App::new(prog);
+        let (fx, fy, fw, fh) = self.wins[self.focus];
+        let x = (fx + 32).min(self.lw.saturating_sub(fw + 8));
+        let y = (fy + 32)
+            .min(self.lh.saturating_sub(fh + 8))
+            .max(MENU_H + 8);
+        self.wins[i] = (x, y, fw, fh);
+        self.unzoomed[i] = None;
+        if !self.apps[i].start(self.home) {
+            zoo_rt::log!("PeacockHandler: cannot start {}", self.apps[i].program);
+            self.apps[i].closed = true;
+            return;
+        }
+        zoo_rt::log!(
+            "PeacockHandler: new window {} (window {})",
+            self.apps[i].label,
+            i
+        );
+        self.damage_window(i);
+        self.damage_dock();
+        self.begin(i, AnimKind::Open);
         self.set_focus(i);
     }
 
@@ -1817,7 +1889,7 @@ impl Desktop {
         }
         let start = cycles();
         let resizing = self.resize.map(|r| r.0);
-        for i in 0..APPS {
+        for i in 0..WINDOWS {
             if !self.apps[i].visible() || resizing == Some(i) {
                 continue;
             }
@@ -1894,7 +1966,7 @@ impl Desktop {
             let c = self.wall[y];
             self.screen.back[y * self.screen.w + cx0..y * self.screen.w + cx1].fill(c);
         }
-        for k in 0..APPS {
+        for k in 0..WINDOWS {
             let i = self.order[k];
             if let Some(a) = &self.anims[i] {
                 let l = a.snapshot.as_ref().unwrap_or(&self.layers[i]);
@@ -1999,7 +2071,7 @@ impl Desktop {
         };
         // The dock icon (the genie's funnel ends in it).
         let icon: RectF = {
-            let (ix, iy) = zoo_abi::ui::dock_icon(self.lw, self.lh, APPS, i);
+            let (ix, iy) = zoo_abi::ui::dock_icon(self.lw, self.lh, PROGRAMS, self.apps[i].prog);
             let d = DOCK_ICON as f32;
             (ix as f32 + d * 0.1, iy as f32 + d * 0.1, d * 0.8, d * 0.8)
         };
@@ -2042,7 +2114,7 @@ impl Desktop {
     /// not at all).
     fn step_anims(&mut self) {
         let now = self.frame_now;
-        for i in 0..APPS {
+        for i in 0..WINDOWS {
             let Some(a) = self.anims[i].as_mut() else {
                 continue;
             };
@@ -2425,11 +2497,11 @@ impl Desktop {
         self.screen
             .round_rect(dx, dy, dw, dh, 18, t.dock_tint, t.dock_alpha, [true; 4]);
         self.screen.round_outline(dx, dy, dw, dh, 18, t.outline);
-        for k in 0..APPS {
-            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+        for k in 0..PROGRAMS {
+            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, PROGRAMS, k);
             let iy = iy + off;
             self.draw_icon(k, ix, iy);
-            if self.apps[k].running {
+            if self.program_running(k) {
                 let c = t.bar_text;
                 self.screen
                     .disc(ix + DOCK_ICON / 2 - 2, iy + DOCK_ICON + 2, 4, c, c);
@@ -2437,9 +2509,9 @@ impl Desktop {
         }
         if let Some(k) = self.hover {
             let small = self.face(FaceId::Regular13);
-            let label = self.apps[k].label;
+            let label = CATALOG[k].0;
             let lw = small.width(label).div_ceil(self.screen.s) + 20;
-            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, APPS, k);
+            let (ix, iy) = zoo_abi::ui::dock_icon(sw, sh, PROGRAMS, k);
             let lx = (ix + DOCK_ICON / 2).saturating_sub(lw / 2);
             let ly = iy - 10 - 26;
             self.screen
@@ -2698,7 +2770,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         alloc::boxed::Box::leak(alloc::vec![0u32; dw * dh].into_boxed_slice())
     };
     let mut desk = Desktop {
-        layers: [const { Layer::new() }; APPS],
+        layers: [const { Layer::new() }; WINDOWS],
         scratch: Vec::new(),
         hw_cursor: false,
         cursor_moved: false,
@@ -2724,23 +2796,26 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         dark: false,
         wall: alloc::vec![0; dh],
         ramp: shadow_ramp(sc),
-        apps: [
-            App::new("Files", "files", true),
-            App::new("Crash Test", "crash-test", false),
-            App::new("Assistant", "assistant", true),
-            App::new("Notes", "notes", true),
-        ],
+        // Each application's first window, then free slots (closed).
+        apps: core::array::from_fn(|i| {
+            let mut a = App::new(i % PROGRAMS);
+            a.closed = i >= PROGRAMS;
+            a
+        }),
         home,
         focus: 0,
-        wins: zoo_abi::ui::initial_windows(w, h),
-        order: [3, 1, 2, 0],
+        wins: {
+            let first = zoo_abi::ui::initial_windows(w, h);
+            core::array::from_fn(|i| first[i % PROGRAMS])
+        },
+        order: [4, 5, 6, 7, 3, 1, 2, 0],
         px: w / 2,
         py: h / 2,
         held: false,
         drag: None,
         resize: None,
         last_click: (0, 0, 0),
-        unzoomed: [None; APPS],
+        unzoomed: [None; WINDOWS],
         damage: [(0, 0, 0, 0); MAX_DAMAGE],
         damaged: 0,
         full: true,
@@ -2750,10 +2825,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         shows: [0; FRAME_SAMPLES],
         frame_count: 0,
         hover: None,
-        anims: [const { None }; APPS],
+        anims: [const { None }; WINDOWS],
         per_ms: calibrate_ms(),
         frame_now: 0,
         shift: false,
+        ctrl: false,
         paw: paw_mask(PAW_SIZE * sc),
         dock_off: DOCK_HIDDEN,
         dock_shown: false,
@@ -2778,7 +2854,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }
     }
     // The windows open with an animation (docs/u2d-design.md).
-    for i in 0..APPS {
+    for i in 0..WINDOWS {
         if desk.apps[i].visible() {
             desk.begin(i, AnimKind::Open);
         }
@@ -2802,6 +2878,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             // (docs/u2d-design.md).
             if matches!(event.code, KeyCode::LShift | KeyCode::RShift) {
                 desk.shift = event.state == KeyState::Down;
+            }
+            if matches!(event.code, KeyCode::LControl | KeyCode::RControl) {
+                desk.ctrl = event.state == KeyState::Down;
             }
             match decoder.process_keyevent(event) {
                 Some(DecodedKey::Unicode('\t')) => {
@@ -2851,6 +2930,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                 Some(DecodedKey::RawKey(KeyCode::ArrowRight)) => desk.send_key(Key::Right),
                 Some(DecodedKey::Unicode('\n')) => desk.send_key(Key::Enter),
                 Some(DecodedKey::Unicode('\u{8}')) => desk.send_key(Key::Back),
+                // Ctrl+N: a new window of the focused application.
+                Some(DecodedKey::Unicode('n' | 'N')) if desk.ctrl => {
+                    desk.new_window();
+                    dirty = true;
+                }
                 Some(DecodedKey::Unicode(c)) if (' '..='~').contains(&c) => {
                     desk.send_key(Key::Char(c))
                 }

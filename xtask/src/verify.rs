@@ -682,6 +682,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-content", check_content_moved), ("2-full", check_full_repaint)],
         },
         Case {
+            name: "windows",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: windows_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "several windows per application: Ctrl+N opens a second Files window, cascaded and focused; closing it leaves the first",
+            interaction: Some(windows_steps()),
+            screen_checks: vec![("1-two", check_two_files), ("2-one", check_one_files)],
+        },
+        Case {
             name: "logo",
             mode: Mode::Normal,
             custom_image: None,
@@ -3918,6 +3931,31 @@ fn check_restored(img: &screen::Image) -> Result<String, String> {
 
 /// Crash Test is closed (it ends normally and is not restarted), then
 /// started again from the dock.
+/// The `windows` case: a second Files process (pid 31) starts and ends.
+fn windows_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=31 name=files",
+        "ZOO_OS PROC exit pid=31 name=files code=0",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
 fn dock_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
@@ -4036,6 +4074,64 @@ fn check_reopened(img: &screen::Image) -> Result<String, String> {
     Ok(format!(
         "Crash Test reopened and focused: title {t:?}, text {body:?}; the dock hidden again"
     ))
+}
+
+/// The second Files window: the first one's rectangle moved by (32, 32).
+fn second_files() -> (usize, usize, usize, usize) {
+    let (x, y, w, h) = win(FILES_WIN);
+    (x + 32, y + 32, w, h)
+}
+
+fn windows_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        // Files has the focus at start: Ctrl+N opens another Files window.
+        Action::Key("ctrl", true),
+        Action::Keys(vec!["n"]),
+        Action::Key("ctrl", false),
+        Action::WaitContains("PeacockHandler: new window Files (window 4)".into()),
+        Action::WaitContains("PeacockHandler: animation open Files".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-two"),
+        // Its red light closes it; the first Files window stays.
+        p.to(zui::light_centre(second_files(), 0)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("PeacockHandler: closed Files".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-one"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+fn check_two_files(img: &screen::Image) -> Result<String, String> {
+    let new = title(img, "Files", true)?;
+    let want_new = title_pen(second_files(), "Files");
+    let old = title(img, "Files", false)?;
+    let want_old = title_pen(win(FILES_WIN), "Files");
+    if new != want_new || old != want_old {
+        return Err(format!(
+            "two Files windows expected: focused at {want_new:?} (found {new:?}), the first at {want_old:?} (found {old:?})"
+        ));
+    }
+    Ok(format!(
+        "two Files windows: the new one focused at {new:?}, the first at {old:?}"
+    ))
+}
+
+fn check_one_files(img: &screen::Image) -> Result<String, String> {
+    let t = title(img, "Files", true)?;
+    let want = title_pen(win(FILES_WIN), "Files");
+    if t != want {
+        return Err(format!(
+            "the first Files window should be focused at {want:?}, found {t:?}"
+        ));
+    }
+    no_title(img, "Files", false)?;
+    Ok(format!("one Files window again, focused at {t:?}"))
 }
 
 /// The soft paw at `scale`: the middle of its main pad is in the menu-bar
