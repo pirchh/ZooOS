@@ -146,6 +146,13 @@ pub mod sys {
     pub const CHANNEL_PEER: u64 = 74;
 }
 
+/// Handle-message tag: the resident supervisor's channel for one desktop
+/// session (docs/s0-design.md, B5). The supervisor sends it to the kernel
+/// with the session's home folder; the kernel passes it to the session on
+/// its control channel; the supervisor sends a fresh home folder on it
+/// after the filesystem service restarts.
+pub const TAG_SESSION_LINE: u64 = 6;
+
 /// Largest Ethernet frame `NET_SEND` takes and `NET_RECV` returns.
 pub const NET_MAX_FRAME: usize = 1514;
 

@@ -1,10 +1,51 @@
 # M5c-1 design: a writable filesystem, directory capabilities and the action broker
 
 Status: implemented and verified 2026-10-30 (results in docs/verification.md;
-§6 lists where the implementation differs from the first draft). Part of M5c
+§6 lists where the implementation differs from the first draft). **§0 is
+the current state; §1 to §6 describe the filesystem as it was then.** Part of M5c
 (the assistant); this step is everything the assistant's tools need
 **except** the model, so it can be verified deterministically under software
 emulation. M5c-2 adds the conversation UI and the model loop.
+
+## 0. The filesystem as it is now (updated 2026-11-02)
+
+Sections 1 to 6 describe M5c-1 as built on 2026-10-30. Much of the
+filesystem has changed since; this section is the current state, and the
+older text is kept as the record of that step (B15 in docs/bella-audit.md).
+
+| Then (M5c-1) | Now | Changed by |
+| --- | --- | --- |
+| A tree in kernel memory, calls 19-25 | A user-space service, BadgerHandler (`user/src/bin/badger-handler.rs`). Calls 19-25 return `NOSYS`; a folder handle is a channel to BadgerHandler, with requests in `zoo_rt::fsproto` | S4b, ABI 13 (docs/s4-design.md) |
+| Lost at shutdown | `/home/user` is kept on the data disk in ZooFS 2, with crash-safe A/B superblocks | S5, L10c (docs/s5-design.md, docs/linux10c-design.md) |
+| No file writes | Create, write, truncate, remove and rename files; `WRITE` right | POSIX step 4 (docs/posix4-design.md) |
+| Names of `[A-Za-z0-9 ._-]`, at most 64 bytes; at most 4,096 nodes | 1 to 255 bytes of UTF-8 without `/` or NUL, not `.` or `..`; at most 65,536 nodes | L10c, L10d |
+| No symbolic links | Symbolic links, which BadgerHandler stores and the kernel follows for Linux programs | L10d (docs/linux10d-design.md) |
+| "Removed nodes are never reused" | Slots of removed nodes are reused. Each slot has a generation, and a folder handle to a removed node answers `NOTFOUND` | Stage 0, B2 (docs/s0-design.md) |
+| "Check-then-act races cannot occur" | See "Races" below | — |
+| Bulk data in messages | Transfers over 2 KiB go through a shared buffer of at least 64 KiB per folder handle. Its size is checked (B6) | F1, Stage 0 (docs/f1-design.md) |
+| No limit on folder handles per process | One process may hold at most 31 of BadgerHandler's 62 folder channels | Stage 0, B7 |
+
+**Races.**
+- **No interleaving inside one request.** BadgerHandler serves one request
+  at a time, so a single request is atomic: its path is resolved and acted
+  on with nothing else in between.
+- **Sequences can interleave.** A program's sequence of requests (stat,
+  then read) can interleave with other programs' requests, as on any
+  multi-process system. A file can change between them.
+- **Handles stay valid by design.** Paths are relative to a handle and
+  cannot climb out of it, and a handle to a removed folder reaches
+  nothing.
+
+**The broker today.** OtterHandler still has the tools of §4, with three
+changes:
+- **Memory:** `remember` and `recall` (docs/a2-design.md, with the Stage 0
+  limits on what is learned and replayed).
+- **Names in any letter case** (A2b).
+- **`none`:** a search with no matches finishes with `none` instead of
+  `ok`.
+
+It still holds a home handle with all rights. Narrowing it to read, create
+and remove is Stage 2 of docs/bella-roadmap.md.
 
 ## 1. Filesystem (kernel, in memory)
 

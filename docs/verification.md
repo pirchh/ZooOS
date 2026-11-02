@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The Stage 0
-memory section (version 0.75.0) is the current state. Sections before it
+restarts section (version 0.76.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,27 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 0 results: restarts (version 0.76.0)
+
+Design: docs/s0-design.md (B5, B15).
+
+| Check | Result | Negative control (the fix removed) |
+| --- | --- | --- |
+| `services`, extended: after `restart badger-handler`, wait for the reset | `OK`: `badger-handler ran 30 s without failing; restart count reset`, then `restarts=0 last=killed` | No reset: `FAIL services` (timeout) |
+| `home-refresh` (new): BadgerHandler restarted while the desktop runs | `OK`: `sent the desktop session a fresh home folder`, `reloading the desktop`, then `Files: showing Home/Documents` in the new desktop | No fresh folder sent: `FAIL home-refresh` (timeout waiting for it) |
+
+**The original symptom:** with the fix removed and the test's waits for
+the reload removed too, the log shows:
+
+```
+[28:files] Files: cannot list `Documents`: PEERCLOSED
+```
+
+Files still logs `showing Home/Documents` after a failed listing, so the
+case now also requires that `Files: cannot list` never appears.
+
+FULL_SUITE_RESULT
 
 ## Stage 0 results: the memory (version 0.75.0)
 
