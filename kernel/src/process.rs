@@ -7136,6 +7136,36 @@ impl Scheduler {
                 t.map_next = va + (n + 1) * 4096;
                 Outcome::Ret(va as i64)
             }
+            sys::CHANNEL_PEER => {
+                let (chan, side) = match self.proc(i).get(a1) {
+                    Some(HandleEntry {
+                        object: Object::Endpoint { chan, side },
+                        ..
+                    }) => (chan.clone(), *side),
+                    Some(_) => return err(Error::Rights),
+                    None => return err(Error::BadHandle),
+                };
+                let holder = self.procs.iter().flatten().find(|p| {
+                    p.handles.iter().flatten().any(|h| match &h.object {
+                        Object::Endpoint { chan: c, side: s } => {
+                            *s != side && Arc::ptr_eq(c, &chan)
+                        }
+                        _ => false,
+                    })
+                });
+                match holder {
+                    Some(p) => Outcome::Ret(p.pid as i64),
+                    None => err(Error::NotFound),
+                }
+            }
+            sys::SHM_SIZE => match self.proc(i).get(a1) {
+                Some(HandleEntry {
+                    object: Object::Shm(p),
+                    ..
+                }) => Outcome::Ret((p.frames.len() * 4096) as i64),
+                Some(_) => err(Error::Rights),
+                None => err(Error::BadHandle),
+            },
             sys::SHM_UNMAP => {
                 // a1 = an address `shm_map` returned.
                 let Some(k) = self.proc(i).shm_maps.iter().position(|m| m.0 == a1) else {

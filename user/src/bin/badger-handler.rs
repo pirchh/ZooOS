@@ -36,6 +36,9 @@ const MAX_NODES: usize = 65536;
 const MAX_FILE: u64 = 1 << 32;
 /// Folder channels served at once (one handle each in this process).
 const MAX_SESSIONS: usize = WAIT_ANY_MAX - 2;
+/// Most folder channels one process may hold, so no single client can
+/// take them all (docs/s0-design.md, B7). Half of `MAX_SESSIONS`.
+const MAX_PER_CLIENT: usize = MAX_SESSIONS / 2;
 const BLOCK: usize = zoo_abi::BLOCK_BYTES;
 /// Changed blocks held in memory before a save is forced (8 MiB).
 const PENDING_LIMIT: usize = 2048;
@@ -81,11 +84,17 @@ struct Tree {
     nodes: Vec<Option<Node>>,
     /// Slots of removed nodes, reused before the table grows.
     free: Vec<usize>,
+    /// Each slot's generation, raised when its node is removed, so a
+    /// folder channel opened on the old node no longer reaches a new node
+    /// that reuses the slot (docs/s0-design.md, B2).
+    gens: Vec<u32>,
 }
 
 struct Session {
     chan: Handle,
     node: usize,
+    /// `Tree::gens[node]` when the session was opened.
+    generation: u32,
     rights: u64,
     /// The client's shared buffer, mapped here (docs/f1-design.md).
     shm: Option<u64>,
@@ -162,6 +171,7 @@ impl Tree {
             }
             None if self.nodes.len() < MAX_NODES => {
                 self.nodes.push(Some(node));
+                self.gens.push(0);
                 self.nodes.len() - 1
             }
             None => return Err(Error::NoMem),
@@ -197,6 +207,7 @@ impl Tree {
         while let Some(n) = stack.pop() {
             if let Some(node) = self.nodes.get_mut(n).and_then(Option::take) {
                 stack.extend(node.children);
+                self.gens[n] = self.gens[n].wrapping_add(1);
                 self.free.push(n);
             }
         }
@@ -323,6 +334,7 @@ fn seed() -> Tree {
     let mut t = Tree {
         nodes: Vec::new(),
         free: Vec::new(),
+        gens: Vec::new(),
     };
     let root = t
         .add(0, "", Kind::Dir, Content::Static(&[]))
@@ -492,14 +504,38 @@ struct Badger {
 
 impl Badger {
     /// A new folder channel for `node` with `rights`; returns the client end.
-    fn open_session(&mut self, node: usize, rights: u64) -> Result<Handle, Error> {
+    /// `by` is the session asking, if any: the process holding its other
+    /// end may hold at most `MAX_PER_CLIENT` channels.
+    fn open_session(
+        &mut self,
+        node: usize,
+        rights: u64,
+        by: Option<usize>,
+    ) -> Result<Handle, Error> {
         if self.sessions.len() >= MAX_SESSIONS {
             return Err(Error::NoMem);
         }
+        if let Some(pid) = by.and_then(|k| zoo_rt::channel_peer(self.sessions[k].chan).ok()) {
+            let held = self
+                .sessions
+                .iter()
+                .filter(|s| zoo_rt::channel_peer(s.chan) == Ok(pid))
+                .count();
+            if held >= MAX_PER_CLIENT {
+                zoo_rt::log!(
+                    "BadgerHandler: pid {} holds {} folder channels; refused another",
+                    pid,
+                    held
+                );
+                return Err(Error::NoMem);
+            }
+        }
+        let generation = *self.tree.gens.get(node).ok_or(Error::NotFound)?;
         let (mine, theirs) = channel_create()?;
         self.sessions.push(Session {
             chan: mine,
             node,
+            generation,
             rights,
             shm: None,
         });
@@ -672,6 +708,13 @@ impl Badger {
             return fsproto::reply(chan, Err(Error::Inval), &[]).is_ok();
         };
         let (base, rights) = (self.sessions[k].node, self.sessions[k].rights);
+        // The folder this channel was opened on was removed (its slot may
+        // hold another node now): nothing is reachable through it.
+        if self.tree.gens.get(base) != Some(&self.sessions[k].generation)
+            || self.tree.node(base).is_none()
+        {
+            return fsproto::reply(chan, Err(Error::NotFound), &[]).is_ok();
+        }
         let need = match req.op {
             Op::Open => 0,
             Op::CreateDir | Op::CreateFile | Op::CreateLink => dir_rights::CREATE,
@@ -696,7 +739,7 @@ impl Badger {
                     let t = &self.tree;
                     match t.resolve(base, path) {
                         Ok(id) if t.node(id).is_some_and(|n| n.kind == Kind::Dir) => {
-                            match self.open_session(id, new_rights) {
+                            match self.open_session(id, new_rights, Some(k)) {
                                 Ok(client) => {
                                     // The status first, then the handle.
                                     if fsproto::reply(chan, Ok(0), &[]).is_err() {
@@ -985,7 +1028,7 @@ fn main(control: u64, disk: u64) -> u8 {
                 }
             }
             Ok(n) if &buf[..n] == b"half-save" => b.crash_next_save = true,
-            Ok(n) if &buf[..n] == b"root" => match b.open_session(0, dir_rights::ALL) {
+            Ok(n) if &buf[..n] == b"root" => match b.open_session(0, dir_rights::ALL, None) {
                 Ok(client) => {
                     if send_handle(control, client, fsproto::TAG_ROOT).is_err() {
                         let _ = close(client);
@@ -1016,7 +1059,10 @@ fn main(control: u64, disk: u64) -> u8 {
                 Err(Error::WrongKind) => {
                     // A handle: the client's shared buffer.
                     if let Ok((h, tag)) = zoo_rt::try_recv_handle(b.sessions[k].chan) {
+                        // Only a buffer of at least `BULK_SIZE` bytes:
+                        // bulk lengths are checked against that (B6).
                         if tag == fsproto::TAG_SHM
+                            && zoo_rt::shm_size(h).is_ok_and(|n| n >= fsproto::BULK_SIZE as u64)
                             && let Ok(addr) = zoo_rt::shm_map(h)
                             && let Some(old) = b.sessions[k].shm.replace(addr)
                         {

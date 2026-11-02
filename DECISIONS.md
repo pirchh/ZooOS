@@ -150,6 +150,24 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## The Bella roadmap and Stage 0 (2026-11-02)
+
+The owner's direction: the assistant is named Bella. docs/bella-roadmap.md
+and docs/bella-audit.md set the order of work. The model is not fixed to
+Qwen; its weights must be open source. Version 0.74.0 is Stage 0's
+filesystem part (docs/s0-design.md):
+
+- **B1:** Notes edits files up to 1 MiB, read whole. A larger file, or one
+  read only in part, opens read-only and is never saved.
+- **B2:** folder channels carry their folder's generation; a removed
+  folder's channel answers `NotFound`.
+- **B6:** new system call `SHM_SIZE` (73). BadgerHandler only uses a
+  client buffer of at least `BULK_SIZE`.
+- **B7:** new system call `CHANNEL_PEER` (74). One process may hold at
+  most 31 of the 62 folder channels. Two processes acting together can
+  still take them all; per-process quotas set by the supervisor would
+  fix that, and are not done.
+
 ## Assistant step 2b: names in any letter case (2026-11-02)
 
 Version 0.73.1.

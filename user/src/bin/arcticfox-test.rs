@@ -12,7 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use zoo_rt::{
     Error, dir_create, dir_open, dir_remove, dir_rights as r, dir_stat, file_create, file_read,
-    file_remove, file_truncate, file_write, rename,
+    file_remove, file_truncate, file_write, fsproto, rename, send_handle, shm_create,
 };
 
 zoo_rt::entry2!(main);
@@ -223,7 +223,83 @@ fn checks(home: u64, root: u64) -> Result<(), (u8, &'static str)> {
         "4 GiB file limit",
     )?;
 
-    // 8. Clean up: home must be as it was.
+    // 8. A removed folder's handle reaches nothing, not the next folder
+    // made in its slot (docs/s0-design.md, B2).
+    check(dir_create(home, "Old").is_ok(), 48, "create Old")?;
+    let old = dir_open(home, "Old", r::ALL).map_err(|_| (48, "open Old"))?;
+    check(dir_remove(home, "Old").is_ok(), 48, "remove Old")?;
+    check(dir_create(home, "New").is_ok(), 48, "create New")?;
+    check(
+        file_create(old, "planted.txt") == Err(Error::NotFound),
+        48,
+        "a removed folder's handle creates nothing",
+    )?;
+    check(
+        dir_stat(old, "") == Err(Error::NotFound),
+        48,
+        "a removed folder's handle sees nothing",
+    )?;
+    check(
+        dir_stat(home, "New/planted.txt") == Err(Error::NotFound),
+        48,
+        "nothing appeared in New",
+    )?;
+    let _ = zoo_rt::close(old);
+    check(dir_remove(home, "New").is_ok(), 48, "remove New")?;
+
+    // 9. A shared buffer smaller than `BULK_SIZE` is not used, so a bulk
+    // read cannot run past it (B6): Music/liner-notes.txt is 9,230 bytes,
+    // the buffer one page.
+    let d = dir_open(home, "", r::READ).map_err(|_| (49, "open"))?;
+    let small = shm_create(1).map_err(|_| (49, "shm"))?;
+    check(
+        send_handle(d, small, fsproto::TAG_SHM).is_ok(),
+        49,
+        "send the buffer",
+    )?;
+    let _ = zoo_rt::close(small);
+    let len = (fsproto::BULK_SIZE as u32).to_le_bytes();
+    let got = fsproto::call(
+        d,
+        fsproto::Op::ReadBulk,
+        0,
+        0,
+        "Music/liner-notes.txt",
+        &len,
+        &mut [],
+    );
+    check(
+        got == Err(Error::Again),
+        49,
+        "a one-page buffer is not used for bulk reads",
+    )?;
+    let _ = zoo_rt::close(d);
+
+    // 10. One process cannot take every folder channel (B7).
+    let mut held = Vec::new();
+    while held.len() < 70 {
+        match dir_open(home, "", r::READ) {
+            Ok(h) => held.push(h),
+            Err(_) => break,
+        }
+    }
+    let n = held.len();
+    for h in held {
+        let _ = zoo_rt::close(h);
+    }
+    zoo_rt::log!(
+        "ArcticFoxTest: opened {} folder channels before the limit",
+        n
+    );
+    check(
+        (20..40).contains(&n),
+        50,
+        "a per-process folder channel limit",
+    )?;
+    let again = dir_open(home, "", r::READ).map_err(|_| (50, "open after closing"))?;
+    let _ = zoo_rt::close(again);
+
+    // 11. Clean up: home must be as it was.
     for f in ["Scratch2/b.txt", "Scratch2/big.bin"] {
         check(file_remove(home, f).is_ok(), 47, "remove file")?;
     }
