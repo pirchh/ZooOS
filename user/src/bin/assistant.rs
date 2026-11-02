@@ -31,6 +31,9 @@ const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 const COMMANDS: [&str; 5] = ["search", "list", "inspect", "create", "undo"];
 const HINT: &str = "Ask in words, or type search/list/inspect/create/undo.";
+/// A remembered request at least this alike (percent of shared words)
+/// is answered from memory, without the model (docs/a2-design.md).
+const RECALL_AT: usize = 75;
 
 enum Mode {
     Typing,
@@ -50,6 +53,12 @@ struct App {
     home: Handle,
     otter: Option<Handle>,
     elephant: Option<Handle>,
+    /// The request in words being answered (by memory or the model).
+    request: Option<String>,
+    /// A request in words that was not answered well (the model was not
+    /// there, failed, or its choice was refused): the next command that
+    /// works is remembered as its answer (docs/a2-design.md).
+    unanswered: Option<String>,
 }
 
 fn main(chan: u64, home: u64) -> u8 {
@@ -62,6 +71,8 @@ fn main(chan: u64, home: u64) -> u8 {
         home,
         otter: None,
         elephant: None,
+        request: None,
+        unanswered: None,
     };
     if p.win.title("Assistant").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -146,12 +157,16 @@ impl App {
                 let req = alloc::format!("create {}", path);
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
-                self.broker(&req);
+                if self.broker(&req) {
+                    self.learn(&req);
+                }
             }
             (Mode::Confirm(_), Key::Char('n') | Key::Back) => {
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
                 self.say("Not created.");
+                // The choice was wrong: a command typed next answers it.
+                self.unanswered = self.request.take();
             }
             (Mode::Confirm(_), _) => {}
             (Mode::Typing, Key::Char(c)) if self.input.len() < MAX_INPUT => self.input.push(c),
@@ -175,13 +190,19 @@ impl App {
     fn submit(&mut self, text: &str) {
         let word = text.split(' ').next().unwrap_or("");
         if COMMANDS.contains(&word) {
+            // Typed by the user: it may answer an earlier request.
+            self.request = self.unanswered.take();
             self.command(text);
         } else {
-            self.ask_model(text);
+            self.request = Some(String::from(text));
+            if !self.recall(text) {
+                self.ask_model(text);
+            }
         }
     }
 
-    /// A command, typed or chosen by the model. `create` asks first.
+    /// A command, typed or chosen. `create` asks first; others that work
+    /// teach the memory the request they answer.
     fn command(&mut self, text: &str) {
         if let Some(path) = text.strip_prefix("create ") {
             let path = String::from(path.trim());
@@ -191,9 +212,61 @@ impl App {
                 self.status = String::from("Press y to create, n to leave it.");
                 self.mode = Mode::Confirm(path);
             }
+        } else if self.broker(text) {
+            self.learn(text);
         } else {
-            self.broker(text);
+            self.unanswered = self.request.take();
         }
+    }
+
+    /// `command` answered the current request: remember the pair.
+    fn learn(&mut self, command: &str) {
+        let Some(request) = self.request.take() else {
+            return;
+        };
+        let msg = alloc::format!("remember {}\t{}", request, command);
+        let quiet = self.lines.len();
+        if self.broker(&msg) {
+            zoo_rt::log!("Assistant: learned `{}` -> `{}`", request, command);
+        }
+        // `remember` prints nothing; keep the transcript as it was.
+        self.lines.truncate(quiet);
+    }
+
+    /// Answers `text` from memory if a remembered request is alike enough;
+    /// returns whether it did.
+    fn recall(&mut self, text: &str) -> bool {
+        let Some(o) = self.otter() else {
+            return false;
+        };
+        let msg = alloc::format!("recall {}", text);
+        if send_wait(o, msg.as_bytes()).is_err() {
+            return false;
+        }
+        let mut best: Option<(usize, String)> = None;
+        let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        loop {
+            let Ok(n) = recv(o, &mut buf) else {
+                self.otter = None;
+                return false;
+            };
+            let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
+            if let Some(rest) = line.strip_prefix("| ") {
+                let (score, cmd) = rest.split_once(' ').unwrap_or((rest, ""));
+                best = score.parse().ok().map(|s| (s, String::from(cmd)));
+            } else {
+                break;
+            }
+        }
+        let Some((score, cmd)) = best.filter(|(s, _)| *s >= RECALL_AT) else {
+            return false;
+        };
+        zoo_rt::log!("Assistant: recalled `{}` ({}% alike)", cmd, score);
+        let mut l = String::from("Assistant (remembered): ");
+        l.push_str(&cmd);
+        self.say(&l);
+        self.command(&cmd);
+        true
     }
 
     /// Starts OtterHandler on first use, moving the home handle into it.
@@ -305,6 +378,8 @@ impl App {
             self.say(&l);
             self.command(&cmd);
         } else {
+            // Not answered: a command typed next answers it.
+            self.unanswered = self.request.take();
             let why = msg.strip_prefix("err ").unwrap_or(msg);
             let line = match why {
                 "cancelled" => String::from("Cancelled."),
