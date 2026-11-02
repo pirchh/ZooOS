@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Assistant step 3: the model in the everyday system (2026-11-02)
+
+Design: docs/a3-design.md. Version 0.73.0.
+
+- The owner asked for the model to be part of the OS; `run` and
+  `usb-image` now include it when it is in `tools/models/`, `--no-model`
+  leaves it out.
+- Measured cost: +1.85 s of boot under WHPX (the boot loader reads 411 MB
+  more). Accepted for now because the owner asked for it; the follow-up is
+  loading the model from the data disk after boot, which removes the cost.
+
 ## UI step 3h: Rename and the Trash (2026-11-02)
 
 Design: docs/u3h-design.md. Version 0.72.0.

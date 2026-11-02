@@ -16,7 +16,9 @@ a USB stick.
 
 1. `cargo xtask usb-image` builds the everyday image (fast boot, starts in
    the desktop) and copies it to `build/usb/zoo-os-usb.img`, printing its
-   size and SHA-256. It writes no device.
+   size and SHA-256. It writes no device. Since A3 it includes the
+   Assistant's model when `tools/models/` has it (about 410 MB more, so a
+   stick of 1 GB or larger); `--no-model` builds the small image.
 2. The owner writes that file to a USB stick they choose, with a tool such
    as Rufus (DD mode) or balenaEtcher, **double-checking the target is the
    stick**. Everything on the stick is erased. The agent never writes to a

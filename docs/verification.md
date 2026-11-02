@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The U3h section
-(version 0.72.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The A3 section
+(version 0.73.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,31 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Assistant step 3 results: the model in the everyday system (version 0.73.0)
+
+Design: docs/a3-design.md (with the boot-time table).
+
+**New case `everyday-model`** (`--accel whpx`): `OK`.
+- The fast-boot image with the model (52 initrd files, 411 MB) starts in
+  the desktop.
+- `Find my pancake recipe` →
+  ``[11:elephant-handler] ElephantHandler: chose search `pancake recipe` ``.
+
+**Boot cost** (`--accel whpx`, `serial-times.log`):
+
+| | Kernel up | Desktop up |
+| --- | --- | --- |
+| Without the model | 918 ms | 1080 ms |
+| With the model | 2753 ms | 2930 ms |
+
+The first request then took 3.44 s for the model's system prompt and about
+1 s more for the answer.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 89 cases `OK`.
+`everyday-model`, `assistant-live` and the two `wine-home` cases are
+skipped under TCG; the first two pass with `--accel whpx`.
+`cargo test -p xtask` (25) and clippy on `xtask`: clean.
 
 ## UI step 3h results: Rename and the Trash (version 0.72.0)
 
