@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 
 use core::fmt::Write as _;
 use pc_keyboard::layouts::Us104Key;
-use pc_keyboard::{DecodedKey, HandleControl, KeyCode, PS2Keyboard, ScancodeSet1};
+use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1};
 use zoo_abi::font::{Atlas, Face, FaceId, blend};
 use zoo_abi::ui::{
     BASELINE, DARK, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H, Palette as Theme, RADIUS,
@@ -745,8 +745,8 @@ impl AnimKind {
         match self {
             AnimKind::Open => 220,
             AnimKind::Close => 180,
-            AnimKind::Minimize => 320,
-            AnimKind::Restore => 280,
+            AnimKind::Minimize => 520,
+            AnimKind::Restore => 460,
         }
     }
 
@@ -794,6 +794,44 @@ struct Anim {
 }
 
 impl Anim {
+    /// Time elapsed, 0..=1, without easing.
+    fn raw(&self, now: u64) -> f32 {
+        if self.dur == 0 {
+            1.0
+        } else {
+            (now.saturating_sub(self.start) as f32 / self.dur as f32).min(1.0)
+        }
+    }
+
+    /// Minimise and restore are drawn as the genie (`composite_genie`):
+    /// how far along it is (0: the window, 1: in the dock).
+    fn genie(&self, now: u64) -> Option<f32> {
+        match self.kind {
+            AnimKind::Minimize => Some(self.raw(now)),
+            AnimKind::Restore => Some(1.0 - self.raw(now)),
+            _ => None,
+        }
+    }
+
+    /// The logical area this frame draws in.
+    fn bounds(&self, now: u64) -> (usize, usize, usize, usize) {
+        if self.genie(now).is_some() {
+            // The whole funnel, window to dock icon.
+            let (a, b) = (self.from, self.to);
+            let x0 = floor(a.0.min(b.0)).max(0.0);
+            let y0 = floor(a.1.min(b.1)).max(0.0);
+            let x1 = ceil((a.0 + a.2).max(b.0 + b.2)) + 2.0;
+            let y1 = ceil((a.1 + a.3).max(b.1 + b.3)) + 2.0;
+            return (
+                x0 as usize,
+                y0 as usize,
+                (x1 - x0) as usize,
+                (y1 - y0) as usize,
+            );
+        }
+        layer_bounds(self.at(now).0, self.size)
+    }
+
     /// The rectangle and opacity at time `now`, and whether it has ended.
     fn at(&self, now: u64) -> (RectF, f32, bool) {
         let t = if self.dur == 0 {
@@ -838,6 +876,106 @@ fn layer_bounds(rect: RectF, size: (usize, usize)) -> (usize, usize, usize, usiz
         (x1 - x0).max(0.0) as usize,
         (y1 - y0).max(0.0) as usize,
     )
+}
+
+/// The genie (the macOS minimise): layer `l` (a window of logical `size`)
+/// drawn between the window rectangle `win` and the dock icon `icon` at
+/// progress `g` (0: the window, 1: inside the icon).
+///
+/// Every row of the window is stretched between a left and a right edge.
+/// The edges are S-curves from the window's width at its top to the
+/// icon's width at the icon's bottom. In the first 40 % the curves bend in
+/// (the bottom of the window pinches toward the icon); in the rest the
+/// window slides down the funnel, its bottom ahead of its top, and fades
+/// at the very end. Only the window body is drawn, not its shadow.
+#[allow(clippy::too_many_arguments)]
+fn composite_genie(
+    back: &mut [u32],
+    sw: usize,
+    clip: (usize, usize, usize, usize),
+    s: usize,
+    l: &Layer,
+    size: (usize, usize),
+    win: RectF,
+    icon: RectF,
+    g: f32,
+) {
+    if l.w == 0 || g >= 1.0 {
+        return;
+    }
+    let smooth = |u: f32| {
+        let u = u.clamp(0.0, 1.0);
+        u * u * (3.0 - 2.0 * u)
+    };
+    let p1 = smooth(g / 0.4);
+    let p2 = {
+        let u = ((g - 0.4) / 0.6).clamp(0.0, 1.0);
+        u * u
+    };
+    let (wb, ib) = (win.1 + win.3, icon.1 + icon.3);
+    // The body's top and bottom now.
+    let top = win.1 + (icon.1 - win.1) * p2;
+    let bottom = wb + (ib - wb) * (p2 * 1.6).min(1.0);
+    if bottom - top < 0.5 {
+        return;
+    }
+    // The edges at logical height y.
+    let span = (ib - win.1).max(1.0);
+    let edge = |y: f32| {
+        let k = p1 * smooth((y - win.1) / span);
+        (
+            win.0 + (icon.0 - win.0) * k,
+            win.0 + win.2 + (icon.0 + icon.2 - win.0 - win.2) * k,
+        )
+    };
+    let alpha = 1.0 - ((g - 0.85) / 0.15).clamp(0.0, 1.0) * 0.85;
+    let k = (alpha * 256.0) as u32;
+    let sf = s as f32;
+    // The body in the layer, in device pixels.
+    let (bx, by) = ((MARGIN * s) as i64, (MARGIN * s) as i64);
+    let (bw, bh) = ((size.0 * s) as i64, (size.1 * s) as i64);
+    let px = |x: i64, y: i64| -> u32 {
+        if x < bx || y < by || x >= bx + bw || y >= by + bh {
+            0
+        } else {
+            l.buf[y as usize * l.w + x as usize]
+        }
+    };
+    let (cx0, cy0, cx1, cy1) = clip;
+    let y0 = ((top * sf) as usize).max(cy0);
+    let y1 = ((ceil(bottom * sf) as usize) + 1).min(cy1);
+    for dy in y0..y1 {
+        let y = (dy as f32 + 0.5) / sf;
+        let f = (y - top) / (bottom - top);
+        if !(0.0..=1.0).contains(&f) {
+            continue;
+        }
+        let (le, re) = edge(y);
+        let (ld, rd) = (le * sf, re * sf);
+        if rd - ld < 0.5 {
+            continue;
+        }
+        let v = ((by as f32 + f * bh as f32 - 0.5) * 65536.0) as i64;
+        let (vi, vf) = (v >> 16, ((v >> 8) & 0xFF) as u32);
+        let x0 = (floor(ld).max(0.0) as usize).max(cx0);
+        let x1 = ((ceil(rd) as usize) + 1).min(cx1);
+        if x0 >= x1 {
+            continue;
+        }
+        let step = (bw as f32 / (rd - ld) * 65536.0) as i64;
+        let mut u =
+            ((bx as f32 + (x0 as f32 + 0.5 - ld) / (rd - ld) * bw as f32 - 0.5) * 65536.0) as i64;
+        for d in &mut back[dy * sw + x0..dy * sw + x1] {
+            let (ui, uf) = (u >> 16, ((u >> 8) & 0xFF) as u32);
+            u += step;
+            let t = lerp_px(px(ui, vi), px(ui + 1, vi), uf);
+            let b = lerp_px(px(ui, vi + 1), px(ui + 1, vi + 1), uf);
+            let p = lerp_px(t, b, vf);
+            if p != 0 {
+                *d = over(*d, if k >= 256 { p } else { fade_px(p, k) });
+            }
+        }
+    }
 }
 
 /// `a` to `b` by `f` (0..=255), for premultiplied pixels: red and blue,
@@ -1073,6 +1211,8 @@ struct Desktop {
     per_ms: u64,
     /// The time this frame is drawn for (all damaged areas alike).
     frame_now: u64,
+    /// Shift is held: new animations run ten times slower.
+    shift: bool,
     banner: Option<Banner>,
 }
 
@@ -1596,10 +1736,19 @@ impl Desktop {
         for k in 0..APPS {
             let i = self.order[k];
             if let Some(a) = &self.anims[i] {
-                let (rect, alpha, _) = a.at(self.frame_now);
                 let l = a.snapshot.as_ref().unwrap_or(&self.layers[i]);
                 let (sw, clip, s) = (self.screen.w, self.screen.clip, self.screen.s);
-                composite_scaled(self.screen.back, sw, clip, s, l, a.size, rect, alpha);
+                if let Some(g) = a.genie(self.frame_now) {
+                    // From the window to the icon either way round.
+                    let (win, icon) = match a.kind {
+                        AnimKind::Restore => (a.to, a.from),
+                        _ => (a.from, a.to),
+                    };
+                    composite_genie(self.screen.back, sw, clip, s, l, a.size, win, icon, g);
+                } else {
+                    let (rect, alpha, _) = a.at(self.frame_now);
+                    composite_scaled(self.screen.back, sw, clip, s, l, a.size, rect, alpha);
+                }
                 continue;
             }
             if !self.apps[i].visible() {
@@ -1687,12 +1836,11 @@ impl Desktop {
                 win.3 * k,
             )
         };
-        // The dock icon, with the window's proportions.
+        // The dock icon (the genie's funnel ends in it).
         let icon: RectF = {
             let (ix, iy) = zoo_abi::ui::dock_icon(self.lw, self.lh, APPS, i);
             let d = DOCK_ICON as f32;
-            let ih = d * win.3 / win.2.max(1.0);
-            (ix as f32, iy as f32 + (d - ih) / 2.0, d, ih)
+            (ix as f32 + d * 0.1, iy as f32 + d * 0.1, d * 0.8, d * 0.8)
         };
         let (from, to, a0, a1) = match kind {
             AnimKind::Open => (shrink(0.92), win, 0.0, 1.0),
@@ -1712,11 +1860,11 @@ impl Desktop {
         // An animation it replaces still has an area on screen to clean.
         let last = self.anims[i]
             .as_ref()
-            .map_or(layer_bounds(from, (w, h)), |a| a.last);
+            .map_or(layer_bounds(win, (w, h)), |a| a.last);
         self.anims[i] = Some(Anim {
             kind,
             start: cycles(),
-            dur: kind.millis() * self.per_ms,
+            dur: kind.millis() * self.per_ms * if self.shift { 10 } else { 1 },
             from,
             to,
             a0,
@@ -1737,9 +1885,9 @@ impl Desktop {
             let Some(a) = self.anims[i].as_mut() else {
                 continue;
             };
-            let (rect, _, done) = a.at(now);
-            let (last, size, kind, start) = (a.last, a.size, a.kind, a.start);
-            let bounds = layer_bounds(rect, size);
+            let (_, _, done) = a.at(now);
+            let (last, kind, start) = (a.last, a.kind, a.start);
+            let bounds = a.bounds(now);
             a.last = bounds;
             a.frames += 1;
             let frames = a.frames;
@@ -2431,6 +2579,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         anims: [const { None }; APPS],
         per_ms: calibrate_ms(),
         frame_now: 0,
+        shift: false,
         banner: None,
     };
     desk.set_appearance(false);
@@ -2470,6 +2619,11 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             let Ok(Some(event)) = decoder.add_byte(byte) else {
                 continue;
             };
+            // Shift held: animations in slow motion, as on a Mac
+            // (docs/u2d-design.md).
+            if matches!(event.code, KeyCode::LShift | KeyCode::RShift) {
+                desk.shift = event.state == KeyState::Down;
+            }
             match decoder.process_keyevent(event) {
                 Some(DecodedKey::Unicode('\t')) => {
                     desk.focus_next();

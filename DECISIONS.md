@@ -150,6 +150,14 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2d follow-up: the genie (2026-11-01, 0.60.0)
+
+- At the owner's request ("doesn't look as much like mac"), minimise and
+  restore are a genie warp: S-curved edges from the window to the dock
+  icon, pinch, then slide. See docs/u2d-design.md §6.
+- Shift held runs new animations at a tenth of the speed, as on a Mac.
+  The `genie` case uses it to check the warp's shape.
+
 ## UI step 2d: window animations (2026-11-01)
 
 Design: docs/u2d-design.md.
