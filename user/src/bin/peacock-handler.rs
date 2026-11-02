@@ -26,8 +26,8 @@ use pc_keyboard::layouts::Us104Key;
 use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1};
 use zoo_abi::font::{Atlas, Face, FaceId, blend};
 use zoo_abi::ui::{
-    BASELINE, DARK, DOCK_BOTTOM, DOCK_H, DOCK_ICON, LIGHT, LIGHT_D, LINE_H, MENU_H, MENU_ITEM_H,
-    Palette as Theme, RADIUS, RESIZE_CORNER, TEXT_X, TITLE_H,
+    BASELINE, DARK, DOCK_BOTTOM, DOCK_GAP, DOCK_H, DOCK_ICON, DOCK_PAD, LIGHT, LIGHT_D, LINE_H,
+    MENU_H, MENU_ITEM_H, Palette as Theme, RADIUS, RESIZE_CORNER, TEXT_X, TITLE_H,
 };
 use zoo_abi::{CLOCK_REALTIME, FORMAT_BGR, MAX_MESSAGE, MouseEvent};
 use zoo_rt::app::{Key, MAX_LINES};
@@ -1020,8 +1020,28 @@ fn circle(u: f32, v: f32, cx: f32, cy: f32, r: f32) -> bool {
 
 /// A dock icon's image: the icon with room for its shadow, the icon at
 /// `ICON_AT` in it (logical pixels).
-const ICON_BOX: (usize, usize) = (DOCK_ICON + 8, DOCK_ICON + 10);
+const ICON_BOX: (usize, usize) = (MAG_ICON + 8, MAG_ICON + 10);
 const ICON_AT: (usize, usize) = (4, 2);
+
+/// Dock magnification (docs/u2g-design.md): the largest icon size, the
+/// reach of the bell around the pointer, and how long it takes to grow or
+/// settle back.
+const MAG_ICON: usize = 84;
+const MAG_REACH: f32 = 150.0;
+const MAG_MS: u64 = 140;
+
+/// Bilinear blend of four premultiplied pixels (fx, fy in 0..1); the
+/// result is premultiplied too, so each channel stays at most its alpha.
+fn bilerp(a: u32, b: u32, c: u32, d: u32, fx: f32, fy: f32) -> u32 {
+    let ch = |shift: u32| {
+        let g = |p: u32| ((p >> shift) & 0xFF) as f32;
+        let top = g(a) + (g(b) - g(a)) * fx;
+        let bot = g(c) + (g(d) - g(c)) * fx;
+        ((top + (bot - top) * fy + 0.5) as u32).min(255)
+    };
+    let al = ch(24);
+    al << 24 | ch(16).min(al) << 16 | ch(8).min(al) << 8 | ch(0).min(al)
+}
 
 /// A four-pointed sparkle centred at (cx, cy), `r` from centre to tip.
 fn sparkle(u: f32, v: f32, cx: f32, cy: f32, r: f32) -> bool {
@@ -1729,6 +1749,12 @@ struct Desktop {
     dock_off: f32,
     dock_shown: bool,
     dock_slide: Option<(f32, f32, u64, u64)>,
+    /// How much the dock magnifies (0 to 1), eased toward its target;
+    /// and the pointer x it was last drawn for.
+    mag: f32,
+    mag_x: usize,
+    /// The previous frame's time (for easing the magnification).
+    frame_prev: u64,
     dock_hide_at: Option<u64>,
     banner: Option<Banner>,
 }
@@ -1889,11 +1915,68 @@ impl Desktop {
         ))
     }
 
+    /// Each dock item's place as drawn (docs/u2g-design.md): the left x
+    /// and the size of the application icons, then of the minimised
+    /// windows, magnified around the pointer; and the background's left
+    /// and right. Items grow from their bottoms; the item under the
+    /// pointer stays under it, so clicks find the same item as without
+    /// magnification.
+    fn dock_layout(&self) -> (Vec<(f32, f32)>, (f32, f32)) {
+        let (e, n) = self.dock_entries();
+        let base: Vec<usize> = e[..n]
+            .iter()
+            .filter_map(|&k| self.dock_pos(k).map(|p| p.0))
+            .chain(
+                self.minis
+                    .iter()
+                    .filter_map(|&i| self.mini_pos(i).map(|p| p.0)),
+            )
+            .collect();
+        let d = DOCK_ICON as f32;
+        let px = self.px as f32;
+        let grow = (MAG_ICON - DOCK_ICON) as f32 * self.mag;
+        let sizes: Vec<f32> = base
+            .iter()
+            .map(|&x| {
+                let t = ((px - (x as f32 + d / 2.0)) / MAG_REACH).abs().min(1.0);
+                let bell = (1.0 - t * t) * (1.0 - t * t);
+                d + grow * bell
+            })
+            .collect();
+        // The item under the pointer (or nearest) and how far across it.
+        let k = base
+            .iter()
+            .position(|&x| px < x as f32 + d + DOCK_GAP as f32 / 2.0)
+            .unwrap_or(base.len().saturating_sub(1));
+        let frac = base
+            .get(k)
+            .map_or(0.5, |&x| ((px - x as f32) / d).clamp(0.0, 1.0));
+        let before: f32 = sizes[..k].iter().map(|w| w - d).sum();
+        let anchor = before + sizes.get(k).map_or(0.0, |w| (w - d) * frac);
+        let mut extra = 0.0;
+        let mut out = Vec::with_capacity(base.len());
+        for (&x, &w) in base.iter().zip(&sizes) {
+            out.push((x as f32 + extra - anchor, w));
+            extra += w - d;
+        }
+        let (rx, _, rw, _) = self.dock_rect();
+        let pad = DOCK_PAD as f32;
+        let left = out
+            .first()
+            .map_or(rx as f32, |&(x, _)| x - pad)
+            .min(rx as f32);
+        let right = out
+            .last()
+            .map_or((rx + rw) as f32, |&(x, w)| x + w + pad)
+            .max((rx + rw) as f32);
+        (out, (left, right))
+    }
+
     fn damage_dock(&mut self) {
         let (_, y, _, _) = self.dock_rect();
         // The whole band (its width changes with its entries), with the
         // label above an icon, down to the bottom edge (it slides).
-        let top = y.saturating_sub(40);
+        let top = y.saturating_sub(40 + MAG_ICON - DOCK_ICON);
         self.damage(0, top, self.lw, self.lh - top);
     }
 
@@ -1936,6 +2019,30 @@ impl Desktop {
                 Some(_) => {}
             }
         }
+        // Magnification: grows while the pointer is over the icons, settles
+        // back after; redrawn as it changes and as the pointer moves.
+        let (_, _, _, dh) = self.dock_rect();
+        let on_band = self.dock_shown
+            && self.dock_slide.is_none()
+            && self.menu.is_none()
+            && self.py >= dy
+            && self.py < dy + dh
+            && self.px + 10 >= dx
+            && self.px < dx + dw + 10;
+        let target = if on_band { 1.0 } else { 0.0 };
+        if self.mag != target {
+            let step = (now.saturating_sub(self.frame_prev) as f32 / (MAG_MS * ms).max(1) as f32)
+                .max(0.05);
+            self.mag = if target > self.mag {
+                (self.mag + step).min(1.0)
+            } else {
+                (self.mag - step).max(0.0)
+            };
+            self.damage_dock();
+        } else if self.mag > 0.0 && self.px != self.mag_x {
+            self.damage_dock();
+        }
+        self.frame_prev = now;
         if let Some((from, to, start, dur)) = self.dock_slide {
             self.damage_dock();
             let t = (now.saturating_sub(start) as f32 / dur.max(1) as f32).min(1.0);
@@ -3583,21 +3690,26 @@ impl Desktop {
         if !self.screen.visible(dx, dy.saturating_sub(40), dw, dh + 40) {
             return;
         }
+        self.mag_x = self.px;
+        let (items, (bl, br)) = self.dock_layout();
+        let (bx, bw) = (bl as usize, (br - bl + 0.5) as usize);
+        let _ = (dx, dw);
         self.screen
-            .round_rect(dx, dy, dw, dh, 18, t.dock_tint, t.dock_alpha, [true; 4]);
-        self.screen.round_outline(dx, dy, dw, dh, 18, t.outline);
+            .round_rect(bx, dy, bw, dh, 18, t.dock_tint, t.dock_alpha, [true; 4]);
+        self.screen.round_outline(bx, dy, bw, dh, 18, t.outline);
         let _ = (sw, sh);
         let (entries, n) = self.dock_entries();
-        for &k in &entries[..n] {
-            let Some((ix, iy)) = self.dock_pos(k) else {
+        let bottom = (dy + DOCK_PAD + DOCK_ICON) as f32;
+        for (slot, &k) in entries[..n].iter().enumerate() {
+            let Some(&(ix, size)) = items.get(slot) else {
                 continue;
             };
-            let iy = iy + off;
-            self.draw_icon(k, ix, iy);
+            self.draw_icon(k, ix, bottom - size, size);
             if self.program_running(k) {
                 let c = t.bar_text;
+                let cx = (ix + size / 2.0) as usize;
                 self.screen
-                    .disc(ix + DOCK_ICON / 2 - 2, iy + DOCK_ICON + 2, 4, c, c);
+                    .disc(cx - 2, dy + DOCK_PAD + DOCK_ICON + 2, 4, c, c);
             }
         }
         // Minimised windows, after a divider: each its window scaled into
@@ -3610,12 +3722,12 @@ impl Desktop {
                 .fill(lx, dy0 + off + 12, 1, dh0 - 24, t.separator);
             for j in 0..self.minis.len() {
                 let i = self.minis[j];
-                let Some((mx, my)) = self.mini_pos(i) else {
+                let Some(&(mxf, size)) = items.get(n + j) else {
                     continue;
                 };
-                let my = my + off;
+                let (mx, my) = (mxf as usize, (bottom - size) as usize);
                 let (_, _, ww, wh) = self.wins[i];
-                let d = DOCK_ICON as f32;
+                let d = size;
                 let k = (d / ww.max(1) as f32).min(d / wh.max(1) as f32) * 0.92;
                 let (tw, th) = (ww as f32 * k, wh as f32 * k);
                 let rect = (
@@ -3636,7 +3748,7 @@ impl Desktop {
                     1.0,
                 );
                 let badge = ICON[self.apps[i].prog];
-                let (bx, by) = (mx + DOCK_ICON - 16, my + DOCK_ICON - 16);
+                let (bx, by) = (mx + size as usize - 16, my + size as usize - 16);
                 self.screen
                     .round_rect(bx, by, 18, 18, 5, 0xFFFFFF, 255, [true; 4]);
                 self.screen
@@ -3645,17 +3757,19 @@ impl Desktop {
         }
         if let Some(hit) = self.hover {
             let small = self.face(FaceId::Regular13);
-            let (label, pos) = match hit {
-                DockHit::App(k) => (CATALOG[k].0, self.dock_pos(k)),
-                DockHit::Window(i) => (self.apps[i].title.as_str(), self.mini_pos(i)),
+            let (label, slot) = match hit {
+                DockHit::App(k) => (CATALOG[k].0, entries[..n].iter().position(|&p| p == k)),
+                DockHit::Window(i) => (
+                    self.apps[i].title.as_str(),
+                    self.minis.iter().position(|&w| w == i).map(|j| n + j),
+                ),
             };
             let lw = small.width(label).div_ceil(self.screen.s) + 20;
-            let Some((ix, iy)) = pos else {
+            let Some(&(ix, size)) = slot.and_then(|s| items.get(s)) else {
                 return;
             };
-            let iy = iy + off;
-            let lx = (ix + DOCK_ICON / 2).saturating_sub(lw / 2);
-            let ly = iy - 10 - 26;
+            let lx = ((ix + size / 2.0) as usize).saturating_sub(lw / 2);
+            let ly = (bottom - size) as usize - 10 - 26;
             self.screen
                 .round_rect(lx, ly, lw, 24, 6, t.tooltip, 255, [true; 4]);
             self.screen.round_outline(lx, ly, lw, 24, 6, t.outline);
@@ -3667,32 +3781,51 @@ impl Desktop {
     /// An application's dock icon: a rounded square in its colour with a
     /// simple white mark.
     /// Application `k`'s dock icon at (x, y), from its cached image.
-    fn draw_icon(&mut self, k: usize, x: usize, y: usize) {
+    /// Application `k`'s dock icon, `size` logical pixels square with its
+    /// top-left at (x, y): its cached image (drawn at `MAG_ICON`), scaled
+    /// down with bilinear filtering (docs/u2g-design.md).
+    fn draw_icon(&mut self, k: usize, x: f32, y: f32, size: f32) {
         let s = self.screen.s;
         let (bw, bh) = (ICON_BOX.0 * s, ICON_BOX.1 * s);
-        if !self
-            .screen
-            .visible(x - ICON_AT.0, y - ICON_AT.1, ICON_BOX.0, ICON_BOX.1)
-        {
+        let q = size / MAG_ICON as f32;
+        let (ox, oy) = (x - ICON_AT.0 as f32 * q, y - ICON_AT.1 as f32 * q);
+        let (vw, vh) = (ICON_BOX.0 as f32 * q, ICON_BOX.1 as f32 * q);
+        if !self.screen.visible(
+            ox.max(0.0) as usize,
+            oy.max(0.0) as usize,
+            vw as usize + 2,
+            vh as usize + 2,
+        ) {
             return;
         }
         if self.icons.len() != PROGRAMS || self.icons[k].len() != bw * bh {
             self.build_icons();
         }
-        let (x0, y0) = ((x - ICON_AT.0) * s, (y - ICON_AT.1) * s);
+        let sf = s as f32;
+        let (dx0, dy0) = (ox * sf, oy * sf);
+        let (dx1, dy1) = (dx0 + vw * sf, dy0 + vh * sf);
         let (cx0, cy0, cx1, cy1) = self.screen.clip;
         let sw = self.screen.w;
         let img = &self.icons[k];
-        for row in y0.max(cy0)..(y0 + bh).min(cy1) {
-            let (a, b) = (x0.max(cx0), (x0 + bw).min(cx1));
-            if a >= b {
-                continue;
-            }
-            let src = &img[(row - y0) * bw + (a - x0)..(row - y0) * bw + (b - x0)];
-            for (d, &c) in self.screen.back[row * sw + a..row * sw + b]
-                .iter_mut()
-                .zip(src)
-            {
+        let px = |x: usize, y: usize| img[y.min(bh - 1) * bw + x.min(bw - 1)];
+        for row in (dy0.max(0.0) as usize).max(cy0)..((dy1 + 0.999) as usize).min(cy1) {
+            let v = ((row as f32 + 0.5 - dy0) / q - 0.5).max(0.0);
+            let (y0, fy) = (v as usize, v - (v as usize) as f32);
+            for col in (dx0.max(0.0) as usize).max(cx0)..((dx1 + 0.999) as usize).min(cx1) {
+                let u = ((col as f32 + 0.5 - dx0) / q - 0.5).max(0.0);
+                let (x0, fx) = (u as usize, u - (u as usize) as f32);
+                if x0 >= bw || y0 >= bh {
+                    continue;
+                }
+                let c = bilerp(
+                    px(x0, y0),
+                    px(x0 + 1, y0),
+                    px(x0, y0 + 1),
+                    px(x0 + 1, y0 + 1),
+                    fx,
+                    fy,
+                );
+                let d = &mut self.screen.back[row * sw + col];
                 *d = over(*d, c);
             }
         }
@@ -3716,7 +3849,7 @@ impl Desktop {
                 let back = core::mem::replace(&mut self.screen.back, tmp);
                 let saved = (self.screen.w, self.screen.h, self.screen.clip);
                 (self.screen.w, self.screen.h, self.screen.clip) = (bw, bh, (0, 0, bw, bh));
-                app_icon(&mut self.screen, k, ICON_AT.0, ICON_AT.1, DOCK_ICON);
+                app_icon(&mut self.screen, k, ICON_AT.0, ICON_AT.1, MAG_ICON);
                 (self.screen.w, self.screen.h, self.screen.clip) = saved;
                 self.screen.back = back;
             }
@@ -3996,6 +4129,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         dock_off: DOCK_HIDDEN,
         dock_shown: false,
         dock_slide: None,
+        mag: 0.0,
+        mag_x: 0,
+        frame_prev: 0,
         dock_hide_at: None,
         banner: None,
     };

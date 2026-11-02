@@ -758,6 +758,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "dock-magnify",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: mouse_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "dock magnification: the icon under the pointer grows above the dock, its far neighbour less; it settles back when the pointer leaves",
+            interaction: Some(dock_magnify_steps()),
+            screen_checks: vec![
+                ("1-magnified", check_magnified),
+                ("2-settled", check_settled),
+            ],
+        },
+        Case {
             name: "dock-minis",
             mode: Mode::Normal,
             custom_image: None,
@@ -4832,9 +4848,100 @@ fn dock_expectation(normal: &Expectation) -> Expectation {
 /// A running dot under dock icon `k` (4 px, the menu-bar text colour).
 fn dock_dot(img: &screen::Image, k: usize) -> bool {
     let (x, y) = zui::dock_icon(SCREEN.0, SCREEN.1, 4, k);
-    let c = LIGHT.bar_text;
-    img.pixel(x + zui::DOCK_ICON / 2 - 1, y + zui::DOCK_ICON + 3)
-        == Some([(c >> 16) as u8, (c >> 8) as u8, c as u8])
+    img.pixel(x + zui::DOCK_ICON / 2 - 1, y + zui::DOCK_ICON + 3) == Some(rgb(LIGHT.bar_text))
+}
+
+/// The running dots' centres on the dock's dot row. With the pointer on
+/// the dock, icons are magnified and move (docs/u2g-design.md), so hover
+/// checks count dots and look under the pointer, where the hovered icon
+/// stays.
+fn dock_dots(img: &screen::Image) -> Vec<usize> {
+    let (x, y, w, _) = zui::dock_rect(SCREEN.0, SCREEN.1, 4);
+    let row = y + zui::DOCK_PAD + zui::DOCK_ICON + 3;
+    let mut out: Vec<usize> = Vec::new();
+    for px in x.saturating_sub(80)..x + w + 80 {
+        if img.pixel(px, row) == Some(rgb(LIGHT.bar_text))
+            && out.last().is_none_or(|&last| px > last + 6)
+        {
+            out.push(px);
+        }
+    }
+    out
+}
+
+fn dock_magnify_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        p.to((dock_centre(1).0, SCREEN.1 - 1)),
+        Action::Settle(DOCK_SLIDE),
+        // Onto Crash Test's icon: it grows.
+        p.to(dock_centre(1)),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-magnified"),
+        // Down to the very bottom edge: the dock stays, the icons settle.
+        p.to((dock_centre(1).0, SCREEN.1 - 1)),
+        Action::Settle(QUIET),
+        Action::Screenshot("2-settled"),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
+}
+
+/// Crash Test's grey tile (its gradient), not the wallpaper.
+fn tile_grey(p: Option<[u8; 3]>) -> bool {
+    p.is_some_and(|[r, g, b]| r.abs_diff(g) < 14 && g.abs_diff(b) < 16 && (100..=215).contains(&r))
+}
+
+/// How far above the dock's top edge the icon at x reaches (its tile's
+/// highest row), in px.
+fn reach_above_dock(img: &screen::Image, x: usize) -> usize {
+    let (_, dy, _, _) = zui::dock_rect(SCREEN.0, SCREEN.1, 4);
+    (1..40)
+        .take_while(|&k| tile_grey(img.pixel(x, dy - k)))
+        .count()
+}
+
+/// A column through Crash Test's tile, left of its warning sign, inside
+/// the icon at rest and magnified.
+fn crash_column() -> usize {
+    dock_centre(1).0 - 22
+}
+
+fn check_magnified(img: &screen::Image) -> Result<String, String> {
+    let x = crash_column();
+    let up = reach_above_dock(img, x);
+    tooltip(img, "Crash Test")?;
+    // Fully magnified: 84 px against 52, so 32 px above where it rests,
+    // which is 8 px below the dock's top: 24 px above the dock.
+    if up < 18 {
+        return Err(format!(
+            "Crash Test's icon reaches only {up} px above the dock; magnified it should reach about 24"
+        ));
+    }
+    Ok(format!(
+        "pointer on Crash Test: its icon reaches {up} px above the dock (magnified)"
+    ))
+}
+
+fn check_settled(img: &screen::Image) -> Result<String, String> {
+    let x = crash_column();
+    let up = reach_above_dock(img, x);
+    if up > 0 {
+        return Err(format!(
+            "Crash Test's icon still reaches {up} px above the dock after the pointer left the icons"
+        ));
+    }
+    if !dock_dot(img, 0) || !dock_dot(img, 1) || !dock_dot(img, 2) {
+        return Err("settled dock: dots not back at their places".into());
+    }
+    Ok("pointer below the icons: they are back at their size and places".into())
+}
+
+/// Whether one of `dots` is under x (within 6 px).
+fn dot_at(dots: &[usize], x: usize) -> bool {
+    dots.iter().any(|&d| d.abs_diff(x) <= 6)
 }
 
 fn dock_steps() -> Interaction {
@@ -4882,8 +4989,12 @@ fn dock_steps() -> Interaction {
 fn check_dock_shown(img: &screen::Image) -> Result<String, String> {
     let name = tooltip(img, "Files")?;
     no_tooltip(img, "Notes")?;
-    if !(0..3).all(|i| dock_dot(img, i)) || dock_dot(img, 3) {
-        return Err("running dots should mark the first three apps only".into());
+    let dots = dock_dots(img);
+    if dots.len() != 3 || !dot_at(&dots, dock_centre(0).0) {
+        return Err(format!(
+            "running dots should mark the first three apps only, one under the Files icon at x {}: {dots:?}",
+            dock_centre(0).0
+        ));
     }
     Ok(format!(
         "pointer on the Files icon: its name at {name:?}; running dots under the first three, none under Notes"
@@ -4905,8 +5016,12 @@ fn check_closed(img: &screen::Image) -> Result<String, String> {
 
 fn check_dock_closed(img: &screen::Image) -> Result<String, String> {
     tooltip(img, "Crash Test")?;
-    if !dock_dot(img, 0) || dock_dot(img, 1) || !dock_dot(img, 2) || dock_dot(img, 3) {
-        return Err("dots should mark Files and the Assistant only".into());
+    let dots = dock_dots(img);
+    if dots.len() != 2 || dot_at(&dots, dock_centre(1).0) || dots[0] >= dock_centre(1).0 {
+        return Err(format!(
+            "dots should mark Files and the Assistant only, none under Crash Test at x {}: {dots:?}",
+            dock_centre(1).0
+        ));
     }
     Ok(
         "dock: Crash Test's name shown, no running dot under it, dots under Files and Assistant"

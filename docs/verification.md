@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The N3 section
-(version 0.68.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The U2g section
+(version 0.69.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,28 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## UI step 2g results: dock magnification (version 0.69.0)
+
+Design: docs/u2g-design.md.
+
+**New case `dock-magnify`** (TCG): `OK`.
+- `1-magnified`: the pointer on Crash Test's icon; its tile reaches 24 px
+  above the dock's top edge, as designed (84 − 52 − 8).
+- `2-settled`: the pointer at the bottom edge; the tile is back below the
+  edge and the running dots are at their resting places.
+
+**Negative control:** magnification off → ``FAIL dock-magnify: … reaches
+only 0 px above the dock``.
+
+**Updated case:** `dock`'s hover screenshots count running dots and look
+for one under the pointer (magnified neighbours move; the first try with
+fixed positions failed on exactly that).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 85 cases `OK`.
+`assistant-live` passes with `--accel whpx` at `ZOO_OS BOOT
+version=0.69.0`. `cargo test -p xtask` (25), clippy on `zoo-user` and
+`xtask`, and `cargo fmt --check`: clean.
 
 ## Network step 3 results: the Network app and DNS (version 0.68.0)
 

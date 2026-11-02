@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## UI step 2g: dock magnification (2026-11-02)
+
+Design: docs/u2g-design.md. Version 0.69.0.
+
+- On by default (the Mac look the owner asked for), only while the
+  pointer is over the icons, so revealing the dock at the bottom edge does
+  not magnify.
+- Anchored at the pointer, clicks matched to resting positions: the same
+  click picks the same app as before, so existing behaviour and tests hold.
+- Icons cached at the magnified size and scaled down (bilinear), never up.
+
 ## Network step 3: the Network app and DNS (2026-11-02)
 
 Design: docs/n3-design.md. Version 0.68.0.
