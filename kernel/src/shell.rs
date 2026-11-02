@@ -203,7 +203,7 @@ fn execute(line: &str) {
             kprintln!("restart <svc>   stop a service; its restart policy starts it again");
             kprintln!("dir [path]      list a folder in your home folder");
             kprintln!("cat <path>      show a file from your home folder");
-            kprintln!("put <path> <t>  write text to a file in your home folder");
+            kprintln!("put <path> <t>  write text to a file in your home folder (\\t: a tab)");
             kprintln!("clear           clear the screen");
             kprintln!("panic           deliberate kernel panic");
             kprintln!("reboot          reset the machine (QEMU exits)");

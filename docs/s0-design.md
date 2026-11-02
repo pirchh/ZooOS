@@ -1,7 +1,7 @@
 # Stage 0: fix what the audit found
 
 Status: in progress (2026-11-02). B1, B2, B6 and B7 done in version
-0.74.0.
+0.74.0; B3, B4 and B8 in 0.75.0.
 
 Part of the Bella roadmap (docs/bella-roadmap.md). The problem numbers
 B1 to B15 come from the code audit (docs/bella-audit.md). Stage 0 removes
@@ -11,12 +11,12 @@ data loss and isolation holes before any new feature.
 | --- | --- | --- |
 | B1 | Notes cuts files over 8 KiB on save | fixed, version 0.74.0 |
 | B2 | A removed folder's handle reaches the next node in its slot | fixed, version 0.74.0 |
-| B3 | The memory learns wrong answers | open |
-| B4 | Planted memory lines run commands | open |
+| B3 | The memory learns wrong answers | fixed, version 0.75.0 |
+| B4 | Planted memory lines run commands | fixed, version 0.75.0 |
 | B5 | The desktop keeps a dead home handle after a BadgerHandler restart; restart limits never decay | open |
 | B6 | Bulk lengths are trusted up to 64 KiB, not checked against the mapping | fixed, version 0.74.0 |
 | B7 | One process can take every filesystem session | fixed, version 0.74.0 |
-| B8 | Memory matching on shared words picks the wrong folder | open |
+| B8 | Memory matching on shared words picks the wrong folder | fixed, version 0.75.0 |
 | B15 | docs/m5c1-design.md describes the filesystem as it was | open |
 
 ## B1: Notes keeps files whole
@@ -89,6 +89,54 @@ every other program unable to open its files.
 - **What is not counted:** handles in transit inside a message have no
   holder.
 
+## B3, B4, B8: the memory learns only right answers and replays only safe ones
+
+The memory (docs/a2-design.md) pairs a request in words with the command
+that answered it, in `.assistant-memory` in home.
+
+**B3, learning wrong answers:**
+- **The bug:**
+  - A `search` that found nothing still counted as an answer.
+  - A recalled command was learned again.
+  - Because the recall used up the request, a command typed after a wrong
+    recall was never learned as the correction.
+- **The fix:**
+  - OtterHandler finishes a search without matches with `none`, not `ok`.
+    The Assistant treats it as "ran, answered nothing": not learned, and
+    the request stays open for a typed command.
+  - A recall runs its command without learning it, then leaves the
+    request open, so a command typed next replaces the wrong pair (pairs
+    for the same request replace each other).
+  - Declining a `create` no longer drops an open request.
+
+**B4, planted lines:**
+- **The bug:** any program with write access to home can add lines to the
+  memory file, and recalled commands ran without the command filter. So a
+  planted `undo`, or any other text, ran with no model and no
+  confirmation.
+- **The fix:** only `search`, `list`, `inspect` and `create` are learned
+  or replayed (`RECALLABLE`).
+  - A remembered command that is anything else, or contains a tab or
+    newline, is ignored and logged: ``Assistant: ignored remembered `…` ``.
+  - The request then goes to the model as usual.
+  - `create` still asks before acting.
+
+**B8, the wrong folder:**
+- **The bug:** "make a new project folder for work called Receipts" shares
+  75% of its words with the same request for Invoices, so it recalled
+  `create Invoices`.
+- **The fix:**
+  - A remembered pair is recalled only if every name its command's
+    argument took from the remembered request is also in the new one.
+  - Names are the words, also split at `/`.
+  - Otherwise OtterHandler skips it:
+    ``OtterHandler: `create Invoices` names other things than `…` ``.
+
+**What it does not do:** the memory file still lives in home, writable by
+any program with home access. The filter limits what a planted line can
+do to what the user could type. Moving the file behind the broker's own
+handle is Stage 2.
+
 ## Checks
 
 - **`notes-large`:**
@@ -109,4 +157,20 @@ every other program unable to open its files.
   1. It opens folder channels until refused, which must happen at 20 to
      39 of them.
   2. It closes them all; opening one more must work again.
+- **`memory-guard`** (normal image, no model, so requests in words stay
+  open for a typed command):
+  1. In the shell, `put .assistant-memory where is my music	undo`.
+  2. In the Assistant, `where is my music` →
+     ``Assistant: ignored remembered `undo` ``.
+  3. `find my tax papers`, then `search taxes`, which finds nothing. The
+     test then checks that ``learned `find my tax papers` `` never appears
+     in the log.
+  4. `make a new project folder for work called Invoices`, then
+     `create Invoices` and `y` → learned.
+  5. The same request with `Receipts` (75% alike, enough to recall) →
+     OtterHandler's "names other things" line, and no
+     `Assistant: recalled` anywhere.
+- **New harness step `NeverSeen`:** fails a case if a line containing its
+  text appeared. The shell's `put` writes `	` as a tab, so the test can
+  plant a line.
 - **Negative controls:** one for each fix (docs/verification.md).

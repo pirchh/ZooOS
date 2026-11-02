@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 0: the memory (2026-11-02)
+
+Version 0.75.0. Design: docs/s0-design.md (B3, B4, B8).
+
+- Only `search`, `list`, `inspect` and `create` are learned or replayed.
+  Anything else in the memory file is ignored and logged, because any
+  program with home access can write that file.
+- A search with no matches finishes with `none`: it is shown but never
+  learned.
+- A recall is not learned again, and leaves the request open for a typed
+  correction.
+- A pair is recalled only if the names its command took from the
+  remembered request also appear in the new one.
+- The shell's `put` writes `	` as a tab. The test harness gains
+  `NeverSeen`, a check that a line never appeared.
+
 ## The Bella roadmap and Stage 0 (2026-11-02)
 
 The owner's direction: the assistant is named Bella. docs/bella-roadmap.md

@@ -770,6 +770,8 @@ impl Supervisor {
                 let (path, text) = rest.split_once(' ').unwrap_or((rest, ""));
                 let _ = file_create(home, path);
                 let r = file_truncate(home, path, 0).and_then(|_| {
+                    // `\t` writes a tab (the shell cannot type one).
+                    let text = text.replace("\\t", "\t");
                     let mut data = alloc::vec::Vec::from(text.as_bytes());
                     data.push(b'\n');
                     file_write(home, path, 0, &data)
