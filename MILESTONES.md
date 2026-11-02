@@ -160,6 +160,27 @@ lean set of daemons, as ARCHITECTURE.md intends.
 | S4b | Filesystem moved out of the kernel into a service, BadgerHandler (docs/s4-design.md) | done 2026-10-30 |
 | S5 | Disk driver (virtio) and crash-safe A/B snapshots: files survive a reboot (docs/s5-design.md) | done 2026-10-31 |
 
+## Bella roadmap (owner direction 2026-11-02)
+
+The assistant is named Bella. The plan is docs/bella-roadmap.md, built on
+the code audit in docs/bella-audit.md. Stages run in this order; each
+lands as small, separately verified steps.
+
+| Stage | Content | Status |
+| --- | --- | --- |
+| 0 | Fix what the audit found: B1 Notes truncation, B2 stale folder handles, B6 bulk buffer size, B7 sessions per process (docs/s0-design.md) | B1, B2, B6, B7 done 2026-11-02 |
+| 0 | B3, B4, B8 memory; B5 restarts and a fresh home handle; B15 m5c1 docs | open |
+| 1 | Measure: per-request timing, peak heap, assist-check with negative and "none of these" cases (B9), responsiveness | open |
+| 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |
+| 3 | XSAVE, CPU features, an AVX2 backend | open |
+| 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |
+| 5 | Bella v1: workflow templates, safe summarising, "none of these", model bake-off, memory provenance | open |
+| 6 | SMP | open |
+| 7 | Hardware base and real disks: ECAM, MSI-X, IOMMU, flushes (B11), USB storage | open |
+| 8 | GPU compute: RTX 3050, then RTX 5060 Ti, each milestone a stop point | open |
+| 9 | Voice | open |
+| 10 | Model tiers | open |
+
 ## Desktop steps (towards the owner's macOS-like goal)
 
 | Step | Content | Status |

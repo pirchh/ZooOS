@@ -261,6 +261,16 @@ pub fn shm_map(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::SHM_MAP, h, 0, 0))
 }
 
+/// The pid of the process holding the other end of channel `h`.
+pub fn channel_peer(h: Handle) -> Result<u64, Error> {
+    result(syscall(sys::CHANNEL_PEER, h, 0, 0))
+}
+
+/// The size in bytes of shared-memory object `h`.
+pub fn shm_size(h: Handle) -> Result<u64, Error> {
+    result(syscall(sys::SHM_SIZE, h, 0, 0))
+}
+
 /// Unmaps what `shm_map` mapped at `addr`.
 pub fn shm_unmap(addr: u64) -> Result<(), Error> {
     result(syscall(sys::SHM_UNMAP, addr, 0, 0)).map(|_| ())

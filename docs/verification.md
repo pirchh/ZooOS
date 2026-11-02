@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The A2b section
-(version 0.73.1) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Stage 0
+section (version 0.74.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,30 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 0 results: filesystem and Notes fixes (version 0.74.0)
+
+Design: docs/s0-design.md (B1, B2, B6, B7 of docs/bella-audit.md).
+
+| Check | Result | Negative control (the fix removed) |
+| --- | --- | --- |
+| `notes-large` (B1) | `OK`: `opened Music/liner-notes.txt (9230 bytes)`, `saved 9234 bytes` | Old behaviour (8 KiB, no read-only guard): `FAIL notes-large`, Notes logged `opened Music/liner-notes.txt (8192 bytes)` |
+| ArcticFoxTest 48 (B2), in `normal` | `OK` | `FAIL normal`: `arcticfox-test code=48`, ``check 48 failed: a removed folder's handle creates nothing`` |
+| ArcticFoxTest 49 (B6) | `OK` | `FAIL normal`: `crash pid=8 name=badger-handler fault=page-fault access=write`, which reproduces the audit's finding |
+| ArcticFoxTest 50 (B7) | `OK`: `pid 9 holds 31 folder channels; refused another` after 29 new ones | `FAIL normal`: `code=50`, after `opened 56 folder channels` |
+
+With the limit lowered to 8 KiB but the guard kept, Notes opened the file
+read-only (`is read-only: over 1 MiB, too large to edit`). That shows the
+guard works at any limit.
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 91 cases `OK`.
+`assistant-live` and `everyday-model` are skipped under TCG.
+`wine-home-1` and `wine-home-2`, which open many folders, were run
+separately with `--accel whpx`: both `OK`, so the per-process limit leaves
+Wine room.
+- clippy with `-D warnings` (kernel, `zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
+- `cargo test -p xtask`: 25 passed.
 
 ## Assistant step 2b results: names in any letter case (version 0.73.1)
 

@@ -137,6 +137,13 @@ pub mod sys {
     pub const NET_RECV: u64 = 71;
     /// The device's MAC address, in the low 48 bits (first byte lowest).
     pub const NET_MAC: u64 = 72;
+    /// The size in bytes of the shared-memory object `a1`, so a service
+    /// can check a client's buffer before using it (docs/s0-design.md, B6).
+    pub const SHM_SIZE: u64 = 73;
+    /// The pid of the process holding the other end of channel `a1`, so a
+    /// service can limit what each client takes (docs/s0-design.md, B7);
+    /// `NOT_FOUND` when no process holds it (closed, or in a message).
+    pub const CHANNEL_PEER: u64 = 74;
 }
 
 /// Largest Ethernet frame `NET_SEND` takes and `NET_RECV` returns.

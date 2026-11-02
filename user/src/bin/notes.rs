@@ -4,12 +4,17 @@
 //! typing, Enter and Backspace work at the cursor. Program text is
 //! coloured by its kind (by the file's extension). Changes are saved a
 //! second after typing stops, at Ctrl+S, and when the window closes.
+//!
+//! A file is edited only when it was read whole (docs/s0-design.md, B1):
+//! one over `CAPACITY`, or one that failed to read part-way, opens
+//! read-only with the reason in its header, and is never saved.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 use zoo_abi::ui::mark;
 use zoo_abi::{MAX_MESSAGE, WAIT_FOREVER};
@@ -19,8 +24,10 @@ use zoo_rt::{Error, Line, file_create, file_read, file_truncate, file_write, try
 zoo_rt::entry2!(main);
 
 const DEFAULT: &str = "Documents/notes.txt";
-/// Largest file Notes edits.
-const CAPACITY: usize = 8192;
+/// Largest file Notes edits; larger ones open read-only.
+const CAPACITY: usize = 1 << 20;
+/// Bytes read per request.
+const CHUNK: usize = 4096;
 /// Characters per shown line; longer lines wrap.
 const WRAP: usize = 72;
 /// Ticks after the last change before saving.
@@ -157,20 +164,21 @@ struct Editor {
     path: [u8; MAX_PATH],
     path_len: usize,
     lang: Lang,
-    text: [u8; CAPACITY],
+    text: Vec<u8>,
     len: usize,
+    /// Why the file cannot be edited, if it cannot: then it is never saved.
+    read_only: Option<&'static str>,
     /// A byte offset into the text.
     cursor: usize,
     /// The first visual line shown.
     top: usize,
     editing: bool,
     /// The colour role of each byte (`colour`).
-    roles: [u8; CAPACITY],
+    roles: Vec<u8>,
 }
 
 fn main(channel: u64, home: u64) -> u8 {
     let win = Window::new(channel);
-    // On the heap: 16 KiB of arrays is a lot for a stack.
     let ed = alloc_editor(home);
     if !ed.load(DEFAULT) {
         return 3;
@@ -224,12 +232,13 @@ fn alloc_editor(home: u64) -> &'static mut Editor {
         path: [0; MAX_PATH],
         path_len: 0,
         lang: Lang::Plain,
-        text: [0; CAPACITY],
+        text: Vec::new(),
         len: 0,
+        read_only: None,
         cursor: 0,
         top: 0,
         editing: false,
-        roles: [TEXT; CAPACITY],
+        roles: Vec::new(),
     }))
 }
 
@@ -238,35 +247,62 @@ impl Editor {
         core::str::from_utf8(&self.path[..self.path_len]).unwrap_or(DEFAULT)
     }
 
-    /// Reads `path` (a missing file is empty); false if it cannot be read.
+    /// Reads `path` (a missing file is empty); false if it cannot be read
+    /// at all. A file read only in part is shown read-only.
     fn load(&mut self, path: &str) -> bool {
         let k = path.len().min(MAX_PATH);
         self.path[..k].copy_from_slice(&path.as_bytes()[..k]);
         self.path_len = k;
         self.lang = Lang::of(path);
-        self.len = 0;
-        while self.len < CAPACITY {
+        self.text.clear();
+        self.read_only = None;
+        let mut ok = true;
+        // One byte past `CAPACITY` tells a file that is too large.
+        while self.text.len() <= CAPACITY {
+            let at = self.text.len();
+            let want = CHUNK.min(CAPACITY + 1 - at);
+            self.text.resize(at + want, 0);
             let path = core::str::from_utf8(&self.path[..self.path_len]).unwrap_or(DEFAULT);
-            match file_read(self.home, path, self.len as u64, &mut self.text[self.len..]) {
-                Ok(0) | Err(Error::NotFound) => break,
-                Ok(n) => self.len += n,
+            match file_read(self.home, path, at as u64, &mut self.text[at..]) {
+                Ok(0) | Err(Error::NotFound) => {
+                    self.text.truncate(at);
+                    break;
+                }
+                Ok(n) => self.text.truncate(at + n),
                 Err(e) => {
+                    self.text.truncate(at);
                     zoo_rt::log!("Notes: cannot read {}: {}", path, e.name());
-                    return false;
+                    self.read_only = Some("could not be read whole");
+                    ok = at > 0;
+                    break;
                 }
             }
+        }
+        if self.text.len() > CAPACITY {
+            self.text.truncate(CAPACITY);
+            self.read_only = Some("over 1 MiB, too large to edit");
+        }
+        self.len = self.text.len();
+        self.roles.resize(self.len, TEXT);
+        if let Some(why) = self.read_only {
+            zoo_rt::log!("Notes: {} is read-only: {}", self.path(), why);
         }
         // It starts at the end, as before.
         self.cursor = self.len;
         self.top = 0;
         self.editing = false;
         zoo_rt::log!("Notes: opened {} ({} bytes)", self.path(), self.len);
-        true
+        ok
     }
 
-    /// Rewrites the file; true on success.
+    /// Rewrites the file; true on success. A read-only file is never
+    /// written: what is shown may be only part of it.
     fn save(&self) -> bool {
         let path = self.path();
+        if let Some(why) = self.read_only {
+            zoo_rt::log!("Notes: not saving {}: {}", path, why);
+            return false;
+        }
         let text = &self.text[..self.len];
         let result = match file_truncate(self.home, path, 0) {
             Err(Error::NotFound) => file_create(self.home, path),
@@ -286,12 +322,11 @@ impl Editor {
     }
 
     fn insert(&mut self, b: u8) {
-        if self.len >= CAPACITY {
+        if self.len >= CAPACITY || self.read_only.is_some() {
             return;
         }
-        self.text
-            .copy_within(self.cursor..self.len, self.cursor + 1);
-        self.text[self.cursor] = b;
+        self.text.insert(self.cursor, b);
+        self.roles.push(TEXT);
         self.len += 1;
         self.cursor += 1;
         self.editing = true;
@@ -301,9 +336,9 @@ impl Editor {
         match key {
             Key::Char(c) if c.is_ascii() && !c.is_ascii_control() => self.insert(c as u8),
             Key::Enter => self.insert(b'\n'),
-            Key::Back if self.cursor > 0 => {
-                self.text
-                    .copy_within(self.cursor..self.len, self.cursor - 1);
+            Key::Back if self.cursor > 0 && self.read_only.is_none() => {
+                self.text.remove(self.cursor - 1);
+                self.roles.pop();
                 self.len -= 1;
                 self.cursor -= 1;
                 self.editing = true;
@@ -311,7 +346,7 @@ impl Editor {
             Key::Left => self.cursor = self.cursor.saturating_sub(1),
             Key::Right => self.cursor = (self.cursor + 1).min(self.len),
             Key::Up | Key::Down => self.vertical(key == Key::Up),
-            Key::Ctrl('s') => self.editing = !self.save(),
+            Key::Ctrl('s') if self.read_only.is_none() => self.editing = !self.save(),
             _ => {}
         }
     }
@@ -471,12 +506,15 @@ impl Editor {
         });
         win.title(title.as_str())?;
         let mut head = Line::new();
-        let _ = write!(
-            head,
-            "{} ({})",
-            self.path(),
-            if self.editing { "editing" } else { "saved" }
-        );
+        let _ = match self.read_only {
+            Some(why) => write!(head, "{} (read-only: {})", self.path(), why),
+            None => write!(
+                head,
+                "{} ({})",
+                self.path(),
+                if self.editing { "editing" } else { "saved" }
+            ),
+        };
         win.line(0, head.as_str())?;
         self.colour();
         // Keep the cursor's line in view.

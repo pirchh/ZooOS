@@ -787,6 +787,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "notes-large",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: notes_window_expectation(&normal),
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "Notes keeps a file over 8 KiB whole (B1): Music/liner-notes.txt (9,230 bytes) opened from Files, edited and saved is 9,234 bytes, not cut to 8 KiB",
+            interaction: Some(notes_large_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "assistant-any-case",
             mode: Mode::Normal,
             custom_image: None,
@@ -4681,6 +4694,37 @@ fn any_case_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
+}
+
+fn notes_large_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = start_desktop();
+    steps.extend([
+        // Music in the sidebar; liner-notes.txt is its first entry.
+        p.to(files_side(3)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: showing Home/Music".into()),
+        p.to(finder_line(1)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Notes: opened Music/liner-notes.txt (9230 bytes)".into()),
+        p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
+    ]);
+    steps.push(Action::Keys(typed("end")));
+    steps.extend([
+        Action::Key("ctrl", true),
+        Action::Keys(vec!["s"]),
+        Action::Key("ctrl", false),
+        // 9,230 bytes, `end` and the Enter `typed` adds.
+        Action::WaitContains("Notes: saved 9234 bytes".into()),
+        Action::Settle(QUIET),
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
+    Interaction { steps }
 }
 
 fn assistant_any_case_steps() -> Interaction {
