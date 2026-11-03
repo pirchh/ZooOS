@@ -185,6 +185,19 @@ fn model_bytes() -> Option<&'static [u8]> {
 fn service(chan: Handle) -> u8 {
     // Inference yields to the desktop (docs/stage2-design.md, B12).
     let _ = zoo_rt::set_background(true);
+    // The matrix work split across processors (docs/smp-design.md, step
+    // 3): one worker per other processor.
+    let cpus = zoo_rt::cpu_count();
+    if cpus > 1
+        && let Some(pool) = zoo_rt::pool::Workers::start(cpus - 1)
+    {
+        zoo_infer::par::set_pool(pool);
+        zoo_rt::log!(
+            "ElephantHandler: {} threads for the model ({} processors)",
+            zoo_infer::par::width(),
+            cpus
+        );
+    }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     let Some(file) = model_bytes() else {
         let _ = log("ElephantHandler: service: model not installed");

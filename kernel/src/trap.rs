@@ -108,6 +108,11 @@ unsafe extern "C" fn trap_common() {
         "cld",
         "call {dispatch}",
         "mov rsp, rax",
+        // Now on the resumed task's stack: the task left may run elsewhere
+        // (docs/smp-design.md). RSP is the frame's start, 16-byte aligned
+        // as at the call above; every register is reloaded from the frame
+        // below.
+        "call {after_switch}",
         "pop r15",
         "pop r14",
         "pop r13",
@@ -127,6 +132,7 @@ unsafe extern "C" fn trap_common() {
         "add rsp, 16",
         "iretq",
         dispatch = sym trap_dispatch,
+        after_switch = sym crate::smp::after_switch,
     );
 }
 
@@ -252,7 +258,13 @@ extern "C" fn trap_dispatch(frame: *mut TrapFrame) -> *mut TrapFrame {
     let f = unsafe { &mut *frame };
     match f.vector {
         VEC_TIMER => {
-            interrupts::on_timer_tick();
+            // Ticks are counted, and devices polled, on the boot processor;
+            // the others only acknowledge (docs/smp-design.md).
+            if crate::smp::this_cpu() == 0 {
+                interrupts::on_timer_tick();
+            } else {
+                crate::apic::eoi();
+            }
             process::on_timer(frame)
         }
         VEC_KEYBOARD | VEC_MOUSE => {

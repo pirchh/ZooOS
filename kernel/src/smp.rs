@@ -32,6 +32,66 @@ static ONLINE: AtomicU32 = AtomicU32::new(1);
 static STARTED: AtomicBool = AtomicBool::new(false);
 /// The kernel's level-4 table, for `ap_entry`.
 static KERNEL_P4: AtomicU64 = AtomicU64::new(0);
+/// Processor index by local APIC id, and APIC id by index.
+static CPU_OF_APIC: [core::sync::atomic::AtomicU8; 256] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; 256];
+static APIC_OF_CPU: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+/// The page table each processor runs on now (step 2): which processors a
+/// change to an address space concerns.
+static CPU_CR3: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Set by a processor that changed an address space another processor is
+/// running; cleared by that processor once it has flushed its TLB.
+static FLUSH: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+/// Processors with nothing to run, woken by `WAKE_VECTOR` when a task
+/// becomes ready.
+static IDLE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+/// The task whose kernel stack each processor is still on after
+/// switching away from it (`usize::MAX`: none). Until `after_switch`
+/// clears it, no other processor may run that task, which would push onto
+/// the same stack (docs/smp-design.md).
+static LEAVING: [core::sync::atomic::AtomicUsize; MAX_CPUS] =
+    [const { core::sync::atomic::AtomicUsize::new(usize::MAX) }; MAX_CPUS];
+
+/// Tasks each processor has switched to (a user task, not its idle loop):
+/// evidence that work runs everywhere (the shell's `cpus`).
+static SWITCHES: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Counts a switch to a task on this processor.
+pub fn count_switch() {
+    SWITCHES[this_cpu()].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Each online processor's switch count, for the shell.
+pub fn for_each_cpu(mut f: impl FnMut(usize, u64)) {
+    let n = ONLINE.load(Ordering::Relaxed) as usize;
+    for (c, count) in SWITCHES.iter().enumerate().take(n) {
+        f(c, count.load(Ordering::Relaxed));
+    }
+}
+
+/// Notes that this processor is still on task `task`'s kernel stack.
+pub fn leaving(task: usize) {
+    LEAVING[this_cpu()].store(task, Ordering::SeqCst);
+}
+
+/// Whether some processor is still on task `task`'s kernel stack.
+pub fn is_leaving(task: usize) -> bool {
+    let n = ONLINE.load(Ordering::Relaxed) as usize;
+    (0..n).any(|c| LEAVING[c].load(Ordering::SeqCst) == task)
+}
+
+/// Called by `trap_common` once this processor is on the next task's
+/// stack: the one it left may now run elsewhere.
+pub extern "C" fn after_switch() {
+    // Always: with one processor too, `leaving` was set and must clear.
+    LEAVING[this_cpu()].store(usize::MAX, Ordering::SeqCst);
+}
+
+/// The scheduler is ready: started processors may begin taking tasks.
+static RELEASED: AtomicBool = AtomicBool::new(false);
+/// IPI vectors (docs/smp-design.md): flush your TLB; look for work.
+pub const FLUSH_VECTOR: u8 = 0xF1;
+pub const WAKE_VECTOR: u8 = 0xF2;
 
 /// Records the low pages, from the bootloader's memory map: four whole
 /// usable pages at or above 0x1000 and below 0x9F000 (SIPI can start a
@@ -55,6 +115,90 @@ pub fn set_low_pages(regions: &[bootloader_api::info::MemoryRegion]) -> usize {
 
 pub fn online() -> u32 {
     ONLINE.load(Ordering::Relaxed)
+}
+
+/// This processor's index: 0 for the boot processor.
+pub fn this_cpu() -> usize {
+    if ONLINE.load(Ordering::Relaxed) == 1 {
+        return 0;
+    }
+    match crate::apic::id() {
+        Some(id) => usize::from(CPU_OF_APIC[(id & 0xFF) as usize].load(Ordering::Relaxed)),
+        None => 0,
+    }
+}
+
+/// Records the page table this processor now runs on.
+pub fn set_cr3(p4: u64) {
+    CPU_CR3[this_cpu()].store(p4, Ordering::SeqCst);
+}
+
+/// Records whether this processor has nothing to run.
+pub fn set_idle(idle: bool) {
+    IDLE[this_cpu()].store(idle, Ordering::SeqCst);
+}
+
+/// After an address space `p4` changed: every other processor running it
+/// flushes its TLB, and this waits (bounded) until each has, so no frame
+/// that left the space is reused while another processor can still reach
+/// it through a stale entry.
+pub fn shootdown(p4: u64) {
+    let n = ONLINE.load(Ordering::Relaxed) as usize;
+    if n == 1 {
+        return;
+    }
+    let me = this_cpu();
+    let mut any = false;
+    for c in 0..n {
+        if c != me && CPU_CR3[c].load(Ordering::SeqCst) == p4 {
+            FLUSH[c].store(true, Ordering::SeqCst);
+            crate::apic::send_fixed(APIC_OF_CPU[c].load(Ordering::Relaxed), FLUSH_VECTOR);
+            any = true;
+        }
+    }
+    if !any {
+        return;
+    }
+    for _ in 0..10_000_000u64 {
+        if (0..n).all(|c| !FLUSH[c].load(Ordering::SeqCst)) {
+            return;
+        }
+        // Another processor may be asking this one meanwhile.
+        service_flush();
+        core::hint::spin_loop();
+    }
+    kprintln!("ZOO_OS INFO smp: TLB shootdown not acknowledged");
+}
+
+/// Flushes this processor's TLB if another processor asked (from the
+/// flush IPI, and while waiting for a lock with interrupts off).
+pub fn service_flush() {
+    let me = this_cpu();
+    if FLUSH[me].load(Ordering::SeqCst) {
+        let (frame, flags) = Cr3::read();
+        // SAFETY: reloading the same CR3 changes no mapping; it only drops
+        // this processor's non-global TLB entries.
+        unsafe { Cr3::write(frame, flags) };
+        FLUSH[me].store(false, Ordering::SeqCst);
+    }
+}
+
+/// Wakes processors with nothing to run, so a task made ready is picked
+/// up now rather than at their next tick.
+pub fn wake_idle() {
+    let n = ONLINE.load(Ordering::Relaxed) as usize;
+    let me = this_cpu();
+    for c in 1..n {
+        if c != me && IDLE[c].load(Ordering::SeqCst) {
+            crate::apic::send_fixed(APIC_OF_CPU[c].load(Ordering::Relaxed), WAKE_VECTOR);
+        }
+    }
+}
+
+/// Lets the started processors take tasks (step 2): call once the
+/// scheduler exists.
+pub fn release() {
+    RELEASED.store(true, Ordering::SeqCst);
 }
 
 // The trampoline (AT&T syntax). It is copied to a low page `T` and entered
@@ -183,6 +327,7 @@ pub fn start_all(mem: &mut Memory) {
             return;
         }
     };
+    APIC_OF_CPU[0].store(bsp, Ordering::Relaxed);
     let others: Vec<u32> = ids.into_iter().filter(|&id| id != bsp).collect();
     if others.is_empty() {
         kprintln!("ZOO_OS INFO smp cpus=1");
@@ -231,6 +376,8 @@ pub fn start_all(mem: &mut Memory) {
         if cpu >= MAX_CPUS {
             break;
         }
+        CPU_OF_APIC[(id & 0xFF) as usize].store(cpu as u8, Ordering::Relaxed);
+        APIC_OF_CPU[cpu].store(id, Ordering::Relaxed);
         start_one(t, id, cpu as u64, &virt);
     }
     kprintln!("ZOO_OS INFO smp cpus={}", online());
@@ -283,7 +430,7 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
         let p4 = PhysFrame::containing_address(PhysAddr::new(KERNEL_P4.load(Ordering::Relaxed)));
         Cr3::write(p4, Cr3Flags::empty());
     }
-    crate::gdt::init_ap();
+    crate::gdt::init_ap(cpu as usize);
     crate::interrupts::load_idt();
     let _ = crate::fpu::init();
     crate::apic::init_ap();
@@ -295,9 +442,22 @@ extern "C" fn ap_entry(cpu: u64) -> ! {
     );
     let _ = n;
     STARTED.store(true, Ordering::SeqCst);
-    // Parked: no tasks run here yet (docs/smp-design.md, step 1).
+    // Parked until the scheduler exists (step 2).
+    while !RELEASED.load(Ordering::SeqCst) {
+        core::hint::spin_loop();
+    }
+    set_cr3(KERNEL_P4.load(Ordering::Relaxed));
+    set_idle(true);
+    crate::apic::start_timer_ap();
+    // The idle loop: halt until an interrupt (the tick, or a wake), then
+    // offer the processor to a ready task. The scheduler saves this loop's
+    // frame when it switches away and resumes it when nothing is ready.
     loop {
+        x86_64::instructions::interrupts::enable_and_hlt();
         x86_64::instructions::interrupts::disable();
-        x86_64::instructions::hlt();
+        // SAFETY: vector 0x81 is the ring-0 yield gate (`trap.rs`), whose
+        // stub builds a `TrapFrame` like any interrupt; the scheduler
+        // resumes this frame right after the instruction.
+        unsafe { core::arch::asm!("int 0x81") };
     }
 }

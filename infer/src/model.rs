@@ -134,40 +134,36 @@ pub const BATCH: usize = 16;
 /// products as `matvec`, so the same results.
 fn matmul(w: &TensorInfo, xs: &[f32], outs: &mut [f32], n: usize) {
     let (rows, cols) = (w.rows, w.cols);
+    let bytes = w.row_bytes() * rows;
+    // Rows split across processors (docs/smp-design.md, step 3).
     if quant::int8_for(w.ty) {
         // Each token's vector quantized once (docs/int8-design.md).
         let qs: Vec<quant::Q8x> = (0..n)
             .map(|t| quant::Q8x::from(&xs[t * cols..(t + 1) * cols]))
             .collect();
-        for r in 0..rows {
-            let row = w.row(r);
-            for (t, q) in qs.iter().enumerate() {
-                outs[t * rows + r] = quant::dot_q8x(w.ty, row, q);
-            }
-        }
+        crate::par::fill(outs, rows, n, bytes, &|r, t| {
+            quant::dot_q8x(w.ty, w.row(r), &qs[t])
+        });
         return;
     }
-    for r in 0..rows {
-        let row = w.row(r);
-        for t in 0..n {
-            outs[t * rows + r] = quant::dot(w.ty, row, &xs[t * cols..(t + 1) * cols]);
-        }
-    }
+    crate::par::fill(outs, rows, n, bytes, &|r, t| {
+        quant::dot(w.ty, w.row(r), &xs[t * cols..(t + 1) * cols])
+    });
 }
 
 /// `out[r] = W[r] · x` for every row.
 fn matvec(w: &TensorInfo, x: &[f32], out: &mut [f32]) {
+    let rows = w.rows.min(out.len());
+    let bytes = w.row_bytes() * rows;
     if quant::int8_for(w.ty) {
         // Quantized once, used for every row (docs/int8-design.md).
         let q = quant::Q8x::from(x);
-        for (r, o) in out.iter_mut().enumerate().take(w.rows) {
-            *o = quant::dot_q8x(w.ty, w.row(r), &q);
-        }
+        crate::par::fill(out, rows, 1, bytes, &|r, _| {
+            quant::dot_q8x(w.ty, w.row(r), &q)
+        });
         return;
     }
-    for (r, o) in out.iter_mut().enumerate().take(w.rows) {
-        *o = quant::dot(w.ty, w.row(r), x);
-    }
+    crate::par::fill(out, rows, 1, bytes, &|r, _| quant::dot(w.ty, w.row(r), x));
 }
 
 fn rmsnorm(out: &mut [f32], x: &[f32], weight: &[f32], eps: f32) {

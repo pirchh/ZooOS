@@ -132,8 +132,33 @@ struct HandleEntry {
 /// A channel message: bytes, or one handle in transit with a tag
 /// (docs/s3-design.md).
 enum Msg {
-    Bytes(Vec<u8>),
+    /// The bytes, and what they count against their sender's limit (none
+    /// for messages the kernel sends).
+    Bytes(
+        Vec<u8>,
+        // Held for its `Drop`, which gives the bytes back.
+        #[allow(dead_code)] Option<Charge>,
+    ),
     Handle(HandleEntry, u64),
+}
+
+/// Bytes a program may have waiting in channel queues at once
+/// (docs/heap-design.md): ample for its messages, and far below the kernel
+/// heap, so one program flooding queues cannot starve everyone else's.
+const QUEUED_LIMIT: usize = 1024 * 1024;
+
+/// A queued message's share of its sender's `QUEUED_LIMIT`, given back
+/// when the message is dropped: received, discarded with its channel, or
+/// outliving the sender.
+struct Charge {
+    meter: Arc<core::sync::atomic::AtomicUsize>,
+    bytes: usize,
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.meter.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
 }
 
 /// Releases what a handle held. Channel ends close (the peer sees
@@ -159,6 +184,9 @@ fn release(entry: HandleEntry) {
 /// What the threads of one process share: address space, handles and
 /// memory regions (docs/posix1-design.md §2).
 struct Proc {
+    /// Bytes of this program's messages waiting in queues
+    /// (`QUEUED_LIMIT`, docs/heap-design.md).
+    queued: Arc<core::sync::atomic::AtomicUsize>,
     pid: u64,
     name: String,
     p4: PhysFrame,
@@ -320,7 +348,16 @@ struct Task {
     /// An `mmap` of a home-folder file being filled across re-runs of the
     /// call (docs/linux10d-design.md).
     home_map: Option<HomeMap>,
+    /// The processor running it now, or `NO_CPU` (docs/smp-design.md): no
+    /// other processor may pick it, and it is not freed while set.
+    on_cpu: u8,
 }
+
+/// `Task::on_cpu` when it runs on no processor.
+const NO_CPU: u8 = 0xFF;
+/// `Scheduler::current` on a non-boot processor with nothing to run: its
+/// idle loop (docs/smp-design.md).
+const AP_IDLE: usize = usize::MAX;
 
 /// Gathered writes to a home-folder file: descriptor, path, where the
 /// bytes start, the bytes.
@@ -373,6 +410,7 @@ impl Task {
             clear_tid: 0,
             fs_hold: false,
             home_map: None,
+            on_cpu: NO_CPU,
         }
     }
 }
@@ -380,6 +418,7 @@ impl Task {
 impl Proc {
     fn new(pid: u64, name: &str, p4: PhysFrame) -> Proc {
         Proc {
+            queued: Arc::new(core::sync::atomic::AtomicUsize::new(0)),
             pid,
             name: String::from(name),
             cmdline: String::from(name),
@@ -510,6 +549,13 @@ fn err(e: Error) -> Outcome {
 }
 
 struct Scheduler {
+    /// The processor holding the scheduler now (docs/smp-design.md), and
+    /// each processor's current task, swapped into `current` while it
+    /// holds the lock, so code written for one processor reads its own.
+    cpu: usize,
+    cur_of: [usize; crate::smp::MAX_CPUS],
+    /// Each non-boot processor's idle-loop frame, while it runs a task.
+    ap_idle_frame: [u64; crate::smp::MAX_CPUS],
     tasks: Vec<Option<Task>>,
     procs: Vec<Option<Proc>>,
     /// (pid, tid, code) of exited threads, for `wait` on a thread handle;
@@ -568,21 +614,79 @@ static SCHED: Mutex<Option<Scheduler>> = Mutex::new(None);
 /// may be preempted (docs/m3-design.md §3).
 static KERNEL_IDLE: AtomicBool = AtomicBool::new(false);
 
+/// The processor holding `SCHED` (`usize::MAX`: none), to tell a
+/// re-entrant use (a kernel bug) from another processor's turn.
+static SCHED_OWNER: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(usize::MAX);
+
+/// `SCHED` held by this processor; clears the owner when dropped.
+struct SchedGuard(spin::MutexGuard<'static, Option<Scheduler>>);
+
+impl Drop for SchedGuard {
+    fn drop(&mut self) {
+        SCHED_OWNER.store(usize::MAX, Ordering::SeqCst);
+    }
+}
+
+/// Takes the scheduler lock, waiting while another processor holds it
+/// (and flushing this processor's TLB if asked meanwhile, so two
+/// processors never wait on each other). Interrupts must be disabled. A
+/// re-entrant use on this processor panics with a clear message instead
+/// of deadlocking.
+fn lock_sched() -> SchedGuard {
+    let me = crate::smp::this_cpu();
+    loop {
+        if let Some(g) = SCHED.try_lock() {
+            SCHED_OWNER.store(me, Ordering::SeqCst);
+            return SchedGuard(g);
+        }
+        if SCHED_OWNER.load(Ordering::SeqCst) == me {
+            panic!("scheduler lock already held (re-entrant use)");
+        }
+        crate::smp::service_flush();
+        core::hint::spin_loop();
+    }
+}
+
+/// Runs `f` with the scheduler as this processor sees it: `current` is
+/// this processor's task. Wakes idle processors if it leaves a task ready
+/// that none runs (docs/smp-design.md).
+fn sched_run<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> Option<R> {
+    let mut g = lock_sched();
+    let s = g.0.as_mut()?;
+    let cpu = crate::smp::this_cpu();
+    s.cpu = cpu;
+    s.current = s.cur_of[cpu];
+    let entered = s.current;
+    let r = memory::with(|m| f(s, m));
+    s.cur_of[cpu] = s.current;
+    // Switched away from a task whose kernel stack this processor is on
+    // until `trap_common` moves to the next one: held until then.
+    if s.current != entered && entered != AP_IDLE && entered != 0 {
+        crate::smp::leaving(entered);
+    }
+    let wake = crate::smp::online() > 1 && s.unclaimed_ready();
+    drop(g);
+    if wake {
+        crate::smp::wake_idle();
+    }
+    Some(r)
+}
+
 fn with_sched<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> R {
-    cpu_interrupts::without_interrupts(|| {
-        let mut g = SCHED
-            .try_lock()
-            .expect("scheduler lock already held (re-entrant use)");
-        let s = g.as_mut().expect("scheduler not initialised");
-        memory::with(|m| f(s, m))
-    })
+    cpu_interrupts::without_interrupts(|| sched_run(f).expect("scheduler not initialised"))
 }
 
 pub fn init() {
     cpu_interrupts::without_interrupts(|| {
         let mut tasks = Vec::with_capacity(64);
         tasks.push(Some(Task::new(0, 0, "kernel")));
+        let mut cur_of = [AP_IDLE; crate::smp::MAX_CPUS];
+        cur_of[0] = 0;
         *SCHED.lock() = Some(Scheduler {
+            cpu: 0,
+            cur_of,
+            ap_idle_frame: [0; crate::smp::MAX_CPUS],
             tasks,
             procs: Vec::new(),
             thread_exits: Vec::new(),
@@ -614,7 +718,7 @@ fn user_ready() -> bool {
                 .iter()
                 .skip(1)
                 .flatten()
-                .any(|t| t.state == State::Ready)
+                .any(|t| t.state == State::Ready && t.on_cpu == NO_CPU)
         })
     })
 }
@@ -772,7 +876,7 @@ fn control_channel(mode: &[u8]) -> (HandleEntry, HandleEntry) {
         open: [true, true],
     }));
     // Side 1 is Zookeeper's: its receive queue holds the mode.
-    chan.lock().queues[1].push_back(Msg::Bytes(mode.to_vec()));
+    chan.lock().queues[1].push_back(Msg::Bytes(mode.to_vec(), None));
     let rights = RIGHT_SEND | RIGHT_RECV;
     let kernel_end = HandleEntry {
         object: Object::Endpoint {
@@ -824,7 +928,7 @@ pub fn supervisor_send(msg: &[u8]) -> Result<(), Error> {
             } else if c.queues[1].len() >= CHANNEL_DEPTH {
                 Err(Error::Full)
             } else {
-                c.queues[1].push_back(Msg::Bytes(msg.to_vec()));
+                c.queues[1].push_back(Msg::Bytes(msg.to_vec(), None));
                 Ok(())
             }
         };
@@ -851,7 +955,7 @@ pub fn supervisor_try_recv() -> Option<Vec<u8>> {
             s.wake_all();
         }
         match m {
-            Some(Msg::Bytes(b)) => Some(b),
+            Some(Msg::Bytes(b, _)) => Some(b),
             // A handle is kept for the next desktop session (the only
             // handle the supervisor sends the kernel); reported as `<handle>`.
             Some(Msg::Handle(e, tag)) if tag == zoo_abi::TAG_SESSION_LINE => {
@@ -992,8 +1096,16 @@ impl Scheduler {
     /// programs (docs/vectors-design.md) run only when no normal or
     /// background task is ready, and get no such turn.
     fn pick_next(&self) -> usize {
+        if self.cpu != 0 {
+            return self.pick_ap();
+        }
         let n = self.tasks.len();
-        let ready = |i: usize| matches!(&self.tasks[i], Some(t) if t.state == State::Ready);
+        // Ready, and not running on another processor.
+        let ready = |i: usize| {
+            matches!(&self.tasks[i], Some(t)
+                if t.state == State::Ready && (t.on_cpu == NO_CPU || t.on_cpu == 0))
+                && !crate::smp::is_leaving(i)
+        };
         // 0 normal, 1 background, 2 idle.
         let class = |i: usize| {
             self.tasks[i]
@@ -1035,6 +1147,67 @@ impl Scheduler {
             .or_else(|| order.clone().find(|&i| ready(i) && class(i) == 1))
             .or_else(|| order.clone().find(|&i| ready(i)))
             .unwrap_or(0)
+    }
+
+    /// `pick_next` on a non-boot processor (docs/smp-design.md): a ready
+    /// task no other processor runs, never the kernel task and never a
+    /// Linux program's (their `syscall` entry is the boot processor's);
+    /// normal before background before idle; else `AP_IDLE`.
+    fn pick_ap(&self) -> usize {
+        let n = self.tasks.len();
+        let cpu = self.cpu as u8;
+        let ok = |i: usize| {
+            i != 0
+                && matches!(&self.tasks[i], Some(t)
+                    if t.state == State::Ready
+                        && (t.on_cpu == NO_CPU || t.on_cpu == cpu)
+                        && t.proc.is_some())
+                && !self.is_linux(i)
+                && !crate::smp::is_leaving(i)
+        };
+        let class = |i: usize| {
+            self.tasks[i]
+                .as_ref()
+                .and_then(|t| t.proc)
+                .and_then(|p| self.procs[p].as_ref())
+                .map_or(0, |p| u8::from(p.background) + u8::from(p.idle))
+        };
+        let start = if self.current == AP_IDLE {
+            0
+        } else {
+            self.current
+        };
+        let order = (1..=n).map(|k| (start + k) % n);
+        order
+            .clone()
+            .find(|&i| ok(i) && class(i) == 0)
+            .or_else(|| order.clone().find(|&i| ok(i) && class(i) == 1))
+            .or_else(|| order.clone().find(|&i| ok(i)))
+            .unwrap_or(AP_IDLE)
+    }
+
+    /// Whether a ready task waits that no processor runs and a non-boot
+    /// processor could (docs/smp-design.md).
+    fn unclaimed_ready(&self) -> bool {
+        (1..self.tasks.len()).any(|i| {
+            matches!(&self.tasks[i], Some(t)
+                if t.state == State::Ready && t.on_cpu == NO_CPU && t.proc.is_some())
+                && !self.is_linux(i)
+        })
+    }
+
+    /// The task running on this processor until now stops running here.
+    fn leave(&mut self, next: usize) {
+        let c = self.current;
+        if c == next || c == AP_IDLE {
+            return;
+        }
+        let cpu = self.cpu as u8;
+        if let Some(Some(t)) = self.tasks.get_mut(c)
+            && t.on_cpu == cpu
+        {
+            t.on_cpu = NO_CPU;
+        }
     }
 
     /// Whether the running task belongs to a background program.
@@ -1295,7 +1468,11 @@ impl Scheduler {
         let current = self.current;
         let mut keep = Vec::new();
         for i in core::mem::take(&mut self.zombies) {
-            if i == current {
+            // Not while any processor still runs it (docs/smp-design.md).
+            if i == current
+                || self.tasks[i].as_ref().is_some_and(|t| t.on_cpu != NO_CPU)
+                || crate::smp::is_leaving(i)
+            {
                 keep.push(i);
                 continue;
             }
@@ -1343,6 +1520,21 @@ impl Scheduler {
     /// pending system call first; if it blocks or exits again, moves on.
     fn activate(&mut self, mut i: usize, mem: &mut Memory) -> *mut TrapFrame {
         loop {
+            if i == AP_IDLE {
+                // Nothing to run here: back to this processor's idle loop,
+                // on the kernel's own table (docs/smp-design.md).
+                self.leave(AP_IDLE);
+                self.current = AP_IDLE;
+                let (cr3, flags) = Cr3::read();
+                if cr3 != mem.kernel_p4 {
+                    // SAFETY: the kernel's table maps the whole kernel half,
+                    // so the code and stack in use stay mapped.
+                    unsafe { Cr3::write(mem.kernel_p4, flags) };
+                }
+                crate::smp::set_cr3(mem.kernel_p4.start_address().as_u64());
+                crate::smp::set_idle(true);
+                return self.ap_idle_frame[self.cpu] as *mut TrapFrame;
+            }
             let (cr3, _) = Cr3::read();
             let flags = Cr3::read().1;
             let t = self.task(i);
@@ -1358,8 +1550,19 @@ impl Scheduler {
                 // so the code and stack in use stay mapped across the switch.
                 unsafe { Cr3::write(want, flags) };
             }
+            self.leave(i);
             self.current = i;
-            self.tasks[i].as_mut().expect("activated task").last_ran = interrupts::ticks();
+            crate::smp::set_cr3(want.start_address().as_u64());
+            if self.cpu != 0 {
+                crate::smp::set_idle(false);
+            }
+            let cpu = self.cpu as u8;
+            let at = self.tasks[i].as_mut().expect("activated task");
+            at.last_ran = interrupts::ticks();
+            at.on_cpu = cpu;
+            if i != 0 {
+                crate::smp::count_switch();
+            }
             let t = self.task(i);
             if t.p4.is_some() {
                 // User FS base (thread-local storage). Kernel code does not
@@ -3785,7 +3988,7 @@ impl Scheduler {
                 if c.queues[1 - side].len() >= CHANNEL_DEPTH {
                     return FsStep::Fail(EAGAIN);
                 }
-                c.queues[1 - side].push_back(Msg::Bytes(m));
+                c.queues[1 - side].push_back(Msg::Bytes(m, None));
             }
             self.task(i).fs_pending = true;
             self.wake_all();
@@ -3797,8 +4000,8 @@ impl Scheduler {
             match c.queues[side].front() {
                 None if c.open[1 - side] => return FsStep::Wait,
                 None => None,
-                Some(Msg::Bytes(_)) => match c.queues[side].pop_front() {
-                    Some(Msg::Bytes(b)) => Some(b),
+                Some(Msg::Bytes(..)) => match c.queues[side].pop_front() {
+                    Some(Msg::Bytes(b, _)) => Some(b),
                     _ => None,
                 },
                 Some(Msg::Handle(..)) => None,
@@ -6931,6 +7134,11 @@ impl Scheduler {
                 if heap::low(a3 as usize) {
                     return err(Error::NoMem);
                 }
+                // This program's own limit first (docs/heap-design.md).
+                let meter = self.proc(i).queued.clone();
+                if meter.load(Ordering::Relaxed) + a3 as usize > QUEUED_LIMIT {
+                    return err(Error::NoMem);
+                }
                 {
                     let mut c = chan.lock();
                     let peer = 1 - side;
@@ -6942,7 +7150,12 @@ impl Scheduler {
                     }
                     // SAFETY: checked readable user range in the active space.
                     let msg = unsafe { core::slice::from_raw_parts(a2 as *const u8, a3 as usize) };
-                    c.queues[peer].push_back(Msg::Bytes(msg.to_vec()));
+                    meter.fetch_add(msg.len(), Ordering::Relaxed);
+                    let charge = Charge {
+                        meter,
+                        bytes: msg.len(),
+                    };
+                    c.queues[peer].push_back(Msg::Bytes(msg.to_vec(), Some(charge)));
                 }
                 self.wake_all();
                 Outcome::Ret(0)
@@ -6971,12 +7184,12 @@ impl Scheduler {
                         };
                     }
                     Some(Msg::Handle(..)) => return err(Error::WrongKind),
-                    Some(Msg::Bytes(b)) => b.len(),
+                    Some(Msg::Bytes(b, _)) => b.len(),
                 };
                 if len as u64 > a3 {
                     return err(Error::TooSmall);
                 }
-                let Some(Msg::Bytes(msg)) = c.queues[side].pop_front() else {
+                let Some(Msg::Bytes(msg, _)) = c.queues[side].pop_front() else {
                     unreachable!("front is a bytes message");
                 };
                 // SAFETY: checked writable user range of `a3 >= len` bytes in
@@ -7295,6 +7508,7 @@ impl Scheduler {
                     Err(_) => err(Error::Fault),
                 }
             }
+            sys::CPU_COUNT => Outcome::Ret(i64::from(crate::smp::online())),
             sys::SET_BACKGROUND => {
                 // a1 = 1: this program runs only when nothing else is
                 // ready (docs/stage2-design.md); 0: back to normal.
@@ -7574,7 +7788,7 @@ impl Scheduler {
                         } else {
                             Outcome::Block
                         }),
-                        Some(Msg::Bytes(_)) => Err(err(Error::WrongKind)),
+                        Some(Msg::Bytes(..)) => Err(err(Error::WrongKind)),
                         Some(Msg::Handle(..)) => match c.queues[side].pop_front() {
                             Some(Msg::Handle(e, tag)) => Ok((e, tag)),
                             _ => unreachable!("front is a handle message"),
@@ -8398,6 +8612,15 @@ impl Scheduler {
         // next program reuses warm frames (docs/f2-design.md).
         self.reap(mem);
         let cur = self.current;
+        if cur == AP_IDLE {
+            // A non-boot processor's idle loop offers the processor.
+            self.ap_idle_frame[self.cpu] = frame as u64;
+            let next = self.pick_next();
+            if next == AP_IDLE {
+                return frame;
+            }
+            return self.activate(next, mem);
+        }
         let t = self.task(cur);
         t.frame = frame as u64;
         if let Some(area) = &mut t.fpu {
@@ -9648,11 +9871,7 @@ fn log_user(pid: u64, name: &str, bytes: &[u8]) {
 /// Locks for the dispatcher. Interrupts are already off; a held lock here
 /// means a kernel bug, so say so rather than deadlock.
 fn dispatch_locked<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> Option<R> {
-    let mut g = SCHED
-        .try_lock()
-        .expect("scheduler lock held when a trap arrived");
-    let s = g.as_mut()?;
-    Some(memory::with(|m| f(s, m)))
+    sched_run(f)
 }
 
 pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
@@ -9668,7 +9887,7 @@ pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
         if input_pending() {
             s.wake_input_waiters();
         }
-        if s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
+        if s.cpu == 0 && s.current == 0 && !KERNEL_IDLE.load(Ordering::Relaxed) {
             return frame;
         }
         // Preemption: round-robin. The kernel task takes a turn only when it

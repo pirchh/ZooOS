@@ -150,6 +150,27 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## More than one processor, steps 2 and 3 (2026-11-03)
+
+Version 0.97.0. Design: docs/smp-design.md.
+
+- **One kernel lock,** with each processor's current task swapped in,
+  instead of rewriting the scheduler. Programs run in parallel; kernel
+  code runs on one processor at a time.
+- **A task stays in hand until its old processor is off its stack**
+  (`smp::after_switch` from `trap_common`). This was the first crash
+  found.
+- **Linux programs stay on the boot processor.** Their `syscall` entry has
+  one scratch stack variable.
+- **The model's matrix rows split across a worker pool.** Results are
+  identical, because the dot products are the same.
+- **Each program may have 1 MiB of messages queued.** The 4-processor
+  suite showed the shared heap reserve alone let one program starve the
+  services (docs/heap-design.md).
+- **`run` uses 8 processors.** `verify` keeps 1 unless `--cpus`.
+- **Measured:** with 8 processors, 0.5B answers every case in under a
+  second, and Qwen3 small talk takes 0.78 s.
+
 ## More than one processor, step 1 (2026-11-03)
 
 Version 0.96.0. Design: docs/smp-design.md. The owner's 16-core PC ran

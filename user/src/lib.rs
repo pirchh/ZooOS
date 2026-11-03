@@ -16,6 +16,7 @@ pub mod fsproto;
 mod heap;
 pub use heap::stats as heap_stats;
 pub mod net;
+pub mod pool;
 pub mod thread;
 pub mod vm;
 
@@ -289,6 +290,11 @@ pub fn model_read_of(which: u64, block: u64, buf: &mut [u8]) -> Result<(), Error
         buf.as_mut_ptr() as u64,
     ))
     .map(|_| ())
+}
+
+/// Processors online (docs/smp-design.md).
+pub fn cpu_count() -> usize {
+    result(syscall(sys::CPU_COUNT, 0, 0, 0)).map_or(1, |n| n.max(1) as usize)
 }
 
 /// Runs this program only when no normal or background program is ready

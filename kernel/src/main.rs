@@ -240,6 +240,9 @@ fn run(mut mem: memory::Memory) -> ! {
     // The other processors: started and parked (docs/smp-design.md).
     memory::with(smp::start_all);
     process::init();
+    // The scheduler exists: the other processors may take tasks
+    // (docs/smp-design.md, step 2).
+    smp::release();
     if cfg!(feature = "fast-boot") {
         // The check programs are tests; verify runs them on the normal
         // kernel (docs/b1-design.md).

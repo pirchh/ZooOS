@@ -1,15 +1,18 @@
 # More than one processor
 
-Status: step 1 of 3 implemented in version 0.96.0: the other processors
-start and park. The owner's goal is answers in under a second
+Status: implemented, steps 1 to 3. Step 1 is in version 0.96.0; steps 2
+and 3 are in 0.97.0. The owner's goal is answers in under a second
 (2026-11-03), and their PC has 16 cores (an i9-12900K), while ZooOS used
-one. Steps 2 and 3 are proposals until they land.
+one.
 
 | Step | What | Status |
 | --- | --- | --- |
 | 1 | Find the processors, start them, give each its own GDT, TSS and local APIC, park them | done, 0.96.0 |
-| 2 | Run tasks on every processor: one kernel lock, a current task per processor, idle loops, TLB shootdown, Linux programs on processor 0 | proposed |
-| 3 | The model's matrix work split across processors (worker threads) | proposed |
+| 2 | Run tasks on every processor: one kernel lock, a current task per processor, idle loops, TLB shootdown, Linux programs on processor 0 | done, 0.97.0 |
+| 3 | The model's matrix work split across processors (worker threads) | done, 0.97.0 |
+
+**`cargo xtask run` uses 8 processors** (`--cpus` changes it).
+`cargo xtask verify` uses 1 unless `--cpus N`; `smp-` cases use at least 4.
 
 ## Step 1: starting the processors
 
@@ -74,7 +77,7 @@ processor (`qemu::set_cpus`, 1 unless a case's name starts with `smp-`).
 processor ran garbage and reset the machine, and the case gave `FAIL`
 (`early-exit`). A broken start-up path is caught, not hidden.
 
-## Step 2, proposed: tasks on every processor
+## Step 2: tasks on every processor (as built)
 
 - **One kernel lock.** The scheduler lock becomes a spin lock that any
   processor may wait for, with re-entry on the same processor still a
@@ -94,3 +97,77 @@ processor ran garbage and reset the machine, and the case gave `FAIL`
   space that another processor is running, that processor is told by IPI
   to flush, and acknowledges before the frames are reused. A process that
   ends is not freed while any of its threads still runs elsewhere.
+
+What it took, beyond the plan:
+
+- **Locks wait, and flush meanwhile.** `lock_sched` and `memory::with`
+  wait while another processor holds the lock. While waiting, they serve a
+  flush request (`smp::service_flush`): a processor waiting with
+  interrupts off would otherwise never acknowledge a shootdown, and two
+  processors would wait on each other. Re-entry on the same processor
+  still panics with a clear message.
+- **Idle.** A non-boot processor with nothing to run is in its idle loop
+  (`Scheduler::current` is `AP_IDLE`): `sti; hlt`, then `int 0x81` to offer
+  itself. `activate(AP_IDLE)` goes back to the loop's saved frame, on the
+  kernel's own table. A processor with nothing to do is woken by
+  `WAKE_VECTOR` when a dispatch leaves a ready task that none runs
+  (`unclaimed_ready`, `smp::wake_idle`).
+- **The stack hand-off.** This was the first bug found: two processors
+  crashed on one kernel stack. A processor switching away from a task
+  still runs on that task's kernel stack until `trap_common` loads the
+  next one, but it had already released the lock, and another processor
+  could resume the task on the same stack. Now the task stays in hand
+  (`smp::leaving`, `is_leaving`) until `trap_common` calls
+  `smp::after_switch` on the new stack. A first version cleared it only
+  with more than one processor online, which hung a thread forever on a
+  single processor; it always clears now.
+- **Per processor:** a TSS (`gdt::set_kernel_stack` writes this
+  processor's), the local APIC timer at the BSP's calibration, the page
+  table it runs on (`smp::set_cr3`, for shootdowns), and a switch count
+  (the shell's `cpus`).
+- **The boot processor only:** ticks are counted and devices polled
+  there (other processors only acknowledge their timer); the kernel
+  task; Linux programs (`pick_ap` skips them).
+- **The serial log keeps its order.** A line is formatted whole, then
+  written in one piece (`console::_kprintln`). A processor that finds the
+  output buffer busy waits for it, instead of writing past the buffer,
+  which put lines out of order and mixed others' text into the middle of
+  a line. Only a fault on the processor that holds it writes directly.
+
+## Step 3: the model's matrix work split
+
+- **`zoo_infer::par`.** The engine has no threads, so it asks a `Pool`
+  that a program installs: a "parallel for" over jobs. `par::fill`
+  computes `out[t * rows + r] = value(r, t)` with the rows split into
+  `4 × width` jobs. Products of less than 256 KiB of weights are not
+  split. `matvec` and `matmul` use it, and the dot products per row are
+  unchanged, so results are identical; the host test `fill_matches_serial`
+  checks it against a pool on std threads.
+- **`zoo_rt::pool::Workers`,** the guest's pool:
+  - one worker thread per other processor;
+  - each batch has a generation, and a worker claims job indices by
+    compare-and-swap on one word holding the generation and the next
+    index, so a worker that wakes late cannot run a job of a batch that
+    has moved on;
+  - workers spin about 20,000 times between batches, then sleep on a
+    futex.
+- **`CPU_COUNT` (78):** processors online. ElephantHandler installs the
+  pool when there is more than one.
+
+## Measured (WHPX, whole reply; first words in brackets)
+
+| Request | 0.5B, 1 | 0.5B, 4 | 0.5B, 8 | Qwen3 `Q4_0`, 1 | Qwen3 `Q4_0`, 4 | Qwen3 `Q4_0`, 8 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Small talk | 0.61 s (0.17) | — | **0.25 s (0.07)** | 2.55 s (1.40) | 2.71 s (1.49) | **0.78 s (0.43)** |
+| From a fact | 0.93 s (0.54) | 0.39 s (0.22) | **0.30 s (0.18)** | 3.49 s (2.22) | 1.72 s (1.14) | **1.32 s (0.86)** |
+| Summarise `Documents/notes.txt` | 1.67 s (1.27) | 1.02 s (0.78) | **0.68 s (0.52)** | 13.8 s (10.4) | 6.33 s (4.23) | **4.42 s (2.97)** |
+| Warm-up, system prompt | 2.8 s | 1.6 s | 1.1 s | 14.0 s | 6.5–18.3 s | 5.2 s |
+
+With 8 processors **the default model answers every case in under a
+second**, and Qwen3 answers small talk in 0.78 s.
+
+The runs vary. One Qwen3 4-processor small-talk run was no faster than one
+processor, with an 18.3 s warm-up. The host was busy with other QEMU
+runs, and WHPX schedules each virtual processor as a host thread. The
+0.5B small-talk row with 4 processors failed in this sweep, on the log
+mixing fixed since (`smp-boot` and `bella-talk` then passed 3 runs in 3).

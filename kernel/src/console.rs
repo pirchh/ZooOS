@@ -257,11 +257,51 @@ macro_rules! kprint {
     };
 }
 
+/// A line being formatted, at most `LINE_MAX` bytes (more is cut).
+struct LineBuf {
+    buf: [u8; LINE_MAX],
+    len: usize,
+}
+
+/// Longest line `kprintln` writes whole (a 1 KiB message and its prefix).
+const LINE_MAX: usize = 1280;
+
+impl fmt::Write for LineBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for &b in s.as_bytes() {
+            if self.len == LINE_MAX {
+                break;
+            }
+            self.buf[self.len] = b;
+            self.len += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Formats the whole line first, then writes it in one piece, so lines
+/// from different processors never mix (docs/smp-design.md).
+#[doc(hidden)]
+pub fn _kprintln(args: fmt::Arguments) {
+    use fmt::Write;
+    let mut line = LineBuf {
+        buf: [0; LINE_MAX],
+        len: 0,
+    };
+    let _ = line.write_fmt(args);
+    let _ = line.write_str("\n");
+    // Cutting may split a UTF-8 sequence: keep the valid prefix.
+    let text = match core::str::from_utf8(&line.buf[..line.len]) {
+        Ok(t) => t,
+        Err(e) => core::str::from_utf8(&line.buf[..e.valid_up_to()]).unwrap_or(""),
+    };
+    _kprint(format_args!("{}", text));
+}
+
 /// Prints a line to COM1 and the screen.
 #[macro_export]
 macro_rules! kprintln {
     ($($arg:tt)*) => {{
-        $crate::console::_kprint(format_args!($($arg)*));
-        $crate::console::_kprint(format_args!("\n"));
+        $crate::console::_kprintln(format_args!($($arg)*));
     }};
 }

@@ -35,6 +35,11 @@ unsafe impl Sync for TssCell {}
 
 static TSS: TssCell = TssCell(UnsafeCell::new(TaskStateSegment::new()));
 
+/// Each processor's TSS (docs/smp-design.md): the boot processor's is
+/// `TSS`; the others' are leaked by `init_ap`.
+static TSS_OF: [core::sync::atomic::AtomicPtr<TaskStateSegment>; crate::smp::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()) }; crate::smp::MAX_CPUS];
+
 pub struct Selectors {
     pub kernel_code: SegmentSelector,
     pub kernel_data: SegmentSelector,
@@ -79,18 +84,27 @@ pub fn selectors() -> &'static Selectors {
 /// Interrupts must be disabled, and `top` must be the 16-byte-aligned top of
 /// a mapped kernel stack that stays mapped while the next user task runs.
 pub unsafe fn set_kernel_stack(top: u64) {
-    // SAFETY: per the contract, nothing else is accessing the TSS now; the
-    // write goes through the raw pointer without forming a reference.
-    unsafe { (*TSS.0.get()).privilege_stack_table[0] = VirtAddr::new(top) };
-    // The `syscall` entry has no TSS switch; it reads this copy.
-    crate::trap::set_syscall_stack(top);
+    let cpu = crate::smp::this_cpu();
+    let mut tss = TSS_OF[cpu].load(core::sync::atomic::Ordering::Relaxed);
+    if tss.is_null() {
+        tss = TSS.0.get();
+    }
+    // SAFETY: per the contract, nothing else is accessing this processor's
+    // TSS now (only this processor writes it); the write goes through the
+    // raw pointer without forming a reference.
+    unsafe { (*tss).privilege_stack_table[0] = VirtAddr::new(top) };
+    // The `syscall` entry has no TSS switch; it reads this copy. Linux
+    // programs, its only users, run on the boot processor.
+    if cpu == 0 {
+        crate::trap::set_syscall_stack(top);
+    }
 }
 
 /// A non-boot processor's own GDT and TSS (docs/smp-design.md): the same
 /// segments, so the same selectors, but its own TSS (its own double-fault
 /// stack). Built on the heap and never freed. Call once on that
 /// processor, with interrupts disabled.
-pub fn init_ap() {
+pub fn init_ap(cpu: usize) {
     use alloc::boxed::Box;
     let stack: &'static mut [u8] =
         Box::leak(alloc::vec![0u8; DOUBLE_FAULT_STACK_SIZE].into_boxed_slice());
@@ -103,7 +117,9 @@ pub fn init_ap() {
     let _user_data = table.append(Descriptor::user_data_segment());
     let _user_code = table.append(Descriptor::user_code_segment());
     // SAFETY: the TSS is leaked, so it outlives the GDT that points at it.
-    let tss_sel = table.append(unsafe { Descriptor::tss_segment_unchecked(tss) });
+    let tss_ptr: *mut TaskStateSegment = tss;
+    let tss_sel = table.append(unsafe { Descriptor::tss_segment_unchecked(tss_ptr) });
+    TSS_OF[cpu].store(tss_ptr, core::sync::atomic::Ordering::Relaxed);
     let table: &'static GlobalDescriptorTable = Box::leak(Box::new(table));
     table.load();
     // SAFETY: the selectors come from the GDT just loaded (the same layout

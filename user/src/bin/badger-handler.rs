@@ -1023,7 +1023,7 @@ fn main(control: u64, disk: u64) -> u8 {
         }
         match try_recv(control, &mut buf) {
             Ok(n) if &buf[..n] == b"ping" => {
-                if send(control, b"pong").is_err() {
+                if zoo_rt::app::send_wait(control, b"pong").is_err() {
                     return 0;
                 }
             }

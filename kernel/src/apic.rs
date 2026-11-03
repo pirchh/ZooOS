@@ -37,6 +37,10 @@ static LAPIC: AtomicU64 = AtomicU64::new(0);
 /// `delay_us` (docs/smp-design.md).
 static PM_PORT: AtomicU64 = AtomicU64::new(0);
 static PM_32: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// The calibrated timer count per tick and its vector, for the other
+/// processors' timers (docs/smp-design.md).
+static PER_TICK: AtomicU64 = AtomicU64::new(0);
+static TIMER_VECTOR: AtomicU64 = AtomicU64::new(0);
 // Interrupt command register (docs/smp-design.md).
 const ICR_LOW: u64 = 0x300;
 const ICR_HIGH: u64 = 0x310;
@@ -119,6 +123,25 @@ fn send_ipi(apic: u32, low: u32) {
         }
         core::hint::spin_loop();
     }
+}
+
+/// A fixed IPI on `vector` to local APIC `apic` (docs/smp-design.md).
+pub fn send_fixed(apic: u32, vector: u8) {
+    send_ipi(apic, u32::from(vector));
+}
+
+/// Starts this (non-boot) processor's timer at the boot processor's
+/// calibrated rate.
+pub fn start_timer_ap() {
+    let base = LAPIC.load(Ordering::Relaxed);
+    let per_tick = PER_TICK.load(Ordering::Relaxed) as u32;
+    if base == 0 || per_tick == 0 {
+        return;
+    }
+    let vector = TIMER_VECTOR.load(Ordering::Relaxed) as u32;
+    write(base, TIMER_DIVIDE, 0x3);
+    write(base, LVT_TIMER, 1 << 17 | vector);
+    write(base, TIMER_INITIAL, per_tick);
 }
 
 /// INIT, level assert (docs/smp-design.md).
@@ -317,5 +340,7 @@ pub fn init(mem: &mut Memory, vector: u8) -> Result<(u32, u16), &'static str> {
     write(base, LVT_TIMER, 1 << 17 | u32::from(vector));
     write(base, TIMER_INITIAL, per_tick as u32);
     LAPIC.store(base, Ordering::Relaxed);
+    PER_TICK.store(per_tick, Ordering::Relaxed);
+    TIMER_VECTOR.store(u64::from(vector), Ordering::Relaxed);
     Ok((per_tick as u32, pm_port))
 }

@@ -29,6 +29,9 @@ pub struct Settings {
     pub timeout: Duration,
     pub negative_timeout: Duration,
     pub settle: Duration,
+    /// `--cpus N`: processors for every case (docs/smp-design.md); `smp-`
+    /// cases get at least 4.
+    pub cpus: u8,
 }
 
 /// Inspects a screenshot; `Ok` carries a summary, `Err` why it failed.
@@ -1535,7 +1538,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: normal.clone(),
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&["ZOO_OS SHELL line=cpus"]);
+                e
+            },
             timeout: s.timeout,
             want: "pass",
             purpose: "the other processors (docs/smp-design.md, step 1): with 4 processors the MADT lists 4, the 3 others start through the trampoline, report online with their own GDT, TSS and local APIC, and park; the boot runs as before",
@@ -1546,6 +1553,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitSeen("ZOO_OS INFO cpu 3 online apic=".into()),
                     Action::WaitSeen("ZOO_OS INFO smp cpus=4".into()),
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    // The boot's programs ran on the other processors too
+                    // (step 2).
+                    Action::Keys(typed("cpus")),
+                    Action::WaitNumbers(
+                        "ZOO_OS INFO cpu 1 switches=".into(),
+                        vec![("switches=", 1, u64::MAX)],
+                    ),
+                    Action::WaitNumbers(
+                        "ZOO_OS INFO cpu 2 switches=".into(),
+                        vec![("switches=", 1, u64::MAX)],
+                    ),
+                    Action::WaitNumbers(
+                        "ZOO_OS INFO cpu 3 switches=".into(),
+                        vec![("switches=", 1, u64::MAX)],
+                    ),
                 ],
             }),
             screen_checks: vec![],
@@ -2738,7 +2760,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         };
         qemu::set_usb(c.usb);
         // The other processors (docs/smp-design.md).
-        qemu::set_cpus(if c.name.starts_with("smp-") { 4 } else { 1 });
+        qemu::set_cpus(if c.name.starts_with("smp-") {
+            s.cpus.max(4)
+        } else {
+            s.cpus
+        });
         // The everyday system's model comes on the model disk.
         qemu::set_model_disk(if c.name == "everyday-model" || c.name == "bella-vectors" {
             model_image.as_ref().map(|m| m.1.1.clone())

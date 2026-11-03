@@ -173,6 +173,9 @@ pub fn flush() {
     }
 }
 
+/// The processor printing through `TX` now (`usize::MAX`: none).
+static TX_OWNER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
+
 pub struct Serial;
 
 impl fmt::Write for Serial {
@@ -192,17 +195,30 @@ impl fmt::Write for Serial {
             direct(s);
             return Ok(());
         }
-        without_interrupts(|| match TX.try_lock() {
-            Some(mut tx) => {
-                for byte in s.bytes() {
-                    if byte == b'\n' {
-                        tx.push(b'\r');
-                    }
-                    tx.push(byte);
+        without_interrupts(|| {
+            // Held by another processor: wait for it, so lines keep their
+            // order (docs/smp-design.md). Held by this one (a fault or
+            // panic while printing): write directly rather than deadlock.
+            let me = crate::smp::this_cpu();
+            let mut tx = loop {
+                if let Some(tx) = TX.try_lock() {
+                    break tx;
                 }
-                tx.pump();
+                if TX_OWNER.load(Ordering::SeqCst) == me {
+                    direct(s);
+                    return;
+                }
+                core::hint::spin_loop();
+            };
+            TX_OWNER.store(me, Ordering::SeqCst);
+            for byte in s.bytes() {
+                if byte == b'\n' {
+                    tx.push(b'\r');
+                }
+                tx.push(byte);
             }
-            None => direct(s),
+            tx.pump();
+            TX_OWNER.store(usize::MAX, Ordering::SeqCst);
         });
         Ok(())
     }

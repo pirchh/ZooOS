@@ -158,6 +158,8 @@ pub mod sys {
     /// which model in its top byte (`MODEL_WHICH_SHIFT`), `a2` = count (at
     /// most `BLOCK_RUN_MAX`), `a3` = buffer of count * 4 KiB.
     pub const MODEL_READ: u64 = 77;
+    /// Processors online (docs/smp-design.md).
+    pub const CPU_COUNT: u64 = 78;
 }
 
 /// `MODEL_READ`'s block argument carries which model above this bit.
