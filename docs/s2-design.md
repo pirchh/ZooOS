@@ -7,7 +7,7 @@ failing, and never stalls the desktop.
 | Item | Status |
 | --- | --- |
 | B12: scheduler priorities; the model runs in the background | done, version 0.79.0 |
-| Warm the system prompt in the background at desktop start | open |
+| Warm the system prompt in the background at desktop start | done, version 0.80.0 |
 | The model on the data disk | open |
 | B10: disk requests off the scheduler lock | open |
 | Restart ElephantHandler and OtterHandler with back-off | open |
@@ -62,3 +62,55 @@ model reads its system prompt):
 most 150‰ (1.5 ms) over at least 20 events.
 - **Negative control:** ElephantHandler not marking itself background →
   `FAIL` (`tick: mean 481 outside 0..=150`).
+
+## 2. The warm-up
+
+**The problem:** Bella started the model service on the first request in
+words. That request then paid for reading the 76-token system prompt:
+4.7 s of a 6.0 s answer, against about 1.5 s for later requests.
+
+**The design:**
+- **Bella starts ElephantHandler as it opens** and sends `warm`, when the
+  model is in the initial filesystem. An image without the model behaves
+  as before.
+- **ElephantHandler reads the system prompt then**, as a background
+  program (§1), so the desktop does not wait for it. It logs `warmed up:
+  system prompt N tokens in T ms`.
+- **A request arriving during the warm-up** is kept and answered when the
+  warm-up ends. It is told `busy setup done/total` at once, and at every
+  later step, so Bella shows progress.
+- **A `cancel` during the warm-up** drops the kept request and answers
+  `err cancelled`. The warm-up goes on.
+- **Without the model,** ElephantHandler ignores `warm`: it expects no
+  answer.
+
+**Process order:** the model service is now started before the file
+broker (pid 31, then 32, in the desktop's test cases with the model).
+
+**Measured** (`--accel whpx`):
+
+| | Before | After |
+| --- | --- | --- |
+| First request, Enter to answer (`bella-live`, asked after the warm-up) | 6,103 ms | **1,042 to 1,082 ms** |
+| Second request | 1,600 ms | 1,619 ms |
+| Warm-up at desktop start | — | 4.1 to 5.8 s, in the background |
+| Request arriving during the warm-up (`everyday-model`) | 6,002 ms | 3,186 ms |
+| Input wait during the warm-up, mean (`responsiveness`) | — | 1‰ of a tick, the same as idle |
+
+The first request is now about as fast as later ones, as the roadmap's
+"done when" asks.
+
+**Checks:**
+- **`bella-live`** waits for `warmed up`, then requires the first answer
+  within 3,000 ms.
+- **`responsiveness`** now moves the pointer during the warm-up and
+  requires the warm-up to end after the figures, so the model was busy
+  throughout. It then measures idle.
+- **`bella-model`** (TCG; its request arrives during the warm-up) still
+  shows `Thinking:` and still cancels.
+
+**Negative controls:**
+- **Bella not sending `warm`:** `FAIL bella-live`. Its expectation already
+  fails on the model service starting late.
+- **ElephantHandler not background, with the warm-up:**
+  `FAIL responsiveness` (`tick: mean` 501).

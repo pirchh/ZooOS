@@ -39,6 +39,8 @@ const RECALLABLE: [&str; 4] = ["search", "list", "inspect", "create"];
 fn recallable(command: &str) -> bool {
     RECALLABLE.contains(&command.split(' ').next().unwrap_or(""))
 }
+/// The model, in the initial filesystem (as ElephantHandler finds it).
+const MODEL_FILE: &str = "models/qwen2.5-0.5b-instruct-q4_0.gguf";
 const HINT: &str = "Ask in words, or type search/list/inspect/create/undo.";
 /// A remembered request at least this alike (percent of shared words)
 /// is answered from memory, without the model (docs/a2-design.md).
@@ -90,6 +92,7 @@ fn main(chan: u64, home: u64) -> u8 {
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
     }
+    p.warm();
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let mut busy = false;
@@ -370,23 +373,42 @@ impl App {
         }
     }
 
-    fn ask_model(&mut self, text: &str) {
-        if self.elephant.is_none() {
-            let Ok((mine, theirs)) = channel_create() else {
-                self.say("Error: cannot start the model service.");
-                return;
-            };
-            match spawn("elephant-handler", Some(theirs)) {
-                Ok(process) => {
-                    let _ = close(process);
-                    self.elephant = Some(mine);
-                }
-                Err(_) => {
-                    let _ = close(mine);
-                    self.say("Error: cannot start the model service.");
-                    return;
-                }
+    /// Starts the model service and has it read the system prompt now, in
+    /// the background, when the model is installed (docs/s2-design.md).
+    fn warm(&mut self) {
+        if zoo_rt::fs_find(MODEL_FILE).is_none() || !self.start_model() {
+            return;
+        }
+        if let Some(e) = self.elephant {
+            let _ = send_wait(e, b"warm");
+        }
+    }
+
+    /// Starts ElephantHandler if it is not running; false if it cannot.
+    fn start_model(&mut self) -> bool {
+        if self.elephant.is_some() {
+            return true;
+        }
+        let Ok((mine, theirs)) = channel_create() else {
+            return false;
+        };
+        match spawn("elephant-handler", Some(theirs)) {
+            Ok(process) => {
+                let _ = close(process);
+                self.elephant = Some(mine);
+                true
             }
+            Err(_) => {
+                let _ = close(mine);
+                false
+            }
+        }
+    }
+
+    fn ask_model(&mut self, text: &str) {
+        if !self.start_model() {
+            self.say("Error: cannot start the model service.");
+            return;
         }
         let mut msg = String::from("choose ");
         msg.push_str(text);

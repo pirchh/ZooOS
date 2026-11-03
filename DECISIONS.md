@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 2: the warm-up (2026-11-02)
+
+Version 0.80.0. Design: docs/s2-design.md §2.
+
+- **Bella starts the model service as it opens** (when the model is
+  installed) and asks it to read the system prompt in the background.
+- **The first request now takes about 1 s,** like later ones; it took 6 s.
+- **A request during the warm-up** is kept and answered after it, with
+  progress shown; `cancel` drops it.
+
 ## Stage 2: background programs (2026-11-02)
 
 Version 0.79.0. Design: docs/s2-design.md (B12).
