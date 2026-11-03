@@ -131,11 +131,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     );
 
     gdt::init();
-    fpu::init();
+    let fpu = fpu::init();
     interrupts::init_idt(boot_info.kernel_stack_bottom);
     trap::init_syscall();
     apic::set_rsdp(boot_info.rsdp_addr.into_option().unwrap_or(0));
     let mem = memory::init(boot_info);
+    // Not a marker line: the CPU decides it (docs/stage3-design.md).
+    kprintln!(
+        "cpu: xsave={} avx={} register state {} bytes",
+        fpu.xsave,
+        fpu.avx,
+        fpu.size
+    );
     kprintln!(
         "ZOO_OS INFO memory phys_offset={:#x} stack_bottom={:#x} stack_len={:#x} heap={:#x}+{:#x}",
         mem.phys_offset,

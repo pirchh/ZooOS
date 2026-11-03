@@ -247,10 +247,16 @@ fn machine_args(
             "virtio-blk-pci,drive=model,disable-modern=on".into(),
         ]);
     }
-    // TCG uses the fixed `qemu64` model. With a hardware accelerator QEMU's
-    // default model is used: `-cpu max` made OVMF fault under WHPX.
-    if accel == "tcg" {
-        args.extend(["-cpu".into(), "qemu64".into()]);
+    // TCG uses the fixed `qemu64` model, so the portable (SSE) inference
+    // path stays tested. With a hardware accelerator the guest gets
+    // `qemu64` plus XSAVE, AVX, AVX2, FMA and F16C, which the host's CPU
+    // must have (docs/stage3-design.md §4): `-cpu host` and `-cpu max`
+    // made OVMF fault (#GP in PlatformPei) under WHPX. `ZOO_QEMU_CPU`
+    // overrides, for tests.
+    match std::env::var("ZOO_QEMU_CPU") {
+        Ok(cpu) => args.extend(["-cpu".into(), cpu]),
+        Err(_) if accel == "tcg" => args.extend(["-cpu".into(), "qemu64".into()]),
+        Err(_) => args.extend(["-cpu".into(), "qemu64,+xsave,+avx,+avx2,+fma,+f16c".into()]),
     }
     if headless {
         args.extend(["-display".into(), "none".into()]);

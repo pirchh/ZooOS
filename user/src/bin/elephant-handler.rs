@@ -200,8 +200,9 @@ fn service(chan: Handle) -> u8 {
         return 5;
     };
     zoo_rt::log!(
-        "ElephantHandler: service ready (model mapped, parsed in {} ms)",
-        (zoo_rt::now_us() - parse) / 1000
+        "ElephantHandler: service ready (model mapped, parsed in {} ms, engine {})",
+        (zoo_rt::now_us() - parse) / 1000,
+        zoo_infer::cpu::backend()
     );
     let mut assistant: Option<Bella> = None;
     // Replies in words, with their own system prompt (docs/talk-design.md).

@@ -43,7 +43,8 @@ commands:
   infer-check [--tokens N]  compare the engine with the NumPy reference
   assist-check [--prompt S]  guided tool choice on fixed requests (host)
   (run, infer, infer-check, assist-check, verify: --bella 0.5b|1.5b picks
-   Bella's model in tools/models/; 0.5b is the default)
+   Bella's model in tools/models/; 0.5b is the default. infer, infer-check,
+   assist-check: --portable runs the host engine without AVX2)
                             (tools/reference/) on several prompts
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
          [--accel tcg|whpx|kvm] [--skip-model] [--case NAME]
@@ -77,6 +78,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     let opts = Options::parse(rest)?;
     if let Some(name) = &opts.bella {
         infer::select_model(name)?;
+    }
+    if opts.portable {
+        zoo_infer::cpu::force_portable();
     }
     let root = workspace_root();
     match cmd.as_str() {
@@ -313,6 +317,8 @@ struct Options {
     system_file: Option<String>,
     /// `--bella <0.5b|1.5b>`: Bella's model (infer::MODELS).
     bella: Option<String>,
+    /// `--portable`: the host engine without AVX2 (docs/s3-design.md).
+    portable: bool,
 }
 
 impl Options {
@@ -333,6 +339,7 @@ impl Options {
                 "--no-model" => o.no_model = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--bella" => o.bella = Some(value("--bella")?),
+                "--portable" => o.portable = true,
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
                     let v = value("--accel")?;
