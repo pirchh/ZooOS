@@ -272,9 +272,17 @@ fn parse_top(s: &str) -> Vec<(u32, f32)> {
 
 /// Compares the Rust engine with the NumPy reference on `CHECK_PROMPTS`.
 /// Token ids must match exactly; the top-5 logits after the prompt must
-/// name the same tokens and agree within `LOGIT_TOLERANCE`.
+/// name the same tokens and agree within `LOGIT_TOLERANCE`, or, with 8-bit
+/// activations (docs/int8-design.md), within `INT8_LOGIT_TOLERANCE`, set
+/// before it was measured.
 pub fn check(root: &Path, max_new: usize) -> Result<bool, String> {
     const LOGIT_TOLERANCE: f32 = 0.02;
+    const INT8_LOGIT_TOLERANCE: f32 = 0.5;
+    let tolerance = if zoo_infer::quant::int8_for(zoo_infer::quant::TYPE_Q4_0) {
+        INT8_LOGIT_TOLERANCE
+    } else {
+        LOGIT_TOLERANCE
+    };
     let data = load_model(root)?;
     let python = root.join("tools/reference/.venv/Scripts/python.exe");
     let python = if python.is_file() {
@@ -320,7 +328,7 @@ pub fn check(root: &Path, max_new: usize) -> Result<bool, String> {
                 }
             })
             .fold(0.0f32, f32::max);
-        let ok = same_prompt && same_out && ref_top.len() == 5 && max_diff <= LOGIT_TOLERANCE;
+        let ok = same_prompt && same_out && ref_top.len() == 5 && max_diff <= tolerance;
         all_ok &= ok;
         println!(
             "{:<4} {:?}

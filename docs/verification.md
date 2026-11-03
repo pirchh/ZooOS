@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The file
-answers section (version 0.94.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The 8-bit
+section (version 0.95.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,28 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## 8-bit results (version 0.95.0)
+
+Design: docs/int8-design.md, with the full results and the speed table.
+
+**`cargo xtask infer-check`:** `FAIL`, on one point of the bar set before
+measuring.
+- All 5 prompts give the same prompt and output tokens.
+- Top-5 max diffs are 0.171, 0.208 and 0.084 on three of them.
+- On the other two, the 5th-ranked token differs between near-ties (16.63
+  against 16.78; 18.37 against 18.37); the top 4 are the same.
+
+**`assist-check`:** `PASS` (17 of 23, 2 of 8). **`embed-check`:** `PASS`.
+
+**With WHPX:** `bella-talk`, `bella-facts-answer`, `bella-context-answer`
+and `bella-summary-answer` are `OK` with 0.5B and with `--bella
+qwen3-1.7b-q4`.
+
+**Unit test `int8_activations`:** the AVX2 and portable integer paths
+agree, within 1 % of floating point.
+
+FULL_SUITE_RESULT
 
 ## File answers results (version 0.94.0)
 
