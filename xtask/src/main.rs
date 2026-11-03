@@ -88,7 +88,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             let img = match infer::load_model(&root) {
                 Ok(data) if !opts.no_model => {
                     let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
-                    println!("[usb-image] with the Assistant's model (--no-model to leave it out)");
+                    println!("[usb-image] with Bella's model (--no-model to leave it out)");
                     image::build_model_image(
                         &root,
                         &tools,
@@ -147,8 +147,8 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             }
             let tools = config::Tools::resolve_for_qemu()?;
             if opts.model {
-                // The normal image with the assistant's model added (as the
-                // `assistant-live` case uses), about 410 MB larger.
+                // The normal image with Bella's model added (as the
+                // `bella-live` case uses), about 410 MB larger.
                 if opts.mode.is_some() || opts.panic {
                     return Err("--model uses the normal image; drop --mode/--panic".into());
                 }
@@ -170,7 +170,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     opts.timeout,
                 );
             }
-            // The everyday system has the Assistant's model built in when it
+            // The everyday system has Bella's model built in when it
             // is in tools/models/ (docs/a3-design.md); `--no-model` leaves
             // it out.
             if mode == image::Mode::FastBoot && !opts.no_model {
@@ -185,14 +185,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                             infer::GUEST_PROMPT,
                             &r.output_ids,
                         )?;
-                        println!(
-                            "[run] the Assistant's model is built in (--no-model to leave it out)"
-                        );
+                        println!("[run] Bella's model is built in (--no-model to leave it out)");
                         return qemu::run_interactive(&root, &tools, mode, &img, opts.timeout);
                     }
-                    Err(e) => println!(
-                        "[run] no model ({e}); the Assistant will answer typed commands only"
-                    ),
+                    Err(e) => {
+                        println!("[run] no model ({e}); Bella will answer typed commands only")
+                    }
                 }
             }
             let img = image::build(&root, &tools, mode)?;
@@ -305,7 +303,7 @@ struct Options {
     accel: Option<String>,
     skip_model: bool,
     model: bool,
-    /// `run` and `usb-image`: leave the Assistant's model out.
+    /// `run` and `usb-image`: leave Bella's model out.
     no_model: bool,
     case: Option<String>,
     system_file: Option<String>,

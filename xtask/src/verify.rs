@@ -222,7 +222,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
     ]);
     // B1: the same system without the boot checks. D6: it starts in the
     // desktop; after Escape the shell runs a C program.
@@ -240,7 +240,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS DISPLAY acquired pid=6 name=peacock-handler",
         "ZOO_OS PROC start pid=7 name=files",
         "ZOO_OS PROC start pid=8 name=crash-test",
-        "ZOO_OS PROC start pid=9 name=assistant",
+        "ZOO_OS PROC start pid=9 name=bella",
         "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=6",
     ]);
@@ -249,12 +249,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         e.then_any_order(&[
             "ZOO_OS PROC exit pid=7 name=files code=0",
             "ZOO_OS PROC exit pid=8 name=crash-test code=0",
-            "ZOO_OS PROC exit pid=9 name=assistant code=0",
+            "ZOO_OS PROC exit pid=9 name=bella code=0",
             "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
         ]);
         e
     };
-    // A3: the everyday system with the model built in; the Assistant asks
+    // A3: the everyday system with the model built in; the Bella asks
     // its memory (the broker) and then the model (docs/a3-design.md).
     let mut everyday_model = expect(Mode::FastBoot, &fast_head[..fast_head.len() - 2]);
     everyday_model.then(&[
@@ -266,7 +266,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     everyday_model.then_any_order(&[
         "ZOO_OS PROC exit pid=7 name=files code=0",
         "ZOO_OS PROC exit pid=8 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=9 name=assistant code=0",
+        "ZOO_OS PROC exit pid=9 name=bella code=0",
         "ZOO_OS PROC exit pid=10 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=11 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
@@ -300,7 +300,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
     ]);
     // The tablet case closes Crash Test.
     let mut tablet = menu_clock.clone();
@@ -390,7 +390,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         ]);
         e.then_rest();
         let mut steps = vec![
-            Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
             Action::Settle(QUIET),
             Action::Keys(vec!["esc"]),
             Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
@@ -447,7 +447,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "Wine runs cmd.exe, a Windows program, with its prefix in /tmp",
             interaction: Some(Interaction {
                 steps: vec![
-                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
                     Action::Settle(QUIET),
                     Action::Keys(vec!["esc"]),
                     Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
@@ -473,7 +473,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "Wine 11.0 (built for musl) starts under musl's loader and prints its version",
             interaction: Some(Interaction {
                 steps: vec![
-                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
                     Action::Settle(QUIET),
                     Action::Keys(vec!["esc"]),
                     Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
@@ -510,7 +510,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             purpose: "fast boot: no check programs; starts in the desktop; after Escape the shell runs a C program",
             interaction: Some(Interaction {
                 steps: vec![
-                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
                     Action::Settle(QUIET),
                     Action::Screenshot("1-desktop"),
                     Action::Keys(vec!["esc"]),
@@ -771,16 +771,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
-            name: "assistant-memory",
+            name: "bella-memory",
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_memory_expectation(&normal),
+            expectation: bella_memory_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
-            purpose: "the Assistant learns: a request it could not answer, then the command typed for it, is remembered; the same request in other words is answered from memory, also after a desktop restart; an unrelated request is not",
-            interaction: Some(assistant_memory_steps()),
+            purpose: "the Bella learns: a request it could not answer, then the command typed for it, is remembered; the same request in other words is answered from memory, also after a desktop restart; an unrelated request is not",
+            interaction: Some(bella_memory_steps()),
             screen_checks: vec![
                 ("1-recalled", check_recalled),
                 ("2-after-restart", check_recalled_again),
@@ -800,7 +800,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
-            name: "assistant-any-case",
+            name: "bella-any-case",
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
@@ -808,8 +808,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: any_case_expectation(&normal),
             timeout: s.timeout * 2,
             want: "pass",
-            purpose: "the Assistant's file tools take names in any letter case, as the model writes them: `list music` lists the Music folder; a name that matches nothing still fails",
-            interaction: Some(assistant_any_case_steps()),
+            purpose: "the Bella's file tools take names in any letter case, as the model writes them: `list music` lists the Music folder; a name that matches nothing still fails",
+            interaction: Some(bella_any_case_steps()),
             screen_checks: vec![("1-listed", check_any_case)],
         },
         Case {
@@ -821,7 +821,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: memory_guard_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
-            purpose: "the Assistant's memory learns only right answers and replays only safe ones (B3, B4, B8): a planted `undo` is ignored; a search that found nothing is not learned; `create Invoices` is not recalled for Receipts",
+            purpose: "the Bella's memory learns only right answers and replays only safe ones (B3, B4, B8): a planted `undo` is ignored; a search that found nothing is not learned; `create Invoices` is not recalled for Receipts",
             interaction: Some(memory_guard_steps()),
             screen_checks: vec![],
         },
@@ -891,7 +891,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         Action::WaitFor("ZOO_OS PROC exit pid=26 name=zookeeper code=0".into()),
                         Action::Keys(typed("desktop")),
                         Action::WaitContains("[32:peacock-handler] PeacockHandler: appearance dark".into()),
-                        Action::WaitFor("ZOO_OS PROC start pid=35 name=assistant".into()),
+                        Action::WaitFor("ZOO_OS PROC start pid=35 name=bella".into()),
                         Action::Settle(QUIET),
                         Action::Screenshot("1-dark-again"),
                         Action::Keys(vec!["esc"]),
@@ -2060,13 +2060,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     let z = zui::zoomed(SCREEN.0, SCREEN.1);
                     let mut p = Ptr::start();
                     steps.extend([
-                        // The Assistant's title bar.
+                        // The Bella's title bar.
                         p.to(title_bar(ASSISTANT_WIN)),
                         Action::Button(true),
                         Action::Button(false),
                         Action::Button(true),
                         Action::Button(false),
-                        Action::WaitContains("PeacockHandler: zoomed Assistant".into()),
+                        Action::WaitContains("PeacockHandler: zoomed Bella".into()),
                         Action::Settle(QUIET),
                         Action::Screenshot("1-zoomed"),
                         // Its title bar is now at the top.
@@ -2075,7 +2075,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         Action::Button(false),
                         Action::Button(true),
                         Action::Button(false),
-                        Action::WaitContains("PeacockHandler: restored Assistant".into()),
+                        Action::WaitContains("PeacockHandler: restored Bella".into()),
                         Action::Settle(QUIET),
                         Action::Screenshot("2-restored"),
                         Action::Keys(vec!["esc"]),
@@ -2106,19 +2106,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
-            name: "assistant",
+            name: "bella",
             mode: Mode::Normal,
             custom_image: None,
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_expectation(&normal),
+            expectation: bella_expectation(&normal),
             timeout: s.timeout * 3,
             want: "pass",
-            purpose: "Assistant window: typed commands through OtterHandler, plan + confirm before create, undo, escape refused, model absent reported",
-            interaction: Some(assistant_steps()),
+            purpose: "Bella window: typed commands through OtterHandler, plan + confirm before create, undo, escape refused, model absent reported",
+            interaction: Some(bella_steps()),
             screen_checks: vec![
-                ("1-plan", check_assistant_plan),
-                ("2-transcript", check_assistant_transcript),
+                ("1-plan", check_bella_plan),
+                ("2-transcript", check_bella_transcript),
             ],
         },
         Case {
@@ -2167,32 +2167,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
-            name: "assistant-model",
+            name: "bella-model",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_model_expectation(&normal),
+            expectation: bella_model_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
             purpose: "the model works on a request while the desktop stays usable; Backspace cancels it",
-            interaction: Some(assistant_model_steps()),
+            interaction: Some(bella_model_steps()),
             screen_checks: vec![
                 ("1-busy", check_busy_desktop),
                 ("2-cancelled", check_cancelled),
             ],
         },
         Case {
-            name: "assistant-live",
+            name: "bella-live",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: assistant_model_expectation(&normal),
+            expectation: bella_model_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
             purpose: "requests in words: the model picks the tool, the broker runs it (needs --accel; too slow under TCG)",
-            interaction: Some(assistant_live_steps()),
+            interaction: Some(bella_live_steps()),
             screen_checks: vec![("1-live", check_live)],
         },
         Case {
@@ -2204,12 +2204,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: everyday_model,
             timeout: s.timeout * 4,
             want: "pass",
-            purpose: "the everyday image (as `run` boots it) with the model built in: straight to the desktop, and the Assistant answers a request in words",
+            purpose: "the everyday image (as `run` boots it) with the model built in: straight to the desktop, and the Bella answers a request in words",
             interaction: Some(Interaction {
                 steps: vec![
-                    Action::WaitFor("ZOO_OS PROC start pid=9 name=assistant".into()),
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
                     Action::Settle(QUIET),
-                    // Files -> Crash Test -> Assistant.
+                    // Files -> Crash Test -> Bella.
                     Action::Keys(vec!["tab", "tab"]),
                     Action::Settle(QUIET),
                     Action::Keys(typed("Find my pancake recipe")),
@@ -2307,7 +2307,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         }
         let model_case = matches!(
             c.name,
-            "inference" | "assistant-model" | "assistant-live" | "everyday-model"
+            "inference" | "bella-model" | "bella-live" | "everyday-model"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2343,7 +2343,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // boot needs the first's disk), run with an accelerator only.
         if matches!(
             c.name,
-            "assistant-live" | "everyday-model" | "wine-home-1" | "wine-home-2"
+            "bella-live" | "everyday-model" | "wine-home-1" | "wine-home-2"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -2597,7 +2597,7 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
     ]);
     // 3. Crash Test crashes; the window server restarts it.
     let crash_test_crash =
@@ -2613,12 +2613,12 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=31 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC start pid=32 name=peacock-handler",
         "ZOO_OS DISPLAY acquired pid=32 name=peacock-handler",
         "ZOO_OS PROC start pid=33 name=files",
         "ZOO_OS PROC start pid=34 name=crash-test",
-        "ZOO_OS PROC start pid=35 name=assistant",
+        "ZOO_OS PROC start pid=35 name=bella",
     ]);
     // 5. Escape ends the session cleanly; the kernel shell is back.
     e.then(&[
@@ -2628,17 +2628,17 @@ fn desktop_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=33 name=files code=0",
         "ZOO_OS PROC exit pid=34 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=35 name=assistant code=0",
+        "ZOO_OS PROC exit pid=35 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e.then(&["ZOO_OS SHELL line=echo back"]);
     e.clone()
 }
 
-/// The desktop with the Assistant used through typed commands; the normal
+/// The desktop with the Bella used through typed commands; the normal
 /// image has no model, so a request in words reaches ElephantHandler, which
 /// reports that (docs/m5c2-design.md §5).
-fn assistant_expectation(normal: &Expectation) -> Expectation {
+fn bella_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
         "ZOO_OS SHELL line=desktop",
@@ -2647,7 +2647,7 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         // Started on first use: the broker by the first command, the model
         // service by the first request in words.
         "ZOO_OS PROC start pid=31 name=otter-handler",
@@ -2658,7 +2658,7 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=32 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
@@ -2666,13 +2666,13 @@ fn assistant_expectation(normal: &Expectation) -> Expectation {
     e.clone()
 }
 
-fn assistant_steps() -> Interaction {
+fn bella_steps() -> Interaction {
     let mut steps = vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
         Action::Settle(QUIET),
-        // Files -> Crash Test -> Assistant.
+        // Files -> Crash Test -> Bella.
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
     ];
@@ -2703,8 +2703,8 @@ fn assistant_steps() -> Interaction {
     Interaction { steps }
 }
 
-fn check_assistant_plan(img: &screen::Image) -> Result<String, String> {
-    let title = title(img, "Assistant", true)?;
+fn check_bella_plan(img: &screen::Image) -> Result<String, String> {
+    let title = title(img, "Bella", true)?;
     content(img, "You: search pancake")?;
     // Two leading spaces: the broker's reply, not the Files window's
     // `home/user/Documents/...` entry.
@@ -2715,11 +2715,11 @@ fn check_assistant_plan(img: &screen::Image) -> Result<String, String> {
     // Nothing is created before the confirmation.
     no_content(img, "  created Projects")?;
     Ok(format!(
-        "`Assistant` focused at {title:?}; search result at {found:?}; plan shown and confirmation asked at {ask:?}; nothing created yet"
+        "`Bella` focused at {title:?}; search result at {found:?}; plan shown and confirmation asked at {ask:?}; nothing created yet"
     ))
 }
 
-fn check_assistant_transcript(img: &screen::Image) -> Result<String, String> {
+fn check_bella_transcript(img: &screen::Image) -> Result<String, String> {
     let created = content(img, "  created Projects/2026")?;
     content(img, "  removed Projects/2026")?;
     let removed = content(img, "  removed Projects")?;
@@ -2734,7 +2734,7 @@ fn check_assistant_transcript(img: &screen::Image) -> Result<String, String> {
 
 /// Desktop start, the model service (pid 14) and, for the live case, the
 /// broker (pid 15); then a clean exit.
-fn assistant_model_expectation(normal: &Expectation) -> Expectation {
+fn bella_model_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
         "ZOO_OS SHELL line=desktop",
@@ -2743,8 +2743,8 @@ fn assistant_model_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
-        // The broker first (the Assistant asks its memory), then the model
+        "ZOO_OS PROC start pid=30 name=bella",
+        // The broker first (the Bella asks its memory), then the model
         // (docs/a2-design.md).
         "ZOO_OS PROC start pid=31 name=otter-handler",
         "ZOO_OS PROC start pid=32 name=elephant-handler",
@@ -2756,7 +2756,7 @@ fn assistant_model_expectation(normal: &Expectation) -> Expectation {
     let exits = vec![
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=32 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
@@ -2765,11 +2765,11 @@ fn assistant_model_expectation(normal: &Expectation) -> Expectation {
     e.clone()
 }
 
-fn open_assistant() -> Vec<Action> {
+fn open_bella() -> Vec<Action> {
     vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(typed("desktop")),
-        Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
         Action::Settle(QUIET),
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
@@ -2782,8 +2782,8 @@ fn leave_desktop(steps: &mut Vec<Action>) {
     steps.push(Action::Settle(QUIET));
 }
 
-fn assistant_model_steps() -> Interaction {
-    let mut steps = open_assistant();
+fn bella_model_steps() -> Interaction {
+    let mut steps = open_bella();
     steps.extend([
         Action::Keys(typed("find my pancake recipe")),
         Action::WaitFor(
@@ -2794,7 +2794,7 @@ fn assistant_model_steps() -> Interaction {
         Action::Keys(vec!["tab", "down", "down"]),
         Action::Settle(QUIET),
         Action::Screenshot("1-busy"),
-        // Back to the Assistant (Files -> Crash Test -> Assistant) and cancel.
+        // Back to the Bella (Files -> Crash Test -> Bella) and cancel.
         Action::Keys(vec!["tab", "tab", "backspace"]),
         Action::WaitFor("[32:elephant-handler] ElephantHandler: request cancelled".into()),
         Action::Settle(QUIET),
@@ -2804,8 +2804,8 @@ fn assistant_model_steps() -> Interaction {
     Interaction { steps }
 }
 
-fn assistant_live_steps() -> Interaction {
-    let mut steps = open_assistant();
+fn bella_live_steps() -> Interaction {
+    let mut steps = open_bella();
     steps.extend([
         Action::Keys(typed("Find my pancake recipe")),
         Action::WaitFor(
@@ -2825,7 +2825,7 @@ fn assistant_live_steps() -> Interaction {
     Interaction { steps }
 }
 
-/// Assistant's idle status line.
+/// Bella's idle status line.
 const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo.";
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
@@ -2848,11 +2848,11 @@ fn check_cancelled(img: &screen::Image) -> Result<String, String> {
 }
 
 fn check_live(img: &screen::Image) -> Result<String, String> {
-    let s = content(img, "Assistant: search pancake recipe")?;
+    let s = content(img, "Bella: search pancake recipe")?;
     content(img, "  Documents/recipes/pancakes.txt")?;
-    let c = content(img, "Assistant: create Projects/2026")?;
+    let c = content(img, "Bella: create Projects/2026")?;
     let made = content(img, "  created Projects/2026")?;
-    no_content(img, "Assistant: list")?;
+    no_content(img, "Bella: list")?;
     Ok(format!(
         "model chose `search pancake recipe` at {s:?} (result shown) and `create Projects/2026` at {c:?}, created after `y` at {made:?}"
     ))
@@ -3134,7 +3134,7 @@ fn desktop_steps() -> Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
             Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-desktop"),
             // Files: down twice, open the details view.
@@ -3148,7 +3148,7 @@ fn desktop_steps() -> Interaction {
             Action::Screenshot("3-app-restart"),
             // Test key: crash the window server itself.
             Action::Keys(vec!["f12"]),
-            Action::WaitFor("ZOO_OS PROC start pid=35 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=35 name=bella".into()),
             Action::Settle(QUIET),
             Action::Screenshot("4-server-restart"),
             // Leave the desktop and use the kernel shell again.
@@ -3175,20 +3175,20 @@ fn mouse_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
     ]);
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
 }
 
-/// The drag in the mouse case: the Assistant's title bar, moved by this.
+/// The drag in the mouse case: the Bella's title bar, moved by this.
 const DRAG: (i32, i32) = (-400, 60);
 
 fn moved_to(label: &str, k: usize, (dx, dy): (i32, i32)) -> String {
@@ -3206,7 +3206,7 @@ fn mouse_steps() -> Interaction {
         steps: vec![
             Action::WaitFor("ZOO_OS SHELL ready".into()),
             Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-            Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+            Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
             Action::Settle(QUIET),
             Action::Screenshot("1-pointer"),
             // Into the Crash Test window and click.
@@ -3216,12 +3216,12 @@ fn mouse_steps() -> Interaction {
             Action::WaitContains("PeacockHandler: click focuses Crash Test".into()),
             Action::Settle(QUIET),
             Action::Screenshot("2-click"),
-            // Onto the Assistant's title bar, then drag it.
+            // Onto the Bella's title bar, then drag it.
             p.to(title_bar(ASSISTANT_WIN)),
             Action::Button(true),
             p.by(DRAG.0, DRAG.1),
             Action::Button(false),
-            Action::WaitContains(moved_to("Assistant", ASSISTANT_WIN, DRAG)),
+            Action::WaitContains(moved_to("Bella", ASSISTANT_WIN, DRAG)),
             Action::Settle(QUIET),
             Action::Screenshot("3-drag"),
             Action::Keys(vec!["esc"]),
@@ -3236,7 +3236,7 @@ fn start_desktop() -> Vec<Action> {
     vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
         Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
-        Action::WaitFor("ZOO_OS PROC start pid=30 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
         Action::Settle(QUIET),
     ]
 }
@@ -4004,7 +4004,7 @@ fn notes_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=notes",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
@@ -4012,7 +4012,7 @@ fn notes_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=31 name=notes code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
@@ -4292,7 +4292,7 @@ fn check_dark(img: &screen::Image) -> Result<String, String> {
     ui(
         img,
         FaceId::Medium13,
-        "Assistant",
+        "Bella",
         d.title_text_blurred,
         d.title_blurred,
     )?;
@@ -4361,31 +4361,31 @@ fn check_resized(img: &screen::Image) -> Result<String, String> {
 // ---- D9 zoom case (docs/d9-design.md) -------------------------------------
 
 fn check_zoomed(img: &screen::Image) -> Result<String, String> {
-    let want = title_pen(zui::zoomed(SCREEN.0, SCREEN.1), "Assistant");
-    let at = title(img, "Assistant", true)?;
+    let want = title_pen(zui::zoomed(SCREEN.0, SCREEN.1), "Bella");
+    let at = title(img, "Bella", true)?;
     if at != want {
         return Err(format!(
-            "`Assistant` title at {at:?}, expected {want:?} when zoomed"
+            "`Bella` title at {at:?}, expected {want:?} when zoomed"
         ));
     }
     no_title(img, "Files", false)?;
     no_title(img, "Crash Test", false)?;
     Ok(format!(
-        "`Assistant` zoomed: title at {at:?}, covering Files and Crash Test"
+        "`Bella` zoomed: title at {at:?}, covering Files and Crash Test"
     ))
 }
 
 fn check_restored(img: &screen::Image) -> Result<String, String> {
-    let want = title_pen(win(ASSISTANT_WIN), "Assistant");
-    let at = title(img, "Assistant", true)?;
+    let want = title_pen(win(ASSISTANT_WIN), "Bella");
+    let at = title(img, "Bella", true)?;
     if at != want {
         return Err(format!(
-            "`Assistant` title at {at:?}, expected {want:?} after restoring"
+            "`Bella` title at {at:?}, expected {want:?} after restoring"
         ));
     }
     let files = title(img, "Files", false)?;
     Ok(format!(
-        "`Assistant` restored to {at:?}; `Files` visible again at {files:?}"
+        "`Bella` restored to {at:?}; `Files` visible again at {files:?}"
     ))
 }
 
@@ -4404,7 +4404,7 @@ fn dock_menu_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=files",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
@@ -4413,7 +4413,7 @@ fn dock_menu_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=31 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
@@ -4429,7 +4429,7 @@ fn notes_window_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=notes",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
@@ -4438,7 +4438,7 @@ fn notes_window_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=31 name=notes code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
@@ -4594,9 +4594,9 @@ fn check_new_folder(img: &screen::Image) -> Result<String, String> {
     Ok(format!("`untitled folder` made and selected at {at:?}"))
 }
 
-/// The `assistant-memory` case: the desktop runs twice; each run starts
+/// The `bella-memory` case: the desktop runs twice; each run starts
 /// the broker and the model service (which reports no model).
-fn assistant_memory_expectation(normal: &Expectation) -> Expectation {
+fn bella_memory_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     for base in [26, 33] {
         let pid = |k: usize| base + k;
@@ -4610,7 +4610,7 @@ fn assistant_memory_expectation(normal: &Expectation) -> Expectation {
             ),
             format!("ZOO_OS PROC start pid={} name=files", pid(2)),
             format!("ZOO_OS PROC start pid={} name=crash-test", pid(3)),
-            format!("ZOO_OS PROC start pid={} name=assistant", pid(4)),
+            format!("ZOO_OS PROC start pid={} name=bella", pid(4)),
             format!("ZOO_OS PROC start pid={} name=otter-handler", pid(5)),
             format!("ZOO_OS PROC start pid={} name=elephant-handler", pid(6)),
             format!(
@@ -4623,7 +4623,7 @@ fn assistant_memory_expectation(normal: &Expectation) -> Expectation {
         let exits = [
             format!("ZOO_OS PROC exit pid={} name=files code=0", pid(2)),
             format!("ZOO_OS PROC exit pid={} name=crash-test code=0", pid(3)),
-            format!("ZOO_OS PROC exit pid={} name=assistant code=0", pid(4)),
+            format!("ZOO_OS PROC exit pid={} name=bella code=0", pid(4)),
             format!("ZOO_OS PROC exit pid={} name=otter-handler code=0", pid(5)),
             format!(
                 "ZOO_OS PROC exit pid={} name=elephant-handler code=0",
@@ -4636,9 +4636,9 @@ fn assistant_memory_expectation(normal: &Expectation) -> Expectation {
     e
 }
 
-fn assistant_memory_steps() -> Interaction {
+fn bella_memory_steps() -> Interaction {
     let mut steps = start_desktop();
-    // Files -> Crash Test -> Assistant.
+    // Files -> Crash Test -> Bella.
     steps.push(Action::Keys(vec!["tab", "tab"]));
     steps.push(Action::Settle(QUIET));
     // Not answered (no model in this image) ...
@@ -4650,12 +4650,12 @@ fn assistant_memory_steps() -> Interaction {
     // ... so the command typed next is its answer.
     steps.push(Action::Keys(typed("search pancake")));
     steps.push(Action::WaitContains(
-        "Assistant: learned `where is my pancake recipe` -> `search pancake`".into(),
+        "Bella: learned `where is my pancake recipe` -> `search pancake`".into(),
     ));
     // The same request in other words: from memory.
     steps.push(Action::Keys(typed("where is the pancake recipe")));
     steps.push(Action::WaitContains(
-        "Assistant: recalled `search pancake` (100% alike)".into(),
+        "Bella: recalled `search pancake` (100% alike)".into(),
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("1-recalled"));
@@ -4667,14 +4667,14 @@ fn assistant_memory_steps() -> Interaction {
     // A new desktop: the memory is on disk.
     steps.push(Action::Keys(typed("desktop")));
     steps.push(Action::WaitFor(
-        "ZOO_OS PROC start pid=37 name=assistant".into(),
+        "ZOO_OS PROC start pid=37 name=bella".into(),
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["tab", "tab"]));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("pancake recipe where is it")));
     steps.push(Action::WaitContains(
-        "Assistant: recalled `search pancake` (80% alike)".into(),
+        "Bella: recalled `search pancake` (80% alike)".into(),
     ));
     // Unrelated: not from memory, so the model is asked.
     steps.push(Action::Keys(typed(
@@ -4692,7 +4692,7 @@ fn assistant_memory_steps() -> Interaction {
 }
 
 fn check_recalled(img: &screen::Image) -> Result<String, String> {
-    let at = content(img, "Assistant (remembered): search pancake")?;
+    let at = content(img, "Bella (remembered): search pancake")?;
     let found = content(img, "  Documents/recipes/pancakes.txt")?;
     Ok(format!(
         "answered from memory at {at:?}, with the search result at {found:?}"
@@ -4700,10 +4700,10 @@ fn check_recalled(img: &screen::Image) -> Result<String, String> {
 }
 
 fn check_recalled_again(img: &screen::Image) -> Result<String, String> {
-    let at = content(img, "Assistant (remembered): search pancake")?;
+    let at = content(img, "Bella (remembered): search pancake")?;
     content(img, "  Documents/recipes/pancakes.txt")?;
     let model = content(img, "The model is not installed; type a command instead.")?;
-    no_content(img, "Assistant (remembered): make")?;
+    no_content(img, "Bella (remembered): make")?;
     Ok(format!(
         "after a restart, answered from memory at {at:?}; the unrelated request went to the model ({model:?})"
     ))
@@ -4718,7 +4718,7 @@ fn any_case_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=otter-handler",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
@@ -4726,7 +4726,7 @@ fn any_case_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
@@ -4764,9 +4764,9 @@ fn notes_large_steps() -> Interaction {
     Interaction { steps }
 }
 
-fn assistant_any_case_steps() -> Interaction {
+fn bella_any_case_steps() -> Interaction {
     let mut steps = start_desktop();
-    // Files -> Crash Test -> Assistant.
+    // Files -> Crash Test -> Bella.
     steps.push(Action::Keys(vec!["tab", "tab"]));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("list music")));
@@ -4801,7 +4801,7 @@ fn memory_guard_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=otter-handler",
         "ZOO_OS PROC start pid=32 name=elephant-handler",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
@@ -4810,7 +4810,7 @@ fn memory_guard_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=32 name=elephant-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
@@ -4821,22 +4821,26 @@ fn memory_guard_expectation(normal: &Expectation) -> Expectation {
 fn memory_guard_steps() -> Interaction {
     let mut steps = vec![Action::WaitFor("ZOO_OS SHELL ready".into())];
     // B4: a line planted in the memory file (any program with home can
-    // write it), pairing a request with `undo`.
+    // write it), pairing a request with `undo`. It goes under the name
+    // used before Bella, so the move to `.bella-memory` is checked too.
     steps.push(Action::Keys(typed(
         "put .assistant-memory where is my music\\tundo",
     )));
     steps.push(Action::WaitContains("saved".into()));
     steps.push(Action::Keys(typed("desktop")));
     steps.push(Action::WaitFor(
-        "ZOO_OS PROC start pid=30 name=assistant".into(),
+        "ZOO_OS PROC start pid=30 name=bella".into(),
     ));
     steps.push(Action::Settle(QUIET));
-    // Files -> Crash Test -> Assistant.
+    // Files -> Crash Test -> Bella.
     steps.push(Action::Keys(vec!["tab", "tab"]));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("where is my music")));
     steps.push(Action::WaitContains(
-        "Assistant: ignored remembered `undo`".into(),
+        "OtterHandler: moved .assistant-memory to .bella-memory".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: ignored remembered `undo`".into(),
     ));
     steps.push(Action::Settle(QUIET));
     // B3: no model in this image, so the request stays unanswered; a
@@ -4846,7 +4850,7 @@ fn memory_guard_steps() -> Interaction {
     steps.push(Action::Keys(typed("search taxes")));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::NeverSeen(
-        "Assistant: learned `find my tax papers`".into(),
+        "Bella: learned `find my tax papers`".into(),
     ));
     // B8: a learned `create Invoices` ...
     steps.push(Action::Keys(typed(
@@ -4857,7 +4861,8 @@ fn memory_guard_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["y"]));
     steps.push(Action::WaitContains(
-        "Assistant: learned `make a new project folder for work called Invoices` -> `create Invoices`".into(),
+        "Bella: learned `make a new project folder for work called Invoices` -> `create Invoices`"
+            .into(),
     ));
     steps.push(Action::Settle(QUIET));
     // ... is not recalled for another folder's name, although the two
@@ -4870,7 +4875,7 @@ fn memory_guard_steps() -> Interaction {
             .into(),
     ));
     steps.push(Action::Settle(QUIET));
-    steps.push(Action::NeverSeen("Assistant: recalled".into()));
+    steps.push(Action::NeverSeen("Bella: recalled".into()));
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     steps.push(Action::Settle(QUIET));
@@ -5007,7 +5012,7 @@ fn network_app_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=network",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=27",
@@ -5016,7 +5021,7 @@ fn network_app_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=31 name=network code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
@@ -5078,14 +5083,14 @@ fn apps_folder_expectation(normal: &Expectation) -> Expectation {
             &format!("ZOO_OS DISPLAY acquired pid={p} name=peacock-handler"),
             &format!("ZOO_OS PROC start pid={f} name=files"),
             &format!("ZOO_OS PROC start pid={c} name=crash-test"),
-            &format!("ZOO_OS PROC start pid={a} name=assistant"),
+            &format!("ZOO_OS PROC start pid={a} name=bella"),
             &format!("ZOO_OS PROC exit pid={p} name=peacock-handler code=0"),
             &format!("ZOO_OS DISPLAY released pid={p}"),
         ]);
         e.then_any_order(&[
             &format!("ZOO_OS PROC exit pid={f} name=files code=0"),
             &format!("ZOO_OS PROC exit pid={c} name=crash-test code=0"),
-            &format!("ZOO_OS PROC exit pid={a} name=assistant code=0"),
+            &format!("ZOO_OS PROC exit pid={a} name=bella code=0"),
             &format!("ZOO_OS PROC exit pid={z} name=zookeeper code=0"),
         ]);
     }
@@ -5160,7 +5165,7 @@ fn apps_folder_steps() -> Interaction {
         Action::WaitFor("ZOO_OS PROC exit pid=26 name=zookeeper code=0".into()),
         Action::Keys(vec!["d", "e", "s", "k", "t", "o", "p", "ret"]),
         Action::WaitContains("PeacockHandler: dock loaded (3 kept)".into()),
-        Action::WaitFor("ZOO_OS PROC start pid=35 name=assistant".into()),
+        Action::WaitFor("ZOO_OS PROC start pid=35 name=bella".into()),
         Action::Settle(QUIET),
         p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
         Action::Settle(DOCK_SLIDE),
@@ -5218,7 +5223,7 @@ fn windows_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC start pid=31 name=files",
         "ZOO_OS PROC exit pid=31 name=files code=0",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
@@ -5227,7 +5232,7 @@ fn windows_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
@@ -5242,7 +5247,7 @@ fn dock_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
-        "ZOO_OS PROC start pid=30 name=assistant",
+        "ZOO_OS PROC start pid=30 name=bella",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
         "ZOO_OS PROC start pid=31 name=crash-test",
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
@@ -5251,7 +5256,7 @@ fn dock_expectation(normal: &Expectation) -> Expectation {
     e.then_any_order(&[
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=31 name=crash-test code=0",
-        "ZOO_OS PROC exit pid=30 name=assistant code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ]);
     e
@@ -5400,30 +5405,30 @@ fn menu_bar_steps() -> Interaction {
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains(
-            "PeacockHandler: menu bar Window: Minimize, Zoom, Files, Crash Test, Assistant".into(),
+            "PeacockHandler: menu bar Window: Minimize, Zoom, Files, Crash Test, Bella".into(),
         ),
         p.to(bar_item("Files", 5, &window_seps, 5)),
         Action::Settle(QUIET),
         Action::Screenshot("1-window-menu"),
         Action::Button(true),
         Action::Button(false),
-        Action::WaitContains("PeacockHandler: brought Assistant forward".into()),
+        Action::WaitContains("PeacockHandler: brought Bella forward".into()),
         // File's menu, then along the bar to View: the menus switch.
-        p.to(bar_centre("Assistant", 2)),
+        p.to(bar_centre("Bella", 2)),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: menu bar File: New Window, Close Window".into()),
-        p.to(bar_centre("Assistant", 4)),
+        p.to(bar_centre("Bella", 4)),
         Action::WaitContains("PeacockHandler: menu bar View: Dark Appearance".into()),
-        p.to(bar_item("Assistant", 4, &[false], 0)),
+        p.to(bar_item("Bella", 4, &[false], 0)),
         Action::Button(true),
         Action::Button(false),
         Action::WaitContains("PeacockHandler: appearance dark".into()),
-        // Ctrl+M: the Assistant to the dock.
+        // Ctrl+M: the Bella to the dock.
         Action::Key("ctrl", true),
         Action::Keys(vec!["m"]),
         Action::Key("ctrl", false),
-        Action::WaitContains("PeacockHandler: animation minimize Assistant".into()),
+        Action::WaitContains("PeacockHandler: animation minimize Bella".into()),
         p.to((SCREEN.0 / 2, SCREEN.1 / 2)),
         Action::Settle(QUIET),
         Action::Screenshot("2-after"),
@@ -5455,11 +5460,11 @@ fn check_window_menu(img: &screen::Image) -> Result<String, String> {
         LIGHT.tooltip_text,
         LIGHT.tooltip,
     )?;
-    // The pointer is on the Assistant item: highlighted.
+    // The pointer is on the Bella item: highlighted.
     let on = ui(
         img,
         FaceId::Regular13,
-        "Assistant",
+        "Bella",
         LIGHT.select_text,
         LIGHT.select,
     )?;
@@ -5469,24 +5474,24 @@ fn check_window_menu(img: &screen::Image) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "the Window menu: `Minimize` {min:?} with `Ctrl+M` {keys:?}, `Crash Test` {crash:?}, `Assistant` highlighted {on:?}"
+        "the Window menu: `Minimize` {min:?} with `Ctrl+M` {keys:?}, `Crash Test` {crash:?}, `Bella` highlighted {on:?}"
     ))
 }
 
 fn check_menu_after(img: &screen::Image) -> Result<String, String> {
     let d = &zui::DARK;
-    // Dark appearance, the Assistant gone to the dock, Files focused again.
+    // Dark appearance, the Bella gone to the dock, Files focused again.
     let files = ui(img, FaceId::Medium13, "Files", d.title_text, d.title)?;
-    no_ui(img, FaceId::Medium13, "Assistant", d.title_text, d.title)?;
+    no_ui(img, FaceId::Medium13, "Bella", d.title_text, d.title)?;
     no_ui(
         img,
         FaceId::Medium13,
-        "Assistant",
+        "Bella",
         d.title_text_blurred,
         d.title_blurred,
     )?;
     Ok(format!(
-        "dark appearance; the Assistant minimised; `Files` focused at {files:?}"
+        "dark appearance; the Bella minimised; `Files` focused at {files:?}"
     ))
 }
 
@@ -5703,14 +5708,11 @@ fn check_dock_closed(img: &screen::Image) -> Result<String, String> {
     let dots = dock_dots(img);
     if dots.len() != 2 || dot_at(&dots, dock_centre(1).0) || dots[0] >= dock_centre(1).0 {
         return Err(format!(
-            "dots should mark Files and the Assistant only, none under Crash Test at x {}: {dots:?}",
+            "dots should mark Files and the Bella only, none under Crash Test at x {}: {dots:?}",
             dock_centre(1).0
         ));
     }
-    Ok(
-        "dock: Crash Test's name shown, no running dot under it, dots under Files and Assistant"
-            .into(),
-    )
+    Ok("dock: Crash Test's name shown, no running dot under it, dots under Files and Bella".into())
 }
 
 fn check_reopened(img: &screen::Image) -> Result<String, String> {
@@ -5742,13 +5744,13 @@ fn dock_minis_steps() -> Interaction {
         p.to(zui::light_centre(win(ASSISTANT_WIN), 1)),
         Action::Button(true),
         Action::Button(false),
-        Action::WaitContains("PeacockHandler: animation minimize Assistant".into()),
+        Action::WaitContains("PeacockHandler: animation minimize Bella".into()),
         // The dock up (the pointer at the bottom edge; it may still be up
         // from the genie).
         p.to((SCREEN.0 / 2 - 300, SCREEN.1 - 1)),
         Action::Settle(QUIET),
         Action::Screenshot("1-minis"),
-        // Files' thumbnail (the first): Files comes back, the Assistant
+        // Files' thumbnail (the first): Files comes back, the Bella
         // stays in the dock.
         p.to(mini_centre(2, 0)),
         Action::Button(true),
@@ -5764,7 +5766,7 @@ fn dock_minis_steps() -> Interaction {
 }
 
 /// The divider line after the four applications, then two thumbnails
-/// with their applications' badges: Files' blue first, the Assistant's
+/// with their applications' badges: Files' blue first, the Bella's
 /// violet second.
 fn check_dock_minis(img: &screen::Image) -> Result<String, String> {
     let (_, y, _, h) = zui::dock_rect_with(SCREEN.0, SCREEN.1, 4, 2);
@@ -5775,7 +5777,7 @@ fn check_dock_minis(img: &screen::Image) -> Result<String, String> {
             img.pixel(lx, y + h / 2)
         ));
     }
-    for (j, (c, name)) in [(0x3B8EEA, "Files"), (0x7A5AF8, "Assistant")]
+    for (j, (c, name)) in [(0x3B8EEA, "Files"), (0x7A5AF8, "Bella")]
         .into_iter()
         .enumerate()
     {
@@ -5789,16 +5791,16 @@ fn check_dock_minis(img: &screen::Image) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "the divider at x {lx}, then thumbnails of Files and the Assistant with their badges"
+        "the divider at x {lx}, then thumbnails of Files and the Bella with their badges"
     ))
 }
 
 fn check_files_back(img: &screen::Image) -> Result<String, String> {
     let t = title(img, "Files", true)?;
-    no_title(img, "Assistant", false)?;
-    no_title(img, "Assistant", true)?;
+    no_title(img, "Bella", false)?;
+    no_title(img, "Bella", true)?;
     Ok(format!(
-        "Files back and focused at {t:?}; the Assistant still in the dock"
+        "Files back and focused at {t:?}; the Bella still in the dock"
     ))
 }
 
@@ -6090,17 +6092,17 @@ fn check_drag(img: &screen::Image) -> Result<String, String> {
         w.2,
         w.3,
     );
-    let want = title_pen(moved, "Assistant");
-    let at = title(img, "Assistant", true)?;
+    let want = title_pen(moved, "Bella");
+    let at = title(img, "Bella", true)?;
     if at != want {
         return Err(format!(
-            "`Assistant` title at {at:?}, expected {want:?} after the drag"
+            "`Bella` title at {at:?}, expected {want:?} after the drag"
         ));
     }
     no_title(img, "Crash Test", true)?;
     Ok(format!(
-        "`Assistant` title moved from {:?} to {at:?} and focused",
-        title_pen(w, "Assistant")
+        "`Bella` title moved from {:?} to {at:?} and focused",
+        title_pen(w, "Bella")
     ))
 }
 
@@ -6307,11 +6309,11 @@ fn check_desktop_started(img: &screen::Image) -> Result<String, String> {
     content(img, "Home")?;
     let first = selected(img, "Documents", true)?;
     content(img, "This window is a crash test.")?;
-    title(img, "Assistant", false)?;
+    title(img, "Bella", false)?;
     no_selected(img, "Documentsx", true)?;
     no_title(img, "Files", false)?;
     Ok(format!(
-        "menu bar names `Files` at {menu:?}; `Files` focused (title at {t:?}) with `Documents` selected at {first:?}; Crash Test and the Assistant shown; wrong text rejected"
+        "menu bar names `Files` at {menu:?}; `Files` focused (title at {t:?}) with `Documents` selected at {first:?}; Crash Test and the Bella shown; wrong text rejected"
     ))
 }
 

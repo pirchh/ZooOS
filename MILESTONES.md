@@ -170,6 +170,7 @@ lands as small, separately verified steps.
 | --- | --- | --- |
 | 0 | Fix what the audit found: B1 Notes truncation, B2 stale folder handles, B6 bulk buffer size, B7 sessions per process (docs/s0-design.md) | B1, B2, B6, B7 done 2026-11-02 |
 | 0 | B3, B4, B8: the memory learns only right answers and replays only safe ones (docs/s0-design.md) | done 2026-11-02 |
+| — | The assistant renamed Bella everywhere in the OS (app, program, transcript, memory file, tests) | done 2026-11-02 |
 | 0 | B5: restart counts reset after 30 s; the desktop reloads with a fresh home folder after a filesystem restart; B15: m5c1 current state (docs/s0-design.md) | done 2026-11-02 |
 | 1 | Measure: per-request timing, peak heap, assist-check with negative and "none of these" cases (B9), responsiveness | open |
 | 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |

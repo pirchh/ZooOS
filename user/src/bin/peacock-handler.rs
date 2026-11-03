@@ -1,6 +1,6 @@
 //! PeacockHandler: the window server (docs/m4-design.md §4; look:
 //! docs/u1-design.md). Owns the display and keyboard, runs four
-//! applications (Files, Crash Test, the Assistant and Notes) over channels,
+//! applications (Files, Crash Test, Bella and Notes) over channels,
 //! and draws a macOS-style desktop: a translucent menu bar, rounded windows
 //! with shadows and traffic lights, Inter text from the font atlas in the
 //! initrd, a dock, and notification banners. Light and dark appearances
@@ -11,7 +11,7 @@
 //! restarted.
 //!
 //! Its second start-up handle is the home directory (from Zookeeper); each
-//! start of the Assistant gets a fresh copy, which it passes on to the file
+//! start of Bella gets a fresh copy, which it passes on to the file
 //! broker.
 
 #![no_std]
@@ -262,7 +262,7 @@ const WINDOWS: usize = 9;
 const CATALOG: [(&str, &str, bool); PROGRAMS] = [
     ("Files", "files", true),
     ("Crash Test", "crash-test", false),
-    ("Assistant", "assistant", true),
+    ("Bella", "bella", true),
     ("Notes", "notes", true),
     ("Network", "network", false),
 ];
@@ -1208,6 +1208,13 @@ fn role_colour(t: &Theme, r: u8, fg: u32) -> u32 {
 
 /// The application whose program is `program`.
 fn program_index(program: &[u8]) -> Option<usize> {
+    // Bella was called Bella before 0.77.0; docks saved then still
+    // name `assistant`.
+    let program = if program == b"assistant" {
+        b"bella".as_slice()
+    } else {
+        program
+    };
     CATALOG.iter().position(|c| c.1.as_bytes() == program)
 }
 
@@ -1724,7 +1731,7 @@ struct Desktop {
     wall: Vec<u32>,
     ramp: Vec<u8>,
     apps: [App; WINDOWS],
-    /// Home directory handle; copies go to the Assistant.
+    /// Home directory handle; copies go to Bella.
     home: u64,
     focus: usize,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
