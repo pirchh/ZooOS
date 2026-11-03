@@ -68,7 +68,8 @@ Design: docs/summary-design.md.
   `bella-context-answer` and `bella-live`;
 - under TCG: `bella` and `bella-context`.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 11 skipped because they need an accelerator.
 
 ## Heap and audit results (version 0.89.0)
 
