@@ -1,4 +1,5 @@
-//! Assistant: the Assistant window (docs/m5c2-design.md). The user types
+//! Bella: the assistant's window (docs/m5c2-design.md; named the
+//! Assistant before 0.77.0). The user types
 //! either a command (`search …`, `list …`, `inspect …`, `create …`, `undo`),
 //! which goes straight to the file broker, or a request in words, which
 //! ElephantHandler (the model service) turns into one command first.
@@ -7,7 +8,7 @@
 //! anything changes. Backspace on an empty line cancels a running request.
 //!
 //! Handles: the window channel (first) and a home directory handle (second),
-//! which is moved into OtterHandler when it is started; the Assistant itself never
+//! which is moved into OtterHandler when it is started; Bella itself never
 //! uses it. Both helpers start on first use.
 
 #![no_std]
@@ -82,7 +83,7 @@ fn main(chan: u64, home: u64) -> u8 {
         request: None,
         unanswered: None,
     };
-    if p.win.title("Assistant").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
+    if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
     }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
@@ -156,7 +157,7 @@ impl App {
             (Mode::Thinking, Key::Back) => {
                 if let Some(e) = self.elephant {
                     let _ = send(e, b"cancel");
-                    zoo_rt::log!("Assistant: cancel sent at tick {}", zoo_rt::ticks());
+                    zoo_rt::log!("Bella: cancel sent at tick {}", zoo_rt::ticks());
                 }
                 self.status = String::from("Cancelling...");
             }
@@ -242,7 +243,7 @@ impl App {
         let msg = alloc::format!("remember {}\t{}", request, command);
         let quiet = self.lines.len();
         if self.broker(&msg) {
-            zoo_rt::log!("Assistant: learned `{}` -> `{}`", request, command);
+            zoo_rt::log!("Bella: learned `{}` -> `{}`", request, command);
         }
         // `remember` prints nothing; keep the transcript as it was.
         self.lines.truncate(quiet);
@@ -279,11 +280,11 @@ impl App {
         // The memory file is in home, which other programs can write:
         // only replay what the memory may hold (B4).
         if !recallable(&cmd) || cmd.contains(['\t', '\n']) {
-            zoo_rt::log!("Assistant: ignored remembered `{}`", cmd);
+            zoo_rt::log!("Bella: ignored remembered `{}`", cmd);
             return false;
         }
-        zoo_rt::log!("Assistant: recalled `{}` ({}% alike)", cmd, score);
-        let mut l = String::from("Assistant (remembered): ");
+        zoo_rt::log!("Bella: recalled `{}` ({}% alike)", cmd, score);
+        let mut l = String::from("Bella (remembered): ");
         l.push_str(&cmd);
         self.say(&l);
         // Not learned again; a command typed next corrects it (B3).
@@ -400,7 +401,7 @@ impl App {
                 cmd.push(' ');
                 cmd.push_str(arg);
             }
-            let mut l = String::from("Assistant: ");
+            let mut l = String::from("Bella: ");
             l.push_str(&cmd);
             self.say(&l);
             self.command(&cmd);
@@ -416,7 +417,7 @@ impl App {
                     String::from("The model is not installed; type a command instead.")
                 }
                 other => {
-                    let mut l = String::from("Assistant: ");
+                    let mut l = String::from("Bella: ");
                     l.push_str(other);
                     l
                 }

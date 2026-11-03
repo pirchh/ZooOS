@@ -150,6 +150,25 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## The assistant is named Bella (2026-11-02)
+
+Version 0.77.0. The owner's decision: Bella, not Jarvis, everywhere.
+
+- **The app** is Bella: the dock label, the window title, the menu bar, the
+  Applications folder. The program is `bella` (was `assistant`).
+- **The transcript** reads `Bella:` and `Bella (remembered):`, and log
+  lines start with `Bella:`.
+- **The engine's prompt wrapper** is `zoo_infer::assist::Bella`. The
+  model's prompt never named the assistant, so answers do not change.
+- **Kept across the rename:**
+  - A dock saved with `assistant` still pins Bella.
+  - OtterHandler moves `.assistant-memory` to `.bella-memory` the first
+    time it starts.
+- **Renamed test cases:** `bella`, `bella-memory`, `bella-model`,
+  `bella-live` and `bella-any-case`, formerly `assistant…`.
+- **Not renamed:** design documents written before 0.77.0 keep "the
+  Assistant", as the record of those steps.
+
 ## Stage 0: restarts and the filesystem doc (2026-11-02)
 
 Version 0.76.0. Design: docs/s0-design.md (B5, B15).

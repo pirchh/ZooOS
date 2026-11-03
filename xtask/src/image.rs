@@ -22,7 +22,7 @@ pub const USER_PROGRAMS: [&str; 24] = [
     "narwhal-test",
     "elephant-handler",
     "otter-handler",
-    "assistant",
+    "bella",
     "caribou-test",
     "walrus-test",
     "wolverine-test",

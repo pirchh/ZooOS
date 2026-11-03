@@ -33,7 +33,9 @@ const MAX_WALK_DEPTH: usize = 16;
 
 /// The assistant's memory of requests and the commands that answered them
 /// (docs/a2-design.md): `request<TAB>command` lines, newest last.
-const MEMORY: &str = ".assistant-memory";
+const MEMORY: &str = ".bella-memory";
+/// The memory file's name before 0.77.0, moved to `MEMORY` at start.
+const OLD_MEMORY: &str = ".assistant-memory";
 /// Largest memory file kept; the oldest pairs go first.
 const MEMORY_BYTES: usize = 16 * 1024;
 /// Words that do not change what a request means.
@@ -85,7 +87,7 @@ struct Otter {
     chan: Handle,
     home: Handle,
     /// The last request found nothing (a search without matches): it
-    /// finishes with `none`, so the Assistant does not learn it (B3).
+    /// finishes with `none`, so Bella does not learn it (B3).
     empty: bool,
     /// Folders the last `create` made, in creation order.
     journal: Vec<String>,
@@ -101,6 +103,12 @@ fn main(chan: u64, home: u64) -> u8 {
         empty: false,
         journal: Vec::new(),
     };
+    // Keep what the Assistant learned before it was renamed Bella.
+    if dir_stat(home, MEMORY) == Err(Error::NotFound)
+        && zoo_rt::rename(home, OLD_MEMORY, MEMORY).is_ok()
+    {
+        let _ = zoo_rt::log("OtterHandler: moved .assistant-memory to .bella-memory");
+    }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let n = match recv(chan, &mut buf) {

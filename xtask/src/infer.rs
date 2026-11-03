@@ -245,13 +245,13 @@ pub const ASSIST_CASES: [(&str, &str, &[&str]); 8] = [
 
 /// Runs the guided tool choice on `ASSIST_CASES` with the host engine.
 pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
-    use zoo_infer::assist::Assistant;
+    use zoo_infer::assist::Bella;
     let data = load_model(root)?;
     let g = Gguf::parse(&data).map_err(|e| format!("GGUF: {e:?}"))?;
     let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e:?}"))?;
     let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
     let t0 = Instant::now();
-    let mut a = Assistant::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
+    let mut a = Bella::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
     println!(
         "system prompt: {} tokens in {:.1}s",
         a.prefix_tokens(),

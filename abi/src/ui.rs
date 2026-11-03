@@ -30,7 +30,7 @@ pub mod mark {
 pub const APPLICATIONS: [(&str, &str); 5] = [
     ("Files", "files"),
     ("Crash Test", "crash-test"),
-    ("Assistant", "assistant"),
+    ("Bella", "bella"),
     ("Notes", "notes"),
     ("Network", "network"),
 ];
@@ -88,7 +88,7 @@ pub const DOCK_H: usize = DOCK_ICON + 2 * DOCK_PAD + 6;
 pub const DOCK_AREA: usize = DOCK_H + DOCK_BOTTOM + 24;
 
 /// Where the applications' first windows start: Files on the left, the
-/// Assistant and Crash Test on the right, Notes and Network (opened later)
+/// Bella and Crash Test on the right, Notes and Network (opened later)
 /// in the middle. Proportional, with space between them.
 pub fn initial_windows(w: usize, h: usize) -> [(usize, usize, usize, usize); 5] {
     let top = MENU_H + 40;

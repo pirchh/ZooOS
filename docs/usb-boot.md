@@ -17,7 +17,7 @@ a USB stick.
 1. `cargo xtask usb-image` builds the everyday image (fast boot, starts in
    the desktop) and copies it to `build/usb/zoo-os-usb.img`, printing its
    size and SHA-256. It writes no device. Since A3 it includes the
-   Assistant's model when `tools/models/` has it (about 410 MB more, so a
+   Bella's model when `tools/models/` has it (about 410 MB more, so a
    stick of 1 GB or larger); `--no-model` builds the small image.
 2. The owner writes that file to a USB stick they choose, with a tool such
    as Rufus (DD mode) or balenaEtcher, **double-checking the target is the
@@ -38,7 +38,7 @@ a USB stick.
   wide).
 - USB keyboard and mouse through xHCI (docs/h1-design.md,
   docs/h1b-design.md) on the PC's own ports, and PS/2 where it exists.
-- Everything in memory: Files, Notes, the Assistant's typed commands.
+- Everything in memory: Files, Notes, Bella's typed commands.
 
 ## Known risks (in rough order of likelihood)
 

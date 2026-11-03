@@ -3,7 +3,7 @@
 //! comparing next-token scores, then writes the argument with every token
 //! restricted to path characters.
 //!
-//! The system prompt is fed once (`Assistant::new`) and its key/value cache
+//! The system prompt is fed once (`Bella::new`) and its key/value cache
 //! reused for every request by rewinding the position.
 
 use crate::chat;
@@ -86,7 +86,7 @@ fn path_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b' ' | b'.' | b'_' | b'-' | b'/')
 }
 
-pub struct Assistant<'m, 't> {
+pub struct Bella<'m, 't> {
     model: &'m Model<'m>,
     tok: &'t Tokenizer<'t>,
     pub st: State,
@@ -113,7 +113,7 @@ pub enum Step {
     Arg { done: usize },
 }
 
-impl<'m, 't> Assistant<'m, 't> {
+impl<'m, 't> Bella<'m, 't> {
     /// Feeds the system prompt. `progress` may cancel (then `Cancelled`).
     pub fn new(
         model: &'m Model<'m>,
@@ -148,7 +148,7 @@ impl<'m, 't> Assistant<'m, 't> {
                 !bytes.is_empty() && bytes.iter().all(|&b| path_byte(b))
             })
             .collect();
-        Ok(Assistant {
+        Ok(Bella {
             model,
             tok,
             st,

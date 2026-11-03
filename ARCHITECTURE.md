@@ -40,7 +40,7 @@ flowchart TB
     SHELL[Desktop shell: menu bar, dock, launcher, workspaces]
     NATIVE[Native applications: files, settings, terminal]
     WIN[Windows applications: Opera, Battle.net, WoW]
-    CHAT[Assistant conversation UI]
+    CHAT[Bella conversation UI]
   end
   subgraph SERVICES[System services — isolated processes]
     COMP[Compositor and window server]
@@ -298,7 +298,7 @@ not final physical-machine performance. Set numeric budgets after baselines.
 | Opera | Install, browsing, profile, downloads, media, sandbox behavior and update |
 | Battle.net | Install, login, download, patch, restart and launch |
 | WoW | Sustained gameplay; audio/input/network; frame times, FPS and 1% lows |
-| Assistant | Correct file results; authorized folder creation; cancellation and error reporting |
+| Bella (the assistant) | Correct file results; authorized folder creation; cancellation and error reporting |
 | Contention | Desktop/game behavior while inference, indexing and downloads run |
 | Recovery | Interrupted updates and service failures have tested recovery paths |
 | Future phone | Pair, transfer, permission revoke and disconnect on tested iOS versions |

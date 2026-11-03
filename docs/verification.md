@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Stage 0
-restarts section (version 0.76.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Bella
+rename section (version 0.77.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Bella rename results (version 0.77.0)
+
+The assistant is Bella everywhere in the OS (DECISIONS.md).
+
+**Renamed cases**, all `OK`: `bella`, `bella-memory`, `bella-any-case`.
+
+**`memory-guard`** now plants its line in `.assistant-memory`, the name
+used before. It also requires `OtterHandler: moved .assistant-memory to
+.bella-memory`, and the planted `undo` is still ignored after the move:
+`OK`.
+
+FULL_SUITE_RESULT
 
 ## Stage 0 results: restarts (version 0.76.0)
 

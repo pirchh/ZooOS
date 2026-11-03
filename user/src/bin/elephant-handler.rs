@@ -18,7 +18,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt::Write as _;
-use zoo_infer::assist::{AssistError, Assistant, Step};
+use zoo_infer::assist::{AssistError, Bella, Step};
 use zoo_infer::{Gguf, Model, Tokenizer, chat};
 use zoo_rt::{Error, Handle, Line, fs_find, fs_map, log, recv, send, ticks, try_recv};
 
@@ -155,7 +155,7 @@ fn service(chan: Handle) -> u8 {
         return 5;
     };
     let _ = log("ElephantHandler: service ready (model mapped)");
-    let mut assistant: Option<Assistant> = None;
+    let mut assistant: Option<Bella> = None;
     loop {
         let n = match recv(chan, &mut buf) {
             Ok(n) => n,
@@ -199,7 +199,7 @@ fn service(chan: Handle) -> u8 {
         let mut setup_err = None;
         if assistant.is_none() {
             let t = ticks();
-            match Assistant::new(&model, &tok, |s| keep_going(chan, s, &mut stop)) {
+            match Bella::new(&model, &tok, |s| keep_going(chan, s, &mut stop)) {
                 Ok(a) => {
                     zoo_rt::log!(
                         "ElephantHandler: system prompt {} tokens in {} ticks",
