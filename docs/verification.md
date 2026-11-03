@@ -76,7 +76,13 @@ cpu: xsave=true avx=true register state 576 bytes
 
 **Tried first:** `-cpu host` under WHPX: OVMF `#GP` in PlatformPei.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 94 cases `OK`.
+Under TCG the kernel logs `cpu: xsave=false avx=false register state 512
+bytes` (plain `qemu64`), so the FXSAVE fallback and the portable engine
+are what the suite runs.
+- clippy `-D warnings` (kernel, `zoo-user`, `xtask`, `zoo-infer`): clean.
+- `cargo fmt --check`: clean.
+- Tests: `zoo-infer` 12 and `xtask` 25 passed.
 
 ## Bella keeps the conversation (version 0.84.0)
 
