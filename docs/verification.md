@@ -55,7 +55,9 @@ zoo.rs".
 [30:bella] Bella: the screen: focused: Bella; open: Files, Crash Test, Bella, Notes showing zoo.rs; recently: opened Notes, opened Documents/zoo.rs in Notes
 ```
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 12 skipped because they need an accelerator. `bella-context`
+(TCG) is `OK` with the new wording.
 
 ## Model comparison: 0.5B and 1.5B (2026-11-03)
 
