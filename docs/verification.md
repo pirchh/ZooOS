@@ -65,7 +65,13 @@ model service started.
 
 **`bella-live`** (model in the boot image): `OK`, first answer 1,082 ms.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`,
+including `inference` and `bella-model` (the model image). The owner also
+ran `cargo xtask run --accel whpx` on this build:
+`read the model from the model disk: 408 MB in 703 ms`, then `warmed up`.
+- clippy `-D warnings` (kernel, `zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
+- `cargo test -p xtask`: 25 passed.
 
 ## Stage 2 results: the warm-up (version 0.80.0)
 
