@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The summary
-section (version 0.90.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The save
+section (version 0.91.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,30 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Save results (version 0.91.0)
+
+Design: docs/save-design.md.
+
+**`bella-save`** (`--accel whpx`): `OK`.
+
+```
+[31:elephant-handler] ElephantHandler: summarised `The file contains a list of items to buy for a shopping trip.` in 2337 ms
+[32:otter-handler] OtterHandler: wrote Documents/notes-summary.txt (94 bytes)
+[32:otter-handler] OtterHandler: audit: write Documents/notes-summary.txt: done
+[32:otter-handler] OtterHandler: audit: write Documents/notes-summary.txt: already exists
+[33:notes] Notes: opened Documents/notes-summary.txt (94 bytes)
+```
+
+**Negative control:** "save that" not routed → `FAIL`, no `wrote` line in
+300 s. With the broker's exists check removed the case still passes,
+because `FILE_CREATE` refuses an existing file as well.
+
+**Still `OK`:**
+- with WHPX: `bella-summary-answer` and `bella-facts-answer`;
+- under TCG: `bella-audit`, `bella-summary`, `bella` and `bella-access`.
+
+FULL_SUITE_RESULT
 
 ## Summary results (version 0.90.0)
 

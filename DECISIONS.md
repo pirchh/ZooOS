@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella saves a summary (2026-11-03)
+
+Version 0.91.0. Design: docs/save-design.md.
+
+- **"Save that"** after a summary writes `<stem>-summary.txt` beside the
+  file, through a new broker tool `write` (audited, at most 900 bytes).
+- **`write` never replaces a file.** Overwriting is deleting the old
+  contents, and the owner's rule is to confirm deletes; refusing is
+  simpler than asking.
+
 ## Bella summarises a file (2026-11-03)
 
 Version 0.90.0. Design: docs/summary-design.md. The first Stage 5
