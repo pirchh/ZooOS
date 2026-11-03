@@ -141,6 +141,57 @@ pub fn embed_check(root: &Path) -> Result<bool, String> {
     for (l, s) in lines.iter().zip(&scores) {
         println!("     {s:.4}  {l}");
     }
+    // Request pairs (docs/learning-design.md): the same request in other
+    // words, and different requests that look alike. Printed to choose the
+    // threshold for reusing a past command; not part of the pass.
+    let pairs: [(&str, &str, bool); 15] = [
+        (
+            "Find my pancake recipe",
+            "where is the pancake recipe",
+            true,
+        ),
+        ("Find my pancake recipe", "search for pancakes", true),
+        ("open my notes", "open the notes file", true),
+        ("list my music", "what music do I have", true),
+        ("show me my photos", "list the Photos folder", true),
+        ("how much space am I using", "how full is my disk", true),
+        ("open my notes", "open my photos", false),
+        ("list my music", "list my documents", false),
+        ("Find my pancake recipe", "find my tax forms", false),
+        (
+            "move notes.txt to Documents",
+            "move notes.txt to Music",
+            false,
+        ),
+        ("trash old.txt", "trash new.txt", false),
+        ("open my notes", "trash my notes", false),
+        (
+            "Find my pancake recipe",
+            "where did I put the recipe for pancakes",
+            true,
+        ),
+        (
+            "Find my pancake recipe",
+            "I need the pancake recipe again",
+            true,
+        ),
+        (
+            "Find my pancake recipe",
+            "look up my recipe for pancakes",
+            true,
+        ),
+    ];
+    for (a, b, same) in pairs {
+        let (va, vb) = (
+            e.query(a).map_err(|x| format!("{x:?}"))?,
+            e.query(b).map_err(|x| format!("{x:?}"))?,
+        );
+        println!(
+            "pair {:.4} {} {a:?} / {b:?}",
+            similarity(&va, &vb),
+            if same { "same" } else { "DIFF" }
+        );
+    }
     let vet = best == 1;
     println!(
         "{} \"{question}\" is nearest the vet line",

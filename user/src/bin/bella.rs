@@ -52,6 +52,15 @@ const HINT: &str = "Ask in words, or type a command (search, read, open, move, t
 /// A remembered request at least this alike (percent of shared words)
 /// is answered from memory, without the model (docs/a2-design.md).
 const RECALL_AT: usize = 75;
+/// A past command is reused by meaning only at this similarity
+/// (thousandths) or above, and only when the new request names everything
+/// its argument names (docs/learning-design.md): different requests reached
+/// 840 when only a file name changed.
+const REUSE_AT: u32 = 870;
+/// Commands that may be reused without the model: none that changes files.
+const REUSABLE: [&str; 7] = [
+    "search", "list", "inspect", "read", "open", "launch", "info",
+];
 
 enum Mode {
     Typing,
@@ -122,6 +131,9 @@ struct App {
     /// (docs/vectors-design.md), and whether its first index is built.
     magpie: Option<Handle>,
     magpie_ready: bool,
+    /// Past requests near the current one, for the model's choice
+    /// (docs/learning-design.md).
+    examples: String,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -205,6 +217,7 @@ fn main(chan: u64, home: u64) -> u8 {
         sources: None,
         magpie: None,
         magpie_ready: false,
+        examples: String::new(),
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -437,6 +450,8 @@ impl App {
             self.request = Some(String::from(text));
             if self.recall(text) {
                 self.answered("memory");
+            } else if self.recall_by_meaning(text) {
+                self.answered("memory, by meaning");
             } else {
                 self.ask_model(text);
             }
@@ -1141,6 +1156,107 @@ impl App {
         self.status = String::from("Thinking... (Backspace cancels)");
     }
 
+    /// Past requests near `text` in meaning, from the file index
+    /// (docs/learning-design.md): `(score, request, command)`, best first.
+    fn past_requests(&mut self, text: &str) -> Vec<(u32, String, String)> {
+        let mut out = Vec::new();
+        let Some(m) = self.magpie.filter(|_| self.magpie_ready) else {
+            return out;
+        };
+        let mut req = String::from("example ");
+        req.push_str(text);
+        if send_wait(m, req.as_bytes()).is_err() {
+            self.magpie = None;
+            return out;
+        }
+        let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        let deadline = zoo_rt::ticks() + INDEX_DEADLINE;
+        loop {
+            let left = deadline.saturating_sub(zoo_rt::ticks());
+            if left == 0 || zoo_rt::wait_any(&[m], left).is_err() {
+                let _ = close(m);
+                self.magpie = None;
+                return Vec::new();
+            }
+            let n = match try_recv(m, &mut buf) {
+                Ok(n) => n,
+                Err(Error::Again) => continue,
+                Err(_) => {
+                    self.magpie = None;
+                    return Vec::new();
+                }
+            };
+            let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
+            let Some(rest) = line.strip_prefix("| ") else {
+                return out;
+            };
+            let (score, pair) = rest.split_once(' ').unwrap_or(("0", rest));
+            let (request, command) = pair.split_once('\t').unwrap_or((pair, ""));
+            out.push((
+                score.parse().unwrap_or(0),
+                String::from(request),
+                String::from(command),
+            ));
+        }
+    }
+
+    /// Reuses the command of a past request that means the same, without
+    /// the model (docs/learning-design.md). Only a command that changes no
+    /// file, at `REUSE_AT` or above, and only when the new request names
+    /// every word of the command's argument. Nearer misses are kept as
+    /// examples for the model.
+    fn recall_by_meaning(&mut self, text: &str) -> bool {
+        let past = self.past_requests(text);
+        self.examples = past
+            .iter()
+            .map(|(_, r, c)| alloc::format!("\"{}\" was done with `{}`", r, c))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let Some((score, request, cmd)) = past.into_iter().next() else {
+            return false;
+        };
+        let tool = cmd.split(' ').next().unwrap_or("");
+        let arg = cmd.split_once(' ').map_or("", |(_, a)| a);
+        // Every word of the argument ("pancake recipe", "Documents/notes")
+        // must be in the new request: "trash old.txt" never answers
+        // "trash new.txt".
+        let lower = text.to_ascii_lowercase();
+        let covered = arg
+            .split(['/', ' ', '.'])
+            .filter(|w| w.len() >= 3 && !matches!(*w, "txt" | "the" | "and"))
+            .all(|w| lower.contains(&w.to_ascii_lowercase()));
+        if score < REUSE_AT || !REUSABLE.contains(&tool) || !covered || !recallable(&cmd) {
+            if score >= REUSE_AT {
+                zoo_rt::log!(
+                    "Bella: not reusing `{}` ({}): {}",
+                    cmd,
+                    score,
+                    if covered {
+                        "it changes files"
+                    } else {
+                        "the request does not name its argument"
+                    }
+                );
+            }
+            return false;
+        }
+        zoo_rt::log!(
+            "Bella: reused by meaning `{}` from `{}` ({} of 1000 alike)",
+            cmd,
+            request,
+            score
+        );
+        let mut l = String::from("Bella (remembered): ");
+        l.push_str(&cmd);
+        self.say(&l);
+        let pending = self.request.take();
+        self.command(&cmd);
+        self.exchanged(text, &cmd);
+        self.unanswered = pending;
+        self.examples.clear();
+        true
+    }
+
     fn ask_model(&mut self, text: &str) {
         if !self.start_model() {
             self.say("Error: cannot start the model service.");
@@ -1158,6 +1274,12 @@ impl App {
             msg.push_str(e);
             self.following = true;
             zoo_rt::log!("Bella: a follow-up; with the last exchange");
+        } else if !self.examples.is_empty() {
+            // Past requests like this one, as examples for the choice.
+            let ex = shorten(core::mem::take(&mut self.examples));
+            zoo_rt::log!("Bella: with past examples: {}", ex);
+            msg.push('\t');
+            msg.push_str(&ex);
         }
         let Some(e) = self.elephant else { return };
         if send_wait(e, msg.as_bytes()).is_err() {

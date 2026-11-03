@@ -2415,6 +2415,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-learn",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 12,
+            want: "pass",
+            purpose: "Bella learns from requests (docs/learning-design.md): after the model answers \"Find my pancake recipe\", \"look up my recipe for pancakes\" reuses its command by meaning without the model; \"look up my recipe for waffles\" is not reused (its words do not cover the argument) (needs --accel and the embedding model)",
+            interaction: Some(bella_learn_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-summary-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2613,6 +2626,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
+                | "bella-learn"
                 | "bella-save"
         );
         if model_case && model_on_disk && matches!(c.name, "inference" | "bella-model") {
@@ -2669,6 +2683,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
+                | "bella-learn"
                 | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
@@ -2717,13 +2732,15 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         };
         qemu::set_usb(c.usb);
         // The everyday system's model comes on the model disk.
-        qemu::set_model_disk(if c.name == "everyday-model" || c.name == "bella-vectors" {
-            model_image.as_ref().map(|m| m.1.1.clone())
-        } else if model_case && model_on_disk {
-            model_image.as_ref().and_then(|m| m.3.clone())
-        } else {
-            None
-        });
+        qemu::set_model_disk(
+            if matches!(c.name, "everyday-model" | "bella-vectors" | "bella-learn") {
+                model_image.as_ref().map(|m| m.1.1.clone())
+            } else if model_case && model_on_disk {
+                model_image.as_ref().and_then(|m| m.3.clone())
+            } else {
+                None
+            },
+        );
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {
@@ -5540,6 +5557,38 @@ fn bella_vectors_steps() -> Interaction {
     ));
     // Nothing embedded again: every line's vector came from the file.
     steps.push(Action::WaitContains(" (0 embedded, ".into()));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn bella_learn_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "Bella: the file index is ready (".into(),
+    ));
+    steps.push(Action::WaitSeen(
+        "ElephantHandler: warmed up: reply prompt".into(),
+    ));
+    // Taught by the model.
+    steps.push(Action::Keys(typed("Find my pancake recipe")));
+    steps.push(Action::WaitContains(
+        "Bella: learned `Find my pancake recipe` -> `search pancake recipe`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // The same request in other words: no model.
+    steps.push(Action::Keys(typed("look up my recipe for pancakes")));
+    steps.push(Action::WaitContains(
+        "Bella: reused by meaning `search pancake recipe` from `Find my pancake recipe`".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: answered in ".into()));
+    steps.push(Action::Settle(QUIET));
+    // Alike, but about something else: not reused.
+    steps.push(Action::Keys(typed("look up my recipe for waffles")));
+    steps.push(Action::WaitContains("MagpieHandler: examples: ".into()));
+    steps.push(Action::WaitContains("ElephantHandler: chose ".into()));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }

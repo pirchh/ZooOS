@@ -44,6 +44,19 @@ const MAX_DEPTH: usize = 16;
 /// Lines sent for a question, and how near they must be (cosine).
 const ANSWER_LINES: usize = 3;
 const MIN_SCORE: f32 = 0.45;
+/// What Bella learned: `request<TAB>command` lines (docs/learning-design.md).
+const MEMORY: &str = ".bella-memory";
+const MEMORY_BYTES: usize = 16 * 1024;
+/// Past requests sent for a new one, and how near they must be.
+const EXAMPLES: usize = 3;
+const MIN_EXAMPLE: f32 = 0.6;
+
+/// A past request, the command that answered it, and the request's vector.
+struct Example {
+    request: String,
+    command: String,
+    vec: Vec<f32>,
+}
 
 /// One indexed line: the file it came from (and that file's hash), the
 /// line, and its vector.
@@ -80,6 +93,8 @@ fn main(chan: u64, home: u64) -> u8 {
     if !refresh(home, chan, &mut emb, &mut index) {
         return 0;
     }
+    let mut examples: Vec<Example> = Vec::new();
+    learn(home, &mut emb, &mut examples);
     let mut l = zoo_rt::Line::new();
     let _ = core::fmt::Write::write_fmt(&mut l, format_args!("ready {}", index.len()));
     if send_wait(chan, l.as_str().as_bytes()).is_err() {
@@ -94,6 +109,12 @@ fn main(chan: u64, home: u64) -> u8 {
         let msg = core::str::from_utf8(&buf[..n]).unwrap_or("");
         if msg == "quit" {
             return 0;
+        }
+        if let Some(request) = msg.strip_prefix("example ") {
+            if !examples_for(chan, home, &mut emb, &mut examples, request) {
+                return 0;
+            }
+            continue;
         }
         let Some(question) = msg.strip_prefix("query ") else {
             let _ = send_wait(chan, b"err unknown request");
@@ -141,6 +162,100 @@ fn main(chan: u64, home: u64) -> u8 {
             return 0;
         }
     }
+}
+
+/// Brings the past requests up to date with `.bella-memory`: a request
+/// already embedded keeps its vector; new ones are embedded
+/// (docs/learning-design.md).
+fn learn(home: Handle, emb: &mut Embedder, examples: &mut Vec<Example>) {
+    let mut buf = alloc::vec![0u8; MEMORY_BYTES];
+    let n = file_read(home, MEMORY, 0, &mut buf).unwrap_or(0);
+    let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
+    let old = core::mem::take(examples);
+    let mut embedded = 0;
+    for line in text.lines() {
+        let Some((request, command)) = line.split_once('\t') else {
+            continue;
+        };
+        let (request, command) = (request.trim(), command.trim());
+        if request.is_empty() || command.is_empty() {
+            continue;
+        }
+        // The newest line for a request wins: drop an older one.
+        examples.retain(|e| e.request != request);
+        let vec = match old.iter().find(|e| e.request == request) {
+            Some(e) => e.vec.clone(),
+            None => {
+                let Ok(v) = emb.query(request) else { continue };
+                embedded += 1;
+                v
+            }
+        };
+        examples.push(Example {
+            request: String::from(request),
+            command: String::from(command),
+            vec,
+        });
+    }
+    if embedded > 0 {
+        zoo_rt::log!(
+            "MagpieHandler: learned: {} past requests ({} embedded)",
+            examples.len(),
+            embedded
+        );
+    }
+}
+
+/// `example <request>`: the past requests nearest it in meaning, best
+/// first, as `| <score in thousandths> <request><TAB><command>`, then `ok`
+/// or `none`. False when the channel failed.
+fn examples_for(
+    chan: Handle,
+    home: Handle,
+    emb: &mut Embedder,
+    examples: &mut Vec<Example>,
+    request: &str,
+) -> bool {
+    learn(home, emb, examples);
+    let t = zoo_rt::now_us();
+    let Ok(q) = emb.query(request) else {
+        return send_wait(chan, b"err model error").is_ok();
+    };
+    let mut best: Vec<(f32, usize)> = Vec::new();
+    for (k, e) in examples.iter().enumerate() {
+        let s = similarity(&q, &e.vec);
+        if s < MIN_EXAMPLE {
+            continue;
+        }
+        let at = best.iter().position(|(b, _)| *b < s).unwrap_or(best.len());
+        if at < EXAMPLES {
+            best.insert(at, (s, k));
+            best.truncate(EXAMPLES);
+        }
+    }
+    zoo_rt::log!(
+        "MagpieHandler: examples: {} of {} near enough in {} ms; best {}",
+        best.len(),
+        examples.len(),
+        (zoo_rt::now_us() - t) / 1000,
+        best.first().map_or(0, |(s, _)| (s * 1000.0) as u32)
+    );
+    for &(s, k) in &best {
+        let mut l = zoo_rt::Line::new();
+        let _ = core::fmt::Write::write_fmt(
+            &mut l,
+            format_args!(
+                "| {} {}\t{}",
+                (s * 1000.0) as u32,
+                examples[k].request,
+                examples[k].command
+            ),
+        );
+        if send_wait(chan, l.as_str().as_bytes()).is_err() {
+            return false;
+        }
+    }
+    send_wait(chan, if best.is_empty() { b"none" } else { b"ok" }).is_ok()
 }
 
 /// The embedding model's bytes, read whole from the model disk into
