@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The conversation
-section (version 0.84.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Stage 3
+section (version 0.85.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,42 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 3 results: XSAVE and AVX2 (version 0.85.0)
+
+Design: docs/stage3-design.md (all the tables).
+
+**Host:**
+- **`infer-check`** (AVX2): `PASS`, top-5 logits within 0.00005.
+- **`assist-check`:** the same answers and margins with AVX2 and with
+  `--portable`. A request takes 0.5 s against 1.0 s.
+- **Unit test `avx2_agrees_with_portable`:** `OK`.
+
+**Guest** (`--accel whpx`):
+
+```
+cpu: xsave=true avx=true register state 576 bytes
+[6:narwhal-test] NarwhalTest: AVX registers kept over 12 ticks
+[7:narwhal-test] NarwhalTest: AVX registers kept over 12 ticks
+[31:elephant-handler] ElephantHandler: service ready (model mapped, parsed in 249 ms, engine avx2)
+[31:elephant-handler] ElephantHandler: warmed up: system prompt 76 tokens in 1972 ms
+[30:bella] Bella: answered in 520 ms by the model
+```
+
+**Negative control:** XSAVE without the AVX component → `FAIL normal`,
+`narwhal-test code=5`, `AVX registers changed across task switches`.
+
+**All `OK` with WHPX:**
+- `inference` (`tokens match the host engine exactly`);
+- `bella-live`, `everyday-model` (also with `--bella 1.5b`), `bella-talk`
+  and `responsiveness`;
+- `wine-cmd`, `wine-version`, `wine-home-1` and `wine-home-2`;
+- `linux-hello`, `-eider`, `-skua`, `-fulmar`, `-guillemot`, `-kittiwake`,
+  `-ermine`, `-loon`, `-auklet`, `-dovekie` and `-redpoll`.
+
+**Tried first:** `-cpu host` under WHPX: OVMF `#GP` in PlatformPei.
+
+FULL_SUITE_RESULT
 
 ## Bella keeps the conversation (version 0.84.0)
 

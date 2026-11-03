@@ -150,6 +150,24 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 3: XSAVE and AVX2 (2026-11-03)
+
+Version 0.85.0. Design: docs/stage3-design.md.
+
+- **The kernel switches tasks with `xsave64`/`xrstor64`** when the CPU has
+  XSAVE, with XCR0 = x87 | SSE | AVX, in a 1,024-byte area. Otherwise it
+  keeps FXSAVE, with AVX off. Signal frames keep the 512-byte FXSAVE
+  part.
+- **`zoo_infer` chooses an AVX2 and FMA dot product at run time**
+  (`cpu::avx2()`: CPUID plus XGETBV). The crate goes from `forbid` to
+  `deny(unsafe_code)`, with `allow` only on `avx2`, `cpu`, and the call
+  that chooses them.
+- **WHPX guests get `qemu64,+xsave,+avx,+avx2,+fma,+f16c`;** `-cpu host`
+  faults in OVMF. TCG keeps `qemu64`.
+- **Measured in the guest:** requests about twice as fast (0.5B: 1.08 →
+  0.52 s), tokens unchanged. **0.5B stays the default;** 1.5B takes about
+  2 s per request.
+
 ## Bella keeps the conversation (2026-11-03)
 
 Version 0.84.0. Design: docs/talk-design.md §6.

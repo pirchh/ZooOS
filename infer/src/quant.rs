@@ -12,13 +12,13 @@ pub const TYPE_Q8_0: u32 = 8;
 pub const TYPE_Q6_K: u32 = 14;
 
 pub const BLOCK: usize = 32;
-const Q4_0_BYTES: usize = 2 + 16;
-const Q8_0_BYTES: usize = 2 + 32;
+pub(crate) const Q4_0_BYTES: usize = 2 + 16;
+pub(crate) const Q8_0_BYTES: usize = 2 + 32;
 /// Values per k-quant block.
 pub const QK_K: usize = 256;
 /// A Q6_K block: `ql` (low 4 bits, 128 bytes), `qh` (high 2 bits, 64
 /// bytes), 16 signed 8-bit scales, then the f16 scale `d`.
-const Q6_K_BYTES: usize = 128 + 64 + 16 + 2;
+pub(crate) const Q6_K_BYTES: usize = 128 + 64 + 16 + 2;
 
 /// IEEE half to single precision (exact, including subnormals and inf/NaN).
 pub fn f16_to_f32(h: u16) -> f32 {
@@ -55,12 +55,25 @@ pub fn byte_size(ty: u32, n: usize) -> Option<usize> {
     }
 }
 
-fn scale(b: &[u8]) -> f32 {
+pub(crate) fn scale(b: &[u8]) -> f32 {
     f16_to_f32(u16::from_le_bytes([b[0], b[1]]))
 }
 
-/// Dot product of one stored row (`row` bytes of type `ty`) with `x`.
+/// Dot product of one stored row (`row` bytes of type `ty`) with `x`. Uses
+/// AVX2 and FMA when the CPU and the OS allow them (`crate::cpu`), else the
+/// portable SIMD code (SSE on ZooOS's user target).
 pub fn dot(ty: u32, row: &[u8], x: &[f32]) -> f32 {
+    if crate::cpu::avx2() {
+        #[allow(unsafe_code)]
+        // SAFETY: `avx2()` is true only when CPUID reports AVX2 and FMA and
+        // XGETBV shows the OS saves the YMM registers.
+        return unsafe { crate::avx2::dot(ty, row, x) };
+    }
+    dot_portable(ty, row, x)
+}
+
+/// `dot` without AVX2.
+pub fn dot_portable(ty: u32, row: &[u8], x: &[f32]) -> f32 {
     match ty {
         TYPE_F32 => row
             .as_chunks::<4>()
@@ -112,7 +125,7 @@ pub fn dot(ty: u32, row: &[u8], x: &[f32]) -> f32 {
 /// Expands one Q6_K block into 256 values, as GGML's
 /// `dequantize_row_q6_K` does: two halves of 128, each from 64 bytes of
 /// `ql`, 32 of `qh` and 8 scales.
-fn q6_k_block(b: &[u8; Q6_K_BYTES], out: &mut [f32; QK_K]) {
+pub(crate) fn q6_k_block(b: &[u8; Q6_K_BYTES], out: &mut [f32; QK_K]) {
     let (ql_all, rest) = b.split_at(128);
     let (qh_all, rest) = rest.split_at(64);
     let (sc_all, d) = rest.split_at(16);

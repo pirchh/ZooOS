@@ -181,7 +181,7 @@ lands as small, separately verified steps.
 | 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |
-| 3 | XSAVE, CPU features, an AVX2 backend | open |
+| 3 | XSAVE, CPU features, an AVX2 backend: inference 2–2.5× faster in the guest (0.5B request 1.08 → 0.52 s) (docs/stage3-design.md) | done 2026-11-03 |
 | 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |
 | 5 | Bella v1: workflow templates, safe summarising, "none of these", model bake-off, memory provenance | open |
 | 6 | SMP | open |

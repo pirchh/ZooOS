@@ -308,6 +308,7 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
     let g = Gguf::parse(&data).map_err(|e| format!("GGUF: {e:?}"))?;
     let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e:?}"))?;
     let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
+    println!("engine: {}", zoo_infer::cpu::backend());
     let t0 = Instant::now();
     let mut a = Bella::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
     println!(

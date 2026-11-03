@@ -2,7 +2,10 @@
 //! (docs/m5b-design.md). Pure computation over a GGUF file in memory.
 
 #![cfg_attr(not(test), no_std)]
-#![forbid(unsafe_code)]
+// Safe code everywhere except the AVX2 dot products and the CPU check
+// (docs/stage3-design.md): those modules, and the one call that chooses them,
+// allow `unsafe`, each block with its assumptions.
+#![deny(unsafe_code)]
 // Integer dot products in vectors (docs/a1-design.md): `core::simd` is
 // safe code; the pinned nightly provides it.
 #![feature(portable_simd)]
@@ -10,7 +13,11 @@
 extern crate alloc;
 
 pub mod assist;
+#[allow(unsafe_code)]
+mod avx2;
 pub mod chat;
+#[allow(unsafe_code)]
+pub mod cpu;
 pub mod gguf;
 pub mod model;
 pub mod quant;
