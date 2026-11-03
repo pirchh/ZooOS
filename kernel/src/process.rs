@@ -16,6 +16,7 @@ use crate::klog;
 use crate::kprintln;
 use crate::memory::{
     self, KSTACK_SLOTS, Memory, USER_IMAGE_END, USER_IMAGE_START, USER_STACK_SIZE, USER_STACK_TOP,
+    heap,
 };
 use crate::mouse;
 use crate::rtc;
@@ -6828,7 +6829,7 @@ impl Scheduler {
                     return err(Error::Fault);
                 }
                 let t = self.proc(i);
-                if t.free_slots() < 2 {
+                if t.free_slots() < 2 || heap::low(0) {
                     return err(Error::NoMem);
                 }
                 let chan = Arc::new(Mutex::new(Channel {
@@ -6856,6 +6857,9 @@ impl Scheduler {
             sys::SPAWN => {
                 if a2 == 0 || a2 > MAX_CMDLINE as u64 {
                     return err(Error::Inval);
+                }
+                if heap::low(0) {
+                    return err(Error::NoMem);
                 }
                 if !ok(a1, a2, false) {
                     return err(Error::Fault);
@@ -6910,6 +6914,9 @@ impl Scheduler {
                 };
                 if !ok(a2, a3, false) {
                     return err(Error::Fault);
+                }
+                if heap::low(a3 as usize) {
+                    return err(Error::NoMem);
                 }
                 {
                     let mut c = chan.lock();
@@ -7477,8 +7484,33 @@ impl Scheduler {
                     }) if rights & RIGHT_SEND != 0 => (chan.clone(), *side),
                     Some(_) => return err(Error::Rights),
                 };
-                if self.proc(i).get(a2).is_none() {
-                    return err(Error::BadHandle);
+                match self.proc(i).get(a2) {
+                    None => return err(Error::BadHandle),
+                    // A channel end may travel only while its channel
+                    // carries no handles, and never over its own channel:
+                    // otherwise ends could hold each other in their queues
+                    // and outlive every handle, a leak no close can reach
+                    // (docs/heap-design.md).
+                    Some(HandleEntry {
+                        object: Object::Endpoint { chan: moved, .. },
+                        ..
+                    }) => {
+                        if Arc::ptr_eq(moved, &chan) {
+                            return err(Error::Inval);
+                        }
+                        let m = moved.lock();
+                        if m.queues
+                            .iter()
+                            .flatten()
+                            .any(|q| matches!(q, Msg::Handle(..)))
+                        {
+                            return err(Error::Busy);
+                        }
+                    }
+                    Some(_) => {}
+                }
+                if heap::low(0) {
+                    return err(Error::NoMem);
                 }
                 {
                     let c = chan.lock();

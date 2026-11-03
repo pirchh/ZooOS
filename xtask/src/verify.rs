@@ -902,6 +902,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-audit",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella's audit trail (docs/audit-design.md): every broker request gets a log line; changes also get a dated line in .bella-audit, kept across a desktop restart; \"what did you do?\" lists them and not the reads",
+            interaction: Some(bella_audit_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -1472,6 +1485,44 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     ),
                     Action::WaitContains("SkuaTest: all checks passed".into()),
                     Action::WaitFor("ZOO_OS PROC exit pid=26 name=skua-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "heap-flood",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run hare-test",
+                    "ZOO_OS PROC start pid=26 name=hare-test",
+                    // The three fillers; each exits when told to go.
+                    "ZOO_OS PROC start pid=27 name=hare-test",
+                    "ZOO_OS PROC start pid=28 name=hare-test",
+                    "ZOO_OS PROC start pid=29 name=hare-test",
+                    "ZOO_OS PROC exit pid=27 name=hare-test code=0",
+                    "ZOO_OS PROC exit pid=28 name=hare-test code=0",
+                    "ZOO_OS PROC exit pid=29 name=hare-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=hare-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "B13, the kernel heap (docs/heap-design.md): channel ends cannot be parked where no close reaches them; three programs filling the heap get NOMEM, the kernel lives, and the heap is usable once they exit",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run hare-test")),
+                    Action::WaitContains("HareTest: an end over its own channel: refused".into()),
+                    Action::WaitContains("HareTest: an end carrying a handle: refused".into()),
+                    Action::WaitContains("fillers refused with NOMEM".into()),
+                    Action::WaitContains("HareTest: kernel heap ok".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=hare-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -5145,6 +5196,54 @@ fn desktop_then_rest(normal: &Expectation) -> Expectation {
     ]);
     e.then_rest();
     e
+}
+
+fn bella_audit_steps() -> Interaction {
+    let mut steps = start_desktop();
+    let say = |steps: &mut Vec<Action>, line: &str, wait: &str| {
+        steps.push(Action::Keys(typed(line)));
+        steps.push(Action::WaitContains(wait.into()));
+        steps.push(Action::Settle(QUIET));
+    };
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "what did you do?",
+        "OtterHandler: listed 0 of 0 changes",
+    );
+    // A read: a log line, no audit line.
+    say(
+        &mut steps,
+        "list Documents",
+        "OtterHandler: audit: list Documents: done",
+    );
+    // A change: both.
+    say(
+        &mut steps,
+        "remember that Zara the zebra likes carrots",
+        "OtterHandler: audit: fact-add Zara the zebra likes carrots: done",
+    );
+    // A new desktop: the audit file is on disk.
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitContains(
+        "Zookeeper: desktop session ended".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("desktop")));
+    steps.push(Action::WaitContains("name=bella".into()));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "what have you changed?",
+        "OtterHandler: listed 1 of 1 changes",
+    );
+    // The one line kept is the dated fact-add; the list was not a change.
+    steps.push(Action::WaitSeen("OtterHandler: shows change: 20".into()));
+    Interaction { steps }
 }
 
 fn bella_context_steps(model: bool) -> Interaction {
