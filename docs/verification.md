@@ -53,7 +53,12 @@ used before. It also requires `OtterHandler: moved .assistant-memory to
 .bella-memory`, and the planted `undo` is still ignored after the move:
 `OK`.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+`bella-live` and `everyday-model`, run separately with `--accel whpx`:
+both `OK` with the renamed program.
+- clippy with `-D warnings` (`zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
+- `cargo test -p xtask`: 25 passed.
 
 ## Stage 0 results: restarts (version 0.76.0)
 
