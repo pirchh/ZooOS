@@ -3139,7 +3139,7 @@ fn bella_live_steps() -> Interaction {
 }
 
 /// Bella's idle status line.
-const HINT_TEXT: &str = "Ask in words, or type search/list/inspect/create/undo.";
+const HINT_TEXT: &str = "Ask in words, or type a command (search, read, open, move, trash, info...).";
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = title(img, "Files", true)?;

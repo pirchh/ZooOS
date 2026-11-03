@@ -83,7 +83,12 @@ second attempt made `bella-convo` fail: "where is my music" became
 `search` finds "where files are" fixed that, and the request joined the
 set.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): 94 cases `OK`, and one
+`FAIL`: `bella-model` looked for Bella's old idle line,
+`…search/list/inspect/create/undo.`, which this change replaced. With its
+`HINT_TEXT` updated, `bella-model` alone: `OK`.
+- clippy `-D warnings` and `cargo fmt --check`: clean.
+- `zoo_abi` tests: 18 passed.
 
 ## Stage 3 results: XSAVE and AVX2 (version 0.85.0)
 
