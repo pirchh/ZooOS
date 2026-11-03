@@ -10,8 +10,8 @@ failing, and never stalls the desktop.
 | Warm the system prompt in the background at desktop start | done, version 0.80.0 |
 | The model on its own disk | done, version 0.81.0 |
 | B10: disk requests off the scheduler lock | measured: 52 µs per request; not changed (§3) |
-| Restart ElephantHandler and OtterHandler with back-off | open |
-| B14: non-blocking broker calls | open |
+| Restart ElephantHandler and OtterHandler with back-off | done, version 0.82.0 |
+| B14: non-blocking broker calls | a 10 s deadline, version 0.82.0; keys during a call: open |
 | B13: a bounded kernel heap per process | open |
 | The broker's rights narrowed; audit lines | open |
 
@@ -190,3 +190,56 @@ in the boot image, because ZooOS has no USB storage driver yet (Stage 7).
     no model service starts).
 - **`bella-live`** (the model in the boot image): still `OK`, first answer
   1,082 ms.
+
+## 4. Bella's helpers end and start again
+
+**The problem:**
+- **The model service:** if ElephantHandler ended, Bella noticed only while
+  waiting for an answer, and the next request then paid for a cold start.
+- **The broker:** if OtterHandler ended, Bella had given it her only home
+  handle, so she could never start another. The file commands were gone
+  until the desktop restarted.
+- **No deadline:** a broker that stopped answering held Bella forever
+  (B14).
+
+**The design** (`user/src/bin/bella.rs`):
+- **Bella keeps her home handle.** Each OtterHandler gets a copy
+  (`dir_open(home, "", ALL)`).
+- **The model service's channel is watched all the time,** not only while
+  thinking. When it closes, Bella logs `the model service ended; starting
+  it again in N ms`, tells a waiting request so, and leaves the request
+  open. After the back-off she starts the service again and warms it up.
+- **A broker that ends** is noticed on the next request (`the file broker
+  stopped; a new one in N ms`). That request fails with that message.
+  Until the back-off has passed the broker is not available; after it, a
+  new one is started.
+- **The back-off** is 0.5 s, doubling with each failure in a row up to
+  16 s, and back to 0.5 s after a success.
+- **Broker answers have a 10 s deadline** (part of B14): `wait_any` with a
+  timeout, then `the file broker did not answer in 10 s`, and the broker
+  is replaced. Keys are still not read during a broker call; that is the
+  rest of B14.
+
+**For tests:** the shell's new `kill <program> [after <seconds>]` ends a
+program now or later. The shell keeps running behind the desktop, so it
+can end a service in the middle of a desktop session.
+`process::kill_named` logs `ZOO_OS PROC killed … by=0`.
+
+**Checks:**
+- **`broker-restart`** (TCG):
+  1. `kill otter-handler after 20`, then the desktop.
+  2. `list music` works; the broker is killed.
+  3. The next `list music` reports `the file broker stopped; a new one in
+     500 ms`.
+  4. The one after that is answered by a new broker.
+- **`model-restart`** (WHPX):
+  1. `kill elephant-handler after 20`, then the desktop.
+  2. After its warm-up the service is killed.
+  3. Bella starts it again in 500 ms, it warms up again, and "Find my
+     pancake recipe" is answered in 1,043 ms.
+
+**Negative controls:**
+- **No new broker after a failure:** `FAIL broker-restart`.
+- **No restart of the model service:** `FAIL model-restart`.
+
+**Not tested:** the 10 s deadline. No test can make OtterHandler hang yet.

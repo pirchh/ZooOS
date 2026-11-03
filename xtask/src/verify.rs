@@ -837,6 +837,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "broker-restart",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: rest_after_desktop(&normal, "kill otter-handler after 20"),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "Bella survives its file broker ending (docs/s2-design.md §4): OtterHandler killed mid-session; the next request reports it; after the back-off a new broker answers",
+            interaction: Some(broker_restart_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -2181,6 +2194,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "model-restart",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: rest_after_desktop(&normal, "kill elephant-handler after 20"),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella survives its model service ending (docs/s2-design.md §4): ElephantHandler killed after its warm-up; Bella starts it again, it warms up again, and a request is answered (needs --accel)",
+            interaction: Some(model_restart_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "responsiveness",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().map(|m| m.0.clone()),
@@ -2326,7 +2352,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         }
         let model_case = matches!(
             c.name,
-            "inference" | "bella-model" | "bella-live" | "everyday-model" | "responsiveness"
+            "inference"
+                | "bella-model"
+                | "bella-live"
+                | "everyday-model"
+                | "responsiveness"
+                | "model-restart"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2362,7 +2393,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // boot needs the first's disk), run with an accelerator only.
         if matches!(
             c.name,
-            "bella-live" | "everyday-model" | "responsiveness" | "wine-home-1" | "wine-home-2"
+            "bella-live"
+                | "everyday-model"
+                | "responsiveness"
+                | "model-restart"
+                | "wine-home-1"
+                | "wine-home-2"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -2895,6 +2931,73 @@ fn responsiveness_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(vec!["f11"]));
     steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+/// A `kill … after …` shell line, then the desktop; after that, process
+/// numbers depend on timing.
+fn rest_after_desktop(normal: &Expectation, kill: &str) -> Expectation {
+    let mut e = normal.clone();
+    let line = format!("ZOO_OS SHELL line={kill}");
+    e.then(&[
+        line.as_str(),
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+    ]);
+    e.then_rest();
+    e
+}
+
+fn broker_restart_steps() -> Interaction {
+    let mut steps = vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("kill otter-handler after 20")),
+        Action::Keys(typed("desktop")),
+        Action::WaitFor("ZOO_OS PROC start pid=30 name=bella".into()),
+        Action::Settle(QUIET),
+        // Files -> Crash Test -> Bella.
+        Action::Keys(vec!["tab", "tab"]),
+        Action::Settle(QUIET),
+        // Starts the broker.
+        Action::Keys(typed("list music")),
+        Action::WaitContains("OtterHandler: `music` is `Music`".into()),
+        Action::WaitContains("name=otter-handler by=0".into()),
+        Action::Settle(QUIET),
+        // The ended broker is noticed on the next request ...
+        Action::Keys(typed("list music")),
+        Action::WaitContains("Bella: the file broker stopped; a new one in 500 ms".into()),
+        Action::Settle(QUIET),
+    ];
+    // ... and after the back-off a new one answers.
+    steps.push(Action::Keys(typed("list music")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: `music` is `Music`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+fn model_restart_steps() -> Interaction {
+    let mut steps = vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("kill elephant-handler after 20")),
+        Action::Keys(typed("desktop")),
+        Action::WaitContains("ElephantHandler: warmed up".into()),
+        Action::WaitContains("name=elephant-handler by=0".into()),
+        Action::WaitContains("Bella: the model service ended; starting it again in 500 ms".into()),
+        Action::WaitContains("Bella: starting the model service again".into()),
+        Action::WaitContains("ElephantHandler: warmed up".into()),
+        Action::Settle(QUIET),
+        // Files -> Crash Test -> Bella.
+        Action::Keys(vec!["tab", "tab"]),
+        Action::Settle(QUIET),
+        Action::Keys(typed("Find my pancake recipe")),
+        Action::WaitContains("ElephantHandler: chose search `pancake recipe`".into()),
+        Action::WaitContains("Bella: answered in ".into()),
+        Action::Settle(QUIET),
+    ];
     leave_desktop(&mut steps);
     Interaction { steps }
 }

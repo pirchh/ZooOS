@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 2: Bella's helpers start again (2026-11-02)
+
+Version 0.82.0. Design: docs/s2-design.md §4.
+
+- **Bella keeps her home handle** and gives each file broker a copy, so a
+  broker that ends can be replaced.
+- **ElephantHandler and OtterHandler are started again** after a back-off
+  (0.5 s, doubling to 16 s). The model is warmed up again.
+- **Broker answers have a 10 s deadline** (part of B14).
+- **The shell's `kill <program> [after <s>]`,** for tests.
+
 ## Stage 2: the model on its own disk (2026-11-02)
 
 Version 0.81.0. Design: docs/s2-design.md §3.

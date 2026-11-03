@@ -73,6 +73,7 @@ pub fn run() -> ! {
 fn next_byte() -> Option<u8> {
     let mut was_owned = false;
     loop {
+        run_pending_kill();
         // Check with interrupts off, then `sti; hlt` as one step: a key that
         // arrives after the check still wakes the CPU.
         cpu_interrupts::disable();
@@ -96,6 +97,27 @@ fn next_byte() -> Option<u8> {
         // Idle point: user processes may run while the shell waits.
         process::idle_hlt();
         cpu_interrupts::enable();
+    }
+}
+
+/// `kill <name> after <seconds>`: the program to kill and when (ticks).
+static PENDING_KILL: spin::Mutex<Option<(String, u64)>> = spin::Mutex::new(None);
+
+/// Runs a scheduled `kill` once its time has come. The shell keeps
+/// waiting here while a desktop session owns the keyboard, so a test can
+/// end a service in the middle of the desktop (docs/s2-design.md).
+fn run_pending_kill() {
+    let due = {
+        let mut p = PENDING_KILL.lock();
+        match p.as_ref() {
+            Some((_, at)) if interrupts::ticks() >= *at => p.take(),
+            _ => None,
+        }
+    };
+    if let Some((name, _)) = due
+        && process::kill_named(&name).is_none()
+    {
+        kprintln!("kill: no running program named {}", name);
     }
 }
 
@@ -201,6 +223,7 @@ fn execute(line: &str) {
             kprintln!("logs [text]     recent log lines, optionally only those containing text");
             kprintln!("poke <svc> <x>  send a test request to a service");
             kprintln!("restart <svc>   stop a service; its restart policy starts it again");
+            kprintln!("kill <prog> [after <s>]  end a program now or after s seconds");
             kprintln!("dir [path]      list a folder in your home folder");
             kprintln!("cat <path>      show a file from your home folder");
             kprintln!("put <path> <t>  write text to a file in your home folder (\\t: a tab)");
@@ -262,6 +285,25 @@ fn execute(line: &str) {
             }
         }
         "services" => supervisor_request("status"),
+        "kill" => {
+            let rest = rest.trim();
+            match rest.split_once(" after ") {
+                Some((name, secs)) => match secs.trim().parse::<u64>() {
+                    Ok(s) => {
+                        let at = interrupts::ticks() + s * u64::from(interrupts::TIMER_HZ);
+                        *PENDING_KILL.lock() = Some((String::from(name.trim()), at));
+                        kprintln!("kill: {} in {} s", name.trim(), s);
+                    }
+                    Err(_) => kprintln!("kill <program> [after <seconds>]"),
+                },
+                None if !rest.is_empty() => {
+                    if process::kill_named(rest).is_none() {
+                        kprintln!("kill: no running program named {}", rest);
+                    }
+                }
+                None => kprintln!("kill <program> [after <seconds>]"),
+            }
+        }
         "dir" | "cat" | "put" => {
             let mut req = String::from("file ");
             req.push_str(cmd);
