@@ -144,6 +144,40 @@ pub fn file_to_summarise(text: &str) -> Option<&str> {
     None
 }
 
+/// "save that", "save the summary", "save it as a note": keep the last
+/// summary in a file (docs/save-design.md).
+pub fn wants_saved(text: &str) -> bool {
+    let mut t = text.trim().trim_end_matches(['?', '.', '!']);
+    if t.len() > 7 && t.as_bytes()[..7].eq_ignore_ascii_case(b"please ") {
+        t = t[7..].trim_start();
+    }
+    [
+        "save that",
+        "save it",
+        "save this",
+        "save the summary",
+        "save that summary",
+        "keep that as a note",
+        "make a note of that",
+    ]
+    .iter()
+    .any(|q| {
+        t.len() >= q.len()
+            && t.as_bytes()[..q.len()].eq_ignore_ascii_case(q.as_bytes())
+            && (t.len() == q.len() || t.as_bytes()[q.len()] == b' ')
+    })
+}
+
+/// The summary of `path` is saved beside it as `<this>-summary.txt`:
+/// `path` without its extension.
+pub fn summary_stem(path: &str) -> &str {
+    let name_at = path.rfind('/').map_or(0, |i| i + 1);
+    match path[name_at..].rfind('.') {
+        Some(dot) if dot > 0 => &path[..name_at + dot],
+        _ => path,
+    }
+}
+
 /// "forget X", "forget that X", "forget about X": what to forget.
 pub fn fact_to_forget(text: &str) -> Option<&str> {
     let t = text.trim();
@@ -315,6 +349,25 @@ mod tests {
         assert_eq!(fact_to_forget("forget"), None);
         assert!(asks_what_remembered("What do you remember?"));
         assert!(!asks_what_remembered("where is my music"));
+    }
+
+    #[test]
+    fn saved() {
+        for t in [
+            "save that",
+            "Save it as a note.",
+            "please save the summary",
+            "make a note of that",
+        ] {
+            assert!(wants_saved(t), "{t}");
+        }
+        for t in ["saved games", "where is save.txt", "summarise notes.txt"] {
+            assert!(!wants_saved(t), "{t}");
+        }
+        assert_eq!(summary_stem("Documents/notes.txt"), "Documents/notes");
+        assert_eq!(summary_stem("todo"), "todo");
+        assert_eq!(summary_stem("a/.hidden"), "a/.hidden");
+        assert_eq!(summary_stem("v1.2/notes"), "v1.2/notes");
     }
 
     #[test]

@@ -70,8 +70,7 @@ yet, because the 1.5B model does not fit the boot image the case uses.
 
 ## Not done
 
-- Writing the summary somewhere (a note) is the next workflow, "find,
-  summarise, then create a note"; for now it is only shown.
+- Saving the summary as a file: docs/save-design.md ("save that").
 - Files over 900 bytes are summarised from their start.
 - Resistance to instructions inside a file is not measured yet; the
   separate call bounds the damage to one shown summary.

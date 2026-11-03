@@ -2375,6 +2375,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-save",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella saves a summary (docs/save-design.md): \"save that\" writes Documents/notes-summary.txt beside the file, a second save refuses to replace it, Notes opens it, and the audit trail lists the write (needs --accel)",
+            interaction: Some(bella_save_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2544,6 +2557,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-summary-answer"
+                | "bella-save"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2588,6 +2602,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-summary-answer"
+                | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -5417,6 +5432,38 @@ fn bella_summary_answer_steps() -> Interaction {
         // can only come from the summary.
         Action::WaitSeen("hopping".into()),
     ]);
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+fn bella_save_steps() -> Interaction {
+    let mut steps = open_bella();
+    let summarise = |steps: &mut Vec<Action>| {
+        steps.push(Action::Keys(typed("summarise Documents/notes.txt")));
+        steps.push(Action::WaitContains("ElephantHandler: summarised `".into()));
+        steps.push(Action::Settle(QUIET));
+    };
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: reply prompt".into(),
+    ));
+    summarise(&mut steps);
+    steps.push(Action::Keys(typed("save that")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: wrote Documents/notes-summary.txt (".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // The same summary again: the file exists, so it is not replaced.
+    summarise(&mut steps);
+    steps.push(Action::Keys(typed("save it")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: audit: write Documents/notes-summary.txt: already exists".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("open Documents/notes-summary.txt")));
+    steps.push(Action::WaitContains(
+        "Notes: opened Documents/notes-summary.txt".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     leave_desktop(&mut steps);
     Interaction { steps }
 }

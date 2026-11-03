@@ -49,7 +49,17 @@ const AUDIT_BYTES: usize = 16 * 1024;
 const AUDIT_SHOWN: usize = 8;
 /// Requests that change the home folder or what Bella remembers: these
 /// get a line in `AUDIT` as well as in the log.
-const CHANGES: [&str; 6] = ["create", "move", "trash", "undo", "fact-add", "fact-forget"];
+const CHANGES: [&str; 7] = [
+    "create",
+    "write",
+    "move",
+    "trash",
+    "undo",
+    "fact-add",
+    "fact-forget",
+];
+/// Largest file `write` makes (docs/save-design.md).
+const WRITE_BYTES: usize = 900;
 /// The memory file's name before 0.77.0, moved to `MEMORY` at start.
 const OLD_MEMORY: &str = ".assistant-memory";
 /// Largest memory file kept; the oldest pairs go first.
@@ -240,6 +250,9 @@ impl Otter {
             // `trash`; the rest need no confirmation.
             "read" => self.read(&self.resolve_existing(clean(arg)?)),
             "move" => self.move_to(arg),
+            // `write <path>\t<text>`: a new file; never overwrites
+            // (docs/save-design.md).
+            "write" => self.write_new(arg),
             "trash" => self.trash(&self.resolve_existing(clean(arg)?)),
             "info" if arg.is_empty() => self.info(),
             // Facts the user told Bella (docs/facts-design.md).
@@ -266,7 +279,7 @@ impl Otter {
             Ok(()) => "done",
             Err(why) => why,
         };
-        let what = req.trim();
+        let what = req.split('\t').next().unwrap_or(req).trim();
         zoo_rt::log!("OtterHandler: audit: {}: {}", what, outcome);
         if result.is_err() || !CHANGES.contains(&tool) {
             return;
@@ -801,6 +814,34 @@ impl Otter {
                 .map_err(|_| "reply failed")?;
         }
         Ok(())
+    }
+
+    /// `write <path>\t<text>`: makes a new text file. An existing file is
+    /// never replaced; its folder must exist.
+    fn write_new(&mut self, arg: &str) -> Result<(), &'static str> {
+        let (path, text) = arg.split_once('\t').ok_or("expected <path> and text")?;
+        if text.is_empty() || text.len() > WRITE_BYTES || text.contains('\0') {
+            return Err("nothing to write");
+        }
+        let path = self.resolve(clean(path)?);
+        if path.is_empty() {
+            return Err("no file named");
+        }
+        match dir_stat(self.home, &path) {
+            Ok(_) => return Err("already exists"),
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(reason(e)),
+        }
+        if let Some((folder, _)) = path.rsplit_once('/')
+            && !dir_stat(self.home, folder).is_ok_and(|e| e.is_dir())
+        {
+            return Err("no such folder");
+        }
+        file_create(self.home, &path).map_err(reason)?;
+        file_write(self.home, &path, 0, text.as_bytes()).map_err(reason)?;
+        zoo_rt::log!("OtterHandler: wrote {} ({} bytes)", path, text.len());
+        self.line(format_args!("saved {}", path))
+            .map_err(|_| "reply failed")
     }
 
     /// `move <from> to <to>`: renames, or moves into `<to>` when it is a

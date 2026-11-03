@@ -34,7 +34,7 @@ const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
     asks_about_activity, asks_what_bella_did, asks_what_remembered, fact_to_forget,
     fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
-    typed_command,
+    summary_stem, typed_command, wants_saved,
 };
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
@@ -107,6 +107,10 @@ struct App {
     /// The request whose summary the model is writing
     /// (docs/summary-design.md).
     summarising: Option<String>,
+    /// The file being summarised, and then (file, summary) once shown:
+    /// "save that" writes it beside the file (docs/save-design.md).
+    summary_of: Option<String>,
+    last_summary: Option<(String, String)>,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -161,6 +165,8 @@ fn main(chan: u64, home: u64) -> u8 {
         asking_context: None,
         capture: None,
         summarising: None,
+        summary_of: None,
+        last_summary: None,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -303,6 +309,9 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if wants_saved(text) && self.last_summary.is_some() {
+            self.request = None;
+            self.save_summary();
         } else if let Some(path) = file_to_summarise(text) {
             self.request = None;
             self.summarise(text, path);
@@ -502,8 +511,33 @@ impl App {
             return;
         }
         self.summarising = Some(String::from(request));
+        self.summary_of = Some(String::from(path));
         self.mode = Mode::Thinking;
         self.status = String::from("Reading... (Backspace cancels)");
+    }
+
+    /// Writes the last summary beside its file (docs/save-design.md); the
+    /// broker refuses to replace a file that exists.
+    fn save_summary(&mut self) {
+        let Some((file, summary)) = self.last_summary.clone() else {
+            return;
+        };
+        let mut to = String::from(summary_stem(&file));
+        to.push_str("-summary.txt");
+        let mut req = String::from("write ");
+        req.push_str(&to);
+        req.push('\t');
+        req.push_str("Summary of ");
+        req.push_str(&file);
+        req.push_str(":\n");
+        req.push_str(&summary);
+        req.push('\n');
+        if self.broker(&req) {
+            self.last_summary = None;
+            let mut l = String::from("Bella: Saved. Open it with: open ");
+            l.push_str(&to);
+            self.say(&l);
+        }
     }
 
     /// The window server's answer to `context?`: the question waiting for
@@ -943,6 +977,11 @@ impl App {
             // only remembered for a follow-up's command choice.
             // A summary was not kept in the model's conversation: note
             // it, without the file's text, so follow-ups know it.
+            if let Some(file) = self.summary_of.take()
+                && summarising.is_some()
+            {
+                self.last_summary = Some((file, String::from(text)));
+            }
             if let Some(asked) = summarising {
                 self.remember_exchange(&asked, text);
             }
