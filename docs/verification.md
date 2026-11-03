@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The Stage 2
-model disk section (version 0.81.0) is the current state. Sections before it
+helpers section (version 0.82.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 2 results: Bella's helpers start again (version 0.82.0)
+
+Design: docs/s2-design.md §4.
+
+**`broker-restart`** (TCG): `OK`.
+
+```
+ZOO_OS PROC killed pid=31 name=otter-handler by=0
+[30:bella] Bella: the file broker stopped; a new one in 500 ms
+[32:otter-handler] OtterHandler: `music` is `Music`
+```
+
+**`model-restart`** (`--accel whpx`): `OK`.
+
+```
+ZOO_OS PROC killed pid=31 name=elephant-handler by=0
+[30:bella] Bella: the model service ended; starting it again in 500 ms
+[32:elephant-handler] ElephantHandler: warmed up: system prompt 76 tokens in 4784 ms
+[30:bella] Bella: answered in 1043 ms by the model
+```
+
+**Negative controls:**
+- **No new broker after a failure:** `FAIL broker-restart`.
+- **No restart of the model service:** `FAIL model-restart`.
+
+FULL_SUITE_RESULT
 
 ## Stage 2 results: the model on its own disk (version 0.81.0)
 

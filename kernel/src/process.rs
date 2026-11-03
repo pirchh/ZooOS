@@ -683,6 +683,21 @@ pub fn on_input(frame: *mut TrapFrame, was_idle: bool) -> *mut TrapFrame {
     .unwrap_or(frame)
 }
 
+/// Kills the first live process named `name`, as the kernel (`by=0`), and
+/// returns its pid: the shell's `kill` (docs/s2-design.md, for tests that
+/// end a service while the desktop runs).
+pub fn kill_named(name: &str) -> Option<u64> {
+    with_sched(|s, _| {
+        let j = s.tasks.iter().position(|t| {
+            matches!(t, Some(t) if t.name == name && t.proc.is_some() && t.state != State::Exited)
+        })?;
+        let pid = s.task(j).pid;
+        kprintln!("ZOO_OS PROC killed pid={} name={} by=0", pid, name);
+        s.finish(j, ExitStatus::Killed);
+        Some(pid)
+    })
+}
+
 /// Number of user tasks not yet reaped.
 pub fn user_tasks() -> usize {
     with_sched(|s, _| s.tasks.iter().skip(1).filter(|t| t.is_some()).count())

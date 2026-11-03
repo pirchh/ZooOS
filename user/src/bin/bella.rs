@@ -73,6 +73,25 @@ struct App {
     /// When Enter was pressed on the request being answered, in
     /// microseconds since boot (docs/s1-design.md).
     asked_at: u64,
+    /// The model service ended: start it again (and warm it up) at this
+    /// tick (docs/s2-design.md §4).
+    model_restart_at: Option<u64>,
+    /// Failures of each helper since its last success, for the back-off.
+    model_failures: u32,
+    broker_failures: u32,
+    /// No new broker before this tick.
+    broker_retry_at: u64,
+}
+
+/// First wait before restarting a helper that ended (0.5 s); it doubles
+/// with each failure in a row, up to `MAX_BACKOFF`.
+const BACKOFF: u64 = 50;
+const MAX_BACKOFF: u64 = 1600;
+/// Longest wait for the broker's answer (10 s, docs/s2-design.md §4).
+const BROKER_DEADLINE: u64 = 1000;
+
+fn backoff(failures: u32) -> u64 {
+    (BACKOFF << failures.saturating_sub(1).min(5)).min(MAX_BACKOFF)
 }
 
 fn main(chan: u64, home: u64) -> u8 {
@@ -88,6 +107,10 @@ fn main(chan: u64, home: u64) -> u8 {
         request: None,
         unanswered: None,
         asked_at: 0,
+        model_restart_at: None,
+        model_failures: 0,
+        broker_failures: 0,
+        broker_retry_at: 0,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -110,20 +133,27 @@ fn main(chan: u64, home: u64) -> u8 {
                 Err(_) => return 0,
             }
         }
-        if let (Mode::Thinking, Some(e)) = (&p.mode, p.elephant) {
+        if let Some(e) = p.elephant {
+            // Replies matter while thinking; otherwise only the channel
+            // closing (the service ended) is looked for.
+            let thinking = matches!(p.mode, Mode::Thinking);
             match try_recv(e, &mut buf) {
-                Ok(n) => {
+                Ok(n) if thinking => {
                     busy = true;
                     let msg = String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
                     p.model_reply(&msg);
                 }
-                Err(Error::Again) => {}
+                Ok(_) | Err(Error::Again) => {}
                 Err(_) => {
-                    p.elephant = None;
-                    p.mode = Mode::Typing;
-                    p.status = String::from("The model service stopped.");
+                    busy = true;
+                    p.model_ended(thinking);
                 }
             }
+        }
+        if p.model_restart_at.is_some_and(|at| zoo_rt::ticks() >= at) {
+            p.model_restart_at = None;
+            zoo_rt::log!("Bella: starting the model service again");
+            p.warm();
         }
         if busy {
             if p.draw().is_err() {
@@ -315,11 +345,43 @@ impl App {
         true
     }
 
-    /// Starts OtterHandler on first use, moving the home handle into it.
+    /// The model service ended (crashed or killed): say so if a request
+    /// was waiting, and start it again after a back-off
+    /// (docs/s2-design.md §4).
+    fn model_ended(&mut self, thinking: bool) {
+        if let Some(e) = self.elephant.take() {
+            let _ = close(e);
+        }
+        self.model_failures += 1;
+        let wait = backoff(self.model_failures);
+        zoo_rt::log!(
+            "Bella: the model service ended; starting it again in {} ms",
+            wait * 10
+        );
+        self.model_restart_at = Some(zoo_rt::ticks() + wait);
+        if thinking {
+            self.mode = Mode::Typing;
+            self.status = String::from(HINT);
+            self.say("Error: the model service stopped; it is starting again.");
+            if let Some(r) = self.request.take() {
+                self.unanswered = Some(r);
+            }
+        }
+    }
+
+    /// Starts OtterHandler on first use with a copy of the home handle, so
+    /// it can be started again if it ends (docs/s2-design.md §4).
     fn otter(&mut self) -> Option<Handle> {
         if self.otter.is_none() && self.home != NO_HANDLE {
+            if zoo_rt::ticks() < self.broker_retry_at {
+                return None;
+            }
             let (mine, theirs) = channel_create().ok()?;
-            let home = core::mem::replace(&mut self.home, NO_HANDLE);
+            let Ok(home) = zoo_rt::dir_open(self.home, "", zoo_rt::dir_rights::ALL) else {
+                let _ = close(mine);
+                let _ = close(theirs);
+                return None;
+            };
             match spawn_with("otter-handler", [Some(theirs), Some(home)]) {
                 Ok(process) => {
                     // The process handle is not needed: the channel closing
@@ -343,17 +405,28 @@ impl App {
             return false;
         };
         if send_wait(o, req.as_bytes()).is_err() {
-            self.otter = None;
-            self.say("Error: the file broker stopped.");
+            self.broker_ended("stopped");
             return false;
         }
         let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        let deadline = zoo_rt::ticks() + BROKER_DEADLINE;
         loop {
-            let Ok(n) = recv(o, &mut buf) else {
-                self.otter = None;
-                self.say("Error: the file broker stopped.");
+            // Bounded (B14): a broker that does not answer in 10 s is
+            // ended and started again later.
+            let left = deadline.saturating_sub(zoo_rt::ticks());
+            if left == 0 || zoo_rt::wait_any(&[o], left).is_err() {
+                self.broker_ended("did not answer in 10 s");
                 return false;
+            }
+            let n = match zoo_rt::try_recv(o, &mut buf) {
+                Ok(n) => n,
+                Err(Error::Again) => continue,
+                Err(_) => {
+                    self.broker_ended("stopped");
+                    return false;
+                }
             };
+            self.broker_failures = 0;
             let line = core::str::from_utf8(&buf[..n]).unwrap_or("?");
             if let Some(rest) = line.strip_prefix("| ") {
                 let mut l = String::from("  ");
@@ -371,6 +444,26 @@ impl App {
                 return false;
             }
         }
+    }
+
+    /// The broker ended or stopped answering: drop it; the next request
+    /// starts a new one after a back-off (docs/s2-design.md §4).
+    fn broker_ended(&mut self, why: &str) {
+        if let Some(o) = self.otter.take() {
+            let _ = close(o);
+        }
+        self.broker_failures += 1;
+        let wait = backoff(self.broker_failures);
+        self.broker_retry_at = zoo_rt::ticks() + wait;
+        zoo_rt::log!(
+            "Bella: the file broker {}; a new one in {} ms",
+            why,
+            wait * 10
+        );
+        let mut l = String::from("Error: the file broker ");
+        l.push_str(why);
+        l.push('.');
+        self.say(&l);
     }
 
     /// Starts the model service and has it read the system prompt now, in
