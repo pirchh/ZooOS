@@ -55,6 +55,97 @@ pub fn byte_size(ty: u32, n: usize) -> Option<usize> {
     }
 }
 
+/// 8-bit activations (docs/int8-design.md): a vector quantized like a
+/// `Q8_0` row, 32 values per block with one scale, so a weight row of
+/// `Q4_0` or `Q8_0` can be dotted with it in integers.
+#[derive(Default, Clone)]
+pub struct Q8x {
+    pub q: alloc::vec::Vec<i8>,
+    pub d: alloc::vec::Vec<f32>,
+}
+
+impl Q8x {
+    /// `x` (a whole number of blocks) quantized: per block,
+    /// `d = max |x| / 127`, `q = round(x / d)`.
+    pub fn from(x: &[f32]) -> Q8x {
+        let mut v = Q8x::default();
+        v.set(x);
+        v
+    }
+
+    pub fn set(&mut self, x: &[f32]) {
+        self.q.clear();
+        self.d.clear();
+        for b in x.chunks(BLOCK) {
+            let amax = b.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let d = amax / 127.0;
+            let id = if d > 0.0 { 1.0 / d } else { 0.0 };
+            self.d.push(d);
+            for &v in b {
+                // `round` half away from zero, as ggml's `roundf`.
+                self.q.push(libm::roundf(v * id) as i8);
+            }
+        }
+    }
+}
+
+static INT8: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Turns 8-bit activations on or off (`--f32-activations` on the host's
+/// `infer`, `infer-check` and `assist-check`, to compare).
+pub fn set_int8(on: bool) {
+    INT8.store(on, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether rows of type `ty` are dotted with 8-bit activations.
+pub fn int8_for(ty: u32) -> bool {
+    INT8.load(core::sync::atomic::Ordering::Relaxed) && (ty == TYPE_Q4_0 || ty == TYPE_Q8_0)
+}
+
+/// A `Q4_0` or `Q8_0` row dotted with quantized activations `x`, in
+/// integers per block: `d_w * d_x * sum(w_i * x_i)`.
+pub fn dot_q8x(ty: u32, row: &[u8], x: &Q8x) -> f32 {
+    if crate::cpu::avx2() {
+        #[allow(unsafe_code)]
+        // SAFETY: `avx2()` is true only when CPUID reports AVX2 and FMA and
+        // XGETBV shows the OS saves the YMM registers.
+        return unsafe { crate::avx2::dot_q8x(ty, row, x) };
+    }
+    dot_q8x_portable(ty, row, x)
+}
+
+/// `dot_q8x` without AVX2.
+pub fn dot_q8x_portable(ty: u32, row: &[u8], x: &Q8x) -> f32 {
+    let mut total = 0f32;
+    match ty {
+        TYPE_Q4_0 => {
+            for (k, b) in row.as_chunks::<Q4_0_BYTES>().0.iter().enumerate() {
+                let xs = &x.q[k * BLOCK..(k + 1) * BLOCK];
+                let mut s = 0i32;
+                for j in 0..BLOCK / 2 {
+                    let lo = i32::from(b[2 + j] & 0x0F) - 8;
+                    let hi = i32::from(b[2 + j] >> 4) - 8;
+                    s += lo * i32::from(xs[j]) + hi * i32::from(xs[j + BLOCK / 2]);
+                }
+                total += scale(b) * x.d[k] * s as f32;
+            }
+        }
+        TYPE_Q8_0 => {
+            for (k, b) in row.as_chunks::<Q8_0_BYTES>().0.iter().enumerate() {
+                let xs = &x.q[k * BLOCK..(k + 1) * BLOCK];
+                let s: i32 = b[2..34]
+                    .iter()
+                    .zip(xs)
+                    .map(|(&w, &v)| i32::from(w as i8) * i32::from(v))
+                    .sum();
+                total += scale(b) * x.d[k] * s as f32;
+            }
+        }
+        _ => {}
+    }
+    total
+}
+
 pub(crate) fn scale(b: &[u8]) -> f32 {
     f16_to_f32(u16::from_le_bytes([b[0], b[1]]))
 }

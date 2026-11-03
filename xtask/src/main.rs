@@ -85,6 +85,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     if opts.portable {
         zoo_infer::cpu::force_portable();
     }
+    if opts.f32_activations {
+        zoo_infer::quant::set_int8(false);
+    }
     let root = workspace_root();
     match cmd.as_str() {
         "doctor" => {
@@ -346,6 +349,8 @@ struct Options {
     bella: Option<String>,
     /// `--portable`: the host engine without AVX2 (docs/s3-design.md).
     portable: bool,
+    /// `--f32-activations`: no 8-bit activations (docs/int8-design.md).
+    f32_activations: bool,
 }
 
 impl Options {
@@ -367,6 +372,7 @@ impl Options {
                 "--case" => o.case = Some(value("--case")?),
                 "--bella" => o.bella = Some(value("--bella")?),
                 "--portable" => o.portable = true,
+                "--f32-activations" => o.f32_activations = true,
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
                     let v = value("--accel")?;

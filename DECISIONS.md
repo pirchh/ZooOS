@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## 8-bit activations (2026-11-03)
+
+Version 0.95.0. Design: docs/int8-design.md. The owner's goal is answers
+in under a second; they chose this on 2026-11-03 ("do everything").
+
+- **`Q4_0` and `Q8_0` rows are dotted with 8-bit activations** in
+  integers, as llama.cpp does: about 1.3× faster.
+- **Kept although `infer-check` reports `FAIL`.** It failed on one point
+  of the bar set before measuring: a 5th-place near-tie swaps on 2 of 5
+  prompts. Every output token, every command choice and the embedding
+  scores are unchanged. `--f32-activations` turns it off.
+
 ## Bella answers from your files; a file index by meaning (2026-11-03)
 
 Version 0.94.0. Designs: docs/lookup-design.md, docs/vectors-design.md,

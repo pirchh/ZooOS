@@ -134,6 +134,19 @@ pub const BATCH: usize = 16;
 /// products as `matvec`, so the same results.
 fn matmul(w: &TensorInfo, xs: &[f32], outs: &mut [f32], n: usize) {
     let (rows, cols) = (w.rows, w.cols);
+    if quant::int8_for(w.ty) {
+        // Each token's vector quantized once (docs/int8-design.md).
+        let qs: Vec<quant::Q8x> = (0..n)
+            .map(|t| quant::Q8x::from(&xs[t * cols..(t + 1) * cols]))
+            .collect();
+        for r in 0..rows {
+            let row = w.row(r);
+            for (t, q) in qs.iter().enumerate() {
+                outs[t * rows + r] = quant::dot_q8x(w.ty, row, q);
+            }
+        }
+        return;
+    }
     for r in 0..rows {
         let row = w.row(r);
         for t in 0..n {
@@ -144,6 +157,14 @@ fn matmul(w: &TensorInfo, xs: &[f32], outs: &mut [f32], n: usize) {
 
 /// `out[r] = W[r] · x` for every row.
 fn matvec(w: &TensorInfo, x: &[f32], out: &mut [f32]) {
+    if quant::int8_for(w.ty) {
+        // Quantized once, used for every row (docs/int8-design.md).
+        let q = quant::Q8x::from(x);
+        for (r, o) in out.iter_mut().enumerate().take(w.rows) {
+            *o = quant::dot_q8x(w.ty, w.row(r), &q);
+        }
+        return;
+    }
     for (r, o) in out.iter_mut().enumerate().take(w.rows) {
         *o = quant::dot(w.ty, w.row(r), x);
     }
