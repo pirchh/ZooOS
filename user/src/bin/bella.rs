@@ -33,7 +33,8 @@ const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
     asks_about_activity, asks_what_bella_did, asks_what_remembered, fact_to_forget,
-    fact_to_remember, follow_up, question_about_answer, small_talk, typed_command,
+    fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
+    typed_command,
 };
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
@@ -100,6 +101,12 @@ struct App {
     /// A question about the screen, waiting for the window server's
     /// `context:` answer (docs/context-design.md).
     asking_context: Option<String>,
+    /// While set, the broker's `| ` lines are collected here instead of
+    /// shown (a file being read for a summary).
+    capture: Option<String>,
+    /// The request whose summary the model is writing
+    /// (docs/summary-design.md).
+    summarising: Option<String>,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -152,6 +159,8 @@ fn main(chan: u64, home: u64) -> u8 {
         talking: None,
         following: false,
         asking_context: None,
+        capture: None,
+        summarising: None,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -294,6 +303,9 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if let Some(path) = file_to_summarise(text) {
+            self.request = None;
+            self.summarise(text, path);
         } else if asks_about_activity(text) {
             // What is on the screen: asked of the window server, answered
             // in words (docs/context-design.md).
@@ -377,7 +389,13 @@ impl App {
             }
             said.push('.');
         }
-        let said = shorten(said);
+        self.remember_exchange(asked, &said);
+    }
+
+    /// Keeps an exchange that was not a reply in words: as the last
+    /// exchange for a follow-up, and in the model's conversation.
+    fn remember_exchange(&mut self, asked: &str, said: &str) {
+        let said = shorten(String::from(said));
         let mut e = String::from("The user asked: ");
         e.push_str(asked);
         e.push_str(". Bella: ");
@@ -444,6 +462,48 @@ impl App {
                 self.unanswered = Some(r);
             }
         }
+    }
+
+    /// Reads `path` through the broker and has the model summarise it in
+    /// a call of its own (docs/summary-design.md): the text is data, it is
+    /// capped, and it never joins the conversation.
+    fn summarise(&mut self, request: &str, path: &str) {
+        let mut req = String::from("read ");
+        req.push_str(path);
+        self.capture = Some(String::new());
+        let ok = self.broker(&req);
+        let text = self.capture.take().unwrap_or_default();
+        if !ok {
+            return;
+        }
+        let mut cut = String::new();
+        for c in text.chars() {
+            if cut.len() + c.len_utf8() > zoo_infer::talk::MAX_SUMMARY_TEXT {
+                break;
+            }
+            cut.push(if c == '\t' { ' ' } else { c });
+        }
+        if cut.trim().is_empty() {
+            self.say("Bella: That file is empty.");
+            return;
+        }
+        zoo_rt::log!("Bella: summarising {} ({} bytes)", path, cut.len());
+        if !self.start_model() {
+            self.say("Error: cannot start the model service.");
+            return;
+        }
+        let mut msg = String::from("summarise ");
+        msg.push_str(path);
+        msg.push('\t');
+        msg.push_str(&cut);
+        let Some(e) = self.elephant else { return };
+        if send_wait(e, msg.as_bytes()).is_err() {
+            self.model_ended(false);
+            return;
+        }
+        self.summarising = Some(String::from(request));
+        self.mode = Mode::Thinking;
+        self.status = String::from("Reading... (Backspace cancels)");
     }
 
     /// The window server's answer to `context?`: the question waiting for
@@ -715,7 +775,15 @@ impl App {
             };
             self.broker_failures = 0;
             let line = core::str::from_utf8(&buf[..n]).unwrap_or("?");
-            if let Some(rest) = line.strip_prefix("| ") {
+            if let Some(rest) = line.strip_prefix("| ")
+                && let Some(c) = self.capture.as_mut()
+            {
+                // `read`'s note of what it left out is not file text.
+                if !(rest.starts_with('(') && rest.ends_with(" more bytes)")) {
+                    c.push_str(rest);
+                    c.push('\n');
+                }
+            } else if let Some(rest) = line.strip_prefix("| ") {
                 let mut l = String::from("  ");
                 l.push_str(rest);
                 self.say(&l);
@@ -864,6 +932,7 @@ impl App {
         }
         self.mode = Mode::Typing;
         self.status = String::from(HINT);
+        let summarising = self.summarising.take();
         if let Some(text) = msg.strip_prefix("say ") {
             // A reply in words: shown, never run.
             let mut l = String::from("Bella: ");
@@ -872,6 +941,11 @@ impl App {
             self.answered("the model, in words");
             // The model keeps its own reply in its conversation; here it is
             // only remembered for a follow-up's command choice.
+            // A summary was not kept in the model's conversation: note
+            // it, without the file's text, so follow-ups know it.
+            if let Some(asked) = summarising {
+                self.remember_exchange(&asked, text);
+            }
             if let Some(asked) = self.talking.take() {
                 let mut e = String::from("The user said: ");
                 e.push_str(&asked);

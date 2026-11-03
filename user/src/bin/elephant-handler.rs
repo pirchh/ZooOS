@@ -321,8 +321,14 @@ fn service(chan: Handle) -> u8 {
             }
             continue;
         }
-        if let Some(request) = msg.strip_prefix("talk ") {
-            // `talk <request>\t<facts>`: facts the user told Bella before.
+        // `talk <request>\t<facts>`: facts the user told Bella before.
+        // `summarise <name>\t<text>`: a file's text, summarised in a call
+        // of its own (docs/summary-design.md).
+        let job = msg
+            .strip_prefix("talk ")
+            .map(|r| (false, r))
+            .or_else(|| msg.strip_prefix("summarise ").map(|r| (true, r)));
+        if let Some((summary, request)) = job {
             let (request, facts) = request.split_once('\t').unwrap_or((request, ""));
             // Bella answers in words: text only, never run
             // (docs/talk-design.md).
@@ -361,6 +367,7 @@ fn service(chan: Handle) -> u8 {
                 talk = Some(tk);
             }
             let result = match talk.as_mut() {
+                Some(tk) if summary => tk.summarise(request, facts, &mut keep),
                 Some(tk) => tk.reply_with(request, facts, &mut keep),
                 None => Err(AssistError::Cancelled),
             };
@@ -373,7 +380,8 @@ fn service(chan: Handle) -> u8 {
                 (_, Some(Stop::TimedOut)) => reply(chan, format_args!("err timed out"), false),
                 (Ok(text), None) => {
                     zoo_rt::log!(
-                        "ElephantHandler: said `{}` in {} ms",
+                        "ElephantHandler: {} `{}` in {} ms",
+                        if summary { "summarised" } else { "said" },
                         text,
                         (zoo_rt::now_us() - t0) / 1000
                     );

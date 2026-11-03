@@ -114,6 +114,36 @@ pub fn fact_to_remember(text: &str) -> Option<&str> {
     None
 }
 
+/// "summarise X", "summarize the file X", "sum up X": the file to
+/// summarise (docs/summary-design.md).
+pub fn file_to_summarise(text: &str) -> Option<&str> {
+    let t = text.trim().trim_end_matches(['?', '.', '!']);
+    for p in [
+        "please summarise ",
+        "please summarize ",
+        "can you summarise ",
+        "can you summarize ",
+        "give me a summary of ",
+        "summary of ",
+        "summarise ",
+        "summarize ",
+        "sum up ",
+    ] {
+        if t.len() > p.len() && t.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()) {
+            let mut rest = t[p.len()..].trim();
+            for lead in ["the file ", "file ", "the ", "my "] {
+                if rest.len() > lead.len()
+                    && rest.as_bytes()[..lead.len()].eq_ignore_ascii_case(lead.as_bytes())
+                {
+                    rest = rest[lead.len()..].trim();
+                }
+            }
+            return (!rest.is_empty()).then_some(rest);
+        }
+    }
+    None
+}
+
 /// "forget X", "forget that X", "forget about X": what to forget.
 pub fn fact_to_forget(text: &str) -> Option<&str> {
     let t = text.trim();
@@ -285,6 +315,21 @@ mod tests {
         assert_eq!(fact_to_forget("forget"), None);
         assert!(asks_what_remembered("What do you remember?"));
         assert!(!asks_what_remembered("where is my music"));
+    }
+
+    #[test]
+    fn summarise() {
+        for (t, want) in [
+            ("summarise Documents/notes.txt", "Documents/notes.txt"),
+            ("Summarize the file notes.txt?", "notes.txt"),
+            ("can you summarise my shopping list", "shopping list"),
+            ("give me a summary of zoo.rs", "zoo.rs"),
+        ] {
+            assert_eq!(file_to_summarise(t), Some(want), "{t}");
+        }
+        for t in ["summarise", "read notes.txt", "what is a summary"] {
+            assert_eq!(file_to_summarise(t), None, "{t}");
+        }
     }
 
     #[test]

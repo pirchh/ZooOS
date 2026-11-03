@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The heap and
-audit section (version 0.89.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The summary
+section (version 0.90.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,34 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Summary results (version 0.90.0)
+
+Design: docs/summary-design.md.
+
+**`bella-summary`** (TCG): `OK`.
+
+```
+[30:bella] Bella: summarising Documents/recipes/pancakes.txt (90 bytes)
+[31:otter-handler] OtterHandler: audit: read nothing-here.txt: not found
+```
+
+**`bella-summary-answer`** (`--accel whpx`): `OK`.
+
+```
+[30:bella] Bella: summarising Documents/notes.txt (64 bytes)
+[31:elephant-handler] ElephantHandler: summarised `The file contains a list of items to buy for a shopping trip.` in 2410 ms
+```
+
+**Negative control:** with "A file." sent instead of the text, `FAIL`:
+``summarised `The file Documents/notes.txt contains data to describe.` ``
+
+**Still `OK`** (the reply path was split into `Talk::generate`):
+- with WHPX: `bella-talk`, `bella-convo`, `bella-facts-answer`,
+  `bella-context-answer` and `bella-live`;
+- under TCG: `bella` and `bella-context`.
+
+FULL_SUITE_RESULT
 
 ## Heap and audit results (version 0.89.0)
 
