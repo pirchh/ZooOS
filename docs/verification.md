@@ -62,7 +62,9 @@ qwen3-1.7b-q4`.
 **Unit test `int8_activations`:** the AVX2 and portable integer paths
 agree, within 1 % of floating point.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 101 cases
+`OK` and 14 skipped because they need an accelerator. Under TCG the engine
+uses the portable integer path; `bella-model` and `inference` pass with it.
 
 ## File answers results (version 0.94.0)
 
