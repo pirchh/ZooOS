@@ -172,12 +172,12 @@ lands as small, separately verified steps.
 | 0 | B3, B4, B8: the memory learns only right answers and replays only safe ones (docs/s0-design.md) | done 2026-11-02 |
 | — | The assistant renamed Bella everywhere in the OS (app, program, transcript, memory file, tests) | done 2026-11-02 |
 | 0 | B5: restart counts reset after 30 s; the desktop reloads with a fresh home folder after a filesystem restart; B15: m5c1 current state (docs/s0-design.md) | done 2026-11-02 |
-| 1 | Measure: "none of these" (B9) and a 22-request assist-check with a bar; per-request timing lines; peak heap; WHPX baselines (docs/s1-design.md) | done 2026-11-02 |
+| 1 | Measure: "none of these" (B9) and a 22-request assist-check with a bar; per-request timing lines; peak heap; WHPX baselines (docs/stage1-design.md) | done 2026-11-02 |
 | 1 | Responsiveness while the model runs | open |
-| 2 | B12: background programs; input preempts them; the model runs in the background (input wait during inference 4.7 → 0.25 ms) (docs/s2-design.md) | done 2026-11-02 |
-| 2 | The model warms up in the background as Bella opens: first request 6.1 → 1.0 s (docs/s2-design.md §2) | done 2026-11-02 |
-| 2 | The model on its own read-only disk: desktop up 2.93 → 1.21 s; B10 measured (52 µs per request) (docs/s2-design.md §3) | done 2026-11-02 |
-| 2 | Bella's helpers start again after a back-off; broker deadline (docs/s2-design.md §4) | done 2026-11-02 |
+| 2 | B12: background programs; input preempts them; the model runs in the background (input wait during inference 4.7 → 0.25 ms) (docs/stage2-design.md) | done 2026-11-02 |
+| 2 | The model warms up in the background as Bella opens: first request 6.1 → 1.0 s (docs/stage2-design.md §2) | done 2026-11-02 |
+| 2 | The model on its own read-only disk: desktop up 2.93 → 1.21 s; B10 measured (52 µs per request) (docs/stage2-design.md §3) | done 2026-11-02 |
+| 2 | Bella's helpers start again after a back-off; broker deadline (docs/stage2-design.md §4) | done 2026-11-02 |
 | 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |
 | 3 | XSAVE, CPU features, an AVX2 backend | open |
 | 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |

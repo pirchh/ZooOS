@@ -152,7 +152,7 @@ Design: docs/d10-design.md.
 
 ## Stage 2: Bella's helpers start again (2026-11-02)
 
-Version 0.82.0. Design: docs/s2-design.md §4.
+Version 0.82.0. Design: docs/stage2-design.md §4.
 
 - **Bella keeps her home handle** and gives each file broker a copy, so a
   broker that ends can be replaced.
@@ -163,7 +163,7 @@ Version 0.82.0. Design: docs/s2-design.md §4.
 
 ## Stage 2: the model on its own disk (2026-11-02)
 
-Version 0.81.0. Design: docs/s2-design.md §3.
+Version 0.81.0. Design: docs/stage2-design.md §3.
 
 - **A read-only model disk** (`build/model-disk.img`): a `ZOOMODL1` header
   block, then the model. Chosen over the data disk to keep the model
@@ -180,7 +180,7 @@ Version 0.81.0. Design: docs/s2-design.md §3.
 
 ## Stage 2: the warm-up (2026-11-02)
 
-Version 0.80.0. Design: docs/s2-design.md §2.
+Version 0.80.0. Design: docs/stage2-design.md §2.
 
 - **Bella starts the model service as it opens** (when the model is
   installed) and asks it to read the system prompt in the background.
@@ -190,7 +190,7 @@ Version 0.80.0. Design: docs/s2-design.md §2.
 
 ## Stage 2: background programs (2026-11-02)
 
-Version 0.79.0. Design: docs/s2-design.md (B12).
+Version 0.79.0. Design: docs/stage2-design.md (B12).
 
 - **New system call `SET_BACKGROUND` (75).** A background program runs
   only when no other program is ready. After 1 s without a turn it gets
@@ -204,7 +204,7 @@ Version 0.79.0. Design: docs/s2-design.md (B12).
 
 ## Stage 1: "none of these" and timing lines (2026-11-02)
 
-Version 0.78.0. Design: docs/s1-design.md.
+Version 0.78.0. Design: docs/stage1-design.md.
 
 - **A fifth tool word, `none`**, and a prompt line asking for it when the
   request is not about files. Measured on 22 requests:

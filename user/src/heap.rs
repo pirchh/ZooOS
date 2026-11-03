@@ -15,7 +15,7 @@ struct GrowingHeap(LockedHeap);
 static HEAP: GrowingHeap = GrowingHeap(LockedHeap::empty());
 
 /// Most bytes in use at once since the program started
-/// (docs/s1-design.md).
+/// (docs/stage1-design.md).
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
 /// Heap bytes in use now, the most ever in use, and the heap's size.

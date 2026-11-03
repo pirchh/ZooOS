@@ -192,7 +192,7 @@ fn run(mut mem: memory::Memory) -> ! {
     }
     memory::install(mem);
     // The data disk, if QEMU attached one (docs/s5-design.md).
-    // And the model disk (docs/s2-design.md §3), told apart by its header.
+    // And the model disk (docs/stage2-design.md §3), told apart by its header.
     let disks = memory::with(virtio_blk::init);
     match disks.data {
         Some(bytes) => kprintln!("ZOO_OS INFO disk virtio-blk bytes={}", bytes),

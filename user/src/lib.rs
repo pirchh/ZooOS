@@ -262,7 +262,7 @@ pub fn shm_map(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::SHM_MAP, h, 0, 0))
 }
 
-/// The model's length in bytes on the model disk (docs/s2-design.md §3).
+/// The model's length in bytes on the model disk (docs/stage2-design.md §3).
 pub fn model_size() -> Result<u64, Error> {
     result(syscall(sys::MODEL_SIZE, 0, 0, 0))
 }
@@ -281,7 +281,7 @@ pub fn model_read(block: u64, buf: &mut [u8]) -> Result<(), Error> {
 }
 
 /// Marks this program as background work (`true`): it runs only when no
-/// other program is ready, and input preempts it (docs/s2-design.md).
+/// other program is ready, and input preempts it (docs/stage2-design.md).
 pub fn set_background(on: bool) -> Result<(), Error> {
     result(syscall(sys::SET_BACKGROUND, u64::from(on), 0, 0)).map(|_| ())
 }
@@ -573,7 +573,7 @@ fn cycles() -> u64 {
 }
 
 /// Microseconds on the CPU's cycle counter, for timing lines
-/// (docs/s1-design.md). The kernel's monotonic clock counts 10 ms ticks,
+/// (docs/stage1-design.md). The kernel's monotonic clock counts 10 ms ticks,
 /// too coarse for them. The first call calibrates, waiting about 30 ms.
 pub fn now_us() -> u64 {
     use core::sync::atomic::Ordering;
