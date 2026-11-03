@@ -74,7 +74,8 @@ ElephantHandler: summarised `The file lists items to buy: flour, eggs, and milk.
 **Negative control:** with Bella ignoring `part` messages,
 `bella-summary-answer` gives `FAIL` (no `first words on screen`).
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 12 skipped because they need an accelerator.
 
 ## Screen wording results (version 0.92.0)
 
