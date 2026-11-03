@@ -67,7 +67,8 @@ assistant built into ZooOS, an operating system.` ``
   `bella-convo` and `bella-live`;
 - under TCG: `bella-facts`, `bella-access` and `bella`.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 97 cases
+`OK` and 10 skipped because they need an accelerator.
 
 ## Facts results (version 0.87.0)
 
