@@ -93,6 +93,12 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
 });
 
 /// Loads the IDT. Requires `gdt::init` first (the double-fault IST).
+/// Loads the IDT on a non-boot processor (docs/smp-design.md): one IDT
+/// for every processor.
+pub fn load_idt() {
+    IDT.load();
+}
+
 pub fn init_idt(kernel_stack_bottom: u64) {
     STACK_BOTTOM.store(kernel_stack_bottom, Ordering::Relaxed);
     IDT.load();

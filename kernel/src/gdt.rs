@@ -86,6 +86,37 @@ pub unsafe fn set_kernel_stack(top: u64) {
     crate::trap::set_syscall_stack(top);
 }
 
+/// A non-boot processor's own GDT and TSS (docs/smp-design.md): the same
+/// segments, so the same selectors, but its own TSS (its own double-fault
+/// stack). Built on the heap and never freed. Call once on that
+/// processor, with interrupts disabled.
+pub fn init_ap() {
+    use alloc::boxed::Box;
+    let stack: &'static mut [u8] =
+        Box::leak(alloc::vec![0u8; DOUBLE_FAULT_STACK_SIZE].into_boxed_slice());
+    let tss: &'static mut TaskStateSegment = Box::leak(Box::new(TaskStateSegment::new()));
+    tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+        VirtAddr::from_ptr(stack.as_ptr()) + DOUBLE_FAULT_STACK_SIZE as u64;
+    let mut table = GlobalDescriptorTable::new();
+    let kernel_code = table.append(Descriptor::kernel_code_segment());
+    let kernel_data = table.append(Descriptor::kernel_data_segment());
+    let _user_data = table.append(Descriptor::user_data_segment());
+    let _user_code = table.append(Descriptor::user_code_segment());
+    // SAFETY: the TSS is leaked, so it outlives the GDT that points at it.
+    let tss_sel = table.append(unsafe { Descriptor::tss_segment_unchecked(tss) });
+    let table: &'static GlobalDescriptorTable = Box::leak(Box::new(table));
+    table.load();
+    // SAFETY: the selectors come from the GDT just loaded (the same layout
+    // as the boot processor's), flat kernel segments and a leaked TSS.
+    unsafe {
+        CS::set_reg(kernel_code);
+        SS::set_reg(kernel_data);
+        DS::set_reg(kernel_data);
+        ES::set_reg(kernel_data);
+        load_tss(tss_sel);
+    }
+}
+
 /// Loads the kernel GDT and TSS. Call once, with interrupts disabled.
 pub fn init() {
     // SAFETY: interrupts are disabled and the TSS is not yet loaded, so this

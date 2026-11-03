@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## More than one processor, step 1 (2026-11-03)
+
+Version 0.96.0. Design: docs/smp-design.md. The owner's 16-core PC ran
+ZooOS on one core; answers in under a second need the others.
+
+- **In three steps, each mergeable:** start and park the processors; run
+  tasks on them under one kernel lock; split the model's work across
+  them.
+- **The trampoline is the only new assembly,** in `global_asm!` (about 50
+  instructions): real mode to long mode, with temporary tables that map
+  the trampoline's page to itself and copy the kernel's upper half.
+- **Every existing case still runs with one processor;** `smp-` cases get
+  4.
+
 ## 8-bit activations (2026-11-03)
 
 Version 0.95.0. Design: docs/int8-design.md. The owner's goal is answers

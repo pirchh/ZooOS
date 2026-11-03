@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The 8-bit
-section (version 0.95.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The
+processors section (version 0.96.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,28 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Processors results (version 0.96.0)
+
+Design: docs/smp-design.md.
+
+**`smp-boot`** (4 processors): `OK` under TCG and with `--accel whpx`.
+
+```
+ZOO_OS INFO timer source=lapic per-tick=125063 pm-timer=0x608
+ZOO_OS INFO cpu 1 online apic=1
+ZOO_OS INFO cpu 2 online apic=2
+ZOO_OS INFO cpu 3 online apic=3
+ZOO_OS INFO smp cpus=4
+```
+
+The boot then runs as before, to `ZOO_OS SHELL ready`.
+
+**Negative control:** SIPI one page off: `FAIL` (`early-exit`). The
+processor ran garbage and reset the machine.
+
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 102 cases
+`OK` and 14 skipped because they need an accelerator.
 
 ## 8-bit results (version 0.95.0)
 

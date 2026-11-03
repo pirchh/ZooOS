@@ -1530,6 +1530,27 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "smp-boot",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: normal.clone(),
+            timeout: s.timeout,
+            want: "pass",
+            purpose: "the other processors (docs/smp-design.md, step 1): with 4 processors the MADT lists 4, the 3 others start through the trampoline, report online with their own GDT, TSS and local APIC, and park; the boot runs as before",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitSeen("ZOO_OS INFO cpu 1 online apic=".into()),
+                    Action::WaitSeen("ZOO_OS INFO cpu 2 online apic=".into()),
+                    Action::WaitSeen("ZOO_OS INFO cpu 3 online apic=".into()),
+                    Action::WaitSeen("ZOO_OS INFO smp cpus=4".into()),
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "heap-flood",
             mode: Mode::Normal,
             custom_image: None,
@@ -2716,6 +2737,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         };
         qemu::set_usb(c.usb);
+        // The other processors (docs/smp-design.md).
+        qemu::set_cpus(if c.name.starts_with("smp-") { 4 } else { 1 });
         // The everyday system's model comes on the model disk.
         qemu::set_model_disk(if c.name == "everyday-model" || c.name == "bella-vectors" {
             model_image.as_ref().map(|m| m.1.1.clone())

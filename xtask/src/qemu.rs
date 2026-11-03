@@ -128,6 +128,13 @@ pub fn set_model_disk(disk: Option<PathBuf>) {
 /// The guest's memory in GiB (2 unless changed; docs/talk-design.md).
 static MEMORY_GIB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
 
+/// Processors the guest gets (1 unless changed; docs/smp-design.md).
+static CPUS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+
+pub fn set_cpus(n: u8) {
+    CPUS.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_memory_gib(gib: u8) {
     MEMORY_GIB.store(gib, std::sync::atomic::Ordering::Relaxed);
 }
@@ -209,7 +216,7 @@ fn machine_args(
         "-accel".into(),
         accel.clone(),
         "-smp".into(),
-        "1".into(),
+        CPUS.load(std::sync::atomic::Ordering::Relaxed).to_string(),
         "-m".into(),
         format!("{}G", MEMORY_GIB.load(std::sync::atomic::Ordering::Relaxed)),
         "-drive".into(),

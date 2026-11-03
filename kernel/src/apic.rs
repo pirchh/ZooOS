@@ -33,6 +33,15 @@ pub const SPURIOUS_VECTOR: u8 = 0xFF;
 static RSDP: AtomicU64 = AtomicU64::new(0);
 /// The local APIC's mapped registers once it drives the tick (0: PIT).
 static LAPIC: AtomicU64 = AtomicU64::new(0);
+/// The ACPI PM timer's port and whether it counts 32 bits (0: none), for
+/// `delay_us` (docs/smp-design.md).
+static PM_PORT: AtomicU64 = AtomicU64::new(0);
+static PM_32: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+// Interrupt command register (docs/smp-design.md).
+const ICR_LOW: u64 = 0x300;
+const ICR_HIGH: u64 = 0x310;
+/// Delivery status: the last IPI is still being sent.
+const ICR_PENDING: u32 = 1 << 12;
 
 pub fn set_rsdp(phys: u64) {
     RSDP.store(phys, Ordering::Relaxed);
@@ -66,6 +75,137 @@ pub fn eoi() {
     if base != 0 {
         write(base, EOI, 0);
     }
+}
+
+/// Waits about `us` microseconds on the ACPI PM timer (bounded), or by
+/// spinning when there is none.
+pub fn delay_us(us: u64) {
+    let port = PM_PORT.load(Ordering::Relaxed) as u16;
+    if port == 0 {
+        for _ in 0..us * 1000 {
+            core::hint::spin_loop();
+        }
+        return;
+    }
+    let mask: u32 = if PM_32.load(Ordering::Relaxed) {
+        u32::MAX
+    } else {
+        0x00FF_FFFF
+    };
+    // SAFETY: reading the ACPI PM timer port the FADT named.
+    let pm = || unsafe { Port::<u32>::new(port).read() & mask };
+    let want = us * PM_HZ / 1_000_000 + 1;
+    let start = pm();
+    for _ in 0..SPINS {
+        if u64::from(pm().wrapping_sub(start) & mask) >= want {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Sends an IPI (`low` is the ICR's low word) to local APIC `apic` and
+/// waits (bounded) until it is sent.
+fn send_ipi(apic: u32, low: u32) {
+    let base = LAPIC.load(Ordering::Relaxed);
+    if base == 0 {
+        return;
+    }
+    write(base, ICR_HIGH, apic << 24);
+    write(base, ICR_LOW, low);
+    for _ in 0..SPINS {
+        if read(base, ICR_LOW) & ICR_PENDING == 0 {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// INIT, level assert (docs/smp-design.md).
+pub fn send_init(apic: u32) {
+    send_ipi(apic, 0x0000_4500);
+}
+
+/// Start-up IPI: the processor begins in real mode at `vector * 4096`.
+pub fn send_sipi(apic: u32, vector: u8) {
+    send_ipi(apic, 0x0000_4600 | u32::from(vector));
+}
+
+/// Enables this (non-boot) processor's local APIC, at the base the boot
+/// processor mapped (every local APIC sits at the same physical address).
+/// Its timer stays off (docs/smp-design.md, step 1).
+pub fn init_ap() {
+    let base = LAPIC.load(Ordering::Relaxed);
+    if base == 0 {
+        return;
+    }
+    let mut msr = Msr::new(IA32_APIC_BASE);
+    // SAFETY: a processor started by SIPI has a local APIC; setting the
+    // enable bit keeps the base unchanged.
+    unsafe {
+        let v = msr.read();
+        if v & (1 << 11) == 0 {
+            msr.write(v | 1 << 11);
+        }
+    }
+    write(base, TPR, 0);
+    write(base, SVR, 1 << 8 | u32::from(SPURIOUS_VECTOR));
+    write(base, LVT_TIMER, 1 << 16); // masked
+}
+
+/// The local APIC ids of the processors the ACPI MADT lists as enabled
+/// (or able to be brought online), the boot processor's included.
+pub fn processors(mem: &Memory) -> Result<alloc::vec::Vec<u32>, &'static str> {
+    let rsdp = RSDP.load(Ordering::Relaxed);
+    if rsdp == 0 {
+        return Err("no-acpi");
+    }
+    let at = |phys: u64| mem.phys_to_virt(PhysAddr::new(phys));
+    // SAFETY (all reads below): as in `pm_timer`: ACPI tables in memory the
+    // bootloader maps, read unaligned, lengths from the tables' headers.
+    let r8 = |phys: u64| unsafe { at(phys).read_unaligned() };
+    let r32 = |phys: u64| unsafe { (at(phys) as *const u32).read_unaligned() };
+    let r64 = |phys: u64| unsafe { (at(phys) as *const u64).read_unaligned() };
+    let sig = |phys: u64, want: &[u8]| (0..want.len()).all(|i| r8(phys + i as u64) == want[i]);
+    if !sig(rsdp, b"RSD PTR ") {
+        return Err("bad-rsdp");
+    }
+    let (root, entry) = if r8(rsdp + 15) >= 2 {
+        (r64(rsdp + 24), 8)
+    } else {
+        (u64::from(r32(rsdp + 16)), 4)
+    };
+    let len = u64::from(r32(root + 4)).min(36 + 8 * 256);
+    let mut off = 36;
+    while off + entry <= len {
+        let table = if entry == 8 {
+            r64(root + off)
+        } else {
+            u64::from(r32(root + off))
+        };
+        off += entry;
+        if !sig(table, b"APIC") {
+            continue;
+        }
+        let end = table + u64::from(r32(table + 4)).min(64 * 1024);
+        let mut ids = alloc::vec::Vec::new();
+        // Interrupt controller structures follow the 44-byte header.
+        let mut e = table + 44;
+        while e + 2 <= end {
+            let (kind, elen) = (r8(e), u64::from(r8(e + 1)));
+            if elen < 2 {
+                break;
+            }
+            // Type 0, processor local APIC: [0, 8, uid, apic id, flags].
+            // Flags bit 0 enabled, bit 1 online capable.
+            if kind == 0 && elen >= 8 && r32(e + 4) & 0b11 != 0 {
+                ids.push(u32::from(r8(e + 3)));
+            }
+            e += elen;
+        }
+        return Ok(ids);
+    }
+    Err("no-madt")
 }
 
 /// The ACPI PM timer: (I/O port, 32-bit counter) from the FADT.
@@ -128,6 +268,8 @@ pub fn init(mem: &mut Memory, vector: u8) -> Result<(u32, u16), &'static str> {
         return Err("no-apic");
     }
     let (pm_port, pm_32) = pm_timer(mem)?;
+    PM_PORT.store(u64::from(pm_port), Ordering::Relaxed);
+    PM_32.store(pm_32, Ordering::Relaxed);
     let mask: u32 = if pm_32 { u32::MAX } else { 0x00FF_FFFF };
     let pm = || {
         // SAFETY: reading the ACPI PM timer port the FADT named.

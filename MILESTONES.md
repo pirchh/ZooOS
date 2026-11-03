@@ -187,6 +187,8 @@ lands as small, separately verified steps.
 | 2 | B14 keys during broker calls: measured 2–10 ms per call, not changed (docs/stage2-design.md §4) | done 2026-11-03 |
 | — | Bella answers from your files: by meaning (Qwen3-Embedding-0.6B, MagpieHandler at idle priority, `.bella-index`), else by words; model disk v2; prompts read in batches (docs/vectors-design.md, docs/lookup-design.md, docs/batch-design.md) | done 2026-11-03 |
 | — | 8-bit activations: about 1.3× faster; 0.5B small talk 0.62 s whole (docs/int8-design.md) | done 2026-11-03 |
+| — | More than one processor, step 1: the other processors start (MADT, SIPI, trampoline) and park (docs/smp-design.md) | done 2026-11-03 |
+| — | More than one processor, steps 2–3: tasks on every processor; the model's work split across them | open |
 | 2 | Still open: narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |
