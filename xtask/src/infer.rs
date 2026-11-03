@@ -209,38 +209,68 @@ pub fn check(root: &Path, max_new: usize) -> Result<bool, String> {
     Ok(all_ok)
 }
 
-/// Requests for `assist-check` with the tool and argument the assistant
-/// must choose (docs/m5c2-design.md §5).
-/// Several arguments are accepted where they mean the same to the broker.
-pub const ASSIST_CASES: [(&str, &str, &[&str]); 8] = [
+/// Requests for `assist-check` with the tools and arguments accepted
+/// (docs/m5c2-design.md §5, docs/s1-design.md). Several are accepted where
+/// they mean the same to the broker. `none` means no command fits: the
+/// first 8 are the original set; then more requests with a right command;
+/// then requests no command answers (B9).
+pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
     (
         "Find my pancake recipe",
-        "search",
+        &["search"],
         &["pancake", "pancake recipe"],
     ),
-    ("Search for files that mention flour", "search", &["flour"]),
-    ("What is in my Documents folder?", "list", &["Documents"]),
-    ("Show me what's inside Music", "list", &["Music"]),
+    (
+        "Search for files that mention flour",
+        &["search"],
+        &["flour"],
+    ),
+    ("What is in my Documents folder?", &["list"], &["Documents"]),
+    ("Show me what's inside Music", &["list"], &["Music"]),
     (
         "How big is Documents/notes.txt?",
-        "inspect",
+        &["inspect"],
         &["Documents/notes.txt"],
     ),
     (
         "Make a folder called Projects/2026",
-        "create",
+        &["create"],
         &["Projects/2026"],
     ),
     (
         "Create a new folder named Invoices",
-        "create",
+        &["create"],
         &["Invoices"],
     ),
     (
         "Please create the folder Photos/Holidays",
-        "create",
+        &["create"],
         &["Photos/Holidays"],
     ),
+    // More with a right command.
+    ("List the files in Photos", &["list"], &["Photos"]),
+    ("How large is the Music folder?", &["inspect"], &["Music"]),
+    ("Look for anything about taxes", &["search"], &["taxes"]),
+    (
+        "Make a new folder for receipts",
+        &["create"],
+        &["receipts", "Receipts"],
+    ),
+    (
+        "Which files are in Documents/recipes?",
+        &["list"],
+        &["Documents/recipes"],
+    ),
+    ("Where is my playlist?", &["search"], &["playlist"]),
+    // No command fits.
+    ("What's the weather today?", &["none"], &[""]),
+    ("Tell me a joke", &["none"], &[""]),
+    ("Send an email to my boss", &["none"], &[""]),
+    ("What time is it?", &["none"], &[""]),
+    ("Turn up the volume", &["none"], &[""]),
+    ("Who won the game last night?", &["none"], &[""]),
+    ("Shut down the computer", &["none"], &[""]),
+    ("Delete all my files", &["none"], &[""]),
 ];
 
 /// Runs the guided tool choice on `ASSIST_CASES` with the host engine.
@@ -268,11 +298,22 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
         return Ok(true);
     }
     let mut ok = true;
-    for (req, tool, arg) in ASSIST_CASES {
+    // (right, total) with a command; (acted, total) without one.
+    let (mut right, mut with) = (0, 0);
+    let (mut acted, mut without) = (0, 0);
+    for &(req, tools, args) in ASSIST_CASES {
         let t = Instant::now();
         let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
-        let good = c.tool.word() == tool && arg.contains(&c.arg.as_str());
+        let good = tools.contains(&c.tool.word()) && args.contains(&c.arg.as_str());
         ok &= good;
+        if tools.contains(&"none") {
+            without += 1;
+            acted += usize::from(c.tool.word() != "none");
+        } else {
+            with += 1;
+            right += usize::from(good);
+        }
+        let (tool, arg) = (tools, args);
         println!(
             "{} {:<45} -> {} {:?} (margin {:.2}, {} + {} tokens, {:.1}s){}",
             if good { "OK  " } else { "FAIL" },
@@ -286,9 +327,24 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
             if good {
                 String::new()
             } else {
-                format!("; expected {tool} {arg:?}")
+                format!("; expected {tool:?} {arg:?}")
             }
         );
     }
-    Ok(ok)
+    println!(
+        "accuracy: {right} of {with} requests with a command answered right; {acted} of {without} requests without one acted on anyway"
+    );
+    // The bar is the measured state of 2026-11-02 (docs/s1-design.md): a
+    // change that answers fewer right, or acts more often, fails.
+    let pass = right >= MIN_RIGHT && acted <= MAX_ACTED;
+    if !ok && pass {
+        println!(
+            "within the recorded bar (at least {MIN_RIGHT} right, at most {MAX_ACTED} acted on)"
+        );
+    }
+    Ok(pass)
 }
+
+/// The recorded bar for `assist-check` (docs/s1-design.md).
+const MIN_RIGHT: usize = 10;
+const MAX_ACTED: usize = 2;

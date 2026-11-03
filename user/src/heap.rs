@@ -4,6 +4,7 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{NonNull, null_mut};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use linked_list_allocator::LockedHeap;
 
 const FIRST_CHUNK: u64 = 1 << 20;
@@ -12,6 +13,16 @@ struct GrowingHeap(LockedHeap);
 
 #[global_allocator]
 static HEAP: GrowingHeap = GrowingHeap(LockedHeap::empty());
+
+/// Most bytes in use at once since the program started
+/// (docs/s1-design.md).
+static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+/// Heap bytes in use now, the most ever in use, and the heap's size.
+pub fn stats() -> (usize, usize, usize) {
+    let heap = HEAP.0.lock();
+    (heap.used(), PEAK.load(Ordering::Relaxed), heap.size())
+}
 
 // SAFETY: all state is behind the allocator's lock; memory comes only from
 // `mem_alloc`, which returns fresh, exclusively owned, writable pages.
@@ -27,6 +38,7 @@ unsafe impl GlobalAlloc for GrowingHeap {
         }
         loop {
             if let Ok(p) = heap.allocate_first_fit(layout) {
+                PEAK.fetch_max(heap.used(), Ordering::Relaxed);
                 return p.as_ptr();
             }
             // Grow by at least the request plus alignment slack.

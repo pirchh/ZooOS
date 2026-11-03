@@ -68,6 +68,9 @@ struct App {
     /// there, failed, or its choice was refused): the next command that
     /// works is remembered as its answer (docs/a2-design.md).
     unanswered: Option<String>,
+    /// When Enter was pressed on the request being answered, in
+    /// microseconds since boot (docs/s1-design.md).
+    asked_at: u64,
 }
 
 fn main(chan: u64, home: u64) -> u8 {
@@ -82,6 +85,7 @@ fn main(chan: u64, home: u64) -> u8 {
         elephant: None,
         request: None,
         unanswered: None,
+        asked_at: 0,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -199,17 +203,31 @@ impl App {
     }
 
     fn submit(&mut self, text: &str) {
+        self.asked_at = zoo_rt::now_us();
         let word = text.split(' ').next().unwrap_or("");
         if COMMANDS.contains(&word) {
             // Typed by the user: it may answer an earlier request.
             self.request = self.unanswered.take();
             self.command(text);
+            self.answered("a typed command");
         } else {
             self.request = Some(String::from(text));
-            if !self.recall(text) {
+            if self.recall(text) {
+                self.answered("memory");
+            } else {
                 self.ask_model(text);
             }
         }
+    }
+
+    /// The timing line for one request: from Enter to its answer shown,
+    /// through the broker (docs/s1-design.md).
+    fn answered(&self, by: &str) {
+        zoo_rt::log!(
+            "Bella: answered in {} ms by {}",
+            (zoo_rt::now_us() - self.asked_at) / 1000,
+            by
+        );
     }
 
     /// A command, typed or chosen. `create` asks first; others that work
@@ -396,6 +414,17 @@ impl App {
             let word = parts.next().unwrap_or("");
             let _margin = parts.next();
             let arg = parts.next().unwrap_or("").trim();
+            if word == "none" {
+                // No command fits (docs/s1-design.md, B9): say so, and let
+                // a command typed next answer the request.
+                zoo_rt::log!("Bella: no command fits");
+                self.say("Bella: I can only search, list, inspect or create folders.");
+                if let Some(r) = self.request.take() {
+                    self.unanswered = Some(r);
+                }
+                self.answered("the model (no command fits)");
+                return;
+            }
             let mut cmd = String::from(word);
             if !arg.is_empty() {
                 cmd.push(' ');
@@ -405,6 +434,7 @@ impl App {
             l.push_str(&cmd);
             self.say(&l);
             self.command(&cmd);
+            self.answered("the model");
         } else {
             // Not answered: a command typed next answers it.
             if let Some(r) = self.request.take() {

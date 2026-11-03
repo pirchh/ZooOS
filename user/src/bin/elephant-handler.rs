@@ -150,11 +150,15 @@ fn service(chan: Handle) -> u8 {
             }
         }
     };
+    let parse = zoo_rt::now_us();
     let Ok(g) = Gguf::parse(file) else { return 4 };
     let (Ok(tok), Ok(model)) = (Tokenizer::from_gguf(&g), Model::from_gguf(&g)) else {
         return 5;
     };
-    let _ = log("ElephantHandler: service ready (model mapped)");
+    zoo_rt::log!(
+        "ElephantHandler: service ready (model mapped, parsed in {} ms)",
+        (zoo_rt::now_us() - parse) / 1000
+    );
     let mut assistant: Option<Bella> = None;
     loop {
         let n = match recv(chan, &mut buf) {
@@ -169,6 +173,9 @@ fn service(chan: Handle) -> u8 {
             continue;
         };
         let start = ticks();
+        let t0 = zoo_rt::now_us();
+        let mut setup_us = 0;
+        let mut first_arg: Option<u64> = None;
         let mut stop = None;
         // Checked between tokens: a `cancel` message, the client leaving,
         // or the deadline end the request.
@@ -199,7 +206,10 @@ fn service(chan: Handle) -> u8 {
         let mut setup_err = None;
         if assistant.is_none() {
             let t = ticks();
-            match Bella::new(&model, &tok, |s| keep_going(chan, s, &mut stop)) {
+            let tu = zoo_rt::now_us();
+            let made = Bella::new(&model, &tok, |s| keep_going(chan, s, &mut stop));
+            setup_us = zoo_rt::now_us() - tu;
+            match made {
                 Ok(a) => {
                     zoo_rt::log!(
                         "ElephantHandler: system prompt {} tokens in {} ticks",
@@ -212,7 +222,12 @@ fn service(chan: Handle) -> u8 {
             }
         }
         let result = match (assistant.as_mut(), setup_err) {
-            (Some(a), _) => a.choose(request, |s| keep_going(chan, s, &mut stop)),
+            (Some(a), _) => a.choose(request, |s| {
+                if matches!(s, Step::Arg { .. }) && first_arg.is_none() {
+                    first_arg = Some(zoo_rt::now_us());
+                }
+                keep_going(chan, s, &mut stop)
+            }),
             (None, e) => Err(e.unwrap_or(AssistError::Cancelled)),
         };
         let elapsed = ticks() - start;
@@ -241,6 +256,23 @@ fn service(chan: Handle) -> u8 {
                     elapsed
                 );
                 zoo_rt::log!("ElephantHandler: chose {} `{}`", c.tool.word(), c.arg);
+                // One timing line per request (docs/s1-design.md): set-up
+                // (the system prompt, first request only), reading the
+                // request, writing the argument, and the heap.
+                let end = zoo_rt::now_us();
+                let read_end = first_arg.unwrap_or(end);
+                let (used, peak, _) = zoo_rt::heap_stats();
+                zoo_rt::log!(
+                    "ElephantHandler: timing: setup {} ms, reading {} ms ({} tokens), writing {} ms ({} tokens), total {} ms; heap {} KiB, peak {} KiB",
+                    setup_us / 1000,
+                    (read_end - t0 - setup_us) / 1000,
+                    c.request_tokens,
+                    (end - read_end) / 1000,
+                    c.arg_tokens,
+                    (end - t0) / 1000,
+                    used / 1024,
+                    peak / 1024
+                );
                 reply(
                     chan,
                     format_args!(

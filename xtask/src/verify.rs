@@ -2183,6 +2183,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "responsiveness",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "responsiveness while the model runs (docs/s1-design.md): the window server's input wait for pointer moves, idle and then during the model's set-up (needs --accel)",
+            interaction: Some(responsiveness_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-live",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().map(|m| m.0.clone()),
@@ -2216,6 +2229,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitFor(
                         "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
                     ),
+                    // Stage 1 timing lines (docs/s1-design.md).
+                    Action::WaitContains("ElephantHandler: timing: setup ".into()),
+                    Action::WaitContains("Bella: answered in ".into()),
                     Action::Settle(QUIET),
                     Action::Keys(vec!["esc"]),
                     Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
@@ -2307,7 +2323,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         }
         let model_case = matches!(
             c.name,
-            "inference" | "bella-model" | "bella-live" | "everyday-model"
+            "inference" | "bella-model" | "bella-live" | "everyday-model" | "responsiveness"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2343,7 +2359,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // boot needs the first's disk), run with an accelerator only.
         if matches!(
             c.name,
-            "bella-live" | "everyday-model" | "wine-home-1" | "wine-home-2"
+            "bella-live" | "everyday-model" | "responsiveness" | "wine-home-1" | "wine-home-2"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -2786,9 +2802,7 @@ fn bella_model_steps() -> Interaction {
     let mut steps = open_bella();
     steps.extend([
         Action::Keys(typed("find my pancake recipe")),
-        Action::WaitFor(
-            "[32:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
-        ),
+        Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
         Action::Settle(QUIET),
         // While the model computes: move to Files and down two entries.
         Action::Keys(vec!["tab", "down", "down"]),
@@ -2804,6 +2818,45 @@ fn bella_model_steps() -> Interaction {
     Interaction { steps }
 }
 
+/// Pointer moves for the responsiveness case: a square, `rounds` times.
+fn wiggle(p: &mut Ptr, rounds: usize) -> Vec<Action> {
+    let mut v = Vec::new();
+    for _ in 0..rounds {
+        for (dx, dy) in [(40, 0), (0, 40), (-40, 0), (0, -40)] {
+            v.push(p.by(dx, dy));
+        }
+    }
+    v
+}
+
+fn responsiveness_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = open_bella();
+    // F11 logs the window server's frame and input-wait figures and
+    // starts them over: first to clear, then after moves with the desktop
+    // idle, then after moves while the model reads its system prompt.
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    steps.extend(wiggle(&mut p, 10));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    steps.push(Action::Keys(typed("Find my pancake recipe")));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: service ready (model mapped".into(),
+    ));
+    steps.extend(wiggle(&mut p, 10));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    // The model was still busy when the figures were taken.
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose search `pancake recipe`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
 fn bella_live_steps() -> Interaction {
     let mut steps = open_bella();
     steps.extend([
@@ -2811,6 +2864,9 @@ fn bella_live_steps() -> Interaction {
         Action::WaitFor(
             "[32:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
+        // Stage 1 timing lines (docs/s1-design.md).
+        Action::WaitContains("ElephantHandler: timing: setup ".into()),
+        Action::WaitContains("Bella: answered in ".into()),
         Action::Settle(QUIET),
         Action::Keys(typed("Make a folder called Projects/2026")),
         Action::WaitFor(
@@ -4773,6 +4829,8 @@ fn bella_any_case_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "OtterHandler: `music` is `Music`".into(),
     ));
+    // Stage 1: the timing line (docs/s1-design.md).
+    steps.push(Action::WaitContains("ms by a typed command".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("list musik")));
     steps.push(Action::Settle(QUIET));

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Bella
-rename section (version 0.77.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Stage 1
+section (version 0.78.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,53 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 1 results: "none of these" and timing (version 0.78.0)
+
+Design: docs/s1-design.md (with the prompt comparison and the baselines).
+
+**`cargo xtask assist-check`** (host, 22 requests):
+
+```
+accuracy: 10 of 14 requests with a command answered right; 2 of 8 requests without one acted on anyway
+within the recorded bar (at least 10 right, at most 2 acted on)
+assist-check: PASS
+```
+
+Negative control, `none` never chosen: `8 of 8 … acted on anyway`,
+`assist-check: FAIL`.
+
+**In the guest** (`--accel whpx`): `bella-live` and `everyday-model`
+`OK`. Both now also require the timing lines. From `bella-live`:
+
+```
+[32:elephant-handler] ElephantHandler: service ready (model mapped, parsed in 248 ms)
+[32:elephant-handler] ElephantHandler: timing: setup 4720 ms, reading 729 ms (10 tokens), writing 254 ms (3 tokens), total 5703 ms; heap 18579 KiB, peak 18580 KiB
+[30:bella] Bella: answered in 6011 ms by the model
+[32:elephant-handler] ElephantHandler: timing: setup 0 ms, reading 1032 ms (15 tokens), writing 499 ms (6 tokens), total 1532 ms; heap 18579 KiB, peak 18580 KiB
+[30:bella] Bella: answered in 1557 ms by the model
+```
+
+**Under TCG:** `bella-any-case` requires `ms by a typed command`, and
+logs `answered in 6 ms` and `1 ms`.
+
+**New case `responsiveness`** (`--accel whpx`): `OK`. F11 figures, idle
+then during the model's set-up:
+
+```
+[27:peacock-handler] PeacockHandler: input wait 40 events mean 56831 max 160317 cycles; per mille of a tick: mean 1 longest 5
+[27:peacock-handler] PeacockHandler: input wait 40 events mean 15051414 max 30541159 cycles; per mille of a tick: mean 472 longest 958
+```
+
+This is the baseline before scheduler priorities (Stage 2).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+The accelerator-only cases were skipped under TCG; `bella-live`,
+`everyday-model` and `responsiveness` were run separately with
+`--accel whpx`, all `OK`.
+- clippy with `-D warnings` (`zoo-user`, `xtask`, `zoo-infer`): clean.
+- `cargo fmt --check`: clean.
+- Tests: `cargo test -p xtask` 25 passed, `-p zoo-infer` 10 passed.
 
 ## Bella rename results (version 0.77.0)
 
