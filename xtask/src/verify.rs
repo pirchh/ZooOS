@@ -889,6 +889,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-context",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella sees the screen (docs/context-design.md): after Documents/zoo.rs is opened in Notes, \"what am I working on?\" gets the window server's snapshot, naming Notes and the file",
+            interaction: Some(bella_context_steps(false)),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -2285,6 +2298,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-context-answer",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella answers from the screen (docs/context-design.md): asked what the user is working on, her reply names zoo.rs (needs --accel)",
+            interaction: Some(bella_context_steps(true)),
+            screen_checks: vec![],
+        },
+        Case {
             name: "responsiveness",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2439,6 +2465,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-talk"
                 | "bella-convo"
                 | "bella-facts-answer"
+                | "bella-context-answer"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2481,6 +2508,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-talk"
                 | "bella-convo"
                 | "bella-facts-answer"
+                | "bella-context-answer"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -5117,6 +5145,45 @@ fn desktop_then_rest(normal: &Expectation) -> Expectation {
     ]);
     e.then_rest();
     e
+}
+
+fn bella_context_steps(model: bool) -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    if model {
+        steps.push(Action::WaitContains(
+            "ElephantHandler: warmed up: reply prompt".into(),
+        ));
+    }
+    steps.push(Action::Keys(typed("open Documents/zoo.rs")));
+    steps.push(Action::WaitContains(
+        "Notes: opened Documents/zoo.rs".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // Notes has the keyboard now: back to Bella.
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(ASSISTANT_WIN)));
+    steps.push(Action::Button(true));
+    steps.push(Action::Button(false));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("what am I working on?")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: context for Bella".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the screen: focused: Bella; open: ".into(),
+    ));
+    steps.push(Action::WaitSeen("opened Documents/zoo.rs in Notes".into()));
+    if model {
+        // After the screen line, the next one naming zoo is her reply.
+        steps.push(Action::WaitContains("zoo".into()));
+        steps.push(Action::Settle(QUIET));
+        steps.push(Action::WaitSeen("ElephantHandler: said `".into()));
+    }
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
 }
 
 fn bella_facts_steps() -> Interaction {

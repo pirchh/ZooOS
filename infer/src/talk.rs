@@ -156,7 +156,7 @@ impl<'m, 't> Talk<'m, 't> {
         }
         let mut text = String::new();
         if !facts.is_empty() {
-            text.push_str("(What I told you before: ");
+            text.push_str("(What you know: ");
             text.push_str(facts);
             text.push_str(")\n");
         }

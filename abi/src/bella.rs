@@ -138,6 +138,27 @@ pub fn asks_what_remembered(text: &str) -> bool {
     .any(|q| contains_ignoring_case(text, q))
 }
 
+/// A question about what the user is doing ("what am I working on?",
+/// "what's open?"): answered with what is on the screen
+/// (docs/context-design.md).
+pub fn asks_about_activity(text: &str) -> bool {
+    [
+        "what am i working on",
+        "what was i working on",
+        "what am i doing",
+        "what was i doing",
+        "what's open",
+        "whats open",
+        "what is open",
+        "which windows",
+        "what windows",
+        "what did i just open",
+        "what did i open",
+    ]
+    .iter()
+    .any(|q| contains_ignoring_case(text, q))
+}
+
 /// Whether `hay` contains `needle`, ASCII letters compared without case.
 fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
@@ -247,6 +268,21 @@ mod tests {
         assert_eq!(fact_to_forget("forget"), None);
         assert!(asks_what_remembered("What do you remember?"));
         assert!(!asks_what_remembered("where is my music"));
+    }
+
+    #[test]
+    fn activity() {
+        for t in [
+            "What am I working on?",
+            "whats open",
+            "Which windows are open?",
+            "what did I just open",
+        ] {
+            assert!(asks_about_activity(t), "{t}");
+        }
+        for t in ["open Music", "where is my music", "what is in Music"] {
+            assert!(!asks_about_activity(t), "{t}");
+        }
     }
 
     #[test]

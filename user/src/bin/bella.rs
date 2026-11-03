@@ -32,8 +32,8 @@ const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
-    asks_what_remembered, fact_to_forget, fact_to_remember, follow_up, question_about_answer,
-    small_talk, typed_command,
+    asks_about_activity, asks_what_remembered, fact_to_forget, fact_to_remember, follow_up,
+    question_about_answer, small_talk, typed_command,
 };
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
@@ -97,6 +97,9 @@ struct App {
     talking: Option<String>,
     /// The request being chosen for is a follow-up, sent with context.
     following: bool,
+    /// A question about the screen, waiting for the window server's
+    /// `context:` answer (docs/context-design.md).
+    asking_context: Option<String>,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -148,6 +151,7 @@ fn main(chan: u64, home: u64) -> u8 {
         last_exchange: None,
         talking: None,
         following: false,
+        asking_context: None,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -162,7 +166,10 @@ fn main(chan: u64, home: u64) -> u8 {
             match try_recv(chan, &mut buf) {
                 Ok(n) => {
                     busy = true;
-                    if let Some(key) = Key::parse(&buf[..n]) {
+                    if let Some(ctx) = buf[..n].strip_prefix(b"context:") {
+                        let ctx = String::from(core::str::from_utf8(ctx).unwrap_or(""));
+                        p.got_context(&ctx);
+                    } else if let Some(key) = Key::parse(&buf[..n]) {
                         p.key(key);
                     }
                 }
@@ -287,6 +294,15 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if asks_about_activity(text) {
+            // What is on the screen: asked of the window server, answered
+            // in words (docs/context-design.md).
+            self.request = None;
+            if self.win.context().is_ok() {
+                self.asking_context = Some(String::from(text));
+                self.mode = Mode::Thinking;
+                self.status = String::from("Looking at the screen...");
+            }
         } else if let Some(fact) = fact_to_remember(text) {
             // Facts the user tells Bella (docs/facts-design.md).
             let mut req = String::from("fact-add ");
@@ -422,6 +438,21 @@ impl App {
                 self.unanswered = Some(r);
             }
         }
+    }
+
+    /// The window server's answer to `context?`: the question waiting for
+    /// it is answered in words with what is on the screen.
+    fn got_context(&mut self, ctx: &str) {
+        let Some(question) = self.asking_context.take() else {
+            return;
+        };
+        zoo_rt::log!("Bella: the screen: {}", ctx);
+        self.mode = Mode::Typing;
+        self.status = String::from(HINT);
+        // Whose screen: the model otherwise answers as if it were working.
+        let mut seen = String::from("On my screen: ");
+        seen.push_str(ctx);
+        self.talk_with(&question, &seen);
     }
 
     /// The facts sharing at least `min` words with `text`, joined with
@@ -754,6 +785,12 @@ impl App {
 
     /// Asks the model for a reply in words (docs/talk-design.md).
     fn ask_talk(&mut self, text: &str) {
+        self.talk_with(text, "");
+    }
+
+    /// `ask_talk`, with `extra` (what is on the screen) given as context
+    /// besides the facts the user told Bella.
+    fn talk_with(&mut self, text: &str, extra: &str) {
         if !self.start_model() {
             self.say("Error: cannot start the model service.");
             return;
@@ -763,9 +800,18 @@ impl App {
         msg.push_str(text);
         let facts = self.facts_about(text, 1);
         if !facts.is_empty() {
-            msg.push('\t');
-            msg.push_str(&facts);
             zoo_rt::log!("Bella: from what you told me: {}", facts);
+        }
+        let mut context = String::from(extra);
+        if !facts.is_empty() {
+            if !context.is_empty() {
+                context.push_str("; ");
+            }
+            context.push_str(&facts);
+        }
+        if !context.is_empty() {
+            msg.push('\t');
+            msg.push_str(&shorten(context));
         }
         let Some(e) = self.elephant else { return };
         if send_wait(e, msg.as_bytes()).is_err() {
