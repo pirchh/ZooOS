@@ -110,7 +110,8 @@ tokens (docs/batch-design.md). The check accepts either form now, and the
 case is `OK`; the cancel still happens (`ElephantHandler: request
 cancelled`).
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG, second run): `PASS`,
+101 cases `OK` and 14 skipped because they need an accelerator.
 
 ## Qwen3 4-bit results (2026-11-03)
 
