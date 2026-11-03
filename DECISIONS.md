@@ -150,6 +150,12 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Screen snapshot wording for both models (2026-11-03)
+
+Version 0.92.0. A window's title is written "Notes showing zoo.rs", not
+"Notes (zoo.rs)": with the old form the 1.5B model answered "the Notes
+file". Both models now name the file (docs/context-design.md).
+
 ## Model cases run with the 1.5B model from the model disk (2026-11-03)
 
 `cargo xtask verify --bella 1.5b` used to skip every Bella model case,

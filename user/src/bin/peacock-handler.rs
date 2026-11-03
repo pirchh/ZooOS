@@ -2621,7 +2621,7 @@ impl Desktop {
                 let name = |a: &App, l: &mut Line| {
                     let _ = l.write_str(a.label);
                     if a.title.as_str() != a.label && !a.title.as_str().is_empty() {
-                        let _ = write!(l, " ({})", a.title.as_str());
+                        let _ = write!(l, " showing {}", a.title.as_str());
                     }
                     if a.minimized {
                         let _ = l.write_str(", minimised");
