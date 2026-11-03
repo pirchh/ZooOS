@@ -318,6 +318,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC start pid=26 name=elephant-handler",
         "ZOO_OS PROC exit pid=26 name=elephant-handler code=0",
     ]);
+    // A larger model than the default needs a larger machine.
+    if crate::infer::model_file() != crate::infer::MODELS[0].1 {
+        qemu::set_memory_gib(4);
+    }
     let model_image = match crate::infer::load_model(root) {
         Ok(data) => {
             let r = crate::infer::run(
@@ -331,15 +335,24 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 r.text,
                 crate::infer::ids(&r.output_ids)
             );
-            Some((
-                image::build_model_image(
+            // The boot image only holds the default model: a larger one
+            // does not fit its FAT partition, so with `--bella` the cases
+            // that need it are skipped and the model-disk ones run
+            // (docs/talk-design.md).
+            let in_boot_image = if crate::infer::model_file() == crate::infer::MODELS[0].1 {
+                Some(image::build_model_image(
                     root,
                     tools,
                     image::Mode::Normal,
                     &data,
                     crate::infer::GUEST_PROMPT,
                     &r.output_ids,
-                )?,
+                )?)
+            } else {
+                None
+            };
+            Some((
+                in_boot_image,
                 // The everyday system as `run` boots it: the plain
                 // fast-boot image and the model disk (docs/stage2-design.md §3).
                 (
@@ -2180,7 +2193,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "bella-model",
             mode: Mode::Normal,
-            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: bella_model_expectation(&normal),
@@ -2196,7 +2209,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "model-restart",
             mode: Mode::Normal,
-            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: rest_after_desktop(&normal, "kill elephant-handler after 20"),
@@ -2207,9 +2220,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-talk",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella answers in words (docs/talk-design.md): small talk without a command; a request no command fits; and a sentence starting with `search` goes to the model, not run literally (needs --accel)",
+            interaction: Some(bella_talk_steps()),
+            screen_checks: vec![("1-talk", check_talk)],
+        },
+        Case {
             name: "responsiveness",
             mode: Mode::Normal,
-            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: warm_only_expectation(&normal),
@@ -2222,7 +2248,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "bella-live",
             mode: Mode::Normal,
-            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: bella_model_expectation(&normal),
@@ -2271,7 +2297,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "inference",
             mode: Mode::Normal,
-            custom_image: model_image.as_ref().map(|m| m.0.clone()),
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: inference,
@@ -2358,6 +2384,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "everyday-model"
                 | "responsiveness"
                 | "model-restart"
+                | "bella-talk"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2397,6 +2424,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "everyday-model"
                 | "responsiveness"
                 | "model-restart"
+                | "bella-talk"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -3000,6 +3028,39 @@ fn model_restart_steps() -> Interaction {
     ];
     leave_desktop(&mut steps);
     Interaction { steps }
+}
+
+fn bella_talk_steps() -> Interaction {
+    let mut steps = open_bella();
+    steps.extend([
+        Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
+        // Small talk: answered in words, no command asked for.
+        Action::Keys(typed("whats your name")),
+        Action::WaitContains("ElephantHandler: said `".into()),
+        Action::WaitContains("Bella: answered in ".into()),
+        Action::Settle(QUIET),
+        // No command fits: the model says `none`, then answers in words.
+        Action::Keys(typed("Tell me a joke")),
+        Action::WaitContains("Bella: no command fits".into()),
+        Action::WaitContains("ElephantHandler: said `".into()),
+        Action::Settle(QUIET),
+        // A sentence that starts with a command word goes to the model.
+        Action::Keys(typed("search for my music")),
+        Action::WaitContains("ElephantHandler: chose ".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-talk"),
+        Action::NeverSeen("ms by a typed command".into()),
+    ]);
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+fn check_talk(img: &screen::Image) -> Result<String, String> {
+    let you = content(img, "You: whats your name")?;
+    let joke = content(img, "You: Tell me a joke")?;
+    Ok(format!(
+        "the conversation is shown: `whats your name` at {you:?}, `Tell me a joke` at {joke:?}"
+    ))
 }
 
 fn bella_live_steps() -> Interaction {

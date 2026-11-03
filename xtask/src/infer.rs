@@ -8,14 +8,42 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use zoo_infer::{Gguf, Model, Tokenizer, chat};
 
-pub const MODEL_FILE: &str = "qwen2.5-0.5b-instruct-q4_0.gguf";
+/// The models Bella can use: (`--bella` name, file in tools/models/), each
+/// pinned by its `.sha256` file (tools/models/README.md). The first is the
+/// default; the test suite uses it.
+pub const MODELS: [(&str, &str); 2] = [
+    ("0.5b", "qwen2.5-0.5b-instruct-q4_0.gguf"),
+    ("1.5b", "qwen2.5-1.5b-instruct-q4_0.gguf"),
+];
+
+static SELECTED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// `--bella <name>`: which of `MODELS` this command uses.
+pub fn select_model(name: &str) -> Result<(), String> {
+    let file = MODELS
+        .iter()
+        .find(|m| m.0 == name)
+        .map(|m| m.1)
+        .ok_or_else(|| {
+            let names: Vec<&str> = MODELS.iter().map(|m| m.0).collect();
+            format!("unknown model `{name}` (one of: {})", names.join(", "))
+        })?;
+    SELECTED
+        .set(file)
+        .map_err(|_| String::from("the model was already chosen"))
+}
+
+/// The chosen model's file name.
+pub fn model_file() -> &'static str {
+    SELECTED.get().copied().unwrap_or(MODELS[0].1)
+}
 pub const SYSTEM: &str = "You are a helpful assistant.";
 /// The prompt ElephantHandler runs in the guest, and how many tokens.
 pub const GUEST_PROMPT: &str = "What is the capital of France?";
 pub const GUEST_TOKENS: usize = 8;
 
 pub fn model_path(root: &Path) -> PathBuf {
-    root.join("tools").join("models").join(MODEL_FILE)
+    root.join("tools").join("models").join(model_file())
 }
 
 /// Reads the model and checks it against the pinned SHA-256.
@@ -295,6 +323,20 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
             c.arg,
             c.margin
         );
+        // No command fits: Bella answers in words (docs/talk-design.md).
+        if c.tool.word() == "none" {
+            let t = Instant::now();
+            let mut talk =
+                zoo_infer::talk::Talk::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
+            let p = t.elapsed().as_secs_f64();
+            let t = Instant::now();
+            let r = talk.reply(req, |_| true).map_err(|e| format!("{e:?}"))?;
+            println!(
+                "Bella says: {r:?} (prompt {} tokens in {p:.1}s, reply {:.1}s)",
+                talk.prefix_tokens(),
+                t.elapsed().as_secs_f64()
+            );
+        }
         return Ok(true);
     }
     let mut ok = true;
