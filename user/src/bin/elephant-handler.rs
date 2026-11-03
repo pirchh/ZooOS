@@ -143,6 +143,8 @@ fn service(chan: Handle) -> u8 {
         // Answer every request with the reason until the client leaves.
         loop {
             match recv(chan, &mut buf) {
+                // `warm` expects no answer.
+                Ok(n) if &buf[..n] == b"warm" => {}
                 Ok(_) => {
                     if reply(chan, format_args!("err model not installed"), false).is_err() {
                         return 0;
@@ -162,14 +164,74 @@ fn service(chan: Handle) -> u8 {
         (zoo_rt::now_us() - parse) / 1000
     );
     let mut assistant: Option<Bella> = None;
+    // A request that arrived during the warm-up, answered after it.
+    let mut pending: Option<alloc::string::String> = None;
     loop {
-        let n = match recv(chan, &mut buf) {
-            Ok(n) => n,
-            Err(_) => return 0,
+        let msg = match pending.take() {
+            Some(m) => m,
+            None => {
+                let n = match recv(chan, &mut buf) {
+                    Ok(n) => n,
+                    Err(_) => return 0,
+                };
+                let Ok(m) = core::str::from_utf8(&buf[..n]) else {
+                    continue;
+                };
+                alloc::string::String::from(m)
+            }
         };
-        let Ok(msg) = core::str::from_utf8(&buf[..n]) else {
+        let msg = msg.as_str();
+        if msg == "warm" {
+            // Read the system prompt now, in the background, so the first
+            // request is answered as fast as later ones (docs/s2-design.md).
+            // A request arriving meanwhile waits in `pending`; a `cancel`
+            // drops it.
+            if assistant.is_none() {
+                let t = zoo_rt::now_us();
+                let mut closed = false;
+                let made = Bella::new(&model, &tok, |step| {
+                    // A request is waiting: show it the set-up's progress.
+                    if let (Some(_), Step::Prefix { done, total }) = (&pending, step) {
+                        let _ = reply(chan, format_args!("busy setup {}/{}", done, total), true);
+                    }
+                    let mut m = [0u8; zoo_abi::MAX_MESSAGE];
+                    match try_recv(chan, &mut m) {
+                        Ok(k) => {
+                            let s = core::str::from_utf8(&m[..k]).unwrap_or("");
+                            if s.starts_with("choose ") {
+                                pending = Some(alloc::string::String::from(s));
+                                // Tell it at once that the set-up is under way.
+                                if let Step::Prefix { done, total } = step {
+                                    let _ = reply(
+                                        chan,
+                                        format_args!("busy setup {}/{}", done, total),
+                                        true,
+                                    );
+                                }
+                            } else if s == "cancel" && pending.take().is_some() {
+                                let _ = log("ElephantHandler: request cancelled");
+                                let _ = reply(chan, format_args!("err cancelled"), false);
+                            }
+                        }
+                        Err(Error::Again) => {}
+                        Err(_) => closed = true,
+                    }
+                    !closed
+                });
+                if closed {
+                    return 0;
+                }
+                if let Ok(a) = made {
+                    zoo_rt::log!(
+                        "ElephantHandler: warmed up: system prompt {} tokens in {} ms",
+                        a.prefix_tokens(),
+                        (zoo_rt::now_us() - t) / 1000
+                    );
+                    assistant = Some(a);
+                }
+            }
             continue;
-        };
+        }
         let Some(request) = msg.strip_prefix("choose ") else {
             // `cancel` with nothing running, or unknown: nothing to do.
             continue;

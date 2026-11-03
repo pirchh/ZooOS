@@ -254,12 +254,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         ]);
         e
     };
-    // A3: the everyday system with the model built in; the Bella asks
-    // its memory (the broker) and then the model (docs/a3-design.md).
+    // A3: the everyday system with the model built in. Bella starts the
+    // model service at once to warm it up (docs/s2-design.md), then the
+    // broker on the first request (docs/a3-design.md).
     let mut everyday_model = expect(Mode::FastBoot, &fast_head[..fast_head.len() - 2]);
     everyday_model.then(&[
-        "ZOO_OS PROC start pid=10 name=otter-handler",
-        "ZOO_OS PROC start pid=11 name=elephant-handler",
+        "ZOO_OS PROC start pid=10 name=elephant-handler",
+        "ZOO_OS PROC start pid=11 name=otter-handler",
         "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=6",
     ]);
@@ -267,8 +268,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=7 name=files code=0",
         "ZOO_OS PROC exit pid=8 name=crash-test code=0",
         "ZOO_OS PROC exit pid=9 name=bella code=0",
-        "ZOO_OS PROC exit pid=10 name=otter-handler code=0",
-        "ZOO_OS PROC exit pid=11 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=10 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=11 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
     ]);
     let mut fast_boot = fast_boot_desktop_exits(Mode::FastBoot);
@@ -2188,7 +2189,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             custom_image: model_image.as_ref().map(|m| m.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
-            expectation: bella_model_expectation(&normal),
+            expectation: warm_only_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
             purpose: "responsiveness while the model runs (docs/s1-design.md): the window server's input wait for pointer moves, idle and then during the model's set-up (needs --accel)",
@@ -2227,7 +2228,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Settle(QUIET),
                     Action::Keys(typed("Find my pancake recipe")),
                     Action::WaitFor(
-                        "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+                        "[10:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
                     ),
                     // Stage 1 timing lines (docs/s1-design.md).
                     Action::WaitContains("ElephantHandler: timing: setup ".into()),
@@ -2750,6 +2751,32 @@ fn check_bella_transcript(img: &screen::Image) -> Result<String, String> {
 
 /// Desktop start, the model service (pid 14) and, for the live case, the
 /// broker (pid 15); then a clean exit.
+/// The desktop with the model, where Bella is asked nothing: only the
+/// model service starts, to warm up (docs/s2-design.md).
+fn warm_only_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+        "ZOO_OS DISPLAY acquired pid=27 name=peacock-handler",
+        "ZOO_OS PROC start pid=28 name=files",
+        "ZOO_OS PROC start pid=29 name=crash-test",
+        "ZOO_OS PROC start pid=30 name=bella",
+        "ZOO_OS PROC start pid=31 name=elephant-handler",
+        "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
+        "ZOO_OS DISPLAY released pid=27",
+    ]);
+    e.then_any_order(&[
+        "ZOO_OS PROC exit pid=28 name=files code=0",
+        "ZOO_OS PROC exit pid=29 name=crash-test code=0",
+        "ZOO_OS PROC exit pid=30 name=bella code=0",
+        "ZOO_OS PROC exit pid=31 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
+    ]);
+    e
+}
+
 fn bella_model_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
@@ -2760,10 +2787,10 @@ fn bella_model_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
         "ZOO_OS PROC start pid=30 name=bella",
-        // The broker first (the Bella asks its memory), then the model
-        // (docs/a2-design.md).
-        "ZOO_OS PROC start pid=31 name=otter-handler",
-        "ZOO_OS PROC start pid=32 name=elephant-handler",
+        // The model service at once, to warm up (docs/s2-design.md); the
+        // broker on the first request (Bella asks its memory first).
+        "ZOO_OS PROC start pid=31 name=elephant-handler",
+        "ZOO_OS PROC start pid=32 name=otter-handler",
     ]);
     e.then(&[
         "ZOO_OS PROC exit pid=27 name=peacock-handler code=0",
@@ -2773,8 +2800,8 @@ fn bella_model_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC exit pid=28 name=files code=0",
         "ZOO_OS PROC exit pid=29 name=crash-test code=0",
         "ZOO_OS PROC exit pid=30 name=bella code=0",
-        "ZOO_OS PROC exit pid=31 name=otter-handler code=0",
-        "ZOO_OS PROC exit pid=32 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=31 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=32 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=26 name=zookeeper code=0",
     ];
     e.then_any_order(&exits);
@@ -2810,7 +2837,7 @@ fn bella_model_steps() -> Interaction {
         Action::Screenshot("1-busy"),
         // Back to the Bella (Files -> Crash Test -> Bella) and cancel.
         Action::Keys(vec!["tab", "tab", "backspace"]),
-        Action::WaitFor("[32:elephant-handler] ElephantHandler: request cancelled".into()),
+        Action::WaitFor("[31:elephant-handler] ElephantHandler: request cancelled".into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-cancelled"),
     ]);
@@ -2831,20 +2858,17 @@ fn wiggle(p: &mut Ptr, rounds: usize) -> Vec<Action> {
 
 fn responsiveness_steps() -> Interaction {
     let mut p = Ptr::start();
-    let mut steps = open_bella();
-    // F11 logs the window server's frame and input-wait figures and
-    // starts them over: first to clear, then after moves with the desktop
-    // idle, then after moves while the model reads its system prompt.
-    steps.push(Action::Keys(vec!["f11"]));
-    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
-    steps.extend(wiggle(&mut p, 10));
-    steps.push(Action::Settle(QUIET));
-    steps.push(Action::Keys(vec!["f11"]));
-    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
-    steps.push(Action::Keys(typed("Find my pancake recipe")));
-    steps.push(Action::WaitContains(
-        "ElephantHandler: service ready (model mapped".into(),
-    ));
+    // F11 logs the window server's frame and input-wait figures and starts
+    // them over. The model warms up in the background as soon as Bella
+    // opens (docs/s2-design.md): first, pointer moves during that warm-up;
+    // then, once it is over, the same moves with the desktop idle.
+    let mut steps = vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("desktop")),
+        Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
+        Action::Keys(vec!["f11"]),
+        Action::WaitContains("PeacockHandler: input wait".into()),
+    ];
     steps.extend(wiggle(&mut p, 10));
     steps.push(Action::Keys(vec!["f11"]));
     // While the model runs, the mean wait must stay under 15% of a tick
@@ -2853,11 +2877,16 @@ fn responsiveness_steps() -> Interaction {
         "PeacockHandler: input wait".into(),
         vec![("input wait", 20, 1000), ("tick: mean", 0, 150)],
     ));
-    // The model was still busy when the figures were taken.
-    steps.push(Action::WaitContains(
-        "ElephantHandler: chose search `pancake recipe`".into(),
-    ));
+    // The warm-up ended only after those figures: the model was busy
+    // throughout.
+    steps.push(Action::WaitContains("ElephantHandler: warmed up".into()));
     steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    steps.extend(wiggle(&mut p, 10));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["f11"]));
+    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
     leave_desktop(&mut steps);
     Interaction { steps }
 }
@@ -2865,17 +2894,22 @@ fn responsiveness_steps() -> Interaction {
 fn bella_live_steps() -> Interaction {
     let mut steps = open_bella();
     steps.extend([
+        // The model warms up in the background as Bella opens
+        // (docs/s2-design.md) ...
+        Action::WaitContains("ElephantHandler: warmed up".into()),
         Action::Keys(typed("Find my pancake recipe")),
         Action::WaitFor(
-            "[32:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+            "[31:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
-        // Stage 1 timing lines (docs/s1-design.md).
+        // Stage 1 timing lines (docs/s1-design.md) ...
         Action::WaitContains("ElephantHandler: timing: setup ".into()),
-        Action::WaitContains("Bella: answered in ".into()),
+        // ... so the first request takes about as long as later ones: it
+        // took 6 s with the set-up in it.
+        Action::WaitNumbers("Bella: answered in ".into(), vec![("answered in", 0, 3000)]),
         Action::Settle(QUIET),
         Action::Keys(typed("Make a folder called Projects/2026")),
         Action::WaitFor(
-            "[32:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
+            "[31:elephant-handler] ElephantHandler: chose create `Projects/2026`".into(),
         ),
         Action::Settle(QUIET),
         Action::Keys(vec!["y"]),

@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The Stage 2
-priorities section (version 0.79.0) is the current state. Sections before it
+warm-up section (version 0.80.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,30 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 2 results: the warm-up (version 0.80.0)
+
+Design: docs/s2-design.md §2.
+
+With `--accel whpx`:
+- **`bella-live`:** `OK`, ``[verify] in range: [30:bella] Bella: answered in
+  1042 ms by the model``, the first request after `warmed up: system
+  prompt 76 tokens in 4088 ms`.
+- **`everyday-model`:** `OK`. The request arrives during the warm-up and is
+  answered in 3,186 ms.
+- **`responsiveness`:** `OK`. During the warm-up, `input wait 40 events
+  mean 55060 … per mille of a tick: mean 1 longest 3`.
+
+Under TCG, with the model image: **`bella-model`** `OK`. `Thinking:` is
+shown and the request is cancelled during the warm-up.
+
+**Negative controls:**
+- **No `warm`:** `FAIL bella-live`, the model service started late.
+- **The warm-up not in the background:** `FAIL responsiveness`
+  (`tick: mean` 501).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+clippy `-D warnings` (`zoo-user`, `xtask`) and `cargo fmt --check`: clean.
 
 ## Stage 2 results: background programs (version 0.79.0)
 
