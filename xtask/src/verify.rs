@@ -326,9 +326,6 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=26 name=elephant-handler code=0",
     ]);
     // A larger model than the default needs a larger machine.
-    if !crate::infer::model_in_boot_image(root) {
-        qemu::set_memory_gib(4);
-    }
     let model_image = match crate::infer::load_model(root) {
         Ok(data) => {
             let r = crate::infer::run(
@@ -2759,6 +2756,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         };
         qemu::set_usb(c.usb);
+        // A model too large for the boot image needs 4 GiB beside the
+        // desktop; every other case keeps 2 (timing-sensitive desktop cases
+        // were measured at 2).
+        let big_model = model_on_disk
+            && (model_case || matches!(c.name, "bella-vectors" | "bella-learn" | "bella-save"));
+        qemu::set_memory_gib(if big_model || c.name == "everyday-model" {
+            4
+        } else {
+            2
+        });
         // The other processors (docs/smp-design.md).
         qemu::set_cpus(if c.name.starts_with("smp-") {
             s.cpus.max(4)
