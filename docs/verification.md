@@ -62,7 +62,14 @@ FAIL  responsiveness  … `tick: mean` 481 outside 0..=150 in `… input wait 40
 `bella-live` (`--accel whpx`): `OK`. First request 6,103 ms Enter to
 answer (Stage 1: 6,011 ms), second 1,600 ms (1,557 ms).
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+The scheduler change touches every program, so the accelerator-only
+cases were also run with `--accel whpx`:
+- `everyday-model`, `bella-live` and `responsiveness`: `OK`;
+- `wine-home-1` (74.8 s) and `wine-home-2`: `OK`.
+
+clippy `-D warnings` (kernel, `zoo-user`, `xtask`) and `cargo fmt --check`:
+clean.
 
 ## Stage 1 results: "none of these" and timing (version 0.78.0)
 
