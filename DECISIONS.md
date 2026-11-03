@@ -150,6 +150,29 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Qwen3-1.7B (4 bits) is Bella's default model (2026-11-03)
+
+Version 0.98.0. **The owner's choice**, after the measurements on 8
+processors: Qwen3 `Q4_0` small talk 0.78 s and an answer from a fact
+1.32 s, with fuller summaries than 0.5B (docs/smp-design.md,
+docs/qwen3-design.md). `--bella 0.5b` keeps the old default.
+
+- **The default is named once** (`infer::DEFAULT_MODEL`). Whether a model
+  fits the boot image, and whether the guest needs 4 GiB, now follow the
+  model's size (`BOOT_IMAGE_MODEL_MAX`, 600 MB), not "is it the default".
+- **Qwen3's 1.13 GB file does not fit the boot image,** so Bella reads it
+  from the model disk. In consequence:
+  - `inference` and `bella-model` (the model in the boot image) are
+    skipped by default; they still run with `--bella 0.5b`;
+  - `run --model`, `model-image` and `usb-image` stop with a clear
+    message and point to `--bella 0.5b`;
+  - the USB stick has no model disk yet, so real hardware boots with
+    0.5B until it gets one.
+- **`infer-check` checks with 0.5B by default:** the NumPy reference
+  implements Qwen2 only.
+- **The 4-bit file is made, not downloaded** (`cargo xtask requant
+  --bella qwen3-1.7b`). A missing file says so.
+
 ## More than one processor, steps 2 and 3 (2026-11-03)
 
 Version 0.97.0. Design: docs/smp-design.md.

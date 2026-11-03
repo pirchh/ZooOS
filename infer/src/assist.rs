@@ -28,6 +28,44 @@ info: about this computer\n\
 Paths are relative to the home folder. Reply with the command only.\n\
 If no command fits the request, reply: none";
 
+/// Qwen3's version (docs/qwen3-design.md): the same commands, with
+/// examples (none worded like `assist-check`'s requests) and a narrower
+/// "none". Qwen3 chose `none` for plain file requests with `SYSTEM`; the
+/// 0.5B model copies the examples, so it keeps `SYSTEM`.
+pub const SYSTEM_QWEN3: &str = "You turn a request about the user's files and apps into one command.\n\
+Commands:\n\
+search <words>: find where files are, by name or text\n\
+list <folder>: show what is inside a folder\n\
+inspect <file or folder>: how big it is\n\
+create <folder>: make a folder\n\
+read <file>: show a file's text\n\
+open <file or folder>: open it in an app\n\
+move <path> to <path>: move or rename it\n\
+trash <file or folder>: delete it\n\
+launch <app>: start an app (Files, Notes, Network)\n\
+info: about this computer\n\
+Paths are relative to the home folder. Reply with the command only.\n\
+Examples:\n\
+Where did I put my budget? -> search budget\n\
+Show the Videos folder -> list Videos\n\
+Open my holiday letter -> open holiday letter\n\
+How big is Downloads? -> inspect Downloads\n\
+Write me a poem -> none\n\
+Reply none only when the request is not about the user's files, folders, apps or this computer.";
+
+/// The apps `launch` can start (the list in the prompts). A launch of
+/// anything else is no command: there is no such app.
+pub const LAUNCHABLE: [&str; 3] = ["Files", "Notes", "Network"];
+
+/// The system prompt for `model`.
+pub fn system_for(model: &Model) -> &'static str {
+    if model.cfg.qwen3 {
+        SYSTEM_QWEN3
+    } else {
+        SYSTEM
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Search,
@@ -165,7 +203,7 @@ impl<'m, 't> Bella<'m, 't> {
         tok: &'t Tokenizer<'t>,
         mut progress: impl FnMut(Step) -> bool,
     ) -> Result<Self, AssistError> {
-        let prefix = prefix_text();
+        let prefix = prefix_text_with(system_for(model));
         let prefix_ids = tok.encode(&prefix);
         // Prefix + request (+ template tokens) + tool word + argument.
         let ctx = prefix_ids.len()
@@ -308,6 +346,19 @@ impl<'m, 't> Bella<'m, 't> {
             self.model.forward(&mut self.st, next)?;
         }
         let arg = String::from(self.tok.decode(&arg_ids).trim());
+        // No such app: no command (the model named one the prompt does not
+        // list, e.g. "Email" for "Send an email to my boss").
+        // "the Notes app" names Notes.
+        let app = LAUNCHABLE.iter().find(|a| {
+            let name = arg.strip_prefix("the ").unwrap_or(&arg);
+            let name = name.strip_suffix(" app").unwrap_or(name);
+            a.eq_ignore_ascii_case(name.trim())
+        });
+        let (tool, arg) = match (tool, app) {
+            (Tool::Launch, Some(a)) => (tool, String::from(*a)),
+            (Tool::Launch, None) => (Tool::Nothing, String::new()),
+            _ => (tool, arg),
+        };
         Ok(Choice {
             tool,
             arg,
@@ -318,9 +369,9 @@ impl<'m, 't> Bella<'m, 't> {
     }
 }
 
-/// The ChatML text before the user's request.
-pub fn prefix_text() -> String {
-    let full = chat::prompt(SYSTEM, "");
+/// The ChatML text before the user's request, with `system`.
+pub fn prefix_text_with(system: &str) -> String {
+    let full = chat::prompt(system, "");
     // `prompt` ends with "<|im_end|>\n<|im_start|>assistant\n" after the
     // (empty) user content; keep everything up to the user content.
     let cut = full
@@ -328,6 +379,11 @@ pub fn prefix_text() -> String {
         .map(|i| i + "<|im_start|>user\n".len())
         .unwrap_or(full.len());
     String::from(&full[..cut])
+}
+
+/// `prefix_text_with` the 0.5B prompt.
+pub fn prefix_text() -> String {
+    prefix_text_with(SYSTEM)
 }
 
 #[cfg(test)]

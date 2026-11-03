@@ -421,6 +421,13 @@ pub fn build_model_image(
     prompt: &str,
     expected: &[u32],
 ) -> Result<PathBuf, String> {
+    if model.len() as u64 > crate::infer::BOOT_IMAGE_MODEL_MAX {
+        return Err(format!(
+            "the model ({} MB) is too large for the boot image (at most {} MB):              use the model disk (`run` without `--model`) or `--bella 0.5b`",
+            model.len() >> 20,
+            crate::infer::BOOT_IMAGE_MODEL_MAX >> 20
+        ));
+    }
     let plain = build(root, tools, mode)?;
     let _ = plain;
     let base = initrd(root, tools)?;

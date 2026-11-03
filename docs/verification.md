@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-processors steps 2–3 section (version 0.97.0) is the current state. Sections before it
+default-model section (version 0.98.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,72 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Default model results (version 0.98.0)
+
+Qwen3-1.7B `Q4_0` is the default (DECISIONS.md). Every model case with
+`--accel whpx --cpus 8`:
+
+| Case | Result |
+| --- | --- |
+| `bella-talk` | `OK`: said "I'm Bella." in 584 ms |
+| `bella-convo` | `OK`: "Yes, that's it. You can ask me to play it or create a playlist." in 1.0–1.7 s |
+| `bella-facts-answer` | `OK`: "Your dentist appointment is on Friday." in 0.8–1.2 s |
+| `bella-context-answer` | `OK`: "You're working on a file called zoo.rs, which is a Rust code file." in 2.4 s |
+| `bella-summary-answer` | `OK`: "The file lists items to buy: flour, eggs, milk. It also mentions calling the vet about Zara the zebra." in 3.1 s |
+| `bella-save` | `OK` |
+| `bella-live` | `OK` 3 of 4 runs; once Bella received "Find my ake recipe" (keys lost, below) |
+| `responsiveness` | `OK` |
+| `model-restart` | `OK` (after the change below) |
+| `everyday-model` | `OK` (and `OK` with `--bella 0.5b`) |
+| `bella-lookup-answer` | `OK`: "The notes mention calling the vet about Zara the zebra." |
+| `bella-vectors` | `OK` |
+| `inference`, `bella-model` | skipped: they check the model in the boot image (run them with `--bella 0.5b`) |
+
+**The command choice, first.** `bella-live`, `model-restart` and
+`everyday-model` failed at first: Qwen3 answered "Find my pancake recipe"
+in words. Its `assist-check` showed the same leaning to `none` (17 of 23
+right, 0 of 8 acted on).
+
+**Qwen3 got its own prompt,** `SYSTEM_QWEN3`, with five examples none worded
+like `assist-check`'s requests, and "reply none only when the request is
+not about the user's files, folders, apps or this computer". The same
+prompt for 0.5B made it worse (6 of 8 acted on: it copied an example), so
+0.5B keeps `SYSTEM`.
+
+**A launch of an app not in the prompt's list is no command.** "Send an
+email to my boss" had become `launch Email`; "the Notes app" still names
+Notes.
+
+| Model | Right (of 23) | Acted on with no command (of 8) |
+| --- | --- | --- |
+| Qwen3 `Q4_0`, before | 17 | 0 |
+| **Qwen3 `Q4_0`, now** | **20** | **0** |
+| 0.5B (its own prompt), now | 18 | 1 |
+
+Qwen3 now chooses `search pancake` where 0.5B chose `search pancake
+recipe`. Both find `Documents/recipes/pancakes.txt`, and `assist-check`
+accepts both, so the three cases now accept either.
+
+**Known issue:** keys lost under load. Once in four `bella-live` runs with
+8 processors, Bella received "Find my ake recipe". The likely cause:
+- at desktop start, the chat model and the embedding model (1.7 GB) are
+  read from the model disk;
+- a disk read holds the kernel lock with interrupts off (B10);
+- the boot processor, which takes the keyboard interrupt, waits on that
+  lock more often with 8 processors;
+- QEMU's PS/2 buffer holds only a few keys.
+
+Not fixed here: it is the next item (docs/smp-design.md).
+
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 16 skipped. The 16 are the 14 cases that need an accelerator, plus
+`inference` and `bella-model`, which need the model in the boot image.
+
+The first run failed `notes-1`, `notes-2` and `dock`. Every case had been
+given 4 GiB, because the default model no longer fits the boot image, and
+these timing-sensitive desktop cases fail that way under TCG. Now only the
+cases that load a large model get 4 GiB, and the three pass.
 
 ## Processors steps 2–3 results (version 0.97.0)
 
