@@ -64,7 +64,8 @@ because `FILE_CREATE` refuses an existing file as well.
 - with WHPX: `bella-summary-answer` and `bella-facts-answer`;
 - under TCG: `bella-audit`, `bella-summary`, `bella` and `bella-access`.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 12 skipped because they need an accelerator.
 
 ## Summary results (version 0.90.0)
 
