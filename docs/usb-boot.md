@@ -20,7 +20,7 @@ a USB stick.
    Bella's model when `tools/models/` has it (about 410 MB more, so a
    stick of 1 GB or larger); `--no-model` builds the small image.
    The stick keeps the model in its boot image: `cargo xtask run` puts it
-   on a separate model disk instead (docs/s2-design.md §3), but ZooOS has
+   on a separate model disk instead (docs/stage2-design.md §3), but ZooOS has
    no USB storage driver yet to read such a disk on a real PC.
 2. The owner writes that file to a USB stick they choose, with a tool such
    as Rufus (DD mode) or balenaEtcher, **double-checking the target is the

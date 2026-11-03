@@ -118,7 +118,7 @@ pub fn set_guestfwd(port: Option<u16>) {
 }
 
 /// The read-only model disk the next machine gets, if any
-/// (docs/s2-design.md §3).
+/// (docs/stage2-design.md §3).
 static MODEL_DISK: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 pub fn set_model_disk(disk: Option<PathBuf>) {

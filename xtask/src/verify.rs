@@ -255,7 +255,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         e
     };
     // A3: the everyday system with the model built in. Bella starts the
-    // model service at once to warm it up (docs/s2-design.md), then the
+    // model service at once to warm it up (docs/stage2-design.md), then the
     // broker on the first request (docs/a3-design.md).
     let mut everyday_model = expect(Mode::FastBoot, &fast_head[..fast_head.len() - 2]);
     everyday_model.then(&[
@@ -341,7 +341,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     &r.output_ids,
                 )?,
                 // The everyday system as `run` boots it: the plain
-                // fast-boot image and the model disk (docs/s2-design.md §3).
+                // fast-boot image and the model disk (docs/stage2-design.md §3).
                 (
                     image::build(root, tools, image::Mode::FastBoot)?,
                     image::model_disk(root)?,
@@ -845,7 +845,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: rest_after_desktop(&normal, "kill otter-handler after 20"),
             timeout: s.timeout * 3,
             want: "pass",
-            purpose: "Bella survives its file broker ending (docs/s2-design.md §4): OtterHandler killed mid-session; the next request reports it; after the back-off a new broker answers",
+            purpose: "Bella survives its file broker ending (docs/stage2-design.md §4): OtterHandler killed mid-session; the next request reports it; after the back-off a new broker answers",
             interaction: Some(broker_restart_steps()),
             screen_checks: vec![],
         },
@@ -2202,7 +2202,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: rest_after_desktop(&normal, "kill elephant-handler after 20"),
             timeout: s.timeout * 10,
             want: "pass",
-            purpose: "Bella survives its model service ending (docs/s2-design.md §4): ElephantHandler killed after its warm-up; Bella starts it again, it warms up again, and a request is answered (needs --accel)",
+            purpose: "Bella survives its model service ending (docs/stage2-design.md §4): ElephantHandler killed after its warm-up; Bella starts it again, it warms up again, and a request is answered (needs --accel)",
             interaction: Some(model_restart_steps()),
             screen_checks: vec![],
         },
@@ -2215,7 +2215,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: warm_only_expectation(&normal),
             timeout: s.timeout * 10,
             want: "pass",
-            purpose: "responsiveness while the model runs (docs/s1-design.md): the window server's input wait for pointer moves, idle and then during the model's set-up (needs --accel)",
+            purpose: "responsiveness while the model runs (docs/stage1-design.md): the window server's input wait for pointer moves, idle and then during the model's set-up (needs --accel)",
             interaction: Some(responsiveness_steps()),
             screen_checks: vec![],
         },
@@ -2246,7 +2246,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 steps: vec![
                     Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
                     // The model comes from the model disk, not the boot
-                    // image (docs/s2-design.md §3).
+                    // image (docs/stage2-design.md §3).
                     Action::WaitContains(
                         "ElephantHandler: read the model from the model disk".into(),
                     ),
@@ -2258,7 +2258,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitFor(
                         "[10:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
                     ),
-                    // Stage 1 timing lines (docs/s1-design.md).
+                    // Stage 1 timing lines (docs/stage1-design.md).
                     Action::WaitContains("ElephantHandler: timing: setup ".into()),
                     Action::WaitContains("Bella: answered in ".into()),
                     Action::Settle(QUIET),
@@ -2796,7 +2796,7 @@ fn check_bella_transcript(img: &screen::Image) -> Result<String, String> {
 /// Desktop start, the model service (pid 14) and, for the live case, the
 /// broker (pid 15); then a clean exit.
 /// The desktop with the model, where Bella is asked nothing: only the
-/// model service starts, to warm up (docs/s2-design.md).
+/// model service starts, to warm up (docs/stage2-design.md).
 fn warm_only_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
@@ -2831,7 +2831,7 @@ fn bella_model_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC start pid=28 name=files",
         "ZOO_OS PROC start pid=29 name=crash-test",
         "ZOO_OS PROC start pid=30 name=bella",
-        // The model service at once, to warm up (docs/s2-design.md); the
+        // The model service at once, to warm up (docs/stage2-design.md); the
         // broker on the first request (Bella asks its memory first).
         "ZOO_OS PROC start pid=31 name=elephant-handler",
         "ZOO_OS PROC start pid=32 name=otter-handler",
@@ -2904,7 +2904,7 @@ fn responsiveness_steps() -> Interaction {
     let mut p = Ptr::start();
     // F11 logs the window server's frame and input-wait figures and starts
     // them over. The model warms up in the background as soon as Bella
-    // opens (docs/s2-design.md): first, pointer moves during that warm-up;
+    // opens (docs/stage2-design.md): first, pointer moves during that warm-up;
     // then, once it is over, the same moves with the desktop idle.
     let mut steps = vec![
         Action::WaitFor("ZOO_OS SHELL ready".into()),
@@ -2916,7 +2916,7 @@ fn responsiveness_steps() -> Interaction {
     steps.extend(wiggle(&mut p, 10));
     steps.push(Action::Keys(vec!["f11"]));
     // While the model runs, the mean wait must stay under 15% of a tick
-    // (1.5 ms); it was 47% before scheduler priorities (docs/s2-design.md).
+    // (1.5 ms); it was 47% before scheduler priorities (docs/stage2-design.md).
     steps.push(Action::WaitNumbers(
         "PeacockHandler: input wait".into(),
         vec![("input wait", 20, 1000), ("tick: mean", 0, 150)],
@@ -3006,13 +3006,13 @@ fn bella_live_steps() -> Interaction {
     let mut steps = open_bella();
     steps.extend([
         // The model warms up in the background as Bella opens
-        // (docs/s2-design.md) ...
+        // (docs/stage2-design.md) ...
         Action::WaitContains("ElephantHandler: warmed up".into()),
         Action::Keys(typed("Find my pancake recipe")),
         Action::WaitFor(
             "[31:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
-        // Stage 1 timing lines (docs/s1-design.md) ...
+        // Stage 1 timing lines (docs/stage1-design.md) ...
         Action::WaitContains("ElephantHandler: timing: setup ".into()),
         // ... so the first request takes about as long as later ones: it
         // took 6 s with the set-up in it.
@@ -4979,7 +4979,7 @@ fn bella_any_case_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "OtterHandler: `music` is `Music`".into(),
     ));
-    // Stage 1: the timing line (docs/s1-design.md).
+    // Stage 1: the timing line (docs/stage1-design.md).
     steps.push(Action::WaitContains("ms by a typed command".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("list musik")));

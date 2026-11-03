@@ -171,7 +171,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 );
             }
             // The everyday system gets Bella's model on the read-only
-            // model disk when it is in tools/models/ (docs/s2-design.md
+            // model disk when it is in tools/models/ (docs/stage2-design.md
             // §3): the boot image stays small; `--no-model` leaves it out.
             if mode == image::Mode::FastBoot && !opts.no_model {
                 match image::model_disk(&root) {

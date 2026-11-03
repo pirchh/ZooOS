@@ -44,7 +44,7 @@ is saved in `build/runs/<case>/qemu-command.txt`.
 
 ## Stage 2 results: Bella's helpers start again (version 0.82.0)
 
-Design: docs/s2-design.md §4.
+Design: docs/stage2-design.md §4.
 
 **`broker-restart`** (TCG): `OK`.
 
@@ -74,7 +74,7 @@ clean.
 
 ## Stage 2 results: the model on its own disk (version 0.81.0)
 
-Design: docs/s2-design.md §3.
+Design: docs/stage2-design.md §3.
 
 **`everyday-model`** (`--accel whpx`, the fast-boot image plus
 `build/model-disk.img`): `OK`.
@@ -105,7 +105,7 @@ ran `cargo xtask run --accel whpx` on this build:
 
 ## Stage 2 results: the warm-up (version 0.80.0)
 
-Design: docs/s2-design.md §2.
+Design: docs/stage2-design.md §2.
 
 With `--accel whpx`:
 - **`bella-live`:** `OK`, ``[verify] in range: [30:bella] Bella: answered in
@@ -129,7 +129,7 @@ clippy `-D warnings` (`zoo-user`, `xtask`) and `cargo fmt --check`: clean.
 
 ## Stage 2 results: background programs (version 0.79.0)
 
-Design: docs/s2-design.md (B12).
+Design: docs/stage2-design.md (B12).
 
 **`responsiveness`** (`--accel whpx`): `OK`, now with a bound on the
 input wait while the model runs:
@@ -158,7 +158,7 @@ clean.
 
 ## Stage 1 results: "none of these" and timing (version 0.78.0)
 
-Design: docs/s1-design.md (with the prompt comparison and the baselines).
+Design: docs/stage1-design.md (with the prompt comparison and the baselines).
 
 **`cargo xtask assist-check`** (host, 22 requests):
 

@@ -111,7 +111,7 @@ fn main(chan: u64, home: u64) -> u8 {
     }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     // The heap's peak is logged each time it passes another 64 KiB
-    // (docs/s1-design.md).
+    // (docs/stage1-design.md).
     let mut peak_logged = 0;
     loop {
         let (_, peak, _) = zoo_rt::heap_stats();

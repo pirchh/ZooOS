@@ -24,7 +24,7 @@ pub enum Tool {
     List,
     Inspect,
     Create,
-    /// No command fits the request (docs/s1-design.md, B9).
+    /// No command fits the request (docs/stage1-design.md, B9).
     Nothing,
 }
 
