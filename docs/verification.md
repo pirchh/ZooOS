@@ -71,7 +71,23 @@ Negative control, `none` never chosen: `8 of 8 … acted on anyway`,
 **Under TCG:** `bella-any-case` requires `ms by a typed command`, and
 logs `answered in 6 ms` and `1 ms`.
 
-FULL_SUITE_RESULT
+**New case `responsiveness`** (`--accel whpx`): `OK`. F11 figures, idle
+then during the model's set-up:
+
+```
+[27:peacock-handler] PeacockHandler: input wait 40 events mean 56831 max 160317 cycles; per mille of a tick: mean 1 longest 5
+[27:peacock-handler] PeacockHandler: input wait 40 events mean 15051414 max 30541159 cycles; per mille of a tick: mean 472 longest 958
+```
+
+This is the baseline before scheduler priorities (Stage 2).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+The accelerator-only cases were skipped under TCG; `bella-live`,
+`everyday-model` and `responsiveness` were run separately with
+`--accel whpx`, all `OK`.
+- clippy with `-D warnings` (`zoo-user`, `xtask`, `zoo-infer`): clean.
+- `cargo fmt --check`: clean.
+- Tests: `cargo test -p xtask` 25 passed, `-p zoo-infer` 10 passed.
 
 ## Bella rename results (version 0.77.0)
 

@@ -8,7 +8,7 @@ every later stage proves its gain.
 | --- | --- |
 | B9: a "none of these" answer and a measured `assist-check` | done, version 0.78.0 |
 | One timing line per request; peak heap | done, version 0.78.0 |
-| Responsiveness while the model runs | open |
+| Responsiveness while the model runs | measured, version 0.78.0 (§3) |
 | Baselines under TCG and WHPX | timing lines: see docs/verification.md |
 
 ## 1. B9: "none of these"
@@ -125,9 +125,34 @@ so the heap figures are the engine's working memory: caches and scores.
 - **`bella-live` and `everyday-model`** (WHPX): also require the
   ElephantHandler timing line and `Bella: answered in`.
 
-## 4. Not done yet
+## 4. Responsiveness while the model runs
 
-- **A responsiveness check:** the time from a key press in Files to its
-  frame while the model runs.
+**New case `responsiveness`** (WHPX, the model image):
+1. It moves the pointer in a square 10 times with the desktop idle, then
+   presses F11.
+2. It asks Bella "Find my pancake recipe" and, while the model reads its
+   system prompt, moves the pointer the same way and presses F11.
+
+F11 makes PeacockHandler log two things since the last F11:
+- **Frame costs.**
+- **The input wait:** time-stamp-counter cycles from a pointer event's
+  arrival in the kernel to PeacockHandler reading it, also as thousandths
+  of a 10 ms tick.
+
+**Baseline, 2026-11-02, before scheduler priorities:**
+
+| | Idle | Model busy |
+| --- | --- | --- |
+| Input wait, mean | 56,831 cycles (1‰ of a tick, about 0.01 ms) | 15,051,414 cycles (472‰, about 4.7 ms) |
+| Input wait, longest | 160,317 cycles (5‰) | 30,541,159 cycles (958‰, about 9.6 ms) |
+| Frame cost, median | 27,961 cycles | 129,207 cycles |
+
+**What it shows:** with one CPU and round-robin scheduling, a pointer move
+during inference waits for the timer tick that ends the model's turn, up
+to a whole tick. That is B12. Stage 2's priorities must bring the busy
+column close to the idle one; this case is the measure.
+
+## 5. Not done yet
+
 - **p50/p95 figures over many requests.** The lines make them possible;
   collecting them is part of the Stage 5 bake-off.
