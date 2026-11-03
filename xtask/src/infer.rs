@@ -238,7 +238,7 @@ pub fn check(root: &Path, max_new: usize) -> Result<bool, String> {
 }
 
 /// Requests for `assist-check` with the tools and arguments accepted
-/// (docs/m5c2-design.md §5, docs/s1-design.md). Several are accepted where
+/// (docs/m5c2-design.md §5, docs/stage1-design.md). Several are accepted where
 /// they mean the same to the broker. `none` means no command fits: the
 /// first 8 are the original set; then more requests with a right command;
 /// then requests no command answers (B9).
@@ -376,7 +376,7 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
     println!(
         "accuracy: {right} of {with} requests with a command answered right; {acted} of {without} requests without one acted on anyway"
     );
-    // The bar is the measured state of 2026-11-02 (docs/s1-design.md): a
+    // The bar is the measured state of 2026-11-02 (docs/stage1-design.md): a
     // change that answers fewer right, or acts more often, fails.
     let pass = right >= MIN_RIGHT && acted <= MAX_ACTED;
     if !ok && pass {
@@ -387,6 +387,6 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
     Ok(pass)
 }
 
-/// The recorded bar for `assist-check` (docs/s1-design.md).
+/// The recorded bar for `assist-check` (docs/stage1-design.md).
 const MIN_RIGHT: usize = 10;
 const MAX_ACTED: usize = 2;

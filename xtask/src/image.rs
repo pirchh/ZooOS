@@ -480,7 +480,7 @@ pub fn build_model_image(
 /// (8 bytes, little-endian); the kernel's `virtio_blk::MODEL_MAGIC`.
 const MODEL_DISK_MAGIC: &[u8; 8] = b"ZOOMODL1";
 
-/// The read-only model disk (docs/s2-design.md §3):
+/// The read-only model disk (docs/stage2-design.md §3):
 /// `build/model-disk.img`, a 4 KiB header block, then the model padded to
 /// whole 4 KiB blocks. Rewritten only when the model file is newer or a
 /// different size.

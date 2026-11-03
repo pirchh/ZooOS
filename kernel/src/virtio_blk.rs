@@ -3,7 +3,7 @@
 //! polled (no interrupts), whole 4 KiB blocks. Enough for the filesystem
 //! service's snapshots; interrupts and the modern interface come later.
 //!
-//! Up to two devices (docs/s2-design.md §3): the data disk, and the read-only
+//! Up to two devices (docs/stage2-design.md §3): the data disk, and the read-only
 //! model disk, told apart by the model disk's header in block 0
 //! (`MODEL_MAGIC`, then the model's length in bytes; the model starts at
 //! block 1).

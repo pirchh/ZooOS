@@ -105,7 +105,7 @@ static PENDING_KILL: spin::Mutex<Option<(String, u64)>> = spin::Mutex::new(None)
 
 /// Runs a scheduled `kill` once its time has come. The shell keeps
 /// waiting here while a desktop session owns the keyboard, so a test can
-/// end a service in the middle of the desktop (docs/s2-design.md).
+/// end a service in the middle of the desktop (docs/stage2-design.md).
 fn run_pending_kill() {
     let due = {
         let mut p = PENDING_KILL.lock();

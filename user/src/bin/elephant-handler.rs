@@ -137,7 +137,7 @@ enum Stop {
 
 /// The model's bytes: mapped from the initial filesystem when the boot
 /// image has it (the USB stick, the test images), else read whole from
-/// the read-only model disk into page-aligned memory (docs/s2-design.md
+/// the read-only model disk into page-aligned memory (docs/stage2-design.md
 /// §3). Read as a background program, the read does not hold up the
 /// desktop.
 fn model_bytes() -> Option<&'static [u8]> {
@@ -175,7 +175,7 @@ fn model_bytes() -> Option<&'static [u8]> {
 }
 
 fn service(chan: Handle) -> u8 {
-    // Inference yields to the desktop (docs/s2-design.md, B12).
+    // Inference yields to the desktop (docs/stage2-design.md, B12).
     let _ = zoo_rt::set_background(true);
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     let Some(file) = model_bytes() else {
@@ -237,7 +237,7 @@ fn service(chan: Handle) -> u8 {
         if msg == "warm" {
             warm_talk = true;
             // Read the system prompt now, in the background, so the first
-            // request is answered as fast as later ones (docs/s2-design.md).
+            // request is answered as fast as later ones (docs/stage2-design.md).
             // A request arriving meanwhile waits in `pending`; a `cancel`
             // drops it.
             if assistant.is_none() {
@@ -471,7 +471,7 @@ fn service(chan: Handle) -> u8 {
                     elapsed
                 );
                 zoo_rt::log!("ElephantHandler: chose {} `{}`", c.tool.word(), c.arg);
-                // One timing line per request (docs/s1-design.md): set-up
+                // One timing line per request (docs/stage1-design.md): set-up
                 // (the system prompt, first request only), reading the
                 // request, writing the argument, and the heap.
                 let end = zoo_rt::now_us();

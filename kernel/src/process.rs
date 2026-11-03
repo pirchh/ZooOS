@@ -55,7 +55,7 @@ const RIGHT_WAIT: u8 = 4;
 const RIGHT_KILL: u8 = 8;
 const RFLAGS_IF: u64 = 1 << 9;
 /// A background program that has not run for this many ticks (1 s) gets
-/// a turn even while others are ready (docs/s2-design.md).
+/// a turn even while others are ready (docs/stage2-design.md).
 const BACKGROUND_STARVE: u64 = 100;
 /// First id given to an additional thread.
 const FIRST_EXTRA_TID: u64 = 0x1_0000;
@@ -177,7 +177,7 @@ struct Proc {
     shm_maps: Vec<(u64, u64, Arc<ShmPages>)>,
     /// May call `log_attach` and `block_attach` (the resident supervisor).
     log_ok: bool,
-    /// Runs only when no other program is ready (docs/s2-design.md, B12):
+    /// Runs only when no other program is ready (docs/stage2-design.md, B12):
     /// set by the program itself with `SET_BACKGROUND`.
     background: bool,
     /// Program name and arguments, NUL-separated (`args_get`).
@@ -664,7 +664,7 @@ pub fn on_input(frame: *mut TrapFrame, was_idle: bool) -> *mut TrapFrame {
             return frame;
         }
         // Input preempts a background program at once rather than at the
-        // next tick (docs/s2-design.md, B12).
+        // next tick (docs/stage2-design.md, B12).
         if s.current != 0 && s.current_is_background() {
             s.prefer_user = true;
             return s.switch_away(frame, m);
@@ -684,7 +684,7 @@ pub fn on_input(frame: *mut TrapFrame, was_idle: bool) -> *mut TrapFrame {
 }
 
 /// Kills the first live process named `name`, as the kernel (`by=0`), and
-/// returns its pid: the shell's `kill` (docs/s2-design.md, for tests that
+/// returns its pid: the shell's `kill` (docs/stage2-design.md, for tests that
 /// end a service while the desktop runs).
 pub fn kill_named(name: &str) -> Option<u64> {
     with_sched(|s, _| {
@@ -980,7 +980,7 @@ impl Scheduler {
     /// ticks the plain round-robin applies, so the kernel shell still gets
     /// its turn while user tasks are busy.
     ///
-    /// Background programs (`SET_BACKGROUND`, docs/s2-design.md) run only
+    /// Background programs (`SET_BACKGROUND`, docs/stage2-design.md) run only
     /// when no other task is ready, except that one which has not run for
     /// `BACKGROUND_STARVE` ticks gets a turn, so it cannot starve.
     fn pick_next(&self) -> usize {
@@ -7253,7 +7253,7 @@ impl Scheduler {
             },
             sys::MODEL_READ => {
                 // Any program may read the model: it is public, read-only
-                // data (docs/s2-design.md §3).
+                // data (docs/stage2-design.md §3).
                 let count = a2 as usize;
                 if count == 0 || count > zoo_abi::BLOCK_RUN_MAX {
                     return err(Error::Inval);
@@ -7274,7 +7274,7 @@ impl Scheduler {
             }
             sys::SET_BACKGROUND => {
                 // a1 = 1: this program runs only when nothing else is
-                // ready (docs/s2-design.md); 0: back to normal.
+                // ready (docs/stage2-design.md); 0: back to normal.
                 self.proc(i).background = a1 != 0;
                 Outcome::Ret(0)
             }

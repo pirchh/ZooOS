@@ -71,10 +71,10 @@ struct App {
     /// works is remembered as its answer (docs/a2-design.md).
     unanswered: Option<String>,
     /// When Enter was pressed on the request being answered, in
-    /// microseconds since boot (docs/s1-design.md).
+    /// microseconds since boot (docs/stage1-design.md).
     asked_at: u64,
     /// The model service ended: start it again (and warm it up) at this
-    /// tick (docs/s2-design.md §4).
+    /// tick (docs/stage2-design.md §4).
     model_restart_at: Option<u64>,
     /// Failures of each helper since its last success, for the back-off.
     model_failures: u32,
@@ -87,7 +87,7 @@ struct App {
 /// with each failure in a row, up to `MAX_BACKOFF`.
 const BACKOFF: u64 = 50;
 const MAX_BACKOFF: u64 = 1600;
-/// Longest wait for the broker's answer (10 s, docs/s2-design.md §4).
+/// Longest wait for the broker's answer (10 s, docs/stage2-design.md §4).
 const BROKER_DEADLINE: u64 = 1000;
 
 fn backoff(failures: u32) -> u64 {
@@ -256,7 +256,7 @@ impl App {
     }
 
     /// The timing line for one request: from Enter to its answer shown,
-    /// through the broker (docs/s1-design.md).
+    /// through the broker (docs/stage1-design.md).
     fn answered(&self, by: &str) {
         zoo_rt::log!(
             "Bella: answered in {} ms by {}",
@@ -349,7 +349,7 @@ impl App {
 
     /// The model service ended (crashed or killed): say so if a request
     /// was waiting, and start it again after a back-off
-    /// (docs/s2-design.md §4).
+    /// (docs/stage2-design.md §4).
     fn model_ended(&mut self, thinking: bool) {
         if let Some(e) = self.elephant.take() {
             let _ = close(e);
@@ -372,7 +372,7 @@ impl App {
     }
 
     /// Starts OtterHandler on first use with a copy of the home handle, so
-    /// it can be started again if it ends (docs/s2-design.md §4).
+    /// it can be started again if it ends (docs/stage2-design.md §4).
     fn otter(&mut self) -> Option<Handle> {
         if self.otter.is_none() && self.home != NO_HANDLE {
             if zoo_rt::ticks() < self.broker_retry_at {
@@ -449,7 +449,7 @@ impl App {
     }
 
     /// The broker ended or stopped answering: drop it; the next request
-    /// starts a new one after a back-off (docs/s2-design.md §4).
+    /// starts a new one after a back-off (docs/stage2-design.md §4).
     fn broker_ended(&mut self, why: &str) {
         if let Some(o) = self.otter.take() {
             let _ = close(o);
@@ -469,7 +469,7 @@ impl App {
     }
 
     /// Starts the model service and has it read the system prompt now, in
-    /// the background, when the model is installed (docs/s2-design.md).
+    /// the background, when the model is installed (docs/stage2-design.md).
     fn warm(&mut self) {
         let installed = zoo_rt::fs_find(MODEL_FILE).is_some() || zoo_rt::model_size().is_ok();
         if !installed || !self.start_model() {
@@ -557,7 +557,7 @@ impl App {
             let word = parts.next().unwrap_or("");
             let _margin = parts.next();
             let arg = parts.next().unwrap_or("").trim();
-            // No command fits (docs/s1-design.md, B9), or the model chose
+            // No command fits (docs/stage1-design.md, B9), or the model chose
             // one with nothing to act on: Bella answers in words instead
             // (docs/talk-design.md), and a command typed next can still
             // answer the request.
