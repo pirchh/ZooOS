@@ -179,6 +179,7 @@ lands as small, separately verified steps.
 | 2 | The model on its own read-only disk: desktop up 2.93 → 1.21 s; B10 measured (52 µs per request) (docs/s2-design.md §3) | done 2026-11-02 |
 | 2 | Bella's helpers start again after a back-off; broker deadline (docs/s2-design.md §4) | done 2026-11-02 |
 | 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |
+| — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | 3 | XSAVE, CPU features, an AVX2 backend | open |
 | 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |
 | 5 | Bella v1: workflow templates, safe summarising, "none of these", model bake-off, memory provenance | open |

@@ -1,5 +1,7 @@
 //! Tensor element formats used by the model: F32, Q4_0 and Q8_0 (GGML
-//! block quantization, 32 values per block with one f16 scale).
+//! block quantization, 32 values per block with one f16 scale), and Q6_K
+//! (GGML "k-quant": 256 values per block, 6 bits each, 16 sub-block
+//! scales), which Qwen2.5-1.5B's output layer uses.
 
 use core::simd::prelude::*;
 
@@ -7,10 +9,16 @@ use core::simd::prelude::*;
 pub const TYPE_F32: u32 = 0;
 pub const TYPE_Q4_0: u32 = 2;
 pub const TYPE_Q8_0: u32 = 8;
+pub const TYPE_Q6_K: u32 = 14;
 
 pub const BLOCK: usize = 32;
 const Q4_0_BYTES: usize = 2 + 16;
 const Q8_0_BYTES: usize = 2 + 32;
+/// Values per k-quant block.
+pub const QK_K: usize = 256;
+/// A Q6_K block: `ql` (low 4 bits, 128 bytes), `qh` (high 2 bits, 64
+/// bytes), 16 signed 8-bit scales, then the f16 scale `d`.
+const Q6_K_BYTES: usize = 128 + 64 + 16 + 2;
 
 /// IEEE half to single precision (exact, including subnormals and inf/NaN).
 pub fn f16_to_f32(h: u16) -> f32 {
@@ -42,6 +50,7 @@ pub fn byte_size(ty: u32, n: usize) -> Option<usize> {
         TYPE_F32 => n.checked_mul(4),
         TYPE_Q4_0 if n.is_multiple_of(BLOCK) => (n / BLOCK).checked_mul(Q4_0_BYTES),
         TYPE_Q8_0 if n.is_multiple_of(BLOCK) => (n / BLOCK).checked_mul(Q8_0_BYTES),
+        TYPE_Q6_K if n.is_multiple_of(QK_K) => (n / QK_K).checked_mul(Q6_K_BYTES),
         _ => None,
     }
 }
@@ -84,7 +93,47 @@ pub fn dot(ty: u32, row: &[u8], x: &[f32]) -> f32 {
             }
             total.reduce_sum()
         }
+        TYPE_Q6_K => {
+            let mut total = f32x16::splat(0.0);
+            let mut vals = [0f32; QK_K];
+            let blocks = row.as_chunks::<Q6_K_BYTES>().0;
+            for (b, xs) in blocks.iter().zip(x.as_chunks::<QK_K>().0) {
+                q6_k_block(b, &mut vals);
+                for (v, xv) in vals.as_chunks::<16>().0.iter().zip(xs.as_chunks::<16>().0) {
+                    total += f32x16::from_array(*v) * f32x16::from_array(*xv);
+                }
+            }
+            total.reduce_sum()
+        }
         _ => 0.0,
+    }
+}
+
+/// Expands one Q6_K block into 256 values, as GGML's
+/// `dequantize_row_q6_K` does: two halves of 128, each from 64 bytes of
+/// `ql`, 32 of `qh` and 8 scales.
+fn q6_k_block(b: &[u8; Q6_K_BYTES], out: &mut [f32; QK_K]) {
+    let (ql_all, rest) = b.split_at(128);
+    let (qh_all, rest) = rest.split_at(64);
+    let (sc_all, d) = rest.split_at(16);
+    let d = scale(d);
+    for half in 0..2 {
+        let ql = &ql_all[64 * half..];
+        let qh = &qh_all[32 * half..];
+        let sc = &sc_all[8 * half..];
+        let y = &mut out[128 * half..];
+        for l in 0..32 {
+            let is = l / 16;
+            let q1 = ((ql[l] & 0xF) | ((qh[l] & 3) << 4)) as i32 - 32;
+            let q2 = ((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) as i32 - 32;
+            let q3 = ((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) as i32 - 32;
+            let q4 = ((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) as i32 - 32;
+            let s = |k: usize| d * f32::from(sc[is + k] as i8);
+            y[l] = s(0) * q1 as f32;
+            y[l + 32] = s(2) * q2 as f32;
+            y[l + 64] = s(4) * q3 as f32;
+            y[l + 96] = s(6) * q4 as f32;
+        }
     }
 }
 
@@ -115,6 +164,12 @@ pub fn dequantize(ty: u32, row: &[u8], out: &mut [f32]) {
                 }
             }
         }
+        TYPE_Q6_K => {
+            let blocks = row.as_chunks::<Q6_K_BYTES>().0;
+            for (b, os) in blocks.iter().zip(out.as_chunks_mut::<QK_K>().0) {
+                q6_k_block(b, os);
+            }
+        }
         _ => out.fill(0.0),
     }
 }
@@ -122,6 +177,42 @@ pub fn dequantize(ty: u32, row: &[u8], out: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn q6_k_block_matches_hand_computation() {
+        // d = 0.5; scales 1..=16; ql/qh chosen so each value is known.
+        let mut b = [0u8; Q6_K_BYTES];
+        for (k, s) in b[192..208].iter_mut().enumerate() {
+            *s = (k + 1) as u8;
+        }
+        b[208..210].copy_from_slice(&0x3800u16.to_le_bytes()); // 0.5
+        // First half, l = 0: ql[0] = 0x21 (low 1, high 2), ql[32] = 0x43
+        // (low 3, high 4); qh[0] = 0b11_10_01_00 gives the high bits
+        // 0, 1, 2, 3 for q1..q4.
+        b[0] = 0x21;
+        b[32] = 0x43;
+        b[128] = 0b1110_0100;
+        let mut out = [0f32; QK_K];
+        q6_k_block(&b, &mut out);
+        // q1 = (1 | 0 << 4) - 32 = -31, scale index 0 -> 1.
+        assert_eq!(out[0], 0.5 * 1.0 * -31.0);
+        // q2 = (3 | 1 << 4) - 32 = -13, scale index 2 -> 3.
+        assert_eq!(out[32], 0.5 * 3.0 * -13.0);
+        // q3 = (2 | 2 << 4) - 32 = 2, scale index 4 -> 5.
+        assert_eq!(out[64], 0.5 * 5.0 * 2.0);
+        // q4 = (4 | 3 << 4) - 32 = 20, scale index 6 -> 7.
+        assert_eq!(out[96], 0.5 * 7.0 * 20.0);
+        // An untouched value in the second half: (0 | 0) - 32, scale 9.
+        assert_eq!(out[128], 0.5 * 9.0 * -32.0);
+        // The dot product agrees with the expanded values.
+        let x: Vec<f32> = (0..QK_K).map(|i| (i % 7) as f32 - 3.0).collect();
+        let want: f32 = out.iter().zip(&x).map(|(a, b)| a * b).sum();
+        let got = dot(TYPE_Q6_K, &b, &x);
+        assert!(
+            (got - want).abs() < 1e-3 * want.abs().max(1.0),
+            "{got} {want}"
+        );
+    }
 
     #[test]
     fn half_precision_values() {

@@ -14,6 +14,7 @@ pub mod chat;
 pub mod gguf;
 pub mod model;
 pub mod quant;
+pub mod talk;
 pub mod tokenizer;
 
 pub use gguf::{Gguf, GgufError};

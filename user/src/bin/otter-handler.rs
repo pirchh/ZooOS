@@ -376,7 +376,16 @@ impl Otter {
         if text.is_empty() {
             return Err("nothing to search for");
         }
-        let words: Vec<&[u8]> = text.split_whitespace().map(str::as_bytes).collect();
+        // Filler words ("my", "the") are not searched for: "my music"
+        // finds Music (docs/talk-design.md).
+        let words: Vec<&[u8]> = text
+            .split_whitespace()
+            .filter(|w| !FILLER.iter().any(|f| f.eq_ignore_ascii_case(w)))
+            .map(str::as_bytes)
+            .collect();
+        if words.is_empty() {
+            return Err("nothing to search for");
+        }
         let mut found = Vec::new();
         let mut truncated = false;
         self.walk("", 0, &words, &mut found, &mut truncated)

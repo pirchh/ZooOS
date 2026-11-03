@@ -125,6 +125,13 @@ pub fn set_model_disk(disk: Option<PathBuf>) {
     *MODEL_DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;
 }
 
+/// The guest's memory in GiB (2 unless changed; docs/talk-design.md).
+static MEMORY_GIB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+
+pub fn set_memory_gib(gib: u8) {
+    MEMORY_GIB.store(gib, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_net(net: Net) {
     NET.store(net as u8, std::sync::atomic::Ordering::Relaxed);
 }
@@ -204,7 +211,7 @@ fn machine_args(
         "-smp".into(),
         "1".into(),
         "-m".into(),
-        "2G".into(),
+        format!("{}G", MEMORY_GIB.load(std::sync::atomic::Ordering::Relaxed)),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,unit=0,readonly=on,file={}",

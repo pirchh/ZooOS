@@ -42,6 +42,8 @@ commands:
                             prompt/output token ids, top logits and timing
   infer-check [--tokens N]  compare the engine with the NumPy reference
   assist-check [--prompt S]  guided tool choice on fixed requests (host)
+  (run, infer, infer-check, assist-check, verify: --bella 0.5b|1.5b picks
+   Bella's model in tools/models/; 0.5b is the default)
                             (tools/reference/) on several prompts
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
          [--accel tcg|whpx|kvm] [--skip-model] [--case NAME]
@@ -73,6 +75,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         return Ok(ExitCode::from(2));
     };
     let opts = Options::parse(rest)?;
+    if let Some(name) = &opts.bella {
+        infer::select_model(name)?;
+    }
     let root = workspace_root();
     match cmd.as_str() {
         "doctor" => {
@@ -181,6 +186,11 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                             disk.display()
                         );
                         qemu::set_model_disk(Some(disk));
+                        // The 1.5B model needs more than 2 GiB with the
+                        // desktop beside it.
+                        if infer::model_file() != infer::MODELS[0].1 {
+                            qemu::set_memory_gib(4);
+                        }
                     }
                     Err(e) => {
                         println!("[run] no model ({e}); Bella will answer typed commands only")
@@ -301,6 +311,8 @@ struct Options {
     no_model: bool,
     case: Option<String>,
     system_file: Option<String>,
+    /// `--bella <0.5b|1.5b>`: Bella's model (infer::MODELS).
+    bella: Option<String>,
 }
 
 impl Options {
@@ -320,6 +332,7 @@ impl Options {
                 "--model" => o.model = true,
                 "--no-model" => o.no_model = true,
                 "--case" => o.case = Some(value("--case")?),
+                "--bella" => o.bella = Some(value("--bella")?),
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
                     let v = value("--accel")?;

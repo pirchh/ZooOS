@@ -19,6 +19,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 use zoo_infer::assist::{AssistError, Bella, Step};
+use zoo_infer::talk::{Talk, TalkStep};
 use zoo_infer::{Gguf, Model, Tokenizer, chat};
 use zoo_rt::{Error, Handle, Line, fs_find, fs_map, log, recv, send, ticks, try_recv};
 
@@ -203,9 +204,22 @@ fn service(chan: Handle) -> u8 {
         (zoo_rt::now_us() - parse) / 1000
     );
     let mut assistant: Option<Bella> = None;
+    // Replies in words, with their own system prompt (docs/talk-design.md).
+    let mut talk: Option<Talk> = None;
+    // Bella asked for a warm-up: the reply prompt is warmed whenever no
+    // request is waiting, and a request interrupts it (it resumes after).
+    let mut warm_talk = false;
+    let mut talk_tries = 0;
     // A request that arrived during the warm-up, answered after it.
     let mut pending: Option<alloc::string::String> = None;
     loop {
+        // Resume the reply prompt's warm-up once no request is waiting
+        // (a few tries: it only fails on a model error).
+        if pending.is_none() && warm_talk && talk.is_none() && assistant.is_some() && talk_tries < 3
+        {
+            talk_tries += 1;
+            pending = Some(alloc::string::String::from("warm"));
+        }
         let msg = match pending.take() {
             Some(m) => m,
             None => {
@@ -221,6 +235,7 @@ fn service(chan: Handle) -> u8 {
         };
         let msg = msg.as_str();
         if msg == "warm" {
+            warm_talk = true;
             // Read the system prompt now, in the background, so the first
             // request is answered as fast as later ones (docs/s2-design.md).
             // A request arriving meanwhile waits in `pending`; a `cancel`
@@ -237,7 +252,7 @@ fn service(chan: Handle) -> u8 {
                     match try_recv(chan, &mut m) {
                         Ok(k) => {
                             let s = core::str::from_utf8(&m[..k]).unwrap_or("");
-                            if s.starts_with("choose ") {
+                            if s.starts_with("choose ") || s.starts_with("talk ") {
                                 pending = Some(alloc::string::String::from(s));
                                 // Tell it at once that the set-up is under way.
                                 if let Step::Prefix { done, total } = step {
@@ -268,6 +283,103 @@ fn service(chan: Handle) -> u8 {
                     );
                     assistant = Some(a);
                 }
+            }
+            // Then the prompt for replies in words, unless a request is
+            // already waiting: it is answered first.
+            if talk.is_none() && pending.is_none() {
+                let t = zoo_rt::now_us();
+                let mut closed = false;
+                let made = Talk::new(&model, &tok, |_| {
+                    let mut m = [0u8; zoo_abi::MAX_MESSAGE];
+                    match try_recv(chan, &mut m) {
+                        Ok(k) => {
+                            let s = core::str::from_utf8(&m[..k]).unwrap_or("");
+                            if s.starts_with("choose ") || s.starts_with("talk ") {
+                                pending = Some(alloc::string::String::from(s));
+                            } else if s == "cancel" && pending.take().is_some() {
+                                let _ = log("ElephantHandler: request cancelled");
+                                let _ = reply(chan, format_args!("err cancelled"), false);
+                            }
+                        }
+                        Err(Error::Again) => {}
+                        Err(_) => closed = true,
+                    }
+                    !closed && pending.is_none()
+                });
+                if closed {
+                    return 0;
+                }
+                if let Ok(tk) = made {
+                    zoo_rt::log!(
+                        "ElephantHandler: warmed up: reply prompt {} tokens in {} ms",
+                        tk.prefix_tokens(),
+                        (zoo_rt::now_us() - t) / 1000
+                    );
+                    talk = Some(tk);
+                }
+            }
+            continue;
+        }
+        if let Some(request) = msg.strip_prefix("talk ") {
+            // Bella answers in words: text only, never run
+            // (docs/talk-design.md).
+            let start = ticks();
+            let t0 = zoo_rt::now_us();
+            let mut stop = None;
+            let mut keep = |step: TalkStep| -> bool {
+                let mut m = [0u8; 16];
+                match try_recv(chan, &mut m) {
+                    Ok(k) if &m[..k] == b"cancel" => stop = Some(Stop::Cancelled),
+                    Ok(_) | Err(Error::Again) => {}
+                    Err(_) => stop = Some(Stop::Closed),
+                }
+                if stop.is_none() && ticks() - start > DEADLINE_TICKS {
+                    stop = Some(Stop::TimedOut);
+                }
+                if stop.is_some() {
+                    return false;
+                }
+                let _ = match step {
+                    TalkStep::Prefix { done, total } => {
+                        reply(chan, format_args!("busy setup {}/{}", done, total), true)
+                    }
+                    TalkStep::Request { done, total } => {
+                        reply(chan, format_args!("busy reading {}/{}", done, total), true)
+                    }
+                    TalkStep::Reply { done } => {
+                        reply(chan, format_args!("busy writing {}", done), true)
+                    }
+                };
+                true
+            };
+            if talk.is_none()
+                && let Ok(tk) = Talk::new(&model, &tok, &mut keep)
+            {
+                talk = Some(tk);
+            }
+            let result = match talk.as_mut() {
+                Some(tk) => tk.reply(request, &mut keep),
+                None => Err(AssistError::Cancelled),
+            };
+            let sent = match (result, stop) {
+                (_, Some(Stop::Closed)) => return 0,
+                (_, Some(Stop::Cancelled)) => {
+                    let _ = log("ElephantHandler: request cancelled");
+                    reply(chan, format_args!("err cancelled"), false)
+                }
+                (_, Some(Stop::TimedOut)) => reply(chan, format_args!("err timed out"), false),
+                (Ok(text), None) => {
+                    zoo_rt::log!(
+                        "ElephantHandler: said `{}` in {} ms",
+                        text,
+                        (zoo_rt::now_us() - t0) / 1000
+                    );
+                    reply(chan, format_args!("say {}", text), false)
+                }
+                (Err(_), None) => reply(chan, format_args!("err model error"), false),
+            };
+            if sent.is_err() {
+                return 0;
             }
             continue;
         }

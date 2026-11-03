@@ -4,6 +4,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod bella;
 pub mod dns;
 pub mod elf;
 pub mod font;
@@ -306,7 +307,10 @@ pub struct DisplayInfo {
 
 /// Where `mem_alloc` places a process's heap, and its per-process limit.
 pub const HEAP_BASE: u64 = 0x0000_1000_0000_0000;
-pub const HEAP_LIMIT: u64 = 1 << 30;
+/// 4 GiB: Qwen2.5-1.5B's weights alone are 1.07 GB when read from the
+/// model disk into ElephantHandler's heap (docs/talk-design.md). The
+/// frames come from the machine's memory as pages are asked for.
+pub const HEAP_LIMIT: u64 = 4 << 30;
 /// Where `fs_map` places read-only file mappings.
 pub const MAP_BASE: u64 = 0x0000_2000_0000_0000;
 

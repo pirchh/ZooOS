@@ -150,6 +150,25 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella talks; Qwen2.5-1.5B as a choice (2026-11-02)
+
+Version 0.83.0. Design: docs/talk-design.md.
+
+- **A line is a typed command** only if it has no sentence words, so
+  "search for my music" goes to the model. Small talk is answered in
+  words. The rules are in `zoo_abi::bella`, with host tests.
+- **Bella answers in words** (`zoo_infer::talk`, its own system prompt)
+  for small talk and when no command fits. The reply is shown, never run.
+- **`--bella 1.5b`** chooses Qwen2.5-1.5B-Instruct (Apache-2.0, pinned;
+  owner-approved download). The engine gains `Q6_K`. `HEAP_LIMIT` goes to
+  4 GiB and the guest gets 4 GiB with it. On the model disk only.
+  - **Measured:** 11 of 14 against 10 of 14 for 0.5B, but about 3.5
+    times slower (request 3.7 s in the guest).
+  - **0.5B stays the default** until Stage 3's speed-up.
+- **The owner's direction on access: "broad, confirm deletes".** Bella
+  will reach the whole home folder, file contents and apps through the
+  broker; only destructive actions ask. Not built yet.
+
 ## Stage 2: Bella's helpers start again (2026-11-02)
 
 Version 0.82.0. Design: docs/s2-design.md §4.

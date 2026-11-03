@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Stage 2
-helpers section (version 0.82.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Bella talks
+section (version 0.83.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,47 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Bella talks; Qwen2.5-1.5B (version 0.83.0)
+
+Design: docs/talk-design.md (with the 0.5B and 1.5B measurements).
+
+**`bella-talk`** (`--accel whpx`): `OK`.
+
+```
+[31:elephant-handler] ElephantHandler: warmed up: reply prompt 61 tokens in 3102 ms
+[31:elephant-handler] ElephantHandler: said `My name is Bella, the assistant built into ZooOS.` in 1333 ms
+[30:bella] Bella: no command fits
+[31:elephant-handler] ElephantHandler: said `Why did the tomato turn red? Because it saw the salad dressing!` in 1486 ms
+[31:elephant-handler] ElephantHandler: chose search `my music`
+```
+
+**`everyday-model --bella 1.5b`** (`--accel whpx`): `OK`.
+
+```
+model disk: 1066227232 bytes of model
+[10:elephant-handler] ElephantHandler: read the model from the model disk: 1016 MB in 743 ms
+[10:elephant-handler] ElephantHandler: warmed up: system prompt 76 tokens in 17591 ms
+[10:elephant-handler] ElephantHandler: timing: setup 0 ms, reading 2712 ms (10 tokens), writing 946 ms (3 tokens), total 3658 ms; heap 1065908 KiB, peak 1065909 KiB
+```
+
+**`cargo xtask assist-check --bella 1.5b`** (host): `PASS`, 11 of 14 right,
+2 of 8 acted on.
+
+**Host tests:** `zoo_abi` 16 passed (new routing tests), `zoo_infer` 11
+passed (new `Q6_K` block).
+
+**Still `OK`:**
+- with WHPX: `bella-live` (first answer 1,102 ms), `everyday-model`,
+  `model-restart` and `responsiveness`;
+- under TCG: `bella`, `bella-memory`, `memory-guard` and
+  `bella-any-case`.
+
+**A first run of `bella-live` failed** (`answered in 4021 outside
+0..=3000`): the reply prompt's warm-up held the first request back. A
+request now interrupts that warm-up.
+
+FULL_SUITE_RESULT
 
 ## Stage 2 results: Bella's helpers start again (version 0.82.0)
 

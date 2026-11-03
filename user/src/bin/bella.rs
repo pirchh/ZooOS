@@ -30,7 +30,7 @@ zoo_rt::entry2!(main);
 const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
-const COMMANDS: [&str; 5] = ["search", "list", "inspect", "create", "undo"];
+use zoo_abi::bella::{small_talk, typed_command};
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
@@ -237,12 +237,14 @@ impl App {
 
     fn submit(&mut self, text: &str) {
         self.asked_at = zoo_rt::now_us();
-        let word = text.split(' ').next().unwrap_or("");
-        if COMMANDS.contains(&word) {
+        if typed_command(text) {
             // Typed by the user: it may answer an earlier request.
             self.request = self.unanswered.take();
             self.command(text);
             self.answered("a typed command");
+        } else if small_talk(text) {
+            self.request = None;
+            self.ask_talk(text);
         } else {
             self.request = Some(String::from(text));
             if self.recall(text) {
@@ -499,6 +501,23 @@ impl App {
         }
     }
 
+    /// Asks the model for a reply in words (docs/talk-design.md).
+    fn ask_talk(&mut self, text: &str) {
+        if !self.start_model() {
+            self.say("Error: cannot start the model service.");
+            return;
+        }
+        let mut msg = String::from("talk ");
+        msg.push_str(text);
+        let Some(e) = self.elephant else { return };
+        if send_wait(e, msg.as_bytes()).is_err() {
+            self.model_ended(false);
+            return;
+        }
+        self.mode = Mode::Thinking;
+        self.status = String::from("Thinking... (Backspace cancels)");
+    }
+
     fn ask_model(&mut self, text: &str) {
         if !self.start_model() {
             self.say("Error: cannot start the model service.");
@@ -524,21 +543,34 @@ impl App {
         }
         self.mode = Mode::Typing;
         self.status = String::from(HINT);
+        if let Some(text) = msg.strip_prefix("say ") {
+            // A reply in words: shown, never run.
+            let mut l = String::from("Bella: ");
+            l.push_str(text);
+            self.say(&l);
+            self.answered("the model, in words");
+            return;
+        }
         if let Some(rest) = msg.strip_prefix("tool ") {
             // `tool <word> <margin> <argument>`
             let mut parts = rest.splitn(3, ' ');
             let word = parts.next().unwrap_or("");
             let _margin = parts.next();
             let arg = parts.next().unwrap_or("").trim();
-            if word == "none" {
-                // No command fits (docs/s1-design.md, B9): say so, and let
-                // a command typed next answer the request.
+            // No command fits (docs/s1-design.md, B9), or the model chose
+            // one with nothing to act on: Bella answers in words instead
+            // (docs/talk-design.md), and a command typed next can still
+            // answer the request.
+            if word == "none" || (arg.is_empty() && matches!(word, "search" | "create")) {
                 zoo_rt::log!("Bella: no command fits");
-                self.say("Bella: I can only search, list, inspect or create folders.");
-                if let Some(r) = self.request.take() {
-                    self.unanswered = Some(r);
+                let request = self.request.take();
+                if let Some(r) = &request {
+                    let r = r.clone();
+                    self.ask_talk(&r);
+                } else {
+                    self.say("Bella: I can only search, list, inspect or create folders.");
                 }
-                self.answered("the model (no command fits)");
+                self.unanswered = request;
                 return;
             }
             let mut cmd = String::from(word);

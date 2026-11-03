@@ -1,0 +1,123 @@
+//! How Bella routes a line typed into her window (docs/talk-design.md): a
+//! typed command, small talk answered in words, or a request for the
+//! model. Pure text rules, kept here so the host can test them.
+
+/// The commands the user can type.
+pub const COMMANDS: [&str; 5] = ["search", "list", "inspect", "create", "undo"];
+
+/// Words that make a line a sentence rather than a typed command:
+/// "search for my music" is a request in words, "search pancake" a command
+/// (docs/talk-design.md).
+pub const SENTENCE_WORDS: [&str; 20] = [
+    "a", "an", "the", "my", "me", "i", "for", "of", "to", "please", "can", "you", "could", "would",
+    "where", "what", "is", "are", "and", "tell",
+];
+
+/// Whether `text` is a typed command: a command word, then a path or
+/// search words, and none of `SENTENCE_WORDS`.
+pub fn typed_command(text: &str) -> bool {
+    let mut words = text.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    if !COMMANDS.contains(&first) {
+        return false;
+    }
+    if first == "undo" {
+        return words.next().is_none();
+    }
+    words.all(|w| !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w)))
+}
+
+/// Greetings, thanks and questions about Bella herself: answered in words
+/// without asking for a command (docs/talk-design.md). The 0.5B model sends
+/// most of them to `search`.
+pub fn small_talk(text: &str) -> bool {
+    let first = text
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .find(|w| !w.is_empty())
+        .unwrap_or("");
+    const GREETINGS: [&str; 7] = [
+        "hi", "hello", "hey", "thanks", "thank", "morning", "evening",
+    ];
+    const ABOUT_BELLA: [&str; 9] = [
+        "your name",
+        "who are you",
+        "what are you",
+        "what can you do",
+        "who made you",
+        "who built you",
+        "how are you",
+        "what do you do",
+        "are you there",
+    ];
+    GREETINGS.iter().any(|g| g.eq_ignore_ascii_case(first))
+        || ABOUT_BELLA.iter().any(|q| contains_ignoring_case(text, q))
+}
+
+/// Whether `hay` contains `needle`, ASCII letters compared without case.
+fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
+    let (h, n) = (hay.as_bytes(), needle.as_bytes());
+    n.is_empty() || h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_commands() {
+        for t in [
+            "search pancake",
+            "search pancake recipe",
+            "list Music",
+            "list",
+            "inspect Documents/notes.txt",
+            "create Projects/2026",
+            "undo",
+        ] {
+            assert!(typed_command(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn sentences_are_not_commands() {
+        for t in [
+            "search for my music and tell me the path",
+            "search for my music",
+            "list my documents",
+            "create a folder called Work",
+            "undo that",
+            "where is my music?",
+            "find my pancake recipe",
+        ] {
+            assert!(!typed_command(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn small_talk_is_recognised() {
+        for t in [
+            "whats your name",
+            "What's your name?",
+            "hello",
+            "Hi Bella",
+            "thanks!",
+            "What can you do?",
+            "who made you",
+            "how are you today",
+        ] {
+            assert!(small_talk(t), "{t}");
+        }
+        for t in [
+            "where is my music?",
+            "Find my pancake recipe",
+            "list Music",
+            "Tell me a joke",
+            "this is high",
+            "hiking photos",
+        ] {
+            assert!(!small_talk(t), "{t}");
+        }
+    }
+}
