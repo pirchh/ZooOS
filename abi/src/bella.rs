@@ -138,6 +138,23 @@ pub fn asks_what_remembered(text: &str) -> bool {
     .any(|q| contains_ignoring_case(text, q))
 }
 
+/// A question about what Bella herself changed ("what did you do?"):
+/// answered from the broker's audit file (docs/audit-design.md).
+pub fn asks_what_bella_did(text: &str) -> bool {
+    [
+        "what did you do",
+        "what have you done",
+        "what did you change",
+        "what have you changed",
+        "what changes did you make",
+        "show your history",
+        "show me your history",
+        "show the audit",
+    ]
+    .iter()
+    .any(|q| contains_ignoring_case(text, q))
+}
+
 /// A question about what the user is doing ("what am I working on?",
 /// "what's open?"): answered with what is on the screen
 /// (docs/context-design.md).
@@ -268,6 +285,24 @@ mod tests {
         assert_eq!(fact_to_forget("forget"), None);
         assert!(asks_what_remembered("What do you remember?"));
         assert!(!asks_what_remembered("where is my music"));
+    }
+
+    #[test]
+    fn bella_did() {
+        for t in [
+            "What did you do?",
+            "what have you changed",
+            "show your history",
+        ] {
+            assert!(asks_what_bella_did(t), "{t}");
+        }
+        for t in [
+            "what did I just open",
+            "what do you remember",
+            "what am I doing",
+        ] {
+            assert!(!asks_what_bella_did(t), "{t}");
+        }
     }
 
     #[test]

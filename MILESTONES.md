@@ -178,7 +178,9 @@ lands as small, separately verified steps.
 | 2 | The model warms up in the background as Bella opens: first request 6.1 → 1.0 s (docs/stage2-design.md §2) | done 2026-11-02 |
 | 2 | The model on its own read-only disk: desktop up 2.93 → 1.21 s; B10 measured (52 µs per request) (docs/stage2-design.md §3) | done 2026-11-02 |
 | 2 | Bella's helpers start again after a back-off; broker deadline (docs/stage2-design.md §4) | done 2026-11-02 |
-| 2 | Model lifecycle: the model on the data disk, warm-up, supervision; non-blocking broker (B14); disk I/O off the scheduler lock (B10); priorities (B12); kernel heap bound (B13); broker rights and audit lines | open |
+| 2 | B13: the kernel heap under pressure: a 1 MiB reserve programs cannot use (NOMEM, not a panic); no channel-end cycles (docs/heap-design.md) | done 2026-11-03 |
+| 2 | Bella's audit trail: a log line per broker request; changes kept in `.bella-audit`; "what did you do?" (docs/audit-design.md) | done 2026-11-03 |
+| 2 | Still open: keys during broker calls (B14, the deadline is done); narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |
 | 3 | XSAVE, CPU features, an AVX2 backend: inference 2–2.5× faster in the guest (0.5B request 1.08 → 0.52 s) (docs/stage3-design.md) | done 2026-11-03 |

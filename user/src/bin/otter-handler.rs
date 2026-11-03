@@ -41,6 +41,15 @@ const MEMORY: &str = ".bella-memory";
 const FACTS: &str = ".bella-facts";
 /// Largest facts file kept; the oldest facts go first.
 const FACTS_BYTES: usize = 8 * 1024;
+/// What Bella changed, one dated line per action (docs/audit-design.md).
+const AUDIT: &str = ".bella-audit";
+/// Largest audit file kept; the oldest lines go first.
+const AUDIT_BYTES: usize = 16 * 1024;
+/// Lines `audit-list` shows, newest last.
+const AUDIT_SHOWN: usize = 8;
+/// Requests that change the home folder or what Bella remembers: these
+/// get a line in `AUDIT` as well as in the log.
+const CHANGES: [&str; 6] = ["create", "move", "trash", "undo", "fact-add", "fact-forget"];
 /// The memory file's name before 0.77.0, moved to `MEMORY` at start.
 const OLD_MEMORY: &str = ".assistant-memory";
 /// Largest memory file kept; the oldest pairs go first.
@@ -146,6 +155,7 @@ fn main(chan: u64, home: u64) -> u8 {
         }
         otter.empty = false;
         let result = otter.handle(req);
+        otter.audit(req, result);
         if otter.finish(result).is_err() {
             return 4;
         }
@@ -237,18 +247,96 @@ impl Otter {
             "fact-find" => self.fact_find(arg.trim()),
             "fact-list" if arg.is_empty() => self.fact_list(),
             "fact-forget" => self.fact_forget(arg.trim()),
+            "audit-list" if arg.is_empty() => self.audit_list(),
             "remember" => self.remember(arg),
             "recall" => self.recall(arg),
             _ => Err("unknown tool"),
         }
     }
 
+    /// One line per request in the log, and for a change that worked, a
+    /// dated line in `AUDIT` (docs/audit-design.md).
+    fn audit(&self, req: &str, result: Result<(), &str>) {
+        let tool = req.split(' ').next().unwrap_or("");
+        if tool == "audit-list" {
+            return;
+        }
+        let outcome = match result {
+            Ok(()) if self.empty => "nothing found",
+            Ok(()) => "done",
+            Err(why) => why,
+        };
+        let what = req.trim();
+        zoo_rt::log!("OtterHandler: audit: {}: {}", what, outcome);
+        if result.is_err() || !CHANGES.contains(&tool) {
+            return;
+        }
+        let mut lines = self.lines_of(AUDIT, AUDIT_BYTES).unwrap_or_default();
+        let mut l = String::new();
+        if let Ok(ns) = zoo_rt::clock(zoo_abi::CLOCK_REALTIME) {
+            let secs = ns / 1_000_000_000;
+            let (days, rem) = (secs / 86_400, secs % 86_400);
+            let (y, m, d) = civil_from_days(days as i64);
+            let _ = write!(
+                l,
+                "{:04}-{:02}-{:02} {:02}:{:02} ",
+                y,
+                m,
+                d,
+                rem / 3600,
+                rem / 60 % 60
+            );
+        }
+        let _ = l.write_str(what);
+        lines.push(l);
+        // The oldest lines go first once the file would pass its size.
+        let mut size: usize = lines.iter().map(|l| l.len() + 1).sum();
+        let mut drop = 0;
+        while size > AUDIT_BYTES && drop < lines.len() {
+            size -= lines[drop].len() + 1;
+            drop += 1;
+        }
+        if self.write_lines(AUDIT, &lines[drop..]).is_err() {
+            zoo_rt::log!("OtterHandler: could not write the audit file");
+        }
+    }
+
+    /// The last `AUDIT_SHOWN` changes, newest last.
+    fn audit_list(&mut self) -> Result<(), &'static str> {
+        let lines = self.lines_of(AUDIT, AUDIT_BYTES)?;
+        if lines.is_empty() {
+            self.empty = true;
+        }
+        let from = lines.len().saturating_sub(AUDIT_SHOWN);
+        for l in &lines[from..] {
+            zoo_rt::log!("OtterHandler: shows change: {}", l);
+            self.line(format_args!("{}", l))
+                .map_err(|_| "reply failed")?;
+        }
+        zoo_rt::log!(
+            "OtterHandler: listed {} of {} changes",
+            lines.len() - from,
+            lines.len()
+        );
+        Ok(())
+    }
+
     /// The facts file's lines.
     fn facts(&self) -> Result<Vec<String>, &'static str> {
-        let mut text = alloc::vec![0u8; FACTS_BYTES];
+        self.lines_of(FACTS, FACTS_BYTES)
+    }
+
+    fn write_facts(&self, facts: &[String]) -> Result<(), &'static str> {
+        self.write_lines(FACTS, facts)
+    }
+
+    /// The non-blank lines of home file `name`, reading at most `cap`
+    /// bytes; none if it does not exist.
+    fn lines_of(&self, name: &str, cap: usize) -> Result<Vec<String>, &'static str> {
+        let mut text = alloc::vec![0u8; cap];
         let mut len = 0;
         while len < text.len() {
-            match file_read(self.home, FACTS, len as u64, &mut text[len..]) {
+            match file_read(self.home, name, len as u64, &mut text[len..]) {
                 Ok(0) | Err(Error::NotFound) => break,
                 Ok(n) => len += n,
                 Err(e) => return Err(reason(e)),
@@ -262,15 +350,16 @@ impl Otter {
             .collect())
     }
 
-    fn write_facts(&self, facts: &[String]) -> Result<(), &'static str> {
+    /// Replaces home file `name` with `lines`.
+    fn write_lines(&self, name: &str, lines: &[String]) -> Result<(), &'static str> {
         let mut text = String::new();
-        for f in facts {
+        for f in lines {
             text.push_str(f);
             text.push('\n');
         }
-        let _ = file_create(self.home, FACTS);
-        file_truncate(self.home, FACTS, 0)
-            .and_then(|()| file_write(self.home, FACTS, 0, text.as_bytes()).map(|_| ()))
+        let _ = file_create(self.home, name);
+        file_truncate(self.home, name, 0)
+            .and_then(|()| file_write(self.home, name, 0, text.as_bytes()).map(|_| ()))
             .map_err(reason)
     }
 

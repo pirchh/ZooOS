@@ -32,8 +32,8 @@ const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
-    asks_about_activity, asks_what_remembered, fact_to_forget, fact_to_remember, follow_up,
-    question_about_answer, small_talk, typed_command,
+    asks_about_activity, asks_what_bella_did, asks_what_remembered, fact_to_forget,
+    fact_to_remember, follow_up, question_about_answer, small_talk, typed_command,
 };
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
@@ -310,6 +310,12 @@ impl App {
             if self.broker(&req) {
                 self.say("Bella: I'll remember that.");
                 zoo_rt::log!("Bella: remembered a fact");
+            }
+            self.request = None;
+        } else if asks_what_bella_did(text) {
+            self.say("Bella: What I changed, newest last:");
+            if !self.broker("audit-list") {
+                self.say("  nothing yet.");
             }
             self.request = None;
         } else if asks_what_remembered(text) {

@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## The kernel heap under pressure; Bella's audit trail (2026-11-03)
+
+Version 0.89.0. Designs: docs/heap-design.md, docs/audit-design.md.
+Stage 2 items B13 and "audit lines".
+
+- **A 1 MiB heap reserve** that program requests (`CHANNEL_CREATE`,
+  `SEND`, `SEND_HANDLE`, `SPAWN`) may not use: they get `NOMEM`, and the
+  kernel keeps working. Chosen over per-process quotas, which need every
+  allocation charged and moved with messages; the reserve protects the
+  property that matters (no panic).
+- **No channel ends parked where no close reaches them:** `SEND_HANDLE`
+  refuses an end over its own channel (`INVAL`) and an end whose channel
+  carries a handle (`BUSY`). This rules out cycles, which leaked.
+- **The audit trail:** OtterHandler logs every request with its outcome,
+  and writes each change that worked to `.bella-audit` (dated, 16 KiB
+  cap). Reads stay out of the file. "What did you do?" lists the last 8.
+
 ## Bella sees the screen (2026-11-03)
 
 Version 0.88.0. Design: docs/context-design.md. The first piece of Stage 4.

@@ -13,6 +13,19 @@ pub unsafe fn init(start: u64, size: usize) {
     unsafe { ALLOCATOR.lock().init(start as *mut u8, size) }
 }
 
+/// Heap a program's request may not use: kept for the kernel's own needs
+/// (starting and ending tasks, messages it sends itself), so a program
+/// that fills the heap gets `NOMEM` instead of panicking the kernel
+/// (docs/heap-design.md).
+pub const RESERVE: usize = 1024 * 1024;
+
+/// Whether a program's request must be refused: less than `RESERVE` (and
+/// `want` more) bytes are left.
+pub fn low(want: usize) -> bool {
+    let h = ALLOCATOR.lock();
+    h.free() < RESERVE.saturating_add(want)
+}
+
 /// Bytes currently allocated.
 pub fn used() -> usize {
     ALLOCATOR.lock().used()

@@ -12,7 +12,7 @@ failing, and never stalls the desktop.
 | B10: disk requests off the scheduler lock | measured: 52 µs per request; not changed (§3) |
 | Restart ElephantHandler and OtterHandler with back-off | done, version 0.82.0 |
 | B14: non-blocking broker calls | a 10 s deadline, version 0.82.0; keys during a call: open |
-| B13: a bounded kernel heap per process | open |
+| B13: the kernel heap under pressure | done, version 0.89.0 (docs/heap-design.md) |
 | The broker's rights narrowed; audit lines | open |
 
 ## 1. B12: background programs

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The screen
-section (version 0.88.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The heap and
+audit section (version 0.89.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,43 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Heap and audit results (version 0.89.0)
+
+Designs: docs/heap-design.md, docs/audit-design.md.
+
+**`heap-flood`** (TCG): `OK`.
+
+```
+[26:hare-test] HareTest: an end over its own channel: refused
+[26:hare-test] HareTest: an end carrying a handle: refused
+[26:hare-test] HareTest: 3 of 3 fillers refused with NOMEM, 6725 KiB queued in all
+[26:hare-test] HareTest: kernel heap ok
+```
+
+**Negative control:** with `heap::low` always false (no reserve), the
+same case gives `FAIL`; the kernel panicked:
+
+```
+ZOO_OS PANIC memory allocation of 160 bytes failed
+```
+
+**`bella-audit`** (TCG): `OK`.
+
+```
+[31:otter-handler] OtterHandler: listed 0 of 0 changes
+[31:otter-handler] OtterHandler: audit: list Documents: done
+[31:otter-handler] OtterHandler: audit: fact-add Zara the zebra likes carrots: done
+[37:otter-handler] OtterHandler: shows change: 2026-11-03 08:10 fact-add Zara the zebra likes carrots
+[37:otter-handler] OtterHandler: listed 1 of 1 changes
+```
+
+**Negative control:** with `list` counted as a change, the case gives
+`FAIL` (no `listed 1 of 1 changes` within 120 s).
+
+**Still `OK`** under TCG: `bella-facts`, `bella-access` and `bella`.
+
+FULL_SUITE_RESULT
 
 ## Screen results (version 0.88.0)
 
