@@ -27,7 +27,7 @@ fn main(start_handle: u64, second: u64) -> u8 {
     if start_handle != zoo_rt::NO_HANDLE {
         let mut mode = [0u8; 32];
         return match recv(start_handle, &mut mode) {
-            Ok(n) if &mode[..n] == b"session" => session(second),
+            Ok(n) if &mode[..n] == b"session" => session(start_handle, second),
             Ok(n) if &mode[..n] == b"supervise" => supervise(start_handle),
             _ => 30,
         };
@@ -36,22 +36,66 @@ fn main(start_handle: u64, second: u64) -> u8 {
 }
 
 /// Desktop session (docs/m4-design.md §3): run the window server, restart it
-/// if it ends abnormally, finish when it exits cleanly.
-fn session(home: Handle) -> u8 {
+/// if it ends abnormally, finish when it exits cleanly. When the filesystem
+/// service restarts, the resident supervisor sends a fresh home folder on
+/// the session's line, and the desktop reloads with it (docs/s0-design.md,
+/// B5): every app's folder handle came from the old one.
+fn session(control: Handle, home: Handle) -> u8 {
     use zoo_rt::dir_rights as r;
     let _ = log("Zookeeper: starting the desktop session");
     // The desktop gets the user's home folder, nothing above it
     // (docs/m5c2-design.md §2): the kernel passes a folder handle the
     // resident supervisor obtained from BadgerHandler (docs/s4-design.md).
-    let home = (home != zoo_rt::NO_HANDLE).then_some(home);
+    let mut home = (home != zoo_rt::NO_HANDLE).then_some(home);
+    // The supervisor's line follows the mode on the control channel.
+    let mut line = match zoo_rt::try_recv_handle(control) {
+        Ok((h, tag)) if tag == zoo_abi::TAG_SESSION_LINE => Some(h),
+        Ok((h, _)) => {
+            let _ = close(h);
+            None
+        }
+        Err(_) => None,
+    };
     let mut restarts = 0;
     loop {
         let copy = home.and_then(|h| zoo_rt::dir_open(h, "", r::ALL).ok());
         let Ok(peacock) = zoo_rt::spawn_with("peacock-handler", [None, copy]) else {
             return 2;
         };
+        let mut reload = false;
+        while let Some(l) = line {
+            match zoo_rt::wait_any(&[peacock, l], zoo_abi::WAIT_FOREVER) {
+                Ok(1) => match zoo_rt::try_recv_handle(l) {
+                    Ok((fresh, _)) => {
+                        if let Some(old) = home.replace(fresh) {
+                            let _ = close(old);
+                        }
+                        let _ = log(
+                            "Zookeeper: the filesystem restarted; reloading the desktop with a fresh home folder",
+                        );
+                        let _ = kill(peacock);
+                        reload = true;
+                        break;
+                    }
+                    Err(Error::WrongKind) => {
+                        let mut skip = [0u8; zoo_abi::MAX_MESSAGE];
+                        let _ = zoo_rt::try_recv(l, &mut skip);
+                    }
+                    Err(Error::Again) => {}
+                    Err(_) => {
+                        // The supervisor is gone: no more fresh folders.
+                        let _ = close(l);
+                        line = None;
+                    }
+                },
+                _ => break,
+            }
+        }
         let outcome = wait(peacock);
         let _ = close(peacock);
+        if reload {
+            continue;
+        }
         if outcome == Ok(0) {
             let _ = log("Zookeeper: desktop session ended");
             return 0;
@@ -545,6 +589,10 @@ const PING_EVERY: u64 = 100;
 const PING_TIMEOUT: u64 = 200;
 /// First restart back-off; doubles with each restart.
 const BACKOFF: u64 = 10;
+/// A service that has run this long since its last start has its restart
+/// count reset (docs/s0-design.md, B5): the limit counts failures close
+/// together, not every failure since boot. 30 s.
+const STABLE_AFTER: u64 = 3000;
 
 #[derive(PartialEq, Eq)]
 enum SvcState {
@@ -570,6 +618,8 @@ struct Svc {
     last: &'static str,
     /// Tick a ping was sent and not yet answered.
     ping_sent: Option<u64>,
+    /// Tick of its last start.
+    started_at: u64,
 }
 
 struct Supervisor {
@@ -577,6 +627,11 @@ struct Supervisor {
     svcs: alloc::vec::Vec<Svc>,
     /// Root folder handle from the resident BadgerHandler, when running.
     root: Option<Handle>,
+    /// The channel to the current desktop session, for a fresh home
+    /// folder after BadgerHandler restarts (docs/s0-design.md, B5).
+    session_line: Option<Handle>,
+    /// A restart the shell scheduled: (service index, tick).
+    restart_at: Option<(usize, u64)>,
 }
 
 /// Reads `etc/services`: `name max_restarts [logs]` per line, `#` comments.
@@ -639,6 +694,7 @@ impl Supervisor {
                 s.pid = zoo_rt::process_id(process).unwrap_or(0);
                 s.state = SvcState::Running;
                 s.ping_sent = None;
+                s.started_at = zoo_rt::ticks();
                 if s.name == "badger-handler" {
                     // Ask the new filesystem service for its root folder.
                     let _ = send(s.chan, b"root");
@@ -652,6 +708,28 @@ impl Supervisor {
                 let name = s.name.clone();
                 self.event(format_args!("cannot start {}: {}", name, e.name()));
             }
+        }
+    }
+
+    /// Sends the desktop session, if one is running, a home folder from the
+    /// current root: its old one died with the previous BadgerHandler.
+    fn refresh_session(&mut self) {
+        let Some(line) = self.session_line else {
+            return;
+        };
+        let Some(home) = self
+            .root
+            .and_then(|r| zoo_rt::dir_open(r, "home/user", zoo_rt::dir_rights::ALL).ok())
+        else {
+            return;
+        };
+        if zoo_rt::send_handle(line, home, zoo_abi::TAG_SESSION_LINE).is_ok() {
+            self.event(format_args!("sent the desktop session a fresh home folder"));
+        } else {
+            // The session has ended.
+            let _ = close(home);
+            let _ = close(line);
+            self.session_line = None;
         }
     }
 
@@ -809,23 +887,46 @@ impl Supervisor {
                 );
                 self.reply(l.as_str());
             }
-        } else if let Some(name) = req.strip_prefix("restart ") {
+        } else if let Some(rest) = req.strip_prefix("restart ") {
             // Kill a running service; its restart policy brings it back.
+            // `restart <svc> after <seconds>` does it later, so a test can
+            // restart a service while the desktop has the keyboard.
+            let (name, after) = match rest.split_once(" after ") {
+                Some((n, secs)) => (n, secs.trim().parse::<u64>().ok()),
+                None => (rest, None),
+            };
             match self
                 .svcs
                 .iter()
-                .find(|s| s.name == name && s.state == SvcState::Running)
+                .position(|s| s.name == name && s.state == SvcState::Running)
             {
-                Some(s) => {
-                    let _ = kill(s.process);
-                    self.reply("killed; the restart policy applies");
-                }
+                Some(k) => match after {
+                    Some(secs) => {
+                        self.restart_at = Some((k, zoo_rt::ticks() + secs * 100));
+                        self.reply("scheduled");
+                    }
+                    None => {
+                        let _ = kill(self.svcs[k].process);
+                        self.reply("killed; the restart policy applies");
+                    }
+                },
                 None => self.reply("no such running service"),
             }
         } else if let Some(rest) = req.strip_prefix("file ") {
             self.file_request(rest);
         } else if req == "home" {
-            // A home-folder handle for the next desktop session.
+            // A home-folder handle for the next desktop session, after a
+            // line to that session (the kernel keeps both until it starts).
+            if let Ok((mine, theirs)) = channel_create() {
+                if zoo_rt::send_handle(self.control, theirs, zoo_abi::TAG_SESSION_LINE).is_ok() {
+                    if let Some(old) = self.session_line.replace(mine) {
+                        let _ = close(old);
+                    }
+                } else {
+                    let _ = close(mine);
+                    let _ = close(theirs);
+                }
+            }
             match self
                 .root
                 .and_then(|r| zoo_rt::dir_open(r, "home/user", zoo_rt::dir_rights::ALL).ok())
@@ -906,6 +1007,8 @@ fn supervise(control: Handle) -> u8 {
         control,
         svcs: alloc::vec::Vec::new(),
         root: None,
+        session_line: None,
+        restart_at: None,
     };
     for (name, max, logs, disk) in read_service_list() {
         sup.svcs.push(Svc {
@@ -920,6 +1023,7 @@ fn supervise(control: Handle) -> u8 {
             restarts: 0,
             last: "none",
             ping_sent: None,
+            started_at: 0,
         });
     }
     for k in 0..sup.svcs.len() {
@@ -945,10 +1049,29 @@ fn supervise(control: Handle) -> u8 {
             Err(Error::Again) => {}
             Err(_) => return 0, // kernel side closed: nothing left to do
         }
+        if let Some((k, at)) = sup.restart_at
+            && now >= at
+        {
+            sup.restart_at = None;
+            if sup.svcs[k].state == SvcState::Running {
+                let name = sup.svcs[k].name.clone();
+                sup.event(format_args!("restarting {} as scheduled", name));
+                let _ = kill(sup.svcs[k].process);
+            }
+        }
         for k in 0..sup.svcs.len() {
             match sup.svcs[k].state {
                 SvcState::Restarting(at) if now >= at => sup.start(k),
                 SvcState::Running => {
+                    let s = &mut sup.svcs[k];
+                    if s.restarts > 0 && now.saturating_sub(s.started_at) >= STABLE_AFTER {
+                        s.restarts = 0;
+                        let name = s.name.clone();
+                        sup.event(format_args!(
+                            "{} ran 30 s without failing; restart count reset",
+                            name
+                        ));
+                    }
                     let chan = sup.svcs[k].chan;
                     match zoo_rt::try_recv(chan, &mut buf) {
                         Ok(n) if &buf[..n] == b"pong" => sup.svcs[k].ping_sent = None,
@@ -972,6 +1095,7 @@ fn supervise(control: Handle) -> u8 {
                                         "filesystem root from badger-handler (pid {})",
                                         pid
                                     ));
+                                    sup.refresh_session();
                                 } else {
                                     let _ = close(h);
                                 }

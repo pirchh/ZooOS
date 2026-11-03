@@ -826,6 +826,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "home-refresh",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: home_refresh_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the desktop keeps working when the filesystem service restarts (B5): BadgerHandler is restarted while the desktop runs; the session gets a fresh home folder, reloads the desktop, and Files lists Documents again",
+            interaction: Some(home_refresh_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -2884,6 +2897,7 @@ fn services_expectation(normal: &Expectation) -> Expectation {
         "ZOO_OS PROC killed pid=23 name=badger-handler by=22",
         "ZOO_OS PROC start pid=30 name=badger-handler",
         "ZOO_OS SHELL line=services",
+        "ZOO_OS SHELL line=services",
     ]);
     e.clone()
 }
@@ -2937,6 +2951,14 @@ fn services_steps() -> Interaction {
             Action::Settle(QUIET),
             say("services"),
             wait("badger-handler pid=30 running restarts=1 last=killed"),
+            Action::Settle(QUIET),
+            // B5 (docs/s0-design.md): 30 s without failing resets the count.
+            Action::WaitContains(
+                "Zookeeper: badger-handler ran 30 s without failing; restart count reset".into(),
+            ),
+            Action::Settle(QUIET),
+            say("services"),
+            wait("badger-handler pid=30 running restarts=0 last=killed"),
             Action::Settle(QUIET),
         ],
     }
@@ -4852,6 +4874,49 @@ fn memory_guard_steps() -> Interaction {
     steps.push(Action::Keys(vec!["esc"]));
     steps.push(Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()));
     steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn home_refresh_expectation(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=restart badger-handler after 15",
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+    ]);
+    // The restart and the reload: process numbers depend on timing.
+    e.then_rest();
+    e
+}
+
+fn home_refresh_steps() -> Interaction {
+    let mut p = Ptr::start();
+    let mut steps = vec![
+        Action::WaitFor("ZOO_OS SHELL ready".into()),
+        Action::Keys(typed("restart badger-handler after 15")),
+        Action::WaitContains("scheduled".into()),
+    ];
+    steps.extend(start_desktop().into_iter().skip(1));
+    steps.extend([
+        Action::WaitContains("Zookeeper: restarting badger-handler as scheduled".into()),
+        Action::WaitContains("Zookeeper: sent the desktop session a fresh home folder".into()),
+        Action::WaitContains(
+            "Zookeeper: the filesystem restarted; reloading the desktop with a fresh home folder"
+                .into(),
+        ),
+        // The new desktop's Files window.
+        Action::WaitContains("PeacockHandler: animation open Files".into()),
+        Action::Settle(QUIET),
+        // Documents in Files' sidebar, through the new home folder.
+        p.to(files_side(2)),
+        Action::Button(true),
+        Action::Button(false),
+        Action::WaitContains("Files: showing Home/Documents".into()),
+        Action::Settle(QUIET),
+        // Files logs `showing` even when the listing failed.
+        Action::NeverSeen("Files: cannot list".into()),
+    ]);
     Interaction { steps }
 }
 

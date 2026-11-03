@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 0: restarts and the filesystem doc (2026-11-02)
+
+Version 0.76.0. Design: docs/s0-design.md (B5, B15).
+
+- **Restart counts reset** after a service runs 30 s without failing.
+- **A desktop session gets a line from the resident supervisor**
+  (`TAG_SESSION_LINE`, 6), passed by the kernel with its home folder.
+  After BadgerHandler restarts, a fresh home folder arrives on it and the
+  desktop reloads: open windows close, files are kept. Chosen over
+  handing every app a new handle, which would need a new message in
+  every app.
+- **`restart <svc> after <seconds>`** in the shell schedules a restart (for
+  tests while the desktop has the keyboard).
+- **docs/m5c1-design.md** gains a current-state section.
+
 ## Stage 0: the memory (2026-11-02)
 
 Version 0.75.0. Design: docs/s0-design.md (B3, B4, B8).

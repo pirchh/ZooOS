@@ -13,11 +13,11 @@ data loss and isolation holes before any new feature.
 | B2 | A removed folder's handle reaches the next node in its slot | fixed, version 0.74.0 |
 | B3 | The memory learns wrong answers | fixed, version 0.75.0 |
 | B4 | Planted memory lines run commands | fixed, version 0.75.0 |
-| B5 | The desktop keeps a dead home handle after a BadgerHandler restart; restart limits never decay | open |
+| B5 | The desktop keeps a dead home handle after a BadgerHandler restart; restart limits never decay | fixed, version 0.76.0 |
 | B6 | Bulk lengths are trusted up to 64 KiB, not checked against the mapping | fixed, version 0.74.0 |
 | B7 | One process can take every filesystem session | fixed, version 0.74.0 |
 | B8 | Memory matching on shared words picks the wrong folder | fixed, version 0.75.0 |
-| B15 | docs/m5c1-design.md describes the filesystem as it was | open |
+| B15 | docs/m5c1-design.md describes the filesystem as it was | fixed, version 0.76.0 (a current-state section) |
 
 ## B1: Notes keeps files whole
 
@@ -137,6 +137,55 @@ any program with home access. The filter limits what a planted line can
 do to what the user could type. Moving the file behind the broker's own
 handle is Stage 2.
 
+## B5: surviving a filesystem restart
+
+**The bug:**
+- When BadgerHandler crashed, the resident Zookeeper restarted it, but the
+  desktop session kept its home folder handle to the old process. So
+  Files, Notes and the Assistant could no longer reach any file until the
+  desktop was closed and opened again.
+- Restart counts also never went down: three crashes in one session, even
+  hours apart, left the filesystem stopped for good.
+
+**The fix, restart limits:** a service that has run 30 s since its last
+start (`STABLE_AFTER`) has its restart count reset. Zookeeper logs
+`<svc> ran 30 s without failing; restart count reset`. The limit now
+counts failures close together.
+
+**The fix, a fresh home folder:**
+1. When the shell asks for a desktop session's home folder, the resident
+   Zookeeper first sends the kernel one end of a new channel, the
+   session's line, tagged `TAG_SESSION_LINE` (6).
+2. The kernel keeps it with the home folder and queues it on the new
+   session's control channel, after the `session` mode message.
+3. When BadgerHandler serves a new root after a restart, the resident
+   Zookeeper opens `home/user` from it and sends it on the line
+   (`sent the desktop session a fresh home folder`).
+4. The session Zookeeper waits on the window server and the line
+   together. When a home folder arrives, it replaces its own, stops
+   PeacockHandler and starts it again with the new folder (`the filesystem
+   restarted; reloading the desktop with a fresh home folder`). This does
+   not count as a desktop restart.
+
+**Why reload the desktop:** every app's folder handle is a copy of the
+session's home. Handing each app a new one would need a new message in
+every app. A reload costs open windows but no data, since Notes saves as
+you type.
+
+**For tests:** `restart <svc> after <seconds>` in the shell schedules the
+restart, so a test can restart BadgerHandler while the desktop has the
+keyboard.
+
+## B15: the filesystem design document
+
+docs/m5c1-design.md gained a §0 with the current state of the filesystem:
+- the service, persistence, names, links;
+- slot reuse with generations;
+- what can and cannot race;
+- the broker's changes.
+
+The 2026-10-30 text stays as the record of that step.
+
 ## Checks
 
 - **`notes-large`:**
@@ -173,4 +222,16 @@ handle is Stage 2.
 - **New harness step `NeverSeen`:** fails a case if a line containing its
   text appeared. The shell's `put` writes `	` as a tab, so the test can
   plant a line.
+- **`services`** (extended, B5 limits): after `restart badger-handler`,
+  the case waits for `badger-handler ran 30 s without failing; restart
+  count reset` and `services` shows `restarts=0`.
+- **`home-refresh`** (new, B5):
+  1. `restart badger-handler after 15`, then `desktop`.
+  2. While the desktop runs: `restarting badger-handler as scheduled`, then
+     `sent the desktop session a fresh home folder`, then `the filesystem
+     restarted; reloading the desktop`.
+  3. In the new desktop, a click on Documents in Files →
+     `Files: showing Home/Documents`.
+  4. `Files: cannot list` never appears. Without the fix it reads ``Files:
+     cannot list `Documents`: PEERCLOSED``.
 - **Negative controls:** one for each fix (docs/verification.md).

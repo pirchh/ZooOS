@@ -522,6 +522,8 @@ struct Scheduler {
     /// A home-folder handle the supervisor sent for the next desktop
     /// session (docs/s4-design.md §3).
     pending_home: Option<HandleEntry>,
+    /// The supervisor's channel for that session (`TAG_SESSION_LINE`).
+    pending_line: Option<HandleEntry>,
     /// Bound Unix socket names (docs/linux7-design.md): "@name" for the
     /// abstract name space, "/path" for paths. A name is free again once
     /// its socket is closed.
@@ -579,6 +581,7 @@ pub fn init() {
             supervisor: None,
             prefer_user: true,
             pending_home: None,
+            pending_line: None,
             unix_names: Vec::new(),
             tmpfs: alloc::collections::BTreeMap::new(),
             home_links: None,
@@ -813,6 +816,12 @@ pub fn supervisor_try_recv() -> Option<Vec<u8>> {
             Some(Msg::Bytes(b)) => Some(b),
             // A handle is kept for the next desktop session (the only
             // handle the supervisor sends the kernel); reported as `<handle>`.
+            Some(Msg::Handle(e, tag)) if tag == zoo_abi::TAG_SESSION_LINE => {
+                if let Some(old) = s.pending_line.replace(e) {
+                    release(old);
+                }
+                Some(b"<line>".to_vec())
+            }
             Some(Msg::Handle(e, _)) => {
                 if let Some(old) = s.pending_home.replace(e) {
                     release(old);
@@ -837,6 +846,12 @@ pub fn start_session() -> Result<u64, Error> {
             return Err(Error::Busy);
         }
         let (kernel_end, zookeeper_end) = control_channel(b"session");
+        // The supervisor's line follows the mode on the control channel.
+        if let (Some(line), Object::Endpoint { chan, .. }) =
+            (s.pending_line.take(), &zookeeper_end.object)
+        {
+            chan.lock().queues[1].push_back(Msg::Handle(line, zoo_abi::TAG_SESSION_LINE));
+        }
         let home = s.pending_home.take();
         let (_, pid) = s.spawn(m, "zookeeper", [Some(zookeeper_end), home])?;
         if let Some((_, old)) = s.control.replace((pid, kernel_end)) {
