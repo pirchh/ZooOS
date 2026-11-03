@@ -63,7 +63,8 @@ not the guest, so there is no version bump.
 - **`cargo test -p xtask --locked`:** passes, including `requant`'s two
   tests (`half_round_trip`, `q4_block_close_to_q8`).
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 12 skipped because they need an accelerator.
 
 ## Streaming and Qwen3 results (version 0.93.0)
 
