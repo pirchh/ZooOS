@@ -2233,6 +2233,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-talk", check_talk)],
         },
         Case {
+            name: "bella-convo",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella keeps the conversation (docs/talk-design.md §6): a command's result is noted; \"is that it?\" is sent as a follow-up with the last exchange and answered in words, not as `list .` (needs --accel)",
+            interaction: Some(bella_convo_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "responsiveness",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2385,6 +2398,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "responsiveness"
                 | "model-restart"
                 | "bella-talk"
+                | "bella-convo"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2425,6 +2439,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "responsiveness"
                 | "model-restart"
                 | "bella-talk"
+                | "bella-convo"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -3026,6 +3041,24 @@ fn model_restart_steps() -> Interaction {
         Action::WaitContains("Bella: answered in ".into()),
         Action::Settle(QUIET),
     ];
+    leave_desktop(&mut steps);
+    Interaction { steps }
+}
+
+fn bella_convo_steps() -> Interaction {
+    let mut steps = open_bella();
+    steps.extend([
+        Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
+        Action::Keys(typed("where is my music")),
+        Action::WaitContains("ElephantHandler: chose ".into()),
+        Action::WaitContains("ElephantHandler: noted an exchange".into()),
+        Action::Settle(QUIET),
+        Action::Keys(typed("is that it?")),
+        Action::WaitContains("Bella: a follow-up; with the last exchange".into()),
+        Action::WaitContains("ElephantHandler: said `".into()),
+        Action::Settle(QUIET),
+        Action::NeverSeen("invalid path".into()),
+    ]);
     leave_desktop(&mut steps);
     Interaction { steps }
 }
@@ -6656,6 +6689,7 @@ fn typed(text: &str) -> Vec<&'static str> {
             '_' => "shift+minus",
             '+' => "shift+equal",
             ',' => "comma",
+            '?' => "shift+slash",
             '\\' => "backslash",
             other => panic!("typed: no key for {other:?}"),
         })

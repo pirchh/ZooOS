@@ -55,6 +55,20 @@ pub fn small_talk(text: &str) -> bool {
         || ABOUT_BELLA.iter().any(|q| contains_ignoring_case(text, q))
 }
 
+/// Whether `text` refers back to the conversation ("is that it?", "what
+/// about Photos?", "open it"): then the command choice also gets the last
+/// exchange (docs/talk-design.md §6).
+pub fn follow_up(text: &str) -> bool {
+    const BACK: [&str; 12] = [
+        "it", "that", "this", "those", "these", "them", "there", "else", "more", "again", "also",
+        "same",
+    ];
+    contains_ignoring_case(text, "what about")
+        || text
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .any(|w| BACK.iter().any(|b| b.eq_ignore_ascii_case(w)))
+}
+
 /// Whether `hay` contains `needle`, ASCII letters compared without case.
 fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
@@ -92,6 +106,29 @@ mod tests {
             "find my pancake recipe",
         ] {
             assert!(!typed_command(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn follow_ups() {
+        for t in [
+            "is that it?",
+            "what about Photos?",
+            "open it",
+            "anything else",
+            "show me more",
+            "list them",
+        ] {
+            assert!(follow_up(t), "{t}");
+        }
+        for t in [
+            "where is my music?",
+            "Find my pancake recipe",
+            "list Music",
+            "Tell me a joke",
+            "items in the attic",
+        ] {
+            assert!(!follow_up(t), "{t}");
         }
     }
 

@@ -159,6 +159,10 @@ fn reason(e: Error) -> &'static str {
 /// with a clear reason; the kernel refuses them too.
 fn clean(path: &str) -> Result<&str, &'static str> {
     let path = path.trim().trim_end_matches('/');
+    // The model writes `.` for the home folder itself.
+    if path == "." || path == "~" {
+        return Ok("");
+    }
     if path.starts_with('/') || path.split('/').any(|c| c == "..") {
         return Err("path escapes home");
     }

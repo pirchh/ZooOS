@@ -315,6 +315,29 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
         a.prefix_tokens(),
         t0.elapsed().as_secs_f64()
     );
+    // A scripted follow-up (docs/talk-design.md §6): a command answered,
+    // then "is that it?" with the last exchange as context.
+    if extra == Some("--dialogue") {
+        let mut talk =
+            zoo_infer::talk::Talk::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
+        let asked = "where is my music";
+        let said = "I ran `list Music` and it showed: file playlist.txt (46 bytes).";
+        talk.note(asked, said, |_| true)
+            .map_err(|e| format!("{e:?}"))?;
+        let context = format!("The user asked: {asked}. Bella: {said}");
+        for follow in ["is that it?", "what is in it?", "what about Photos?"] {
+            let c = a
+                .choose_in(follow, &context, |_| true)
+                .map_err(|e| format!("{e:?}"))?;
+            print!("{follow:?} -> {} {:?}", c.tool.word(), c.arg);
+            if c.tool.word() == "none" || c.arg.is_empty() {
+                let r = talk.reply(follow, |_| true).map_err(|e| format!("{e:?}"))?;
+                print!("; Bella says: {r:?}");
+            }
+            println!();
+        }
+        return Ok(true);
+    }
     if let Some(req) = extra {
         let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
         println!(
