@@ -67,7 +67,10 @@ ZOO_OS PROC killed pid=31 name=elephant-handler by=0
 - **No new broker after a failure:** `FAIL broker-restart`.
 - **No restart of the model service:** `FAIL model-restart`.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 94 cases `OK`,
+with the new `broker-restart`. `model-restart` was run with `--accel whpx`.
+clippy `-D warnings` (kernel, `zoo-user`, `xtask`) and `cargo fmt --check`:
+clean.
 
 ## Stage 2 results: the model on its own disk (version 0.81.0)
 
