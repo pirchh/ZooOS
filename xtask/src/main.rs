@@ -199,9 +199,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                             disk.display()
                         );
                         qemu::set_model_disk(Some(disk));
-                        // The 1.5B model needs more than 2 GiB with the
-                        // desktop beside it.
-                        if infer::model_file() != infer::MODELS[0].1 {
+                        // A model too large for the boot image needs more
+                        // than 2 GiB with the desktop beside it.
+                        if !infer::model_in_boot_image(&root) {
                             qemu::set_memory_gib(4);
                         }
                     }
@@ -309,6 +309,12 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             })
         }
         "infer-check" => {
+            // The NumPy reference implements Qwen2: without `--bella`, the
+            // engine is checked with Qwen2.5-0.5B.
+            if opts.bella.is_none() {
+                infer::select_model("0.5b")?;
+                println!("infer-check: the reference is Qwen2's; checking with 0.5b");
+            }
             let ok = infer::check(&root, opts.tokens.unwrap_or(24))?;
             println!("infer-check: {}", if ok { "PASS" } else { "FAIL" });
             Ok(if ok {

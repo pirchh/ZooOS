@@ -326,7 +326,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=26 name=elephant-handler code=0",
     ]);
     // A larger model than the default needs a larger machine.
-    if crate::infer::model_file() != crate::infer::MODELS[0].1 {
+    if !crate::infer::model_in_boot_image(root) {
         qemu::set_memory_gib(4);
     }
     let model_image = match crate::infer::load_model(root) {
@@ -347,7 +347,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             // cases boot the plain image and read the model from the model
             // disk instead, as `run` does (docs/summary-design.md); the
             // cases that check the boot image's model are skipped.
-            let on_disk = crate::infer::model_file() != crate::infer::MODELS[0].1;
+            let on_disk = !crate::infer::model_in_boot_image(root);
             let in_boot_image = if on_disk {
                 image::build(root, tools, image::Mode::Normal)?
             } else {
@@ -2545,9 +2545,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Keys(vec!["tab", "tab"]),
                     Action::Settle(QUIET),
                     Action::Keys(typed("Find my pancake recipe")),
-                    Action::WaitFor(
-                        "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
-                    ),
+                    // `pancake recipe` (0.5B) or `pancake` (Qwen3): both find
+                    // the recipe (assist-check accepts both).
+                    Action::WaitContains("ElephantHandler: chose search `pancake".into()),
                     // Stage 1 timing lines (docs/stage1-design.md).
                     Action::WaitContains("ElephantHandler: timing: setup ".into()),
                     Action::WaitContains("Bella: answered in ".into()),
@@ -3318,7 +3318,8 @@ fn model_restart_steps() -> Interaction {
         Action::Keys(vec!["tab", "tab"]),
         Action::Settle(QUIET),
         Action::Keys(typed("Find my pancake recipe")),
-        Action::WaitContains("ElephantHandler: chose search `pancake recipe`".into()),
+        // `pancake recipe` (0.5B) or `pancake` (Qwen3).
+        Action::WaitContains("ElephantHandler: chose search `pancake".into()),
         Action::WaitContains("Bella: answered in ".into()),
         Action::Settle(QUIET),
     ];
@@ -3384,9 +3385,8 @@ fn bella_live_steps() -> Interaction {
         // (docs/stage2-design.md) ...
         Action::WaitContains("ElephantHandler: warmed up".into()),
         Action::Keys(typed("Find my pancake recipe")),
-        Action::WaitFor(
-            "[31:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
-        ),
+        // `pancake recipe` (0.5B) or `pancake` (Qwen3).
+        Action::WaitContains("ElephantHandler: chose search `pancake".into()),
         // Stage 1 timing lines (docs/stage1-design.md) ...
         Action::WaitContains("ElephantHandler: timing: setup ".into()),
         // ... so the first request takes about as long as later ones: it
@@ -3432,13 +3432,14 @@ fn check_cancelled(img: &screen::Image) -> Result<String, String> {
 }
 
 fn check_live(img: &screen::Image) -> Result<String, String> {
-    let s = content(img, "Bella: search pancake recipe")?;
+    // `pancake recipe` (0.5B) or `pancake` (Qwen3); the result is checked.
+    let s = content(img, "Bella: search pancake")?;
     content(img, "  Documents/recipes/pancakes.txt")?;
     let c = content(img, "Bella: create Projects/2026")?;
     let made = content(img, "  created Projects/2026")?;
     no_content(img, "Bella: list")?;
     Ok(format!(
-        "model chose `search pancake recipe` at {s:?} (result shown) and `create Projects/2026` at {c:?}, created after `y` at {made:?}"
+        "model chose `search pancake…` at {s:?} (result shown) and `create Projects/2026` at {c:?}, created after `y` at {made:?}"
     ))
 }
 

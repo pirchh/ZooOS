@@ -1,5 +1,11 @@
 # Model weights
 
+**Bella's default model is Qwen3-1.7B in 4 bits** (`qwen3-1.7b-q4_0.gguf`,
+since version 0.98.0, the owner's choice). It is made from the downloaded
+`Q8_0` file with `cargo xtask requant --bella qwen3-1.7b` (below).
+Qwen2.5-0.5B is `--bella 0.5b`; `infer-check` uses it, because the NumPy
+reference implements Qwen2.
+
 Model files are downloaded, never committed (`*.gguf` is ignored). The owner
 approved this download on 2026-10-30 (DECISIONS.md, "Owner decisions").
 

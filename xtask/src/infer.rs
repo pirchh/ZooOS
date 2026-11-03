@@ -37,9 +37,27 @@ pub fn select_model(name: &str) -> Result<(), String> {
         .map_err(|_| String::from("the model was already chosen"))
 }
 
+/// Bella's model unless `--bella` says otherwise: Qwen3-1.7B in 4 bits,
+/// chosen by the owner on 2026-11-03 (docs/qwen3-design.md).
+pub const DEFAULT_MODEL: &str = "qwen3-1.7b-q4";
+
 /// The chosen model's file name.
 pub fn model_file() -> &'static str {
-    SELECTED.get().copied().unwrap_or(MODELS[0].1)
+    SELECTED.get().copied().unwrap_or_else(|| {
+        MODELS
+            .iter()
+            .find(|m| m.0 == DEFAULT_MODEL)
+            .map_or(MODELS[0].1, |m| m.1)
+    })
+}
+
+/// Largest model the boot image's FAT partition takes; a larger one goes
+/// on the model disk (docs/talk-design.md).
+pub const BOOT_IMAGE_MODEL_MAX: u64 = 600 << 20;
+
+/// Whether the chosen model fits in the boot image.
+pub fn model_in_boot_image(root: &Path) -> bool {
+    std::fs::metadata(model_path(root)).is_ok_and(|m| m.len() <= BOOT_IMAGE_MODEL_MAX)
 }
 pub const SYSTEM: &str = "You are a helpful assistant.";
 /// The prompt ElephantHandler runs in the guest, and how many tokens.
@@ -152,6 +170,15 @@ pub fn embed_check(root: &Path) -> Result<bool, String> {
 fn load_pinned(path: &Path) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
     let path = path.to_path_buf();
+    // The 4-bit Qwen3 file is made here, not downloaded.
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if !path.exists() && name.contains("q4_0") && name.starts_with("qwen3") {
+        return Err(format!(
+            "{} is missing; make it with `cargo xtask requant --bella qwen3-1.7b` \
+             after downloading the Q8_0 file (tools/models/README.md)",
+            path.display()
+        ));
+    }
     let data = std::fs::read(&path).map_err(|e| {
         format!(
             "cannot read {} ({e}); see tools/models/README.md",

@@ -1,7 +1,9 @@
 # Qwen3 in the engine
 
-Status: implemented in version 0.93.0, as an evaluation model
-(`--bella qwen3-1.7b`). The default stays Qwen2.5-0.5B.
+Status: implemented in version 0.93.0. **Bella's default model since
+version 0.98.0** is the 4-bit copy (`qwen3-1.7b-q4`), the owner's choice on
+2026-11-03, once 8 processors brought it to about a second (docs/smp-design.md).
+Qwen2.5-0.5B stays available as `--bella 0.5b`.
 
 The owner asked whether newer models suit Bella better (2026-11-03) and
 approved downloading Qwen3-1.7B after its model card was read.
