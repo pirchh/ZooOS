@@ -99,7 +99,14 @@ accepts both, so the three cases now accept either.
 
 Not fixed here: it is the next item (docs/smp-design.md).
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 16 skipped. The 16 are the 14 cases that need an accelerator, plus
+`inference` and `bella-model`, which need the model in the boot image.
+
+The first run failed `notes-1`, `notes-2` and `dock`. Every case had been
+given 4 GiB, because the default model no longer fits the boot image, and
+these timing-sensitive desktop cases fail that way under TCG. Now only the
+cases that load a large model get 4 GiB, and the three pass.
 
 ## Processors steps 2–3 results (version 0.97.0)
 
