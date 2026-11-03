@@ -40,6 +40,7 @@ mod rtc;
 mod selftest;
 mod serial;
 mod shell;
+mod smp;
 mod trap;
 mod virtio_blk;
 mod virtio_gpu;
@@ -123,6 +124,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
 
     let (regions, usable_bytes) = usable_memory(boot_info);
+    // Low pages for starting the other processors (docs/smp-design.md).
+    let _ = smp::set_low_pages(&boot_info.memory_regions);
     kprintln!(
         "ZOO_OS INFO mode={} memory_regions={} usable_bytes={}",
         MODE,
@@ -234,6 +237,8 @@ fn run(mut mem: memory::Memory) -> ! {
         Some(unix) => kprintln!("ZOO_OS INFO clock unix={}", unix),
         None => kprintln!("ZOO_OS INFO clock none"),
     }
+    // The other processors: started and parked (docs/smp-design.md).
+    memory::with(smp::start_all);
     process::init();
     if cfg!(feature = "fast-boot") {
         // The check programs are tests; verify runs them on the normal
