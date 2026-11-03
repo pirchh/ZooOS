@@ -14,6 +14,7 @@ pub mod app;
 pub mod exception;
 pub mod fsproto;
 mod heap;
+pub use heap::stats as heap_stats;
 pub mod net;
 pub mod thread;
 pub mod vm;
@@ -534,6 +535,34 @@ pub fn args_get(buf: &mut [u8]) -> Result<usize, Error> {
 /// `zoo_abi::CLOCK_MONOTONIC` since boot.
 pub fn clock(which: u64) -> Result<u64, Error> {
     result(syscall(sys::CLOCK, which, 0, 0))
+}
+
+/// Time-stamp-counter cycles per millisecond, measured once per program
+/// against the 10 ms timer (the method PeacockHandler's animation clock
+/// uses, docs/u2d-design.md).
+static CYCLES_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn cycles() -> u64 {
+    // SAFETY: `rdtsc` only reads the counter; user mode may run it (the
+    // kernel does not set CR4.TSD).
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Microseconds on the CPU's cycle counter, for timing lines
+/// (docs/s1-design.md). The kernel's monotonic clock counts 10 ms ticks,
+/// too coarse for them. The first call calibrates, waiting about 30 ms.
+pub fn now_us() -> u64 {
+    use core::sync::atomic::Ordering;
+    let mut per_ms = CYCLES_PER_MS.load(Ordering::Relaxed);
+    if per_ms == 0 {
+        let t0 = ticks();
+        while ticks() == t0 {}
+        let (c0, t1) = (cycles(), ticks());
+        while ticks() < t1 + 3 {}
+        per_ms = (cycles().wrapping_sub(c0) / 30).max(1);
+        CYCLES_PER_MS.store(per_ms, Ordering::Relaxed);
+    }
+    (u128::from(cycles()) * 1000 / u128::from(per_ms)) as u64
 }
 
 /// Mouse events waiting for the display owner (at most `buf.len()`).

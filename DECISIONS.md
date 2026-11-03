@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 1: "none of these" and timing lines (2026-11-02)
+
+Version 0.78.0. Design: docs/s1-design.md.
+
+- **A fifth tool word, `none`**, and a prompt line asking for it when the
+  request is not about files. Measured on 22 requests:
+  - before: 12 of 14 right, 8 of 8 out-of-scope requests acted on;
+  - after: 10 of 14 right, 2 of 8 acted on.
+  The two losses are `list` answered as `search`.
+- **`assist-check`** fails below that bar (at least 10 right, at most 2
+  acted on).
+- **Timing lines** in ElephantHandler (set-up, reading, writing, heap)
+  and Bella (Enter to answer). `zoo_rt::now_us()` uses the cycle counter;
+  the kernel clock is 10 ms ticks.
+
 ## The assistant is named Bella (2026-11-02)
 
 Version 0.77.0. The owner's decision: Bella, not Jarvis, everywhere.

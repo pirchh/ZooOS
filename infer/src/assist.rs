@@ -15,7 +15,8 @@ use alloc::vec::Vec;
 /// The instruction every request is answered under.
 pub const SYSTEM: &str = "You turn a request about the user's files into one command.\n\
 Commands: search <words>, list <folder>, inspect <file or folder>, create <folder>.\n\
-Paths are relative to the home folder. Reply with the command only.";
+Paths are relative to the home folder. Reply with the command only.\n\
+If the request is not about finding, listing, inspecting or creating files or folders, reply: none";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -23,9 +24,17 @@ pub enum Tool {
     List,
     Inspect,
     Create,
+    /// No command fits the request (docs/s1-design.md, B9).
+    Nothing,
 }
 
-pub const TOOLS: [Tool; 4] = [Tool::Search, Tool::List, Tool::Inspect, Tool::Create];
+pub const TOOLS: [Tool; 5] = [
+    Tool::Search,
+    Tool::List,
+    Tool::Inspect,
+    Tool::Create,
+    Tool::Nothing,
+];
 
 impl Tool {
     pub const fn word(self) -> &'static str {
@@ -34,6 +43,7 @@ impl Tool {
             Tool::List => "list",
             Tool::Inspect => "inspect",
             Tool::Create => "create",
+            Tool::Nothing => "none",
         }
     }
 }
@@ -93,9 +103,9 @@ pub struct Bella<'m, 't> {
     /// Cache position after the system prompt.
     prefix_len: usize,
     /// First token of each tool word, in `TOOLS` order.
-    tool_first: [u32; 4],
+    tool_first: [u32; 5],
     /// Token ids of each tool word.
-    tool_ids: [Vec<u32>; 4],
+    tool_ids: [Vec<u32>; 5],
     /// `allowed[id]`: the token is made only of path bytes.
     allowed: Vec<bool>,
     newline: Vec<u32>,
@@ -198,13 +208,22 @@ impl<'m, 't> Bella<'m, 't> {
                 self.model.feed(&mut self.st, id)?;
             }
         }
-        // Tool: best first-token score among the four words.
+        // Tool: best first-token score among the words.
         let scores = self.tool_first.map(|id| self.st.logits[id as usize]);
-        let mut order = [0usize, 1, 2, 3];
+        let mut order = [0usize, 1, 2, 3, 4];
         order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
         let tool = TOOLS[best];
+        if tool == Tool::Nothing {
+            return Ok(Choice {
+                tool,
+                arg: String::new(),
+                margin,
+                request_tokens: ids.len(),
+                arg_tokens: 0,
+            });
+        }
         let word = self.tool_ids[best].clone();
         for (k, &id) in word.iter().enumerate() {
             if k + 1 == word.len() {

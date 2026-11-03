@@ -110,7 +110,15 @@ fn main(chan: u64, home: u64) -> u8 {
         let _ = zoo_rt::log("OtterHandler: moved .assistant-memory to .bella-memory");
     }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+    // The heap's peak is logged each time it passes another 64 KiB
+    // (docs/s1-design.md).
+    let mut peak_logged = 0;
     loop {
+        let (_, peak, _) = zoo_rt::heap_stats();
+        if peak >= peak_logged + 64 * 1024 {
+            peak_logged = peak;
+            zoo_rt::log!("OtterHandler: heap peak {} KiB", peak / 1024);
+        }
         let n = match recv(chan, &mut buf) {
             Ok(n) => n,
             Err(Error::PeerClosed) => return 0,

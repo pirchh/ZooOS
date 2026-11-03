@@ -2216,6 +2216,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitFor(
                         "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
                     ),
+                    // Stage 1 timing lines (docs/s1-design.md).
+                    Action::WaitContains("ElephantHandler: timing: setup ".into()),
+                    Action::WaitContains("Bella: answered in ".into()),
                     Action::Settle(QUIET),
                     Action::Keys(vec!["esc"]),
                     Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
@@ -2786,9 +2789,7 @@ fn bella_model_steps() -> Interaction {
     let mut steps = open_bella();
     steps.extend([
         Action::Keys(typed("find my pancake recipe")),
-        Action::WaitFor(
-            "[32:elephant-handler] ElephantHandler: service ready (model mapped)".into(),
-        ),
+        Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
         Action::Settle(QUIET),
         // While the model computes: move to Files and down two entries.
         Action::Keys(vec!["tab", "down", "down"]),
@@ -2811,6 +2812,9 @@ fn bella_live_steps() -> Interaction {
         Action::WaitFor(
             "[32:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
         ),
+        // Stage 1 timing lines (docs/s1-design.md).
+        Action::WaitContains("ElephantHandler: timing: setup ".into()),
+        Action::WaitContains("Bella: answered in ".into()),
         Action::Settle(QUIET),
         Action::Keys(typed("Make a folder called Projects/2026")),
         Action::WaitFor(
@@ -4773,6 +4777,8 @@ fn bella_any_case_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "OtterHandler: `music` is `Music`".into(),
     ));
+    // Stage 1: the timing line (docs/s1-design.md).
+    steps.push(Action::WaitContains("ms by a typed command".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("list musik")));
     steps.push(Action::Settle(QUIET));
