@@ -77,7 +77,7 @@ bench = false
 
 [[bin]]
 name = "assistant"
-path = "src/bin/assistant.rs"
+path = "src/bin/bella.rs"
 test = false
 bench = false
 
