@@ -67,9 +67,11 @@ processors' lines, which is fixed: `bella-talk` on 4 then passed 3 of 3.
 
 **Host test `fill_matches_serial`:** split work equals serial work.
 
-MULTI_SUITE
+**Full suite on 4 processors** (`cargo xtask verify --skip-model --cpus 4`,
+TCG): `PASS`, 102 cases `OK` and 14 skipped because they need an accelerator.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, 1 processor, TCG): `PASS`,
+102 cases `OK` and 14 skipped because they need an accelerator.
 
 ## Processors results (version 0.96.0)
 
