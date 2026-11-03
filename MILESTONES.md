@@ -183,7 +183,9 @@ lands as small, separately verified steps.
 | 5 | Bella summarises a file in a model call of its own: "summarise Documents/notes.txt" → "a list of items to buy for a shopping trip" in 2.4 s (docs/summary-design.md) | done 2026-11-03 |
 | 5 | Bella saves a summary beside its file ("save that"); the broker's `write` never replaces a file (docs/save-design.md) | done 2026-11-03 |
 | — | Bella answers as she writes (first words 0.3–2.2 s with 0.5B), with an instant line before slow answers; Qwen3-1.7B runs for evaluation (docs/stream-design.md, docs/qwen3-design.md) | done 2026-11-03 |
-| 2 | Still open: keys during broker calls (B14, the deadline is done); narrowing the broker's rights | open |
+| 5 | Qwen3-1.7B in 4 bits (`cargo xtask requant`): about 1.5B's speed, better summaries, assist-check 17/23 and 0/8 (docs/qwen3-design.md) | done 2026-11-03 |
+| 2 | B14 keys during broker calls: measured 2–10 ms per call, not changed (docs/stage2-design.md §4) | done 2026-11-03 |
+| 2 | Still open: narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |
 | 3 | XSAVE, CPU features, an AVX2 backend: inference 2–2.5× faster in the guest (0.5B request 1.08 → 0.52 s) (docs/stage3-design.md) | done 2026-11-03 |

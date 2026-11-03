@@ -11,7 +11,7 @@ failing, and never stalls the desktop.
 | The model on its own disk | done, version 0.81.0 |
 | B10: disk requests off the scheduler lock | measured: 52 µs per request; not changed (§3) |
 | Restart ElephantHandler and OtterHandler with back-off | done, version 0.82.0 |
-| B14: non-blocking broker calls | a 10 s deadline, version 0.82.0; keys during a call: open |
+| B14: non-blocking broker calls | a 10 s deadline, version 0.82.0; keys during a call: measured, not changed (§4) |
 | B13: the kernel heap under pressure | done, version 0.89.0 (docs/heap-design.md) |
 | The broker's rights narrowed; audit lines | open |
 
@@ -217,8 +217,15 @@ in the boot image, because ZooOS has no USB storage driver yet (Stage 7).
   16 s, and back to 0.5 s after a success.
 - **Broker answers have a 10 s deadline** (part of B14): `wait_any` with a
   timeout, then `the file broker did not answer in 10 s`, and the broker
-  is replaced. Keys are still not read during a broker call; that is the
-  rest of B14.
+  is replaced. Keys are not read during a broker call.
+
+**Keys during a broker call, measured (2026-11-03):** every broker call in
+the Bella cases' logs (`Bella: answered in N ms by a typed command`)
+took 2–10 ms. Keys wait in Bella's channel meanwhile and are dropped only
+after 8, which no typist reaches in 10 ms. A call that hangs is ended by
+the 10 s deadline. So the rest of B14 is not changed, like B10 (§3): it
+would add a key queue in Bella for no measured gain. It is reopened if a
+broker call is ever measured above about 100 ms.
 
 **For tests:** the shell's new `kill <program> [after <seconds>]` ends a
 program now or later. The shell keeps running behind the desktop, so it

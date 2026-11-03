@@ -11,6 +11,7 @@ mod musl;
 mod process;
 mod qemu;
 mod qmp;
+mod requant;
 mod screen;
 mod verify;
 
@@ -37,6 +38,7 @@ commands:
                             (Ctrl+C stops QEMU; no timeout unless given).
                             --model: the normal image with the assistant's
                             model (tools/models/); use with --accel
+  requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
   infer [--prompt TEXT] [--tokens N]
                             run the model on the host (tools/models/), print
                             prompt/output token ids, top logits and timing
@@ -217,6 +219,20 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 settle: opts.settle.unwrap_or(Duration::from_millis(1000)),
             };
             verify::run(&root, &tools, &settings)
+        }
+        "requant" => {
+            // Q8_0 -> Q4_0 for the chosen model (docs/qwen3-design.md).
+            let input = infer::model_path(&root);
+            let name = input
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or("bad model file name")?
+                .replace("q8_0", "q4_0");
+            if name == input.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+                return Err(format!("{} is not a q8_0 file", input.display()));
+            }
+            requant::run(&input, &input.with_file_name(name))?;
+            Ok(ExitCode::SUCCESS)
         }
         "infer" => {
             let data = infer::load_model(&root)?;
