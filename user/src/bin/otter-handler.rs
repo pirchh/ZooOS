@@ -299,7 +299,7 @@ impl Otter {
             .map(|f| (words(&f).iter().filter(|w| key.contains(w)).count(), f))
             .filter(|(s, _)| *s > 0)
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|a| core::cmp::Reverse(a.0));
         for (s, f) in scored.iter().take(3) {
             self.line(format_args!("{} {}", s, f))
                 .map_err(|_| "reply failed")?;

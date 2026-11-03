@@ -71,7 +71,11 @@ dentist. I can't provide dental care.` ``
 - with WHPX: `bella-talk`, `bella-convo` and `bella-live`;
 - under TCG: `bella`, `bella-memory`, `memory-guard` and `bella-access`.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 96 cases `OK`.
+- clippy `-D warnings`: clean, after one fix (`sort_by_key` with
+  `Reverse` in `fact_find`; the same order).
+- `cargo fmt --check`: clean.
+- `zoo_abi` tests: 19 passed.
 
 ## Broad access results (version 0.86.0)
 
