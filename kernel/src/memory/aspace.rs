@@ -178,11 +178,13 @@ impl Memory {
                 flush.ignore();
             }
         }
+        crate::smp::shootdown(p4.start_address().as_u64());
     }
 
     /// Unmaps `pages` user pages from `va` in `p4` and frees their frames
     /// (allocator-owned memory, e.g. a heap extension being rolled back).
     pub fn unmap_user_free(&mut self, p4: PhysFrame, va: u64, pages: u64) {
+        let mut gone = alloc::vec::Vec::new();
         for i in 0..pages {
             let page = Page::<Size4KiB>::containing_address(VirtAddr::new(va + i * 4096));
             // SAFETY: `p4` is a live process table; a temporary mapper is
@@ -191,8 +193,14 @@ impl Memory {
             let unmapped = unsafe { self.space(p4).unmap(page) };
             if let Ok((frame, flush)) = unmapped {
                 flush.flush();
-                let _ = self.frames.deallocate(frame);
+                gone.push(frame);
             }
+        }
+        // No other processor may still reach a frame before it is reused
+        // (docs/smp-design.md).
+        crate::smp::shootdown(p4.start_address().as_u64());
+        for frame in gone {
+            let _ = self.frames.deallocate(frame);
         }
     }
 
@@ -270,6 +278,7 @@ impl Memory {
         match r {
             Ok(flush) => {
                 flush.flush();
+                crate::smp::shootdown(p4.start_address().as_u64());
                 Ok(())
             }
             Err(_) => Err(SpaceError::AlreadyMapped),

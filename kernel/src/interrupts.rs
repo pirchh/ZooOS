@@ -89,16 +89,31 @@ static IDT: LazyLock<InterruptDescriptorTable> = LazyLock::new(|| {
     idt[SPURIOUS_MASTER_VECTOR].set_handler_fn(spurious_master);
     idt[SPURIOUS_SLAVE_VECTOR].set_handler_fn(spurious_slave);
     idt[crate::apic::SPURIOUS_VECTOR].set_handler_fn(spurious_apic);
+    idt[crate::smp::FLUSH_VECTOR].set_handler_fn(flush_ipi);
+    idt[crate::smp::WAKE_VECTOR].set_handler_fn(wake_ipi);
     idt
 });
 
-/// Loads the IDT. Requires `gdt::init` first (the double-fault IST).
+/// Another processor changed an address space this one runs: flush the
+/// TLB (docs/smp-design.md). Takes no lock.
+extern "x86-interrupt" fn flush_ipi(_frame: InterruptStackFrame) {
+    crate::smp::service_flush();
+    crate::apic::eoi();
+}
+
+/// A task became ready: the halted idle loop resumes and offers the
+/// processor (docs/smp-design.md).
+extern "x86-interrupt" fn wake_ipi(_frame: InterruptStackFrame) {
+    crate::apic::eoi();
+}
+
 /// Loads the IDT on a non-boot processor (docs/smp-design.md): one IDT
 /// for every processor.
 pub fn load_idt() {
     IDT.load();
 }
 
+/// Loads the IDT. Requires `gdt::init` first (the double-fault IST).
 pub fn init_idt(kernel_stack_bottom: u64) {
     STACK_BOTTOM.store(kernel_stack_bottom, Ordering::Relaxed);
     IDT.load();

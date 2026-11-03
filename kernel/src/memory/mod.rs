@@ -82,12 +82,30 @@ pub fn install(mem: Memory) {
 /// clear message on re-entrant use, instead of deadlocking.
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut guard = MEMORY
-            .try_lock()
-            .expect("memory lock already held (re-entrant use)");
-        f(guard.as_mut().expect("memory not installed yet"))
+        // Another processor may hold it (docs/smp-design.md): wait, and
+        // flush this processor's TLB if asked meanwhile. A re-entrant use
+        // on this processor is a kernel bug: say so.
+        let me = crate::smp::this_cpu();
+        let mut guard = loop {
+            if let Some(g) = MEMORY.try_lock() {
+                OWNER.store(me, core::sync::atomic::Ordering::SeqCst);
+                break g;
+            }
+            if OWNER.load(core::sync::atomic::Ordering::SeqCst) == me {
+                panic!("memory lock already held (re-entrant use)");
+            }
+            crate::smp::service_flush();
+            core::hint::spin_loop();
+        };
+        let r = f(guard.as_mut().expect("memory not installed yet"));
+        OWNER.store(usize::MAX, core::sync::atomic::Ordering::SeqCst);
+        drop(guard);
+        r
     })
 }
+
+/// The processor holding `MEMORY` (`usize::MAX`: none).
+static OWNER: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(usize::MAX);
 
 impl Memory {
     /// Virtual address through which physical address `phys` is accessible.

@@ -21,6 +21,8 @@ pub mod cpu;
 pub mod embed;
 pub mod gguf;
 pub mod model;
+#[allow(unsafe_code)]
+pub mod par;
 pub mod quant;
 pub mod talk;
 pub mod tokenizer;

@@ -160,6 +160,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             if let Some(a) = &opts.accel {
                 qemu::set_accel(a);
             }
+            // The everyday system uses the processors (docs/smp-design.md):
+            // 8 unless `--cpus` says otherwise.
+            qemu::set_cpus(opts.cpus.unwrap_or(8));
             let tools = config::Tools::resolve_for_qemu()?;
             if opts.model {
                 // The normal image with Bella's model added (as the
@@ -221,6 +224,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 timeout: opts.timeout.unwrap_or(Duration::from_secs(30)),
                 negative_timeout: opts.negative_timeout.unwrap_or(Duration::from_secs(5)),
                 settle: opts.settle.unwrap_or(Duration::from_millis(1000)),
+                cpus: opts.cpus.unwrap_or(1),
             };
             verify::run(&root, &tools, &settings)
         }
@@ -351,6 +355,8 @@ struct Options {
     portable: bool,
     /// `--f32-activations`: no 8-bit activations (docs/int8-design.md).
     f32_activations: bool,
+    /// `--cpus N`: the guest's processors (docs/smp-design.md).
+    cpus: Option<u8>,
 }
 
 impl Options {
@@ -373,6 +379,15 @@ impl Options {
                 "--bella" => o.bella = Some(value("--bella")?),
                 "--portable" => o.portable = true,
                 "--f32-activations" => o.f32_activations = true,
+                "--cpus" => {
+                    let v = value("--cpus")?;
+                    o.cpus = Some(
+                        v.parse()
+                            .ok()
+                            .filter(|n| (1..=32).contains(n))
+                            .ok_or_else(|| format!("invalid --cpus `{v}` (1 to 32)"))?,
+                    );
+                }
                 "--system-file" => o.system_file = Some(value("--system-file")?),
                 "--accel" => {
                     let v = value("--accel")?;

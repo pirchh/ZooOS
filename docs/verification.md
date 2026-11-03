@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-processors section (version 0.96.0) is the current state. Sections before it
+processors steps 2–3 section (version 0.97.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Processors steps 2–3 results (version 0.97.0)
+
+Design: docs/smp-design.md, with the timing table.
+
+**`smp-boot`** (4 processors): `OK` under TCG and with `--accel whpx`. The
+shell's `cpus` shows the boot's programs ran on every processor:
+
+```
+ZOO_OS INFO cpu 0 switches=49
+ZOO_OS INFO cpu 1 switches=959
+ZOO_OS INFO cpu 2 switches=875
+ZOO_OS INFO cpu 3 switches=900
+```
+
+**The full suite on 4 processors** (`--cpus 4`, TCG): 101 cases `OK`;
+`heap-flood` failed (services exited when their `pong` hit the full
+heap). That led to the per-program message limit, after which
+`heap-flood` is `OK` on 1 and 4 processors.
+
+**Model timings** (WHPX, 1, 4 and 8 processors, 0.5B and Qwen3 `Q4_0`):
+17 of 18 runs `OK`. The one failure was the serial log mixing two
+processors' lines, which is fixed: `bella-talk` on 4 then passed 3 of 3.
+
+**Host test `fill_matches_serial`:** split work equals serial work.
+
+**Full suite on 4 processors** (`cargo xtask verify --skip-model --cpus 4`,
+TCG): `PASS`, 102 cases `OK` and 14 skipped because they need an accelerator.
+
+**Full suite** (`cargo xtask verify --skip-model`, 1 processor, TCG): `PASS`,
+102 cases `OK` and 14 skipped because they need an accelerator.
 
 ## Processors results (version 0.96.0)
 

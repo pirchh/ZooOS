@@ -45,7 +45,27 @@ there:
    The last send that would close the loop is always refused, so every
    queued end can still be reached by closing a handle someone holds.
 
-## Why not per-process quotas
+## A limit per program (version 0.97.0)
+
+The full suite on 4 processors showed what the reserve alone cannot do.
+While `hare-test` held the heap at its reserve, BadgerHandler and
+BeaverHandler, now running on other processors, failed to send their
+`pong` to Zookeeper. They took that as their supervisor gone, and exited.
+On one processor the ping had never fallen inside the flood.
+
+So **each program may have at most 1 MiB of its messages waiting in queues**
+(`QUEUED_LIMIT`), and `SEND` beyond it is `NOMEM`:
+- each message carries a `Charge` (its size, and an `Arc` of the sender's
+  counter);
+- the message gives its bytes back in `Drop` when it is received,
+  discarded with its channel, or outlives the sender;
+- messages the kernel sends are not charged.
+
+`hare-test`'s fillers now stop at 1,024 KiB each, 3,072 KiB in all, far
+below the reserve, and the services keep working, on 1 processor and on 4.
+The shared reserve stays as the second guard.
+
+## Why not per-process quotas (the first version)
 
 The audit item was worded as "a bounded kernel heap per process". A quota
 needs every allocation charged to a process, and the charge moved when a

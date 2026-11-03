@@ -213,6 +213,7 @@ fn execute(line: &str) {
             kprintln!("help            this list");
             kprintln!("echo <text>     print text");
             kprintln!("mem             physical frames and heap use");
+            kprintln!("cpus            task switches on each processor");
             kprintln!("uptime          time since the timer started");
             kprintln!("keys            keyboard bytes received/dropped");
             kprintln!("ps              list processes");
@@ -232,6 +233,9 @@ fn execute(line: &str) {
             kprintln!("reboot          reset the machine (QEMU exits)");
         }
         "echo" => kprintln!("{}", rest),
+        "cpus" => {
+            crate::smp::for_each_cpu(|c, n| kprintln!("ZOO_OS INFO cpu {} switches={}", c, n))
+        }
         "mem" => {
             let (free, total) = memory::with(|m| (m.frames.available(), m.frames.total()));
             kprintln!("frames: {} free of {} ({} KiB free)", free, total, free * 4);
