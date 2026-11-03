@@ -255,12 +255,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         e
     };
     // A3: the everyday system with the model built in. Bella starts the
-    // model service at once to warm it up (docs/stage2-design.md), then the
-    // broker on the first request (docs/a3-design.md).
+    // file index (docs/vectors-design.md) and the model service at once to
+    // warm it up (docs/stage2-design.md), then the broker on the first
+    // request (docs/a3-design.md).
     let mut everyday_model = expect(Mode::FastBoot, &fast_head[..fast_head.len() - 2]);
     everyday_model.then(&[
-        "ZOO_OS PROC start pid=10 name=elephant-handler",
-        "ZOO_OS PROC start pid=11 name=otter-handler",
+        "ZOO_OS PROC start pid=10 name=magpie-handler",
+        "ZOO_OS PROC start pid=11 name=elephant-handler",
+        "ZOO_OS PROC start pid=12 name=otter-handler",
         "ZOO_OS PROC exit pid=6 name=peacock-handler code=0",
         "ZOO_OS DISPLAY released pid=6",
     ]);
@@ -268,8 +270,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         "ZOO_OS PROC exit pid=7 name=files code=0",
         "ZOO_OS PROC exit pid=8 name=crash-test code=0",
         "ZOO_OS PROC exit pid=9 name=bella code=0",
-        "ZOO_OS PROC exit pid=10 name=elephant-handler code=0",
-        "ZOO_OS PROC exit pid=11 name=otter-handler code=0",
+        // The file index stops when Bella has gone, even mid-index.
+        "ZOO_OS PROC exit pid=10 name=magpie-handler code=0",
+        "ZOO_OS PROC exit pid=11 name=elephant-handler code=0",
+        "ZOO_OS PROC exit pid=12 name=otter-handler code=0",
         "ZOO_OS PROC exit pid=5 name=zookeeper code=0",
     ]);
     let mut fast_boot = fast_boot_desktop_exits(Mode::FastBoot);
@@ -362,6 +366,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     image::model_disk(root)?,
                 ),
                 on_disk,
+                // The chat model alone, for the cases that compare chat
+                // models from the model disk.
+                if on_disk {
+                    Some(image::model_disk_chat(root)?)
+                } else {
+                    None
+                },
             ))
         }
         Err(e) if s.skip_model => {
@@ -889,6 +900,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "Bella remembers what she is told (docs/facts-design.md): facts kept on disk across a desktop restart; a question picks the matching fact; forgetting asks, `n` keeps, `y` forgets",
             interaction: Some(bella_facts_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "bella-lookup",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella answers from the user's files (docs/lookup-design.md): \"what do my notes say about the vet?\" finds the line in Documents/notes.txt; a question nothing answers finds nothing and asks no model",
+            interaction: Some(bella_lookup_steps()),
             screen_checks: vec![],
         },
         Case {
@@ -2365,6 +2389,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-lookup-answer",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella answers from the user's files (docs/lookup-design.md): asked what the notes say about the vet, her answer names Zara, which only the file holds (needs --accel)",
+            interaction: Some(bella_lookup_answer_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "bella-vectors",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 12,
+            want: "pass",
+            purpose: "Bella's file index by meaning (docs/vectors-design.md): MagpieHandler embeds the home folder's lines; \"the animal doctor\" finds the vet line, which shares no word with it, and the answer names Zara; after a desktop restart the index is read back, not rebuilt (needs --accel and the embedding model)",
+            interaction: Some(bella_vectors_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-summary-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2453,7 +2503,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::Settle(QUIET),
                     Action::Keys(typed("Find my pancake recipe")),
                     Action::WaitFor(
-                        "[10:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
+                        "[11:elephant-handler] ElephantHandler: chose search `pancake recipe`".into(),
                     ),
                     // Stage 1 timing lines (docs/stage1-design.md).
                     Action::WaitContains("ElephantHandler: timing: setup ".into()),
@@ -2561,6 +2611,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-summary-answer"
+                | "bella-lookup-answer"
+                | "bella-vectors"
                 | "bella-save"
         );
         if model_case && model_on_disk && matches!(c.name, "inference" | "bella-model") {
@@ -2615,6 +2667,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-summary-answer"
+                | "bella-lookup-answer"
+                | "bella-vectors"
                 | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
@@ -2663,13 +2717,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         };
         qemu::set_usb(c.usb);
         // The everyday system's model comes on the model disk.
-        qemu::set_model_disk(
-            if c.name == "everyday-model" || (model_case && model_on_disk) {
-                model_image.as_ref().map(|m| m.1.1.clone())
-            } else {
-                None
-            },
-        );
+        qemu::set_model_disk(if c.name == "everyday-model" || c.name == "bella-vectors" {
+            model_image.as_ref().map(|m| m.1.1.clone())
+        } else if model_case && model_on_disk {
+            model_image.as_ref().and_then(|m| m.3.clone())
+        } else {
+            None
+        });
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {
@@ -5412,6 +5466,95 @@ fn bella_facts_steps() -> Interaction {
         "what do you remember?",
         "OtterHandler: listed 1 facts",
     );
+    Interaction { steps }
+}
+
+fn bella_lookup_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("what do my notes say about the vet?")));
+    steps.push(Action::WaitContains(
+        "Bella: said first: Let me check your files...".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "OtterHandler: lookup `vet` found 1 lines in ".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: answering from Documents/notes.txt".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("did I write anything about unicorns")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: lookup `anything unicorns` found 0 lines in ".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: nothing in the files for that".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn bella_vectors_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "MagpieHandler: read the embedding model from the model disk".into(),
+    ));
+    steps.push(Action::WaitContains("MagpieHandler: index: ".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the file index is ready (".into(),
+    ));
+    // The chat model warms up first: the index runs only when idle.
+    steps.push(Action::WaitSeen(
+        "ElephantHandler: warmed up: reply prompt".into(),
+    ));
+    // No word of the question is in the vet line: only meaning finds it.
+    steps.push(Action::Keys(typed(
+        "what do my notes say about the animal doctor?",
+    )));
+    steps.push(Action::WaitContains("MagpieHandler: query: ".into()));
+    steps.push(Action::WaitContains(
+        "Bella: answering from Documents/notes.txt".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: answered from files `".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitSeenAny(vec!["Zara".into(), "zebra".into()]));
+    // A new desktop: the index comes back from `.bella-index`.
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitContains(
+        "Zookeeper: desktop session ended".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("desktop")));
+    steps.push(Action::WaitContains("name=magpie-handler".into()));
+    steps.push(Action::WaitContains(
+        "MagpieHandler: read the embedding model".into(),
+    ));
+    // Nothing embedded again: every line's vector came from the file.
+    steps.push(Action::WaitContains(" (0 embedded, ".into()));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn bella_lookup_answer_steps() -> Interaction {
+    let mut steps = open_bella();
+    steps.extend([
+        Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
+        Action::Keys(typed("what do my notes say about the vet?")),
+        Action::WaitContains("Bella: answering from Documents/notes.txt".into()),
+        Action::WaitContains("ElephantHandler: answered from files `".into()),
+        Action::Settle(QUIET),
+        // The file's lines are not in the log: "Zara" can only come
+        // from the file through the answer.
+        Action::WaitSeenAny(vec!["Zara".into(), "zebra".into()]),
+    ]);
+    leave_desktop(&mut steps);
     Interaction { steps }
 }
 

@@ -4,9 +4,10 @@
 //! service's snapshots; interrupts and the modern interface come later.
 //!
 //! Up to two devices (docs/stage2-design.md §3): the data disk, and the read-only
-//! model disk, told apart by the model disk's header in block 0
-//! (`MODEL_MAGIC`, then the model's length in bytes; the model starts at
-//! block 1).
+//! model disk, told apart by the model disk's header in block 0. Version 1
+//! (`MODEL_MAGIC`) holds one model: its length in bytes, and it starts at
+//! block 1. Version 2 (`MODEL_MAGIC2`, docs/vectors-design.md) holds up to
+//! `MAX_MODELS`: a count, then each model's first block and length.
 
 use crate::memory::Memory;
 use spin::Mutex;
@@ -69,9 +70,42 @@ const MODEL: usize = 1;
 /// Block 0 of the model disk starts with this, then the model's length
 /// (8 bytes, little-endian).
 pub const MODEL_MAGIC: &[u8; 8] = b"ZOOMODL1";
+/// Or with this, then the number of models (8 bytes), then for each its
+/// first block and its length in bytes (8 bytes each, little-endian).
+pub const MODEL_MAGIC2: &[u8; 8] = b"ZOOMODL2";
 
-/// The model's length in bytes, read from the model disk's header.
-static MODEL_LEN: Mutex<u64> = Mutex::new(0);
+/// Each model's (first block, length in bytes), from the header; a zero
+/// length is no model.
+static MODELS: Mutex<[(u64, u64); zoo_abi::MAX_MODELS]> = Mutex::new([(0, 0); zoo_abi::MAX_MODELS]);
+
+/// The models a model disk's block 0 describes, if it is one and every
+/// model lies on the disk (of `blocks` blocks) after the header.
+fn parse_header(head: &[u8], blocks: u64) -> Option<[(u64, u64); zoo_abi::MAX_MODELS]> {
+    let word =
+        |i: usize| u64::from_le_bytes(head[8 + 8 * i..16 + 8 * i].try_into().unwrap_or([0; 8]));
+    let mut out = [(0, 0); zoo_abi::MAX_MODELS];
+    if &head[..8] == MODEL_MAGIC {
+        out[0] = (1, word(0));
+    } else if &head[..8] == MODEL_MAGIC2 {
+        let n = usize::try_from(word(0)).ok()?;
+        if n == 0 || n > zoo_abi::MAX_MODELS {
+            return None;
+        }
+        for (k, m) in out.iter_mut().enumerate().take(n) {
+            *m = (word(1 + 2 * k), word(2 + 2 * k));
+        }
+    } else {
+        return None;
+    }
+    let fits = |&(first, len): &(u64, u64)| {
+        len == 0
+            || (first >= 1
+                && first
+                    .checked_add(len.div_ceil(BLOCK as u64))
+                    .is_some_and(|end| end <= blocks))
+    };
+    (out[0].1 != 0 && out.iter().all(fits)).then_some(out)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
@@ -125,6 +159,8 @@ pub struct Found {
     pub data: Option<u64>,
     /// The model's length in bytes, on the model disk.
     pub model: Option<u64>,
+    /// The embedding model's length in bytes, when the disk holds one.
+    pub embedder: Option<u64>,
 }
 
 /// Finds and initialises up to two virtio block devices: the model disk
@@ -133,6 +169,7 @@ pub fn init(mem: &mut Memory) -> Found {
     let mut found = Found {
         data: None,
         model: None,
+        embedder: None,
     };
     for dev in 0..32u8 {
         for func in 0..8u8 {
@@ -152,21 +189,22 @@ pub fn init(mem: &mut Memory) -> Found {
             };
             *DEVICES[slot].lock() = Some(d);
             let mut head = [0u8; BLOCK];
-            let is_model =
-                transfer_on(slot, mem, 0, &mut head, false).is_ok() && &head[..8] == MODEL_MAGIC;
+            let read = transfer_on(slot, mem, 0, &mut head, false).is_ok();
+            let is_model = read && (&head[..8] == MODEL_MAGIC || &head[..8] == MODEL_MAGIC2);
             if is_model {
-                let len = u64::from_le_bytes(head[8..16].try_into().unwrap_or([0; 8]));
-                // The model must fit on the disk after the header block.
-                if len == 0 || len.div_ceil(BLOCK as u64) + 1 > bytes / BLOCK as u64 {
+                // Every model must fit on the disk after the header block.
+                let Some(models) = parse_header(&head, bytes / BLOCK as u64) else {
                     *DEVICES[slot].lock() = None;
                     continue;
-                }
+                };
                 if slot == DATA {
                     let d = DEVICES[DATA].lock().take();
                     *DEVICES[MODEL].lock() = d;
                 }
-                *MODEL_LEN.lock() = len;
-                found.model = Some(len);
+                *MODELS.lock() = models;
+                found.model = Some(models[0].1);
+                found.embedder = (models[zoo_abi::MODEL_EMBED as usize].1 != 0)
+                    .then_some(models[zoo_abi::MODEL_EMBED as usize].1);
             } else if slot == DATA {
                 found.data = Some(bytes);
             } else {
@@ -237,23 +275,31 @@ pub fn capacity() -> Option<u64> {
 }
 
 /// The model's length in bytes, if there is a model disk.
-pub fn model_len() -> Option<u64> {
+/// Model `which`'s length in bytes, if the model disk holds it.
+pub fn model_len(which: usize) -> Option<u64> {
     DEVICES[MODEL].lock().as_ref()?;
-    Some(*MODEL_LEN.lock())
+    let len = MODELS.lock().get(which)?.1;
+    (len != 0).then_some(len)
 }
 
 /// Reads `buf.len() / BLOCK` consecutive blocks of the model, starting at
 /// its block `block` (the model's first block is the disk's block 1).
 /// Called with interrupts disabled.
-pub fn model_read(mem: &Memory, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-    let len = model_len().ok_or(BlockError::NoDevice)?;
+pub fn model_read(
+    mem: &Memory,
+    which: usize,
+    block: u64,
+    buf: &mut [u8],
+) -> Result<(), BlockError> {
+    let len = model_len(which).ok_or(BlockError::NoDevice)?;
+    let first = MODELS.lock()[which].0;
     let end = block
         .checked_add((buf.len() / BLOCK) as u64)
         .ok_or(BlockError::OutOfRange)?;
     if end > len.div_ceil(BLOCK as u64) {
         return Err(BlockError::OutOfRange);
     }
-    transfer_on(MODEL, mem, block + 1, buf, false)
+    transfer_on(MODEL, mem, first + block, buf, false)
 }
 
 /// Reads (`write` false) or writes the 4 KiB block `block` through the

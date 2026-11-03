@@ -69,6 +69,40 @@ const FILLER: [&str; 14] = [
     "a", "an", "the", "my", "please", "me", "i", "to", "for", "of", "can", "you", "could", "would",
 ];
 
+/// Words of a question that say how it is asked, not what about: left
+/// out of a lookup (docs/lookup-design.md).
+const ASKING: [&str; 24] = [
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "how",
+    "which",
+    "does",
+    "did",
+    "do",
+    "say",
+    "says",
+    "said",
+    "notes",
+    "note",
+    "file",
+    "files",
+    "documents",
+    "about",
+    "write",
+    "wrote",
+    "written",
+    "tell",
+    "there",
+];
+/// Files a lookup reads, the bytes it reads of each, and the lines it
+/// sends back.
+const LOOKUP_FILES: usize = 200;
+const LOOKUP_BYTES: usize = 16 * 1024;
+const LOOKUP_LINES: usize = 3;
+
 /// A request's words, lower-cased, without punctuation or filler.
 fn words(text: &str) -> Vec<String> {
     let mut out: Vec<String> = text
@@ -256,6 +290,9 @@ impl Otter {
             "trash" => self.trash(&self.resolve_existing(clean(arg)?)),
             "info" if arg.is_empty() => self.info(),
             // Facts the user told Bella (docs/facts-design.md).
+            // Lines of the user's files that answer a question
+            // (docs/lookup-design.md).
+            "lookup" => self.lookup(arg.trim()),
             "fact-add" => self.fact_add(arg.trim()),
             "fact-find" => self.fact_find(arg.trim()),
             "fact-list" if arg.is_empty() => self.fact_list(),
@@ -687,6 +724,92 @@ impl Otter {
                 .map_err(|_| "reply failed")?;
         }
         Ok(())
+    }
+
+    /// `lookup <question>`: the lines of the home folder's text files
+    /// that share the most words with the question, best first, as
+    /// `path: line`. Hidden files (Bella's own) are not read.
+    fn lookup(&mut self, question: &str) -> Result<(), &'static str> {
+        let key: Vec<String> = words(question)
+            .into_iter()
+            .filter(|w| w.len() >= 3 && !ASKING.contains(&w.as_str()))
+            .collect();
+        if key.is_empty() {
+            return Err("nothing to look up");
+        }
+        let mut best: Vec<(usize, String)> = Vec::new();
+        let mut read = 0;
+        self.look_in("", 0, &key, &mut best, &mut read);
+        for (_, l) in &best {
+            self.line(format_args!("{}", l))
+                .map_err(|_| "reply failed")?;
+        }
+        if best.is_empty() {
+            self.empty = true;
+        }
+        zoo_rt::log!(
+            "OtterHandler: lookup `{}` found {} lines in {} files read",
+            key.join(" "),
+            best.len(),
+            read
+        );
+        Ok(())
+    }
+
+    fn look_in(
+        &self,
+        dir: &str,
+        depth: usize,
+        key: &[String],
+        best: &mut Vec<(usize, String)>,
+        read: &mut usize,
+    ) {
+        if depth > MAX_WALK_DEPTH {
+            return;
+        }
+        let Ok(entries) = self.entries(dir) else {
+            return;
+        };
+        for e in entries {
+            if *read >= LOOKUP_FILES {
+                return;
+            }
+            let path = join(dir, e.name());
+            if e.is_dir() {
+                self.look_in(&path, depth + 1, key, best, read);
+                continue;
+            }
+            let mut buf = alloc::vec![0u8; LOOKUP_BYTES];
+            let Ok(n) = file_read(self.home, &path, 0, &mut buf) else {
+                continue;
+            };
+            *read += 1;
+            let Ok(text) = core::str::from_utf8(&buf[..n]) else {
+                continue;
+            };
+            if text.contains('\0') {
+                continue;
+            }
+            for line in text.lines() {
+                let lower = line.to_ascii_lowercase();
+                let score = key.iter().filter(|k| lower.contains(k.as_str())).count();
+                if score == 0 {
+                    continue;
+                }
+                let mut l = String::from(&path);
+                l.push_str(": ");
+                l.extend(line.trim().chars().take(160));
+                // Best first; among equals, the first found stays first.
+                let at = best
+                    .iter()
+                    .position(|(s, _)| *s < score)
+                    .unwrap_or(best.len());
+                if at < LOOKUP_LINES {
+                    best.insert(at, (score, l));
+                    best.truncate(LOOKUP_LINES);
+                }
+            }
+        }
     }
 
     fn walk(

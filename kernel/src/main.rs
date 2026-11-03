@@ -208,6 +208,9 @@ fn run(mut mem: memory::Memory) -> ! {
     if let Some(bytes) = disks.model {
         kprintln!("model disk: {} bytes of model", bytes);
     }
+    if let Some(bytes) = disks.embedder {
+        kprintln!("model disk: {} bytes of embedding model", bytes);
+    }
     // A USB controller, if there is one (docs/h1-design.md).
     if memory::with(xhci::init).is_none() {
         kprintln!("ZOO_OS INFO usb none");

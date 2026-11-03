@@ -125,6 +125,23 @@ fn matrix<'a>(
     Ok(t)
 }
 
+/// Tokens fed together by `feed_many` (docs/batch-design.md).
+pub const BATCH: usize = 16;
+
+/// `outs[t][r] = W[r] · xs[t]` for `n` vectors at once: each weight row is
+/// read from memory once and used for every vector while it is in cache,
+/// instead of once per token (docs/batch-design.md). The same dot
+/// products as `matvec`, so the same results.
+fn matmul(w: &TensorInfo, xs: &[f32], outs: &mut [f32], n: usize) {
+    let (rows, cols) = (w.rows, w.cols);
+    for r in 0..rows {
+        let row = w.row(r);
+        for t in 0..n {
+            outs[t * rows + r] = quant::dot(w.ty, row, &xs[t * cols..(t + 1) * cols]);
+        }
+    }
+}
+
 /// `out[r] = W[r] · x` for every row.
 fn matvec(w: &TensorInfo, x: &[f32], out: &mut [f32]) {
     for (r, o) in out.iter_mut().enumerate().take(w.rows) {
@@ -279,6 +296,15 @@ impl<'a> Model<'a> {
         })
     }
 
+    /// The hidden state after the last token fed, through the output
+    /// norm: what an embedding model's vector is made from
+    /// (docs/vectors-design.md).
+    pub fn final_hidden(&self, st: &State) -> Vec<f32> {
+        let mut out = vec![0.0; self.cfg.n_embd];
+        rmsnorm(&mut out, &st.x, &self.out_norm, self.cfg.eps);
+        out
+    }
+
     pub fn new_state(&self, max_ctx: usize) -> State {
         let c = &self.cfg;
         let kv_dim = c.head_dim * c.n_head_kv;
@@ -312,6 +338,175 @@ impl<'a> Model<'a> {
     /// quarter of the work (docs/a1-design.md).
     pub fn feed(&self, st: &mut State, token: u32) -> Result<(), ModelError> {
         self.step(st, token, false)
+    }
+
+    /// `feed` for each of `ids`, `BATCH` tokens at a time: what reading a
+    /// prompt costs, with each weight read once per batch rather than once
+    /// per token (docs/batch-design.md). Leaves `st` as feeding them one
+    /// by one would.
+    pub fn feed_many(&self, st: &mut State, ids: &[u32]) -> Result<(), ModelError> {
+        for chunk in ids.chunks(BATCH) {
+            self.batch(st, chunk)?;
+        }
+        Ok(())
+    }
+
+    /// Reads a prompt: `ids` in batches, with the last one through
+    /// `forward` when `logits` (its scores are read next). `go(done)` is
+    /// asked before each batch and may stop (then `Ok(false)`).
+    pub fn read_prompt(
+        &self,
+        st: &mut State,
+        ids: &[u32],
+        logits: bool,
+        mut go: impl FnMut(usize) -> bool,
+    ) -> Result<bool, ModelError> {
+        let body = if logits && !ids.is_empty() {
+            &ids[..ids.len() - 1]
+        } else {
+            ids
+        };
+        let mut done = 0;
+        for chunk in body.chunks(BATCH) {
+            if !go(done) {
+                return Ok(false);
+            }
+            self.batch(st, chunk)?;
+            done += chunk.len();
+        }
+        if logits && let Some(&last) = ids.last() {
+            if !go(done) {
+                return Ok(false);
+            }
+            self.forward(st, last)?;
+        }
+        Ok(true)
+    }
+
+    fn batch(&self, st: &mut State, ids: &[u32]) -> Result<(), ModelError> {
+        let c = &self.cfg;
+        let n = ids.len();
+        if n == 0 {
+            return Ok(());
+        }
+        if n == 1 {
+            return self.step(st, ids[0], false);
+        }
+        let (hd, kv_dim, q_dim) = (c.head_dim, c.head_dim * c.n_head_kv, c.head_dim * c.n_head);
+        if ids.iter().any(|&t| t as usize >= c.vocab) {
+            return Err(ModelError::BadToken);
+        }
+        if st.pos + n > st.max_ctx {
+            return Err(ModelError::ContextFull);
+        }
+        let (e, ff) = (c.n_embd, c.n_ff);
+        let mut x = vec![0.0f32; n * e];
+        let mut xb = vec![0.0f32; n * e];
+        let mut q = vec![0.0f32; n * q_dim];
+        let mut k = vec![0.0f32; n * kv_dim];
+        let mut v = vec![0.0f32; n * kv_dim];
+        let mut xq = vec![0.0f32; n * q_dim];
+        let mut hb = vec![0.0f32; n * ff];
+        let mut hb2 = vec![0.0f32; n * ff];
+        for (t, &id) in ids.iter().enumerate() {
+            quant::dequantize(
+                self.embd.ty,
+                self.embd.row(id as usize),
+                &mut x[t * e..(t + 1) * e],
+            );
+        }
+        let group = c.n_head / c.n_head_kv;
+        let scale = 1.0 / libm::sqrtf(hd as f32);
+        for (l, layer) in self.layers.iter().enumerate() {
+            for t in 0..n {
+                rmsnorm(
+                    &mut xb[t * e..(t + 1) * e],
+                    &x[t * e..(t + 1) * e],
+                    &layer.attn_norm,
+                    c.eps,
+                );
+            }
+            matmul(&layer.q, &xb, &mut q, n);
+            matmul(&layer.k, &xb, &mut k, n);
+            matmul(&layer.v, &xb, &mut v, n);
+            let base = l * st.max_ctx * kv_dim;
+            for t in 0..n {
+                let (qt, kt, vt) = (
+                    &mut q[t * q_dim..(t + 1) * q_dim],
+                    &mut k[t * kv_dim..(t + 1) * kv_dim],
+                    &mut v[t * kv_dim..(t + 1) * kv_dim],
+                );
+                for (a, b) in qt.iter_mut().zip(&layer.q_bias) {
+                    *a += b;
+                }
+                for (a, b) in kt.iter_mut().zip(&layer.k_bias) {
+                    *a += b;
+                }
+                for (a, b) in vt.iter_mut().zip(&layer.v_bias) {
+                    *a += b;
+                }
+                if !layer.q_norm.is_empty() {
+                    rmsnorm_heads(qt, &layer.q_norm, c.eps);
+                }
+                if !layer.k_norm.is_empty() {
+                    rmsnorm_heads(kt, &layer.k_norm, c.eps);
+                }
+                let pos = st.pos + t;
+                rope(qt, hd, pos, &self.freqs);
+                rope(kt, hd, pos, &self.freqs);
+                st.k_cache[base + pos * kv_dim..base + (pos + 1) * kv_dim].copy_from_slice(kt);
+                st.v_cache[base + pos * kv_dim..base + (pos + 1) * kv_dim].copy_from_slice(vt);
+            }
+            // Attention: each token sees the cache up to itself.
+            xq.fill(0.0);
+            for t in 0..n {
+                let pos = st.pos + t;
+                for h in 0..c.n_head {
+                    let qh = &q[t * q_dim + h * hd..t * q_dim + (h + 1) * hd];
+                    let kvh = h / group;
+                    let att = &mut st.att[..=pos];
+                    for (s, a) in att.iter_mut().enumerate() {
+                        let kk = &st.k_cache[base + s * kv_dim + kvh * hd..][..hd];
+                        *a = qh.iter().zip(kk).map(|(x, y)| x * y).sum::<f32>() * scale;
+                    }
+                    softmax(att);
+                    let out = &mut xq[t * q_dim + h * hd..t * q_dim + (h + 1) * hd];
+                    for (s, &a) in att.iter().enumerate() {
+                        let vv = &st.v_cache[base + s * kv_dim + kvh * hd..][..hd];
+                        for (o, &w) in out.iter_mut().zip(vv) {
+                            *o += a * w;
+                        }
+                    }
+                }
+            }
+            matmul(&layer.o, &xq, &mut xb, n);
+            for (a, d) in x.iter_mut().zip(&xb) {
+                *a += d;
+            }
+            // Feed-forward (SwiGLU).
+            for t in 0..n {
+                rmsnorm(
+                    &mut xb[t * e..(t + 1) * e],
+                    &x[t * e..(t + 1) * e],
+                    &layer.ffn_norm,
+                    c.eps,
+                );
+            }
+            matmul(&layer.gate, &xb, &mut hb, n);
+            matmul(&layer.up, &xb, &mut hb2, n);
+            for (g, &u) in hb.iter_mut().zip(&hb2) {
+                let silu = *g / (1.0 + libm::expf(-*g));
+                *g = silu * u;
+            }
+            matmul(&layer.down, &hb, &mut xb, n);
+            for (a, d) in x.iter_mut().zip(&xb) {
+                *a += d;
+            }
+        }
+        // The state as after the last token, ready for the next.
+        st.x.copy_from_slice(&x[(n - 1) * e..n * e]);
+        st.pos += n;
+        Ok(())
     }
 
     fn step(&self, st: &mut State, token: u32, logits: bool) -> Result<(), ModelError> {

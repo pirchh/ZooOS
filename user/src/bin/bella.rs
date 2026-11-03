@@ -32,7 +32,7 @@ const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
-    asks_about_activity, asks_what_bella_did, asks_what_remembered, fact_to_forget,
+    asks_about_activity, asks_my_files, asks_what_bella_did, asks_what_remembered, fact_to_forget,
     fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
     summary_stem, typed_command, wants_saved,
 };
@@ -116,6 +116,12 @@ struct App {
     streaming: bool,
     /// Which acknowledgement line comes next (docs/stream-design.md).
     acks: usize,
+    /// The files an answer from files came from, shown under it.
+    sources: Option<String>,
+    /// MagpieHandler, the index of the user's files by meaning
+    /// (docs/vectors-design.md), and whether its first index is built.
+    magpie: Option<Handle>,
+    magpie_ready: bool,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -149,11 +155,20 @@ const READING: [&str; 3] = [
     "Reading it now, hang tight...",
     "On it, reading the file...",
 ];
+const SEARCHING: [&str; 3] = [
+    "Let me check your files...",
+    "Looking through your files, one sec...",
+    "Checking what you wrote...",
+];
 const LOOKING: [&str; 3] = [
     "Let me look at your screen...",
     "One sec, checking what's open...",
     "Looking at your windows...",
 ];
+
+/// How long a question to the file index may take (ticks): the index is
+/// brought up to date first, which embeds any changed files.
+const INDEX_DEADLINE: u64 = 3000;
 
 fn backoff(failures: u32) -> u64 {
     (BACKOFF << failures.saturating_sub(1).min(5)).min(MAX_BACKOFF)
@@ -187,6 +202,9 @@ fn main(chan: u64, home: u64) -> u8 {
         last_summary: None,
         streaming: false,
         acks: 0,
+        sources: None,
+        magpie: None,
+        magpie_ready: false,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -226,6 +244,29 @@ fn main(chan: u64, home: u64) -> u8 {
                 Err(_) => {
                     busy = true;
                     p.model_ended(thinking);
+                }
+            }
+        }
+        // The file index says when its first index is built.
+        if let Some(m) = p.magpie
+            && !p.magpie_ready
+        {
+            match try_recv(m, &mut buf) {
+                Ok(n) => {
+                    let msg = core::str::from_utf8(&buf[..n]).unwrap_or("");
+                    if let Some(lines) = msg.strip_prefix("ready ") {
+                        p.magpie_ready = true;
+                        zoo_rt::log!("Bella: the file index is ready ({} lines)", lines);
+                    } else {
+                        zoo_rt::log!("Bella: the file index: {}", msg);
+                        let _ = close(m);
+                        p.magpie = None;
+                    }
+                }
+                Err(Error::Again) => {}
+                Err(_) => {
+                    let _ = close(m);
+                    p.magpie = None;
                 }
             }
         }
@@ -332,6 +373,9 @@ impl App {
         } else if wants_saved(text) && self.last_summary.is_some() {
             self.request = None;
             self.save_summary();
+        } else if asks_my_files(text) {
+            self.request = None;
+            self.answer_from_files(text);
         } else if let Some(path) = file_to_summarise(text) {
             self.request = None;
             self.summarise(text, path);
@@ -560,6 +604,66 @@ impl App {
             l.push_str(&to);
             self.say(&l);
         }
+    }
+
+    /// Finds lines of the user's files that share words with `question`
+    /// and has the model answer from them in a call of its own
+    /// (docs/lookup-design.md).
+    fn answer_from_files(&mut self, question: &str) {
+        self.ack(&SEARCHING);
+        // By meaning, from the index; by words when there is none.
+        let found = match self.index_lines(question) {
+            Some(lines) => lines,
+            None => {
+                let mut req = String::from("lookup ");
+                req.push_str(question);
+                self.capture = Some(String::new());
+                let _ = self.broker(&req);
+                self.capture.take().unwrap_or_default()
+            }
+        };
+        if found.trim().is_empty() {
+            self.say("Bella: I couldn't find anything about that in your files.");
+            zoo_rt::log!("Bella: nothing in the files for that");
+            return;
+        }
+        let mut cut = String::new();
+        for c in found.chars() {
+            if cut.len() + c.len_utf8() > zoo_infer::talk::MAX_SUMMARY_TEXT {
+                break;
+            }
+            cut.push(if c == '\t' { ' ' } else { c });
+        }
+        // Where the answer comes from, shown under it.
+        let mut from = String::new();
+        for line in cut.lines() {
+            if let Some((path, _)) = line.split_once(": ")
+                && !from.split(", ").any(|p| p == path)
+            {
+                if !from.is_empty() {
+                    from.push_str(", ");
+                }
+                from.push_str(path);
+            }
+        }
+        zoo_rt::log!("Bella: answering from {}", from);
+        if !self.start_model() {
+            self.say("Error: cannot start the model service.");
+            return;
+        }
+        let mut msg = String::from("answer ");
+        msg.push_str(question);
+        msg.push('\t');
+        msg.push_str(&cut);
+        let Some(e) = self.elephant else { return };
+        if send_wait(e, msg.as_bytes()).is_err() {
+            self.model_ended(false);
+            return;
+        }
+        self.summarising = Some(String::from(question));
+        self.sources = Some(from);
+        self.mode = Mode::Thinking;
+        self.status = String::from("Reading your files... (Backspace cancels)");
     }
 
     /// Says the next of `lines` at once, before a slow answer.
@@ -895,12 +999,85 @@ impl App {
     /// Starts the model service and has it read the system prompt now, in
     /// the background, when the model is installed (docs/stage2-design.md).
     fn warm(&mut self) {
+        self.start_magpie();
         let installed = zoo_rt::fs_find(MODEL_FILE).is_some() || zoo_rt::model_size().is_ok();
         if !installed || !self.start_model() {
             return;
         }
         if let Some(e) = self.elephant {
             let _ = send_wait(e, b"warm");
+        }
+    }
+
+    /// Starts MagpieHandler, the file index (docs/vectors-design.md),
+    /// when the model disk holds an embedding model.
+    fn start_magpie(&mut self) {
+        if self.magpie.is_some()
+            || self.home == NO_HANDLE
+            || zoo_rt::model_size_of(zoo_abi::MODEL_EMBED).is_err()
+        {
+            return;
+        }
+        let Ok((mine, theirs)) = channel_create() else {
+            return;
+        };
+        let Ok(home) = zoo_rt::dir_open(self.home, "", zoo_rt::dir_rights::ALL) else {
+            let _ = close(mine);
+            let _ = close(theirs);
+            return;
+        };
+        match spawn_with("magpie-handler", [Some(theirs), Some(home)]) {
+            Ok(process) => {
+                let _ = close(process);
+                self.magpie = Some(mine);
+                zoo_rt::log!("Bella: starting the file index");
+            }
+            Err(_) => {
+                let _ = close(mine);
+            }
+        }
+    }
+
+    /// Lines of the user's files nearest `question` in meaning, from the
+    /// index (`path: line` per line); `None` when the index cannot answer,
+    /// so the word lookup is used instead.
+    fn index_lines(&mut self, question: &str) -> Option<String> {
+        let m = self.magpie.filter(|_| self.magpie_ready)?;
+        let mut req = String::from("query ");
+        req.push_str(question);
+        if send_wait(m, req.as_bytes()).is_err() {
+            self.magpie = None;
+            return None;
+        }
+        let mut out = String::new();
+        let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        let deadline = zoo_rt::ticks() + INDEX_DEADLINE;
+        loop {
+            let left = deadline.saturating_sub(zoo_rt::ticks());
+            if left == 0 || zoo_rt::wait_any(&[m], left).is_err() {
+                zoo_rt::log!("Bella: the file index did not answer in time");
+                let _ = close(m);
+                self.magpie = None;
+                return None;
+            }
+            let n = match try_recv(m, &mut buf) {
+                Ok(n) => n,
+                Err(Error::Again) => continue,
+                Err(_) => {
+                    self.magpie = None;
+                    return None;
+                }
+            };
+            let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
+            if let Some(rest) = line.strip_prefix("| ") {
+                out.push_str(rest);
+                out.push('\n');
+            } else if line == "ok" || line == "none" {
+                zoo_rt::log!("Bella: {} lines from the file index", out.lines().count());
+                return Some(out);
+            } else {
+                return None;
+            }
         }
     }
 
@@ -1019,6 +1196,9 @@ impl App {
         self.mode = Mode::Typing;
         self.status = String::from(HINT);
         let summarising = self.summarising.take();
+        if !msg.starts_with("say ") {
+            self.sources = None;
+        }
         let streamed = core::mem::take(&mut self.streaming);
         if let Some(text) = msg.strip_prefix("say ") {
             // A reply in words: shown, never run. It replaces the line
@@ -1032,6 +1212,12 @@ impl App {
             self.answered("the model, in words");
             // The model keeps its own reply in its conversation; here it is
             // only remembered for a follow-up's command choice.
+            if let Some(from) = self.sources.take() {
+                let mut l = String::from("  (from ");
+                l.push_str(&from);
+                l.push(')');
+                self.say(&l);
+            }
             // A summary was not kept in the model's conversation: note
             // it, without the file's text, so follow-ups know it.
             if let Some(file) = self.summary_of.take()

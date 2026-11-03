@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 25] = [
+pub const USER_PROGRAMS: [&str; 26] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -36,6 +36,7 @@ pub const USER_PROGRAMS: [&str; 25] = [
     "snowgoose-test",
     "gyrfalcon-test",
     "hare-test",
+    "magpie-handler",
     "network",
 ];
 
@@ -477,57 +478,108 @@ pub fn build_model_image(
     Ok(img)
 }
 
-/// Block 0 of the model disk starts with this, then the model's length
-/// (8 bytes, little-endian); the kernel's `virtio_blk::MODEL_MAGIC`.
-const MODEL_DISK_MAGIC: &[u8; 8] = b"ZOOMODL1";
+/// Block 0 of the model disk starts with this, then the number of models,
+/// then each one's first block and length (8 bytes each, little-endian);
+/// the kernel's `virtio_blk::MODEL_MAGIC2` (docs/vectors-design.md).
+const MODEL_DISK_MAGIC2: &[u8; 8] = b"ZOOMODL2";
 
-/// The read-only model disk (docs/stage2-design.md §3):
-/// `build/model-disk.img`, a 4 KiB header block, then the model padded to
-/// whole 4 KiB blocks. Rewritten only when the model file is newer or a
-/// different size.
+/// The read-only model disk (docs/stage2-design.md §3,
+/// docs/vectors-design.md): `build/model-disk.img`, a 4 KiB header block,
+/// then each model padded to whole 4 KiB blocks. Model 0 is Bella's chat
+/// model; model 1, when `tools/models/` has it, the embedding model.
+/// Rewritten only when a model file is newer or a different size.
 pub fn model_disk(root: &Path) -> Result<PathBuf, String> {
+    model_disk_of(root, true)
+}
+
+/// The model disk with the chat model only (`build/model-chat-disk.img`):
+/// for comparing chat models (`verify --bella`), where the file index
+/// would add a program and compete for the processor.
+pub fn model_disk_chat(root: &Path) -> Result<PathBuf, String> {
+    model_disk_of(root, false)
+}
+
+fn model_disk_of(root: &Path, with_embedder: bool) -> Result<PathBuf, String> {
     use std::io::{Read as _, Write as _};
-    let model = crate::infer::model_path(root);
-    let meta = std::fs::metadata(&model).map_err(|e| {
-        format!(
-            "cannot read {} ({e}); see tools/models/README.md",
-            model.display()
-        )
-    })?;
-    let len = meta.len();
-    let out = root.join("build").join("model-disk.img");
-    let blocks = len.div_ceil(4096);
+    let chat = crate::infer::model_path(root);
+    let embedder = crate::infer::embedder_path(root);
+    let mut paths = vec![chat];
+    if with_embedder && embedder.exists() {
+        paths.push(embedder);
+    }
+    let mut metas = Vec::new();
+    for p in &paths {
+        metas.push(std::fs::metadata(p).map_err(|e| {
+            format!(
+                "cannot read {} ({e}); see tools/models/README.md",
+                p.display()
+            )
+        })?);
+    }
+    // The header: where each model starts and how long it is.
+    let mut head = vec![0u8; 4096];
+    head[..8].copy_from_slice(MODEL_DISK_MAGIC2);
+    head[8..16].copy_from_slice(&(paths.len() as u64).to_le_bytes());
+    let mut first = 1u64;
+    for (k, m) in metas.iter().enumerate() {
+        let at = 16 + 16 * k;
+        head[at..at + 8].copy_from_slice(&first.to_le_bytes());
+        head[at + 8..at + 16].copy_from_slice(&m.len().to_le_bytes());
+        first += m.len().div_ceil(4096);
+    }
+    let total = first * 4096;
+    let out = root.join("build").join(if with_embedder {
+        "model-disk.img"
+    } else {
+        "model-chat-disk.img"
+    });
     let fresh = (|| {
         let disk = std::fs::metadata(&out).ok()?;
-        if disk.len() != (blocks + 1) * 4096 || disk.modified().ok()? < meta.modified().ok()? {
+        let built = disk.modified().ok()?;
+        if disk.len() != total
+            || metas
+                .iter()
+                .any(|m| m.modified().map_or(true, |t| built < t))
+        {
             return None;
         }
-        let mut head = [0u8; 16];
-        std::fs::File::open(&out).ok()?.read_exact(&mut head).ok()?;
-        (&head[..8] == MODEL_DISK_MAGIC && head[8..16] == len.to_le_bytes()).then_some(())
+        let mut have = vec![0u8; 4096];
+        std::fs::File::open(&out).ok()?.read_exact(&mut have).ok()?;
+        (have == head).then_some(())
     })()
     .is_some();
     if fresh {
         println!("[build] model disk (up to date) -> {}", out.display());
         return Ok(out);
     }
-    // Checks the pinned SHA-256 before anything is written.
-    let data = crate::infer::load_model(root)?;
-    let mut head = vec![0u8; 4096];
-    head[..8].copy_from_slice(MODEL_DISK_MAGIC);
-    head[8..16].copy_from_slice(&len.to_le_bytes());
-    let pad = vec![0u8; (blocks * 4096 - len) as usize];
+    // Checks each pinned SHA-256 before anything is written.
+    let mut data = vec![crate::infer::load_model(root)?];
+    if paths.len() > 1 {
+        data.push(crate::infer::load_embedder(root)?);
+    }
     let tmp = out.with_extension("img.tmp");
     std::fs::create_dir_all(out.parent().unwrap_or(root))
         .map_err(|e| format!("cannot create build/: {e}"))?;
     let mut f =
         std::fs::File::create(&tmp).map_err(|e| format!("cannot create {}: {e}", tmp.display()))?;
-    f.write_all(&head)
-        .and_then(|()| f.write_all(&data))
-        .and_then(|()| f.write_all(&pad))
-        .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    let mut write = |b: &[u8]| {
+        f.write_all(b)
+            .map_err(|e| format!("cannot write {}: {e}", tmp.display()))
+    };
+    write(&head)?;
+    for d in &data {
+        write(d)?;
+        let pad = (d.len() as u64).div_ceil(4096) * 4096 - d.len() as u64;
+        write(&vec![0u8; pad as usize])?;
+    }
     drop(f);
     std::fs::rename(&tmp, &out).map_err(|e| format!("cannot move {}: {e}", out.display()))?;
-    println!("[build] model disk ({} MB) -> {}", len >> 20, out.display());
+    println!(
+        "[build] model disk ({} MB, {} model{}) -> {}",
+        total >> 20,
+        data.len(),
+        if data.len() == 1 { "" } else { "s" },
+        out.display()
+    );
     Ok(out)
 }
