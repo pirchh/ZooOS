@@ -889,6 +889,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-summary",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella reads a file for a summary (docs/summary-design.md): \"summarise the pancake recipe\" finds the file by name and hands its text to the model service; a missing file is an error, not a summary",
+            interaction: Some(bella_summary_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context",
             mode: Mode::Normal,
             custom_image: None,
@@ -2349,6 +2362,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-summary-answer",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella summarises a file (docs/summary-design.md): Documents/notes.txt, read through the broker, summarised by the model in a call of its own; the summary names what only the file holds (needs --accel)",
+            interaction: Some(bella_summary_answer_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2517,6 +2543,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-convo"
                 | "bella-facts-answer"
                 | "bella-context-answer"
+                | "bella-summary-answer"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2560,6 +2587,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-convo"
                 | "bella-facts-answer"
                 | "bella-context-answer"
+                | "bella-summary-answer"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -5350,6 +5378,46 @@ fn bella_facts_steps() -> Interaction {
         "what do you remember?",
         "OtterHandler: listed 1 facts",
     );
+    Interaction { steps }
+}
+
+fn bella_summary_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed(
+        "summarise the file Documents/recipes/pancakes.txt",
+    )));
+    // The file is found by its path; its text goes to the model service.
+    steps.push(Action::WaitContains(
+        "Bella: summarising Documents/recipes/pancakes.txt (".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("summarize nothing-here.txt")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: audit: read nothing-here.txt: not found".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen(
+        "Bella: summarising nothing-here.txt".into(),
+    ));
+    Interaction { steps }
+}
+
+fn bella_summary_answer_steps() -> Interaction {
+    let mut steps = open_bella();
+    steps.extend([
+        Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
+        Action::Keys(typed("summarise Documents/notes.txt")),
+        Action::WaitContains("Bella: summarising Documents/notes.txt".into()),
+        Action::WaitContains("ElephantHandler: summarised `".into()),
+        Action::Settle(QUIET),
+        // A word only the file holds: its text is not in the log, so it
+        // can only come from the summary.
+        Action::WaitSeen("hopping".into()),
+    ]);
+    leave_desktop(&mut steps);
     Interaction { steps }
 }
 

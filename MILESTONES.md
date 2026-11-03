@@ -180,6 +180,7 @@ lands as small, separately verified steps.
 | 2 | Bella's helpers start again after a back-off; broker deadline (docs/stage2-design.md §4) | done 2026-11-02 |
 | 2 | B13: the kernel heap under pressure: a 1 MiB reserve programs cannot use (NOMEM, not a panic); no channel-end cycles (docs/heap-design.md) | done 2026-11-03 |
 | 2 | Bella's audit trail: a log line per broker request; changes kept in `.bella-audit`; "what did you do?" (docs/audit-design.md) | done 2026-11-03 |
+| 5 | Bella summarises a file in a model call of its own: "summarise Documents/notes.txt" → "a list of items to buy for a shopping trip" in 2.4 s (docs/summary-design.md) | done 2026-11-03 |
 | 2 | Still open: keys during broker calls (B14, the deadline is done); narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |

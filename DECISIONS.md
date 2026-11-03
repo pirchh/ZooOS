@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella summarises a file (2026-11-03)
+
+Version 0.90.0. Design: docs/summary-design.md. The first Stage 5
+workflow.
+
+- **A call of its own:** `Talk::summarise` writes past the conversation
+  without keeping anything, so a file's text (and anything it tries to
+  instruct) never stays in the model's context. Bella notes the summary,
+  not the text.
+- **Capped at 900 bytes**, read through the broker like any file, marked
+  as data in the prompt, with the request after the text.
+
 ## The kernel heap under pressure; Bella's audit trail (2026-11-03)
 
 Version 0.89.0. Designs: docs/heap-design.md, docs/audit-design.md.
