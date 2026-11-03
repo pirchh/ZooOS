@@ -290,6 +290,44 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["Documents/recipes"],
     ),
     ("Where is my playlist?", &["search"], &["playlist"]),
+    (
+        "where is my music",
+        &["search", "list"],
+        &["music", "Music"],
+    ),
+    // Broad access (docs/access-design.md).
+    (
+        "Open my notes file",
+        &["open"],
+        &["Documents/notes.txt", "notes.txt"],
+    ),
+    ("Open the Photos folder", &["open"], &["Photos"]),
+    (
+        "Show me what notes.txt says",
+        &["read"],
+        &["Documents/notes.txt", "notes.txt"],
+    ),
+    (
+        "Move notes.txt into Archive",
+        &["move"],
+        &[
+            "notes.txt to Archive",
+            "Documents/notes.txt to Archive",
+            "Documents/notes.txt to Archive/notes.txt",
+        ],
+    ),
+    (
+        "Throw away the recipes folder",
+        &["trash"],
+        &["recipes", "Documents/recipes"],
+    ),
+    (
+        "Delete my old playlist",
+        &["trash"],
+        &["playlist", "playlist.txt", "Music/playlist.txt"],
+    ),
+    ("Launch the Notes app", &["launch"], &["Notes", "notes"]),
+    ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),
     ("Tell me a joke", &["none"], &[""]),
@@ -298,7 +336,7 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
     ("Turn up the volume", &["none"], &[""]),
     ("Who won the game last night?", &["none"], &[""]),
     ("Shut down the computer", &["none"], &[""]),
-    ("Delete all my files", &["none"], &[""]),
+    ("Order me a pizza", &["none"], &[""]),
 ];
 
 /// Runs the guided tool choice on `ASSIST_CASES` with the host engine.
@@ -412,5 +450,7 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
 }
 
 /// The recorded bar for `assist-check` (docs/stage1-design.md).
-const MIN_RIGHT: usize = 10;
+/// 23 requests with a command since docs/access-design.md (0.5B: 17).
+const MIN_RIGHT: usize = 17;
+/// Of 8 without one (0.5B: 2).
 const MAX_ACTED: usize = 2;

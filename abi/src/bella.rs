@@ -2,8 +2,12 @@
 //! typed command, small talk answered in words, or a request for the
 //! model. Pure text rules, kept here so the host can test them.
 
-/// The commands the user can type.
-pub const COMMANDS: [&str; 5] = ["search", "list", "inspect", "create", "undo"];
+/// The commands the user can type (docs/access-design.md adds `read`,
+/// `open`, `move`, `trash`, `launch` and `info`).
+pub const COMMANDS: [&str; 11] = [
+    "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
+    "info",
+];
 
 /// Words that make a line a sentence rather than a typed command:
 /// "search for my music" is a request in words, "search pancake" a command
@@ -23,10 +27,14 @@ pub fn typed_command(text: &str) -> bool {
     if !COMMANDS.contains(&first) {
         return false;
     }
-    if first == "undo" {
+    if first == "undo" || first == "info" {
         return words.next().is_none();
     }
-    words.all(|w| !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w)))
+    // `move <path> to <path>`: there, "to" is part of the command.
+    words.all(|w| {
+        (first == "move" && w.eq_ignore_ascii_case("to"))
+            || !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w))
+    })
 }
 
 /// Greetings, thanks and questions about Bella herself: answered in words
@@ -69,6 +77,20 @@ pub fn follow_up(text: &str) -> bool {
             .any(|w| BACK.iter().any(|b| b.eq_ignore_ascii_case(w)))
 }
 
+/// A yes/no question about the last answer ("is that it?", "are there
+/// more?", "did it work?"): answered in words, from the conversation,
+/// without choosing a command (docs/talk-design.md §6).
+pub fn question_about_answer(text: &str) -> bool {
+    const ASKING: [&str; 11] = [
+        "is", "are", "was", "were", "does", "did", "do", "has", "have", "can", "could",
+    ];
+    let first = text
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .find(|w| !w.is_empty())
+        .unwrap_or("");
+    follow_up(text) && ASKING.iter().any(|a| a.eq_ignore_ascii_case(first))
+}
+
 /// Whether `hay` contains `needle`, ASCII letters compared without case.
 fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
@@ -89,6 +111,12 @@ mod tests {
             "inspect Documents/notes.txt",
             "create Projects/2026",
             "undo",
+            "read Documents/notes.txt",
+            "open Music",
+            "launch Notes",
+            "trash Documents/old",
+            "info",
+            "move Documents/notes.txt to Music",
         ] {
             assert!(typed_command(t), "{t}");
         }
@@ -102,6 +130,7 @@ mod tests {
             "list my documents",
             "create a folder called Work",
             "undo that",
+            "move my notes to the archive",
             "where is my music?",
             "find my pancake recipe",
         ] {
@@ -129,6 +158,26 @@ mod tests {
             "items in the attic",
         ] {
             assert!(!follow_up(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn questions_about_the_answer() {
+        for t in [
+            "is that it?",
+            "Are there more?",
+            "did that work?",
+            "is that all of them",
+        ] {
+            assert!(question_about_answer(t), "{t}");
+        }
+        for t in [
+            "what is in it?",
+            "open it",
+            "is my music here",
+            "Find my pancake recipe",
+        ] {
+            assert!(!question_about_answer(t), "{t}");
         }
     }
 

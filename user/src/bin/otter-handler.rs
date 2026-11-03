@@ -30,6 +30,8 @@ const MAX_RESULTS: usize = 20;
 const SEARCH_BYTES: usize = 64 * 1024;
 const MAX_CREATE_DEPTH: usize = 8;
 const MAX_WALK_DEPTH: usize = 16;
+/// The Trash, as Files keeps it (docs/u3h-design.md).
+const TRASH: &str = ".Trash";
 
 /// The assistant's memory of requests and the commands that answered them
 /// (docs/a2-design.md): `request<TAB>command` lines, newest last.
@@ -91,6 +93,9 @@ struct Otter {
     empty: bool,
     /// Folders the last `create` made, in creation order.
     journal: Vec<String>,
+    /// The last `move` (from, to), for `undo`; `create` and `move` each
+    /// replace what `undo` undoes (docs/access-design.md).
+    moved: Option<(String, String)>,
 }
 
 fn main(chan: u64, home: u64) -> u8 {
@@ -102,6 +107,7 @@ fn main(chan: u64, home: u64) -> u8 {
         home,
         empty: false,
         journal: Vec::new(),
+        moved: None,
     };
     // Keep what the Assistant learned before it was renamed Bella.
     if dir_stat(home, MEMORY) == Err(Error::NotFound)
@@ -210,11 +216,17 @@ impl Otter {
         let (tool, arg) = req.split_once(' ').unwrap_or((req, ""));
         match tool {
             "search" => self.search(arg.trim()),
-            "list" => self.list(&self.resolve(clean(arg)?)),
-            "inspect" => self.inspect(&self.resolve(clean(arg)?)),
+            "list" => self.list(&self.resolve_existing(clean(arg)?)),
+            "inspect" => self.inspect(&self.resolve_existing(clean(arg)?)),
             "plan" => self.create(&self.resolve(clean(arg)?), false),
             "create" => self.create(&self.resolve(clean(arg)?), true),
             "undo" if arg.is_empty() => self.undo(),
+            // Broad access (docs/access-design.md): Bella asks before
+            // `trash`; the rest need no confirmation.
+            "read" => self.read(&self.resolve_existing(clean(arg)?)),
+            "move" => self.move_to(arg),
+            "trash" => self.trash(&self.resolve_existing(clean(arg)?)),
+            "info" if arg.is_empty() => self.info(),
             "remember" => self.remember(arg),
             "recall" => self.recall(arg),
             _ => Err("unknown tool"),
@@ -352,6 +364,56 @@ impl Otter {
         out
     }
 
+    /// `resolve`, then, for something that must already exist: when the
+    /// path names nothing, the one file or folder anywhere in home whose
+    /// name, or name without its extension, matches the last part without
+    /// filler words (`notes` finds Documents/notes.txt, `my playlist` finds
+    /// Music/playlist.txt). Only a single match counts
+    /// (docs/access-design.md).
+    fn resolve_existing(&self, path: &str) -> String {
+        let out = self.resolve(path);
+        if out.is_empty() || dir_stat(self.home, &out).is_ok() {
+            return out;
+        }
+        let last = out.rsplit('/').next().unwrap_or(&out);
+        let want: Vec<&str> = last
+            .split([' ', '_'])
+            .filter(|w| !w.is_empty() && !FILLER.iter().any(|f| f.eq_ignore_ascii_case(w)))
+            .collect();
+        if want.is_empty() {
+            return out;
+        }
+        let want = want.join(" ");
+        let mut found = Vec::new();
+        self.find_named("", 0, &want, &mut found);
+        match found.as_slice() {
+            [one] => {
+                zoo_rt::log!("OtterHandler: `{}` is `{}` (found by name)", path, one);
+                one.clone()
+            }
+            _ => out,
+        }
+    }
+
+    /// Paths below `dir` whose name, or name without extension, is `want`
+    /// (letter case ignored); stops after two.
+    fn find_named(&self, dir: &str, depth: usize, want: &str, found: &mut Vec<String>) {
+        if depth > MAX_WALK_DEPTH || found.len() > 1 {
+            return;
+        }
+        for e in self.entries(dir).unwrap_or_default() {
+            let name = e.name();
+            let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+            let path = join(dir, name);
+            if name.eq_ignore_ascii_case(want) || stem.eq_ignore_ascii_case(want) {
+                found.push(path.clone());
+            }
+            if e.is_dir() {
+                self.find_named(&path, depth + 1, want, found);
+            }
+        }
+    }
+
     fn list(&self, path: &str) -> Result<(), &'static str> {
         let entries = self.entries(path).map_err(reason)?;
         for e in &entries {
@@ -476,6 +538,7 @@ impl Otter {
         }
         if apply {
             self.journal.clear();
+            self.moved = None;
         }
         let mut new = 0;
         for k in 1..=parts.len() {
@@ -506,8 +569,150 @@ impl Otter {
         Ok(())
     }
 
-    /// Removes what the last `create` made, deepest first, only while empty.
+    /// Shows a text file's first lines: at most 12 lines of its first
+    /// 4 KiB (docs/access-design.md).
+    fn read(&self, path: &str) -> Result<(), &'static str> {
+        if path.is_empty() {
+            return Err("no file named");
+        }
+        let e = dir_stat(self.home, path).map_err(reason)?;
+        if e.is_dir() {
+            return Err("a folder, not a file");
+        }
+        let mut buf = alloc::vec![0u8; 4096];
+        let n = file_read(self.home, path, 0, &mut buf).map_err(reason)?;
+        let Ok(text) = core::str::from_utf8(&buf[..n]) else {
+            return Err("not a text file");
+        };
+        if text.contains('\0') {
+            return Err("not a text file");
+        }
+        let mut shown = 0;
+        for line in text.lines().take(12) {
+            shown += line.len() + 1;
+            let cut: String = line.chars().take(200).collect();
+            self.line(format_args!("{}", cut))
+                .map_err(|_| "reply failed")?;
+        }
+        let rest = e.size.saturating_sub(shown as u64);
+        if rest > 0 {
+            self.line(format_args!("({} more bytes)", rest))
+                .map_err(|_| "reply failed")?;
+        }
+        Ok(())
+    }
+
+    /// `move <from> to <to>`: renames, or moves into `<to>` when it is a
+    /// folder. Undone by `undo`.
+    fn move_to(&mut self, arg: &str) -> Result<(), &'static str> {
+        let (from, to) = arg.split_once(" to ").ok_or("expected <from> to <to>")?;
+        let from = self.resolve_existing(clean(from)?);
+        let mut to = self.resolve(clean(to)?);
+        if from.is_empty() || to.is_empty() {
+            return Err("no file or folder named");
+        }
+        dir_stat(self.home, &from).map_err(reason)?;
+        if dir_stat(self.home, &to).is_ok_and(|e| e.is_dir()) {
+            let name = from.rsplit('/').next().unwrap_or(&from);
+            to = join(&to, name);
+        }
+        if to == from || to.starts_with(&join(&from, "")) {
+            return Err("cannot move a folder into itself");
+        }
+        if dir_stat(self.home, &to).is_ok() {
+            return Err("already exists");
+        }
+        zoo_rt::rename(self.home, &from, &to).map_err(reason)?;
+        zoo_rt::log!("OtterHandler: moved {} to {}", from, to);
+        self.line(format_args!("moved {} to {}", from, to))
+            .map_err(|_| "reply failed")?;
+        self.journal.clear();
+        self.moved = Some((from, to));
+        Ok(())
+    }
+
+    /// Moves a file or folder into the Trash (`.Trash`, as Files does), so
+    /// it can be put back. Bella asks first.
+    fn trash(&mut self, path: &str) -> Result<(), &'static str> {
+        if path.is_empty() || path == TRASH || path.starts_with(&join(TRASH, "")) {
+            return Err("not something to throw away");
+        }
+        dir_stat(self.home, path).map_err(reason)?;
+        let _ = dir_create(self.home, TRASH);
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let mut to = join(TRASH, name);
+        for n in 2..100 {
+            if dir_stat(self.home, &to).is_err() {
+                break;
+            }
+            to = join(TRASH, name);
+            let _ = write!(to, " {}", n);
+        }
+        zoo_rt::rename(self.home, path, &to).map_err(reason)?;
+        zoo_rt::log!("OtterHandler: moved {} to the Trash as {}", path, to);
+        self.line(format_args!("moved {} to the Trash", path))
+            .map_err(|_| "reply failed")?;
+        Ok(())
+    }
+
+    /// About this computer: the version, the time, how long it has run, and
+    /// what the home folder holds.
+    fn info(&self) -> Result<(), &'static str> {
+        let say = |args: core::fmt::Arguments| self.line(args).map_err(|_| "reply failed");
+        say(format_args!("ZooOS {}", env!("CARGO_PKG_VERSION")))?;
+        if let Ok(ns) = zoo_rt::clock(zoo_abi::CLOCK_REALTIME) {
+            let secs = ns / 1_000_000_000;
+            let (days, rem) = (secs / 86_400, secs % 86_400);
+            let (y, m, d) = civil_from_days(days as i64);
+            say(format_args!(
+                "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+                y,
+                m,
+                d,
+                rem / 3600,
+                rem / 60 % 60
+            ))?;
+        }
+        let up = zoo_rt::ticks() / 100;
+        say(format_args!("running for {} min {} s", up / 60, up % 60))?;
+        let (mut files, mut folders, mut bytes) = (0u64, 0u64, 0u64);
+        self.count("", 0, &mut files, &mut folders, &mut bytes);
+        zoo_rt::log!(
+            "OtterHandler: info: home holds {} files, {} folders",
+            files,
+            folders
+        );
+        say(format_args!(
+            "home: {} files, {} folders, {} bytes",
+            files, folders, bytes
+        ))
+    }
+
+    fn count(&self, dir: &str, depth: usize, files: &mut u64, folders: &mut u64, bytes: &mut u64) {
+        if depth > MAX_WALK_DEPTH {
+            return;
+        }
+        for e in self.entries(dir).unwrap_or_default() {
+            if e.is_dir() {
+                *folders += 1;
+                self.count(&join(dir, e.name()), depth + 1, files, folders, bytes);
+            } else {
+                *files += 1;
+                *bytes += e.size;
+            }
+        }
+    }
+
+    /// Undoes the last `create` (removes what it made, deepest first, only
+    /// while empty) or the last `move` (moves it back).
     fn undo(&mut self) -> Result<(), &'static str> {
+        if let Some((from, to)) = self.moved.take() {
+            zoo_rt::rename(self.home, &to, &from).map_err(reason)?;
+            zoo_rt::log!("OtterHandler: moved {} back to {}", to, from);
+            return self
+                .line(format_args!("moved {} back to {}", to, from))
+                .map_err(|_| "reply failed");
+        }
         if self.journal.is_empty() {
             return Err("nothing to undo");
         }
@@ -525,4 +730,19 @@ impl Otter {
         }
         Ok(())
     }
+}
+
+/// Year, month, day of `days` since 1970-01-01 (Howard Hinnant's
+/// `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
 }

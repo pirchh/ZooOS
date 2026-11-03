@@ -155,6 +155,14 @@ become `list .` and an error.
 - **A follow-up's command with an empty argument** ("is that it?" →
   `list` of nothing) is answered in words instead.
 
+**A yes/no question about the last answer** ("is that it?", "are there
+more?", "did that work?") goes straight to a reply in words, from the
+conversation, without a command choice (`zoo_abi::bella::
+question_about_answer`, version 0.86.0). With ten commands to choose
+from, the 0.5B model had turned "is that it?" into `read file
+playlist.txt`. Bella now answers: "Yes, that's the file `file
+playlist.txt` in the `music` directory. …"
+
 **`.` means home.** OtterHandler takes `.` and `~` as the home folder
 instead of refusing them.
 

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Stage 3
-section (version 0.85.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The broad access
+section (version 0.86.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,54 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Broad access results (version 0.86.0)
+
+Design: docs/access-design.md.
+
+**New case `bella-access`** (TCG, typed commands): `OK`.
+
+```
+[31:otter-handler] OtterHandler: info: home holds 6 files, 4 folders
+[31:otter-handler] OtterHandler: `notes` is `Documents/notes.txt` (found by name)
+[32:files] Files: showing Home/Music
+[31:otter-handler] OtterHandler: moved Documents/notes.txt to Music/notes.txt
+[31:otter-handler] OtterHandler: moved Music/notes.txt back to Documents/notes.txt
+[31:otter-handler] OtterHandler: moved Documents/recipes to the Trash as .Trash/recipes
+[30:bella] Bella: launched notes
+```
+
+**Negative control:** `trash` without asking → `FAIL bella-access`, `` `to
+the Trash as` appeared, and must not `` (after the `n`).
+
+**Two first runs failed, on the test's side and then mine:**
+- **The test's side:** `open Music` opens a Files window, which takes the
+  keyboard, so the case now clicks Bella's title bar to come back.
+- **My side:** `move … to …` was taken for a sentence because "to" is a
+  sentence word. For `move` it is now part of the command
+  (`zoo_abi::bella` test added).
+
+**`bella-convo`** (WHPX) also failed once more: "is that it?" became
+`read file playlist.txt`. Yes/no questions about the last answer now go
+straight to a reply in words (docs/talk-design.md §6): `OK`.
+
+**`assist-check`** (host, 31 requests, the chosen prompt): 0.5B 17 of 23 and
+2 of 8 (`PASS`); 1.5B 19 of 23 and 5 of 8.
+
+**With the first prompt** (command words only), `bella-live`,
+`everyday-model` and `model-restart` failed: "Find my pancake recipe"
+became `inspect pancake recipe`. Describing each command fixed it. A
+second attempt made `bella-convo` fail: "where is my music" became
+``move `/music to Music` `` (refused: the path escapes home). Saying
+`search` finds "where files are" fixed that, and the request joined the
+set.
+
+**Full `cargo xtask verify --skip-model`** (TCG): 94 cases `OK`, and one
+`FAIL`: `bella-model` looked for Bella's old idle line,
+`…search/list/inspect/create/undo.`, which this change replaced. With its
+`HINT_TEXT` updated, `bella-model` alone: `OK`.
+- clippy `-D warnings` and `cargo fmt --check`: clean.
+- `zoo_abi` tests: 18 passed.
 
 ## Stage 3 results: XSAVE and AVX2 (version 0.85.0)
 

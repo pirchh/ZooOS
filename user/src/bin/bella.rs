@@ -31,18 +31,20 @@ zoo_rt::entry2!(main);
 const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
-use zoo_abi::bella::{follow_up, small_talk, typed_command};
+use zoo_abi::bella::{follow_up, question_about_answer, small_talk, typed_command};
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 4] = ["search", "list", "inspect", "create"];
+const RECALLABLE: [&str; 10] = [
+    "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
+];
 
 fn recallable(command: &str) -> bool {
     RECALLABLE.contains(&command.split(' ').next().unwrap_or(""))
 }
 /// The model, in the initial filesystem (as ElephantHandler finds it).
 const MODEL_FILE: &str = "models/qwen2.5-0.5b-instruct-q4_0.gguf";
-const HINT: &str = "Ask in words, or type search/list/inspect/create/undo.";
+const HINT: &str = "Ask in words, or type a command (search, read, open, move, trash, info...).";
 /// A remembered request at least this alike (percent of shared words)
 /// is answered from memory, without the model (docs/a2-design.md).
 const RECALL_AT: usize = 75;
@@ -51,7 +53,8 @@ enum Mode {
     Typing,
     /// Waiting for the model; the original request is kept for the log.
     Thinking,
-    /// A `create` plan is shown; `y` runs it.
+    /// A command that changes things is shown (`create`'s plan, or what
+    /// `trash` would throw away); `y` runs it (docs/access-design.md).
     Confirm(String),
 }
 
@@ -230,18 +233,23 @@ impl App {
                 self.status = String::from("Cancelling...");
             }
             (Mode::Thinking, _) => {}
-            (Mode::Confirm(path), Key::Char('y')) => {
-                let req = alloc::format!("create {}", path);
+            (Mode::Confirm(req), Key::Char('y')) => {
+                let req = req.clone();
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
                 if self.broker(&req) {
                     self.learn(&req);
                 }
             }
-            (Mode::Confirm(_), Key::Char('n') | Key::Back) => {
+            (Mode::Confirm(req), Key::Char('n') | Key::Back) => {
+                let created = req.starts_with("create ");
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
-                self.say("Not created.");
+                self.say(if created {
+                    "Not created."
+                } else {
+                    "Left where it is."
+                });
                 // The choice was wrong: a command typed next answers it.
                 if let Some(r) = self.request.take() {
                     self.unanswered = Some(r);
@@ -274,6 +282,12 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if question_about_answer(text) && self.last_exchange.is_some() {
+            // "is that it?": answered in words from the conversation
+            // (docs/talk-design.md §6).
+            zoo_rt::log!("Bella: a question about the last answer");
+            self.request = None;
+            self.ask_talk(text);
         } else if small_talk(text) {
             self.request = None;
             self.ask_talk(text);
@@ -341,8 +355,32 @@ impl App {
             plan.push_str(&path);
             if self.broker(&plan) {
                 self.status = String::from("Press y to create, n to leave it.");
-                self.mode = Mode::Confirm(path);
+                self.mode = Mode::Confirm(alloc::format!("create {}", path));
             }
+        } else if let Some(path) = text.strip_prefix("trash ") {
+            // The owner's rule: Bella asks before anything goes away
+            // (docs/access-design.md). The Trash keeps it, for Put Back.
+            let path = String::from(path.trim());
+            let mut look = String::from("inspect ");
+            look.push_str(&path);
+            if self.broker(&look) {
+                // The broker's spelling: it resolved letter case and names.
+                let real = self
+                    .last_output
+                    .first()
+                    .and_then(|l| l.split_once(": "))
+                    .map_or(path.clone(), |(p, _)| String::from(p));
+                let mut q = String::from("Move ");
+                q.push_str(&real);
+                q.push_str(" to the Trash?");
+                self.say(&q);
+                self.status = String::from("Press y to move it to the Trash, n to leave it.");
+                self.mode = Mode::Confirm(alloc::format!("trash {}", real));
+            }
+        } else if let Some(path) = text.strip_prefix("open ") {
+            self.open(path.trim());
+        } else if let Some(app) = text.strip_prefix("launch ") {
+            self.launch(app.trim());
         } else if self.broker(text) {
             self.learn(text);
         } else {
@@ -350,6 +388,78 @@ impl App {
                 self.unanswered = Some(r);
             }
         }
+    }
+
+    /// `open <path>`: a folder in Files, a file in Notes, through the
+    /// window server (docs/access-design.md).
+    fn open(&mut self, path: &str) {
+        let mut look = String::from("inspect ");
+        look.push_str(path);
+        if !self.broker(&look) {
+            return;
+        }
+        let folder = self
+            .last_output
+            .first()
+            .is_some_and(|l| l.contains(": folder,"));
+        // The broker resolved the name (letter case, `.`): use its spelling.
+        let shown = self
+            .last_output
+            .first()
+            .and_then(|l| l.split_once(": "))
+            .map_or(String::from(path), |(p, _)| String::from(p));
+        let real = if shown == "home" {
+            String::new()
+        } else {
+            shown
+        };
+        let program = if folder { "files" } else { "notes" };
+        if self.win.open(program, &real).is_ok() {
+            let mut l = String::from("Opened ");
+            l.push_str(if real.is_empty() {
+                "your home folder"
+            } else {
+                &real
+            });
+            l.push_str(if folder { " in Files." } else { " in Notes." });
+            self.say(&l);
+            zoo_rt::log!("Bella: opened `{}` in {}", real, program);
+            self.learn_open(path);
+        }
+    }
+
+    /// `launch <app>`: opens an application by its name.
+    fn launch(&mut self, app: &str) {
+        let a = app.to_ascii_lowercase();
+        let program = match a.trim_end_matches(" app") {
+            "files" | "finder" | "file browser" => "files",
+            "notes" | "editor" | "text editor" => "notes",
+            "network" | "internet" | "web" => "network",
+            "crash test" | "crash-test" => "crash-test",
+            _ => {
+                let mut l = String::from("Error: no app called ");
+                l.push_str(app);
+                self.say(&l);
+                return;
+            }
+        };
+        if self.win.launch(program).is_ok() {
+            let mut l = String::from("Opened ");
+            l.push_str(app);
+            l.push('.');
+            self.say(&l);
+            zoo_rt::log!("Bella: launched {}", program);
+            let mut cmd = String::from("launch ");
+            cmd.push_str(app);
+            self.learn(&cmd);
+        }
+    }
+
+    /// `open` worked: remember it like a command.
+    fn learn_open(&mut self, path: &str) {
+        let mut cmd = String::from("open ");
+        cmd.push_str(path);
+        self.learn(&cmd);
     }
 
     /// `command` answered the current request: remember the pair.
@@ -658,7 +768,11 @@ impl App {
             // answer the request.
             // A follow-up's command with nothing to act on is a question
             // about the last answer ("is that it?" chose `list` of home).
-            let empty = arg.is_empty() && (self.following || matches!(word, "search" | "create"));
+            // `list`, `inspect` and `info` act on nothing (home, or the
+            // computer); the other commands need something to act on.
+            let empty = arg.is_empty()
+                && word != "info"
+                && (self.following || !matches!(word, "list" | "inspect"));
             if word == "none" || empty {
                 zoo_rt::log!("Bella: no command fits");
                 let request = self.request.take();
