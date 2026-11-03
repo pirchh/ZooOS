@@ -61,7 +61,10 @@ the reload removed too, the log shows:
 Files still logs `showing Home/Documents` after a failed listing, so the
 case now also requires that `Files: cannot list` never appears.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+The four accelerator-only cases were skipped.
+- clippy with `-D warnings` (kernel, `zoo-user`, `xtask`): clean.
+- `cargo fmt --check`: clean.
 
 ## Stage 0 results: the memory (version 0.75.0)
 
