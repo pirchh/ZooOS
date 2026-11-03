@@ -336,29 +336,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 crate::infer::ids(&r.output_ids)
             );
             // The boot image only holds the default model: a larger one
-            // does not fit its FAT partition, so with `--bella` the cases
-            // that need it are skipped and the model-disk ones run
-            // (docs/talk-design.md).
-            let in_boot_image = if crate::infer::model_file() == crate::infer::MODELS[0].1 {
-                Some(image::build_model_image(
+            // does not fit its FAT partition. With `--bella` the Bella
+            // cases boot the plain image and read the model from the model
+            // disk instead, as `run` does (docs/summary-design.md); the
+            // cases that check the boot image's model are skipped.
+            let on_disk = crate::infer::model_file() != crate::infer::MODELS[0].1;
+            let in_boot_image = if on_disk {
+                image::build(root, tools, image::Mode::Normal)?
+            } else {
+                image::build_model_image(
                     root,
                     tools,
                     image::Mode::Normal,
                     &data,
                     crate::infer::GUEST_PROMPT,
                     &r.output_ids,
-                )?)
-            } else {
-                None
+                )?
             };
             Some((
-                in_boot_image,
+                Some(in_boot_image),
                 // The everyday system as `run` boots it: the plain
                 // fast-boot image and the model disk (docs/stage2-design.md §3).
                 (
                     image::build(root, tools, image::Mode::FastBoot)?,
                     image::model_disk(root)?,
                 ),
+                on_disk,
             ))
         }
         Err(e) if s.skip_model => {
@@ -2533,6 +2536,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         },
     ];
 
+    let model_on_disk = model_image.as_ref().is_some_and(|m| m.2);
     let mut report = String::new();
     let mut all_ok = true;
     if let Some(only) = &s.only
@@ -2559,6 +2563,15 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-summary-answer"
                 | "bella-save"
         );
+        if model_case && model_on_disk && matches!(c.name, "inference" | "bella-model") {
+            let line = format!(
+                "SKIP  {:<22} not run: checks the model in the boot image (default model only)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
         if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
@@ -2650,11 +2663,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         };
         qemu::set_usb(c.usb);
         // The everyday system's model comes on the model disk.
-        qemu::set_model_disk(if c.name == "everyday-model" {
-            model_image.as_ref().map(|m| m.1.1.clone())
-        } else {
-            None
-        });
+        qemu::set_model_disk(
+            if c.name == "everyday-model" || (model_case && model_on_disk) {
+                model_image.as_ref().map(|m| m.1.1.clone())
+            } else {
+                None
+            },
+        );
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {

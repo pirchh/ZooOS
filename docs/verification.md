@@ -42,6 +42,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Model comparison: 0.5B and 1.5B (2026-11-03)
+
+`cargo xtask verify --accel whpx --bella 1.5b --case <case>`. The 1.5B
+model is read from the model disk (1,016 MB in 663 ms; parsed in 243 ms;
+AVX2 engine), with 4 GiB of guest memory.
+
+| Case | 0.5B | 1.5B | 1.5B reply | 1.5B time |
+| --- | --- | --- | --- | --- |
+| `bella-talk` | `OK` | `OK` | "I am Bella, the assistant built into ZooOS." / a bicycle joke | 3.6 / 6.5 s |
+| `bella-convo` | `OK` | `OK` | "Yes, it seems you have music files in the Music folder. …" | 6.4 s |
+| `bella-facts-answer` | `OK` | `OK` | "Your dentist appointment is on Friday." | 4.3 s |
+| `bella-context-answer` | `OK` | `FAIL` | "You are working on the "Notes" file, which is the most recently opened document." (no file name) | 9.3 s |
+| `bella-summary-answer` | `OK` | `OK` | "… shopping for ingredients and a call to the vet regarding Zara the zebra." | 11.9 s |
+| `bella-save` | `OK` | `OK` | the same summary; save, refuse, open | 12.0 / 13.6 s |
+| `bella-live` | `OK` | `OK` | — | — |
+| `model-restart` | `OK` | `OK` | — | — |
+| `responsiveness` | `OK` | `OK` | — | — |
+| `inference` | `OK` | skipped (boot-image model only) | — | — |
+
+0.5B times for the same cases are 1.8–2.5 s (sections above). In short,
+1.5B gives fuller summaries and keeps the desktop responsive, at 2–5×
+the time per reply, and it reads the screen snapshot less well.
+
+With the default model, `inference`, `bella-summary-answer`,
+`bella-context-answer` (WHPX) and `bella-summary` (TCG) are still `OK`
+after this change.
+
 ## Save results (version 0.91.0)
 
 Design: docs/save-design.md.

@@ -50,8 +50,17 @@ only ever becomes words on the screen.
 The summaries are right but thin: the 0.5B model names the gist and
 drops details (the vet call; the ingredients). Asking it to name the main
 points, before or after the text, gave the same pancake summary
-word for word. The 1.5B model is the likely fix; this case cannot run it
-yet, because the 1.5B model does not fit the boot image the case uses.
+word for word.
+
+**The 1.5B model** (`--bella 1.5b`, read from the model disk; see
+docs/verification.md, "Model comparison"):
+
+| File | Summary | Time |
+| --- | --- | --- |
+| `Documents/notes.txt` | "The file notes.txt contains information about shopping for ingredients and a call to the vet regarding Zara the zebra." | 11.9–12.0 s |
+| the same, asked again | "… shopping for ingredients (flour, eggs, milk) and a call to the vet regarding Zara the zebra." | 13.6 s |
+
+It keeps the details, at about five times the time.
 
 ## Checks
 
