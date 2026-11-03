@@ -2442,6 +2442,35 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "smp-keys",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "keys typed while the models load (docs/smp-design.md): with 8 processors, a 53-character request typed into Bella while the chat and embedding models are read from the model disk reaches the model service whole (needs --accel and the model disk)",
+            interaction: Some(Interaction {
+                steps: {
+                    let mut steps = start_desktop();
+                    // Files -> Crash Test -> Bella, at once: the models are
+                    // still being read.
+                    steps.push(Action::Keys(vec!["tab", "tab"]));
+                    steps.push(Action::Keys(typed(KEYS_UNDER_LOAD)));
+                    steps.push(Action::WaitContains(
+                        "ElephantHandler: read the model from the model disk".into(),
+                    ));
+                    steps.push(Action::WaitContains(format!(
+                        "ElephantHandler: `{KEYS_UNDER_LOAD}`"
+                    )));
+                    steps.push(Action::Settle(QUIET));
+                    steps
+                },
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-vectors",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2653,6 +2682,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
+                | "smp-keys"
                 | "bella-save"
         );
         if model_case && model_on_disk && matches!(c.name, "inference" | "bella-model") {
@@ -2709,6 +2739,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
+                | "smp-keys"
                 | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
@@ -2767,19 +2798,23 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             2
         });
         // The other processors (docs/smp-design.md).
-        qemu::set_cpus(if c.name.starts_with("smp-") {
+        qemu::set_cpus(if c.name == "smp-keys" {
+            s.cpus.max(8)
+        } else if c.name.starts_with("smp-") {
             s.cpus.max(4)
         } else {
             s.cpus
         });
         // The everyday system's model comes on the model disk.
-        qemu::set_model_disk(if c.name == "everyday-model" || c.name == "bella-vectors" {
-            model_image.as_ref().map(|m| m.1.1.clone())
-        } else if model_case && model_on_disk {
-            model_image.as_ref().and_then(|m| m.3.clone())
-        } else {
-            None
-        });
+        qemu::set_model_disk(
+            if matches!(c.name, "everyday-model" | "bella-vectors" | "smp-keys") {
+                model_image.as_ref().map(|m| m.1.1.clone())
+            } else if model_case && model_on_disk {
+                model_image.as_ref().and_then(|m| m.3.clone())
+            } else {
+                None
+            },
+        );
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {
@@ -5554,6 +5589,9 @@ fn bella_lookup_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
+
+/// Typed while the models load (`smp-keys`).
+const KEYS_UNDER_LOAD: &str = "find my pancake recipe please and thank you very much";
 
 fn bella_vectors_steps() -> Interaction {
     let mut steps = start_desktop();

@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-default-model section (version 0.98.0) is the current state. Sections before it
+keys-under-load section (version 0.99.0) and the default-model section
+(0.98.0) before it are the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +42,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Keys under load (version 0.99.0)
+
+New case `smp-keys` (8 processors, model disk, `--accel whpx`): at desktop
+start, Tab to Bella and type "find my pancake recipe please and thank you
+very much" while the models load. Pass only if ElephantHandler logs the
+whole request. Design and measurements: docs/keys-design.md.
+
+    cargo xtask verify --accel whpx --case smp-keys
+
+| Build | Runs | Result |
+| --- | --- | --- |
+| Before the fix (negative control) | 5 | `FAIL` 5 of 5: Bella received "find m and thank you very much", "find mhank you very much", "find myou very much" |
+| Ticket lock instead (not kept) | 5 | `FAIL` 5 of 5 |
+| Held keys alone | 5 | `FAIL` 5 of 5 ("find mvery much", …) |
+| `mem_alloc` in 8 MiB passes, held keys | 5 | `OK` 4, `FAIL` 1 ("pleae") |
+| **`mem_alloc` in 1 MiB passes, held keys** | 10 | **`OK` 10 of 10** |
+
+**The cause, measured** with temporary timing lines (not committed): one
+`mem_alloc` held the scheduler lock 7,845 Mcycles while the other seven
+processors spun for it, the boot processor among them, which went 9,110
+Mcycles without a timer tick. The 0.98.0 note below blamed the disk
+read; that was wrong.
 
 ## Default model results (version 0.98.0)
 
@@ -97,7 +121,7 @@ accepts both, so the three cases now accept either.
   lock more often with 8 processors;
 - QEMU's PS/2 buffer holds only a few keys.
 
-Not fixed here: it is the next item (docs/smp-design.md).
+Fixed in 0.99.0 (above): the cause was `mem_alloc`, not the disk read.
 
 **Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
 `OK` and 16 skipped. The 16 are the 14 cases that need an accelerator, plus

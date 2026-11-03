@@ -317,6 +317,11 @@ struct Task {
     /// asks for, and whether a request is waiting for its reply.
     fs_results: Vec<(i64, Vec<u8>)>,
     fs_cursor: usize,
+    /// A large `mem_alloc` in progress: (its size argument, the start of
+    /// its range, pages mapped so far). It maps `ALLOC_STEP` pages per
+    /// pass and runs again with the lock released in between
+    /// (docs/keys-design.md).
+    alloc_progress: Option<(u64, u64, u64)>,
     fs_pending: bool,
     /// x87/SSE register state while switched out; `None` for the kernel.
     fpu: Option<Box<FxArea>>,
@@ -395,6 +400,7 @@ impl Task {
             last_ran: 0,
             fs_results: Vec::new(),
             fs_cursor: 0,
+            alloc_progress: None,
             fs_pending: false,
             fpu: None,
             fs_base: 0,
@@ -543,6 +549,10 @@ enum Outcome {
     /// The process crashes (a handler declared its exception unhandled).
     Crash,
 }
+
+/// Pages one pass of `mem_alloc` maps (1 MiB, about 1.5 ms) before it
+/// lets the lock go (docs/keys-design.md).
+const ALLOC_STEP: u64 = 256;
 
 fn err(e: Error) -> Outcome {
     Outcome::Ret(e.as_return())
@@ -7385,21 +7395,45 @@ impl Scheduler {
                     return err(Error::Inval);
                 }
                 let pages = a1.div_ceil(4096);
-                let t = self.proc(i);
-                let start = t.heap_next;
-                if start - HEAP_BASE + pages * 4096 > HEAP_LIMIT {
-                    return err(Error::NoMem);
-                }
-                for k in 0..pages {
+                // A pass of a large allocation already under way, or a new
+                // one, whose range is taken now so other threads' calls
+                // never overlap it.
+                let (start, done) = match self.task(i).alloc_progress.take() {
+                    Some((size, start, done)) if size == a1 => (start, done),
+                    _ => {
+                        let t = self.proc(i);
+                        let start = t.heap_next;
+                        if start - HEAP_BASE + pages * 4096 > HEAP_LIMIT {
+                            return err(Error::NoMem);
+                        }
+                        t.heap_next = start + pages * 4096;
+                        (start, 0)
+                    }
+                };
+                let end = pages.min(done + ALLOC_STEP);
+                for k in done..end {
                     if mem
                         .map_user_page(p4, start + k * 4096, true, false)
                         .is_err()
                     {
                         mem.unmap_user_free(p4, start, k);
+                        let t = self.proc(i);
+                        if t.heap_next == start + pages * 4096 {
+                            t.heap_next = start;
+                        }
                         return err(Error::NoMem);
                     }
                 }
-                self.proc(i).heap_next = start + pages * 4096;
+                if end < pages {
+                    // Mapping and zeroing every page holds the lock, with
+                    // interrupts off on the waiting processors too: 1 GiB
+                    // at once stalled all of them for seconds and lost
+                    // keystrokes. Back to the `int 0x80` (RAX still holds
+                    // the call number) for the next pass.
+                    self.task(i).alloc_progress = Some((a1, start, end));
+                    f.rip -= 2;
+                    return Outcome::Resume;
+                }
                 Outcome::Ret(start as i64)
             }
             sys::SHM_CREATE => {

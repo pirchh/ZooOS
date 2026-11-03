@@ -313,7 +313,15 @@ impl Text {
     }
 }
 
+/// Keys held for one app while its queue is full, at most (docs/keys-design.md).
+const HELD_KEYS: usize = 256;
+
 struct App {
+    /// Keys typed for it that its queue had no room for yet, oldest first:
+    /// delivered in order as it reads (docs/keys-design.md).
+    held: alloc::collections::VecDeque<Line>,
+    /// Keys held during the current burst, for the log line when it ends.
+    held_burst: usize,
     /// Its name in the dock and banners, e.g. "Crash Test".
     label: &'static str,
     program: &'static str,
@@ -352,6 +360,8 @@ impl App {
     fn new(prog: usize) -> App {
         let (label, program, wants_home) = CATALOG[prog];
         App {
+            held: alloc::collections::VecDeque::new(),
+            held_burst: 0,
             label,
             program,
             wants_home,
@@ -4400,18 +4410,57 @@ impl Desktop {
         }
     }
 
-    fn send_key(&self, key: Key) {
-        let app = &self.apps[self.focus];
+    fn send_key(&mut self, key: Key) {
+        let i = self.focus;
+        let app = &mut self.apps[i];
         if app.running && app.visible() {
             let mut l = Line::new();
             key.encode(&mut l);
-            // A full queue drops the key; the app is busy or stuck.
-            let _ = zoo_rt::send(app.chan, l.as_str().as_bytes());
+            // Behind any keys already held, so the order stays.
+            app.held.push_back(l);
+            if app.held.len() > HELD_KEYS {
+                // Stuck rather than busy: the oldest go.
+                app.held.pop_front();
+            }
+            self.deliver_keys(i);
+        }
+    }
+
+    /// Sends app `i` the keys held for it while its queue has room. A full
+    /// queue keeps them for the next pass of the main loop: a busy app (at
+    /// desktop start the models are read from disk) loses no typing
+    /// (docs/keys-design.md).
+    fn deliver_keys(&mut self, i: usize) {
+        let app = &mut self.apps[i];
+        while let Some(l) = app.held.front() {
+            match zoo_rt::send(app.chan, l.as_str().as_bytes()) {
+                Ok(()) => {
+                    app.held.pop_front();
+                }
+                Err(zoo_rt::Error::Full) | Err(zoo_rt::Error::NoMem) => {
+                    app.held_burst = app.held_burst.max(app.held.len());
+                    return;
+                }
+                Err(_) => {
+                    app.held.clear();
+                    return;
+                }
+            }
+        }
+        if app.held_burst > 0 {
+            zoo_rt::log!(
+                "PeacockHandler: {} was busy; held up to {} keys, all delivered",
+                app.label,
+                app.held_burst
+            );
+            app.held_burst = 0;
         }
     }
 
     /// Handles an application whose channel closed: it has ended.
     fn app_ended(&mut self, i: usize) {
+        self.apps[i].held.clear();
+        self.apps[i].held_burst = 0;
         self.damage_window(i);
         self.damage_dock();
         self.damage_banner();
@@ -4654,6 +4703,13 @@ fn main(_start_handle: u64, home: u64) -> u8 {
     loop {
         let mut dirty = false;
 
+        // Keys held for busy apps, before any new ones.
+        for i in 0..desk.apps.len() {
+            if !desk.apps[i].held.is_empty() {
+                desk.deliver_keys(i);
+            }
+        }
+
         // Keyboard.
         let n = input_read(&mut kb).unwrap_or(0);
         for &byte in &kb[..n] {
@@ -4836,6 +4892,9 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             if core::mem::take(&mut desk.cursor_switch) {
                 desk.apply_cursor();
             }
+        } else if desk.apps.iter().any(|a| !a.held.is_empty()) {
+            // Keys wait for a busy app: try again next tick.
+            zoo_rt::sleep(1);
         } else {
             // Until input, a message from an application, or the next
             // second (the clock); docs/u1b-design.md.
