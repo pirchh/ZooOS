@@ -183,8 +183,8 @@ fn service(chan: Handle) -> u8 {
         // Answer every request with the reason until the client leaves.
         loop {
             match recv(chan, &mut buf) {
-                // `warm` expects no answer.
-                Ok(n) if &buf[..n] == b"warm" => {}
+                // `warm` and `note` expect no answer.
+                Ok(n) if &buf[..n] == b"warm" || buf[..n].starts_with(b"note ") => {}
                 Ok(_) => {
                     if reply(chan, format_args!("err model not installed"), false).is_err() {
                         return 0;
@@ -383,10 +383,46 @@ fn service(chan: Handle) -> u8 {
             }
             continue;
         }
+        if let Some(note) = msg.strip_prefix("note ") {
+            // An exchange that was not a reply in words, for the
+            // conversation (docs/talk-design.md §6). Fed in the background;
+            // a request arriving meanwhile is kept and answered next.
+            if let (Some(tk), Some((user, said))) = (talk.as_mut(), note.split_once('\t')) {
+                let t = zoo_rt::now_us();
+                let mut closed = false;
+                let fed = tk.note(user, said, |_| {
+                    let mut m = [0u8; zoo_abi::MAX_MESSAGE];
+                    match try_recv(chan, &mut m) {
+                        Ok(k) => {
+                            let s = core::str::from_utf8(&m[..k]).unwrap_or("");
+                            if s.starts_with("choose ") || s.starts_with("talk ") {
+                                pending = Some(alloc::string::String::from(s));
+                            }
+                        }
+                        Err(Error::Again) => {}
+                        Err(_) => closed = true,
+                    }
+                    !closed
+                });
+                if closed {
+                    return 0;
+                }
+                if fed.is_ok() {
+                    zoo_rt::log!(
+                        "ElephantHandler: noted an exchange in {} ms ({} tokens of conversation)",
+                        (zoo_rt::now_us() - t) / 1000,
+                        tk.conversation_tokens()
+                    );
+                }
+            }
+            continue;
+        }
         let Some(request) = msg.strip_prefix("choose ") else {
             // `cancel` with nothing running, or unknown: nothing to do.
             continue;
         };
+        // `choose <request>\t<context>`: a follow-up, with the last exchange.
+        let (request, context) = request.split_once('\t').unwrap_or((request, ""));
         let start = ticks();
         let t0 = zoo_rt::now_us();
         let mut setup_us = 0;
@@ -437,7 +473,7 @@ fn service(chan: Handle) -> u8 {
             }
         }
         let result = match (assistant.as_mut(), setup_err) {
-            (Some(a), _) => a.choose(request, |s| {
+            (Some(a), _) => a.choose_in(request, context, |s| {
                 if matches!(s, Step::Arg { .. }) && first_arg.is_none() {
                     first_arg = Some(zoo_rt::now_us());
                 }

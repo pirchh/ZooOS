@@ -59,6 +59,11 @@ pub struct Budget {
     pub max_arg_tokens: usize,
 }
 
+/// Most bytes of context (the last exchange) given with a follow-up.
+pub const MAX_CONTEXT: usize = 300;
+/// Most tokens that context may take.
+pub const MAX_CONTEXT_TOKENS: usize = 96;
+
 pub const BUDGET: Budget = Budget {
     max_request: 200,
     max_request_tokens: 64,
@@ -133,7 +138,11 @@ impl<'m, 't> Bella<'m, 't> {
         let prefix = prefix_text();
         let prefix_ids = tok.encode(&prefix);
         // Prefix + request (+ template tokens) + tool word + argument.
-        let ctx = prefix_ids.len() + BUDGET.max_request_tokens + 16 + BUDGET.max_arg_tokens;
+        let ctx = prefix_ids.len()
+            + MAX_CONTEXT_TOKENS
+            + BUDGET.max_request_tokens
+            + 16
+            + BUDGET.max_arg_tokens;
         let mut st = model.new_state(ctx);
         for (k, &id) in prefix_ids.iter().enumerate() {
             if !progress(Step::Prefix {
@@ -178,19 +187,41 @@ impl<'m, 't> Bella<'m, 't> {
     pub fn choose(
         &mut self,
         request: &str,
+        progress: impl FnMut(Step) -> bool,
+    ) -> Result<Choice, AssistError> {
+        self.choose_in(request, "", progress)
+    }
+
+    /// Picks a tool and argument for `request`, a follow-up to the
+    /// exchange described in `context` (empty for none;
+    /// docs/talk-design.md §6).
+    pub fn choose_in(
+        &mut self,
+        request: &str,
+        context: &str,
         mut progress: impl FnMut(Step) -> bool,
     ) -> Result<Choice, AssistError> {
         let request = request.trim();
+        let context = context.trim();
+        if context.len() > MAX_CONTEXT {
+            return Err(AssistError::TooLong);
+        }
         if request.is_empty() {
             return Err(AssistError::Empty);
         }
         if request.len() > BUDGET.max_request {
             return Err(AssistError::TooLong);
         }
-        let mut text = String::from(request);
+        let mut text = String::new();
+        if !context.is_empty() {
+            text.push_str("Earlier: ");
+            text.push_str(context);
+            text.push_str("\nNow: ");
+        }
+        text.push_str(request);
         text.push_str("<|im_end|>\n<|im_start|>assistant\n");
         let ids = self.tok.encode(&text);
-        if ids.len() > BUDGET.max_request_tokens + 8 {
+        if ids.len() > BUDGET.max_request_tokens + MAX_CONTEXT_TOKENS + 8 {
             return Err(AssistError::TooLong);
         }
         self.st.pos = self.prefix_len;

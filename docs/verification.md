@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Bella talks
-section (version 0.83.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The conversation
+section (version 0.84.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Bella keeps the conversation (version 0.84.0)
+
+Design: docs/talk-design.md §6.
+
+**New case `bella-convo`** (`--accel whpx`): `OK`.
+
+```
+[31:elephant-handler] ElephantHandler: chose search `music`
+[31:elephant-handler] ElephantHandler: noted an exchange in 1903 ms (37 tokens of conversation)
+[30:bella] Bella: a follow-up; with the last exchange
+[31:elephant-handler] ElephantHandler: said `Yes, that's the information I found for you. If you have any other questions or need further assistance, feel free to ask.` in 2630 ms
+```
+
+**Negative control:** no follow-up context → `FAIL bella-convo`; the model
+chose ``list `.` `` again.
+
+**Still `OK`** (WHPX): `bella-talk`, and `bella-live` (first answer
+1,080 ms).
+
+**Host tests:** `zoo_abi` 17 passed (new `follow_ups`).
+
+FULL_SUITE_RESULT
 
 ## Bella talks; Qwen2.5-1.5B (version 0.83.0)
 

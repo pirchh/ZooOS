@@ -18,6 +18,7 @@ extern crate alloc;
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 use zoo_rt::app::{Key, Window, send_wait};
 use zoo_rt::{
@@ -30,7 +31,7 @@ zoo_rt::entry2!(main);
 const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
-use zoo_abi::bella::{small_talk, typed_command};
+use zoo_abi::bella::{follow_up, small_talk, typed_command};
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
@@ -81,7 +82,20 @@ struct App {
     broker_failures: u32,
     /// No new broker before this tick.
     broker_retry_at: u64,
+    /// The broker's result lines for the last command (for the
+    /// conversation; docs/talk-design.md §6).
+    last_output: Vec<String>,
+    /// The last exchange in a sentence, given with a follow-up.
+    last_exchange: Option<String>,
+    /// The line being answered in words (for `last_exchange`).
+    talking: Option<String>,
+    /// The request being chosen for is a follow-up, sent with context.
+    following: bool,
 }
+
+/// Most bytes of an exchange kept for the conversation (the engine's
+/// `assist::MAX_CONTEXT`).
+const EXCHANGE_BYTES: usize = 300;
 
 /// First wait before restarting a helper that ended (0.5 s); it doubles
 /// with each failure in a row, up to `MAX_BACKOFF`.
@@ -89,6 +103,19 @@ const BACKOFF: u64 = 50;
 const MAX_BACKOFF: u64 = 1600;
 /// Longest wait for the broker's answer (10 s, docs/stage2-design.md §4).
 const BROKER_DEADLINE: u64 = 1000;
+
+/// `s` cut to `EXCHANGE_BYTES` at a character boundary, without tabs or
+/// line breaks (they separate fields in messages).
+fn shorten(s: String) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if out.len() + c.len_utf8() > EXCHANGE_BYTES {
+            break;
+        }
+        out.push(if c == '\t' || c == '\n' { ' ' } else { c });
+    }
+    out
+}
 
 fn backoff(failures: u32) -> u64 {
     (BACKOFF << failures.saturating_sub(1).min(5)).min(MAX_BACKOFF)
@@ -111,6 +138,10 @@ fn main(chan: u64, home: u64) -> u8 {
         model_failures: 0,
         broker_failures: 0,
         broker_retry_at: 0,
+        last_output: Vec::new(),
+        last_exchange: None,
+        talking: None,
+        following: false,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -242,6 +273,7 @@ impl App {
             self.request = self.unanswered.take();
             self.command(text);
             self.answered("a typed command");
+            self.exchanged(text, text);
         } else if small_talk(text) {
             self.request = None;
             self.ask_talk(text);
@@ -252,6 +284,41 @@ impl App {
             } else {
                 self.ask_model(text);
             }
+        }
+    }
+
+    /// A command answered `asked`: keep the exchange for follow-ups, and
+    /// note it in the model's conversation so later replies know it
+    /// (docs/talk-design.md §6). File names in the results reach the model
+    /// this way; its replies are only shown, and destructive commands ask.
+    fn exchanged(&mut self, asked: &str, cmd: &str) {
+        let mut said = String::from("I ran `");
+        said.push_str(cmd);
+        said.push('`');
+        if self.last_output.is_empty() {
+            said.push_str(" and it showed nothing.");
+        } else {
+            said.push_str(" and it showed: ");
+            for (k, l) in self.last_output.iter().enumerate() {
+                if k > 0 {
+                    said.push_str("; ");
+                }
+                said.push_str(l.trim());
+            }
+            said.push('.');
+        }
+        let said = shorten(said);
+        let mut e = String::from("The user asked: ");
+        e.push_str(asked);
+        e.push_str(". Bella: ");
+        e.push_str(&said);
+        self.last_exchange = Some(shorten(e));
+        if let Some(el) = self.elephant {
+            let mut msg = String::from("note ");
+            msg.push_str(asked);
+            msg.push('\t');
+            msg.push_str(&said);
+            let _ = send_wait(el, msg.as_bytes());
         }
     }
 
@@ -343,6 +410,7 @@ impl App {
         // Not learned again; a command typed next corrects it (B3).
         let request = self.request.take();
         self.command(&cmd);
+        self.exchanged(text, &cmd);
         self.unanswered = request;
         true
     }
@@ -410,6 +478,9 @@ impl App {
             self.broker_ended("stopped");
             return false;
         }
+        if !req.starts_with("remember ") && !req.starts_with("recall ") {
+            self.last_output.clear();
+        }
         let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
         let deadline = zoo_rt::ticks() + BROKER_DEADLINE;
         loop {
@@ -434,6 +505,9 @@ impl App {
                 let mut l = String::from("  ");
                 l.push_str(rest);
                 self.say(&l);
+                if self.last_output.len() < 8 {
+                    self.last_output.push(String::from(rest));
+                }
             } else if line == "ok" {
                 return true;
             } else if line == "none" {
@@ -507,6 +581,7 @@ impl App {
             self.say("Error: cannot start the model service.");
             return;
         }
+        self.talking = Some(String::from(text));
         let mut msg = String::from("talk ");
         msg.push_str(text);
         let Some(e) = self.elephant else { return };
@@ -525,6 +600,17 @@ impl App {
         }
         let mut msg = String::from("choose ");
         msg.push_str(text);
+        // A follow-up ("is that it?") gets the last exchange
+        // (docs/talk-design.md §6).
+        self.following = false;
+        if follow_up(text)
+            && let Some(e) = &self.last_exchange
+        {
+            msg.push('\t');
+            msg.push_str(e);
+            self.following = true;
+            zoo_rt::log!("Bella: a follow-up; with the last exchange");
+        }
         let Some(e) = self.elephant else { return };
         if send_wait(e, msg.as_bytes()).is_err() {
             self.elephant = None;
@@ -549,6 +635,15 @@ impl App {
             l.push_str(text);
             self.say(&l);
             self.answered("the model, in words");
+            // The model keeps its own reply in its conversation; here it is
+            // only remembered for a follow-up's command choice.
+            if let Some(asked) = self.talking.take() {
+                let mut e = String::from("The user said: ");
+                e.push_str(&asked);
+                e.push_str(". Bella replied: ");
+                e.push_str(text);
+                self.last_exchange = Some(shorten(e));
+            }
             return;
         }
         if let Some(rest) = msg.strip_prefix("tool ") {
@@ -561,7 +656,10 @@ impl App {
             // one with nothing to act on: Bella answers in words instead
             // (docs/talk-design.md), and a command typed next can still
             // answer the request.
-            if word == "none" || (arg.is_empty() && matches!(word, "search" | "create")) {
+            // A follow-up's command with nothing to act on is a question
+            // about the last answer ("is that it?" chose `list` of home).
+            let empty = arg.is_empty() && (self.following || matches!(word, "search" | "create"));
+            if word == "none" || empty {
                 zoo_rt::log!("Bella: no command fits");
                 let request = self.request.take();
                 if let Some(r) = &request {
@@ -581,8 +679,12 @@ impl App {
             let mut l = String::from("Bella: ");
             l.push_str(&cmd);
             self.say(&l);
+            let asked = self.request.clone();
             self.command(&cmd);
             self.answered("the model");
+            if let Some(a) = asked {
+                self.exchanged(&a, &cmd);
+            }
         } else {
             // Not answered: a command typed next answers it.
             if let Some(r) = self.request.take() {

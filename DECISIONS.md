@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella keeps the conversation (2026-11-03)
+
+Version 0.84.0. Design: docs/talk-design.md §6.
+
+- **Replies in words continue one conversation** in the model's cache (768
+  tokens, then it starts over).
+- **Command exchanges are noted into it,** including the names in their
+  results.
+- **Follow-ups** ("is that it?") send the last exchange with the command
+  choice. A follow-up's empty command is answered in words.
+- **`.` and `~` mean the home folder.**
+
 ## Bella talks; Qwen2.5-1.5B as a choice (2026-11-02)
 
 Version 0.83.0. Design: docs/talk-design.md.

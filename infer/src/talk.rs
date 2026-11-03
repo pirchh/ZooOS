@@ -21,6 +21,9 @@ Answer in one or two short, friendly sentences.";
 
 /// Most tokens in a reply.
 pub const MAX_REPLY_TOKENS: usize = 48;
+/// Tokens the conversation may take after the system prompt; older turns
+/// are forgotten when it is full (docs/talk-design.md §6).
+pub const CONVERSATION_TOKENS: usize = 768;
 
 /// One unit of progress, reported to the callback; returning `false`
 /// cancels.
@@ -39,6 +42,9 @@ pub struct Talk<'m, 't> {
     tok: &'t Tokenizer<'t>,
     st: State,
     prefix_len: usize,
+    /// Where the conversation so far ends in the cache: each reply and
+    /// each noted exchange is kept, so later replies can refer to them.
+    conv_end: usize,
 }
 
 impl<'m, 't> Talk<'m, 't> {
@@ -50,7 +56,7 @@ impl<'m, 't> Talk<'m, 't> {
     ) -> Result<Self, AssistError> {
         let prefix = prefix_text();
         let ids = tok.encode(&prefix);
-        let ctx = ids.len() + BUDGET.max_request_tokens + 16 + MAX_REPLY_TOKENS;
+        let ctx = ids.len() + CONVERSATION_TOKENS;
         let mut st = model.new_state(ctx);
         for (k, &id) in ids.iter().enumerate() {
             if !progress(TalkStep::Prefix {
@@ -66,11 +72,57 @@ impl<'m, 't> Talk<'m, 't> {
             tok,
             st,
             prefix_len: ids.len(),
+            conv_end: ids.len(),
         })
     }
 
     pub fn prefix_tokens(&self) -> usize {
         self.prefix_len
+    }
+
+    /// Tokens of conversation kept now.
+    pub fn conversation_tokens(&self) -> usize {
+        self.conv_end - self.prefix_len
+    }
+
+    /// Room for `n` more tokens of conversation: when there is not, the
+    /// conversation starts over after the system prompt.
+    fn make_room(&mut self, n: usize) {
+        if self.conv_end + n > self.prefix_len + CONVERSATION_TOKENS {
+            self.conv_end = self.prefix_len;
+        }
+    }
+
+    /// Adds an exchange that was not a reply in words (a command Bella ran
+    /// and what it showed) to the conversation, so later replies know it.
+    pub fn note(
+        &mut self,
+        user: &str,
+        bella: &str,
+        mut progress: impl FnMut(TalkStep) -> bool,
+    ) -> Result<(), AssistError> {
+        let mut text = String::from(user.trim());
+        text.push_str("<|im_end|>\n<|im_start|>assistant\n");
+        text.push_str(bella.trim());
+        text.push_str("<|im_end|>\n<|im_start|>user\n");
+        let ids = self.tok.encode(&text);
+        if ids.len() > CONVERSATION_TOKENS / 3 {
+            return Err(AssistError::TooLong);
+        }
+        self.make_room(ids.len());
+        self.st.pos = self.conv_end;
+        for (k, &id) in ids.iter().enumerate() {
+            if !progress(TalkStep::Request {
+                done: k,
+                total: ids.len(),
+            }) {
+                // Half-fed: forget it rather than keep a broken turn.
+                return Err(AssistError::Cancelled);
+            }
+            self.model.feed(&mut self.st, id)?;
+        }
+        self.conv_end = self.st.pos;
+        Ok(())
     }
 
     /// Bella's reply to `request`: at most `MAX_REPLY_TOKENS`, one
@@ -93,7 +145,9 @@ impl<'m, 't> Talk<'m, 't> {
         if ids.len() > BUDGET.max_request_tokens + 8 {
             return Err(AssistError::TooLong);
         }
-        self.st.pos = self.prefix_len;
+        // The request and its reply continue the conversation.
+        self.make_room(ids.len() + MAX_REPLY_TOKENS + 8);
+        self.st.pos = self.conv_end;
         for (k, &id) in ids.iter().enumerate() {
             if !progress(TalkStep::Request {
                 done: k,
@@ -121,6 +175,13 @@ impl<'m, 't> Talk<'m, 't> {
             out.push(next);
             self.model.forward(&mut self.st, next)?;
         }
+        // Close the turn and open the next user turn, so the reply stays in
+        // the conversation.
+        let close = self.tok.encode("<|im_end|>\n<|im_start|>user\n");
+        for &id in &close {
+            self.model.feed(&mut self.st, id)?;
+        }
+        self.conv_end = self.st.pos;
         Ok(clean(&self.tok.decode(&out)))
     }
 }

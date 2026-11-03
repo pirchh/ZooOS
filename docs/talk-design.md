@@ -123,8 +123,59 @@ to win that back.
 
 ## 5. Not done
 
-- **Conversation memory:** each line is still answered on its own. That
-  is next.
 - **Broad access** (the owner chose "broad, confirm deletes") and
   **knowledge** (a vector store; web lookups once there is HTTPS) are
   planned in docs/bella-roadmap.md.
+
+## 6. Conversation memory (version 0.84.0)
+
+The owner noticed: "conversations dont inherit context? its supposed to
+learn with the user". "is that it?" after "where does my music live?" had
+become `list .` and an error.
+
+**Replies in words keep a running conversation** (`zoo_infer::talk`):
+- **Each reply stays in the cache.** The model's key/value cache keeps
+  each request and reply after the system prompt, and the next reply
+  continues from there, so earlier turns cost nothing to re-read.
+- **Command exchanges are noted too.** When a command answered a
+  request, Bella sends `note <request>	<what happened>`, for example
+  ``I ran `list Music` and it showed: file playlist.txt (46 bytes).``
+  ElephantHandler feeds it into the conversation in the background
+  (`noted an exchange in N ms`).
+- **The limit:** 768 tokens. When full, the conversation starts over
+  after the system prompt.
+
+**Follow-ups also reach the command choice:**
+- **What counts as a follow-up:** `zoo_abi::bella::follow_up`, with host
+  tests: a line with "it", "that", "this", "those", "them", "else",
+  "more", "what about" and so on.
+- **What it gets:** Bella sends the last exchange (at most 300 bytes) with
+  it: `choose <request>	<context>`. `Bella::choose_in` puts `Earlier:
+  <context>` / `Now: <request>` in the user turn.
+- **A follow-up's command with an empty argument** ("is that it?" →
+  `list` of nothing) is answered in words instead.
+
+**`.` means home.** OtterHandler takes `.` and `~` as the home folder
+instead of refusing them.
+
+**Trade-off:** file names in command results now reach the model, through
+the noted exchanges. Its replies are still only shown, never run, and
+under the owner's "confirm deletes" rule destructive commands will ask.
+File contents never reach it.
+
+**Measured** on the host (`assist-check --prompt --dialogue`, after the
+exchange above):
+
+| Follow-up | 0.5B | 1.5B |
+| --- | --- | --- |
+| "is that it?" | `list` of nothing, then "Yes, that's the file list for your music." | `none`, then "Yes, it seems you have a file named `playlist.txt` with 46 bytes…" |
+| "what is in it?" | `inspect Music` | `inspect Music/playlist.txt` |
+| "what about Photos?" | `search Photos` | `list Photos` |
+
+**In the guest (`bella-convo`, WHPX, 0.5B):**
+- "where is my music" → `search music`, noted in 1,903 ms;
+- "is that it?" → `a follow-up; with the last exchange`, then said "Yes,
+  that's the information I found for you…" (6.4 s);
+- no `invalid path`.
+- **Negative control:** no follow-up context → `FAIL`; the model chose
+  `list .` again.
