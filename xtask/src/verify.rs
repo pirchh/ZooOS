@@ -876,6 +876,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-facts",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella remembers what she is told (docs/facts-design.md): facts kept on disk across a desktop restart; a question picks the matching fact; forgetting asks, `n` keeps, `y` forgets",
+            interaction: Some(bella_facts_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -2259,6 +2272,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-facts-answer",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: bella_model_expectation(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "Bella answers from what she was told (docs/facts-design.md): told the dentist is on Friday, asked when the dentist is, her reply says Friday (needs --accel)",
+            interaction: Some(bella_facts_answer_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "responsiveness",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2412,6 +2438,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "model-restart"
                 | "bella-talk"
                 | "bella-convo"
+                | "bella-facts-answer"
         );
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -2453,6 +2480,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "model-restart"
                 | "bella-talk"
                 | "bella-convo"
+                | "bella-facts-answer"
                 | "wine-home-1"
                 | "wine-home-2"
         ) && qemu::accel() == "tcg"
@@ -3139,7 +3167,8 @@ fn bella_live_steps() -> Interaction {
 }
 
 /// Bella's idle status line.
-const HINT_TEXT: &str = "Ask in words, or type a command (search, read, open, move, trash, info...).";
+const HINT_TEXT: &str =
+    "Ask in words, or type a command (search, read, open, move, trash, info...).";
 
 fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = title(img, "Files", true)?;
@@ -5088,6 +5117,92 @@ fn desktop_then_rest(normal: &Expectation) -> Expectation {
     ]);
     e.then_rest();
     e
+}
+
+fn bella_facts_steps() -> Interaction {
+    let mut steps = start_desktop();
+    let say = |steps: &mut Vec<Action>, line: &str, wait: &str| {
+        steps.push(Action::Keys(typed(line)));
+        steps.push(Action::WaitContains(wait.into()));
+        steps.push(Action::Settle(QUIET));
+    };
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "remember that my dentist appointment is on Friday",
+        "OtterHandler: remembered a fact (1 kept)",
+    );
+    say(
+        &mut steps,
+        "remember that Zara the zebra likes carrots",
+        "OtterHandler: remembered a fact (2 kept)",
+    );
+    say(
+        &mut steps,
+        "what do you remember?",
+        "OtterHandler: listed 2 facts",
+    );
+    // A question the facts answer: the matching fact goes with it (no
+    // model in this image, so no reply in words).
+    say(
+        &mut steps,
+        "when is my dentist appointment",
+        "Bella: from what you told me: my dentist appointment is on Friday",
+    );
+    steps.push(Action::NeverSeen("Zara the zebra likes carrots;".into()));
+    // A new desktop: the facts are on disk.
+    steps.push(Action::Keys(vec!["esc"]));
+    steps.push(Action::WaitContains(
+        "Zookeeper: desktop session ended".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("desktop")));
+    steps.push(Action::WaitContains("name=bella".into()));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "what do you remember?",
+        "OtterHandler: listed 2 facts",
+    );
+    // Forgetting asks first.
+    steps.push(Action::Keys(typed("forget my dentist appointment")));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("OtterHandler: forgot".into()));
+    steps.push(Action::Keys(typed("forget my dentist appointment")));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains("OtterHandler: forgot 1 facts".into()));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "what do you remember?",
+        "OtterHandler: listed 1 facts",
+    );
+    Interaction { steps }
+}
+
+fn bella_facts_answer_steps() -> Interaction {
+    let mut steps = open_bella();
+    steps.extend([
+        Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
+        Action::Keys(typed("remember that my dentist appointment is on Friday")),
+        Action::WaitContains("OtterHandler: remembered a fact".into()),
+        Action::Settle(QUIET),
+        Action::Keys(typed("when is my dentist appointment?")),
+        Action::WaitContains("Bella: from what you told me".into()),
+        // After that line, the next one naming Friday is her reply.
+        Action::WaitContains("Friday".into()),
+        Action::Settle(QUIET),
+        Action::WaitSeen("ElephantHandler: said `Your dentist appointment is on Friday".into()),
+    ]);
+    leave_desktop(&mut steps);
+    Interaction { steps }
 }
 
 fn bella_access_steps() -> Interaction {

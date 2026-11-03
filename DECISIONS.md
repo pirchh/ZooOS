@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella remembers facts (2026-11-03)
+
+Version 0.87.0. Design: docs/facts-design.md.
+
+- **"remember that X"** keeps X in `.bella-facts` in home (at most 8 KiB).
+  **"what do you remember?"** lists the facts. **"forget X"** asks first.
+- **Facts sharing words with a question** go with it into Bella's reply in
+  words. A question tied to a fact by two or more words is answered in
+  words directly.
+- **Matching is by shared words for now.** A vector store needs an
+  embedding model, a download for the owner to approve.
+
 ## Broad access, confirm deletes (2026-11-03)
 
 Version 0.86.0. Design: docs/access-design.md. The owner chose "broad,

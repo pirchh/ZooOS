@@ -183,6 +183,7 @@ lands as small, separately verified steps.
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |
 | 3 | XSAVE, CPU features, an AVX2 backend: inference 2–2.5× faster in the guest (0.5B request 1.08 → 0.52 s) (docs/stage3-design.md) | done 2026-11-03 |
 | — | Broad access: read, open, move/undo, trash (asks), launch, info; names resolved against real files (docs/access-design.md) | done 2026-11-03 |
+| — | Bella remembers facts the user tells her (on disk), answers from them, forgets on request with confirmation (docs/facts-design.md) | done 2026-11-03 |
 | 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |
 | 5 | Bella v1: workflow templates, safe summarising, "none of these", model bake-off, memory provenance | open |
 | 6 | SMP | open |
