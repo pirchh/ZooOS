@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Broad access, confirm deletes (2026-11-03)
+
+Version 0.86.0. Design: docs/access-design.md. The owner chose "broad,
+confirm deletes".
+
+- **New commands:** `read`, `open` (Files or Notes), `move` (undoable),
+  `trash` (asks first; into the Trash, so Put Back works), `launch` and
+  `info`.
+- **Names are resolved against what exists:** letter case, then a single
+  match by name or stem anywhere in home. Only for commands about
+  something that already exists; never for `create` or a move's target.
+- **The model chooses among ten commands plus `none`,** each described in
+  a few words. 0.5B: 17 of 23 right, 2 of 8 acted on (the new bar). 1.5B:
+  19 of 23, 5 of 8, all `launch` of apps that do not exist.
+- **Read file contents can reach the model** through the conversation.
+  Accepted under the owner's rule: destructive commands ask.
+
 ## Stage 3: XSAVE and AVX2 (2026-11-03)
 
 Version 0.85.0. Design: docs/stage3-design.md.

@@ -208,6 +208,32 @@ impl Browser {
         zoo_rt::log!("Files: showing Home/{}", self.place.as_str());
     }
 
+    /// Shows `path` (from home): a folder is opened, a file is selected in
+    /// its folder. How Bella's `open` reaches Files (docs/access-design.md).
+    fn show(&mut self, path: &str) {
+        let path = path.trim_matches('/');
+        let is_dir = path.is_empty() || zoo_rt::dir_stat(self.home, path).is_ok_and(|e| e.is_dir());
+        let (folder, name) = if is_dir {
+            (path, "")
+        } else {
+            path.rsplit_once('/').unwrap_or(("", path))
+        };
+        let mut p = Place::home();
+        for c in folder.split('/').filter(|c| !c.is_empty()) {
+            if !p.enter(c) {
+                return;
+            }
+        }
+        self.go(p);
+        if !name.is_empty() {
+            self.selected = self.entries[..self.count]
+                .iter()
+                .position(|e| e.as_ref().is_some_and(|e| e.name() == name))
+                .unwrap_or(0);
+            zoo_rt::log!("Files: selected {}", name);
+        }
+    }
+
     /// Back up, with the folder we came from selected.
     fn back(&mut self) {
         let from = self.place;
@@ -402,7 +428,7 @@ impl Browser {
         let count = self.count;
         let entry = |l: usize| l.checked_sub(1).filter(|&k| k < count);
         match ev {
-            Event::Open(_) => {}
+            Event::Open(path) => self.show(path),
             Event::SideClick(k) => {
                 if let Some(&(_, icon, path)) = PLACES.get(k)
                     && icon != 0

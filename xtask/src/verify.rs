@@ -863,6 +863,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-access",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "broad access, confirm deletes (docs/access-design.md): info; read a file found by name; open a folder in Files; move and undo; trash asks, `n` leaves it, `y` moves it to the Trash; launch an app",
+            interaction: Some(bella_access_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "dock-magnify",
             mode: Mode::Normal,
             custom_image: None,
@@ -3054,7 +3067,7 @@ fn bella_convo_steps() -> Interaction {
         Action::WaitContains("ElephantHandler: noted an exchange".into()),
         Action::Settle(QUIET),
         Action::Keys(typed("is that it?")),
-        Action::WaitContains("Bella: a follow-up; with the last exchange".into()),
+        Action::WaitContains("Bella: a question about the last answer".into()),
         Action::WaitContains("ElephantHandler: said `".into()),
         Action::Settle(QUIET),
         Action::NeverSeen("invalid path".into()),
@@ -5061,6 +5074,70 @@ fn notes_large_steps() -> Interaction {
         Action::Keys(vec!["esc"]),
         Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
     ]);
+    Interaction { steps }
+}
+
+/// The desktop starts; after that, process numbers depend on what is
+/// opened.
+fn desktop_then_rest(normal: &Expectation) -> Expectation {
+    let mut e = normal.clone();
+    e.then(&[
+        "ZOO_OS SHELL line=desktop",
+        "ZOO_OS PROC start pid=26 name=zookeeper",
+        "ZOO_OS PROC start pid=27 name=peacock-handler",
+    ]);
+    e.then_rest();
+    e
+}
+
+fn bella_access_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    let say = |steps: &mut Vec<Action>, line: &str, wait: &str| {
+        steps.push(Action::Keys(typed(line)));
+        steps.push(Action::WaitContains(wait.into()));
+        steps.push(Action::Settle(QUIET));
+    };
+    say(&mut steps, "info", "OtterHandler: info: home holds");
+    say(
+        &mut steps,
+        "read notes",
+        "OtterHandler: `notes` is `Documents/notes.txt` (found by name)",
+    );
+    say(&mut steps, "open Music", "Files: showing Home/Music");
+    // The opened Files window has the keyboard now: back to Bella.
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(ASSISTANT_WIN)));
+    steps.push(Action::Button(true));
+    steps.push(Action::Button(false));
+    steps.push(Action::Settle(QUIET));
+    say(
+        &mut steps,
+        "move Documents/notes.txt to Music",
+        "OtterHandler: moved Documents/notes.txt to Music/notes.txt",
+    );
+    say(
+        &mut steps,
+        "undo",
+        "OtterHandler: moved Music/notes.txt back to Documents/notes.txt",
+    );
+    // Trash asks first: `n` leaves it ...
+    say(&mut steps, "trash recipes", "(found by name)");
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("to the Trash as".into()));
+    // ... `y` moves it, into the Trash (Files can put it back).
+    say(&mut steps, "trash recipes", "(found by name)");
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "OtterHandler: moved Documents/recipes to the Trash as .Trash/recipes".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    say(&mut steps, "launch Notes", "Bella: launched notes");
+    steps.push(Action::WaitContains("Notes: opened".into()));
+    steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
 

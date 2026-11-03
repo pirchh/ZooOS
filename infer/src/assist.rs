@@ -13,10 +13,20 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// The instruction every request is answered under.
-pub const SYSTEM: &str = "You turn a request about the user's files into one command.\n\
-Commands: search <words>, list <folder>, inspect <file or folder>, create <folder>.\n\
+pub const SYSTEM: &str = "You turn a request about the user's files and apps into one command.\n\
+Commands:\n\
+search <words>: find where files are, by name or text\n\
+list <folder>: show what is inside a folder\n\
+inspect <file or folder>: how big it is\n\
+create <folder>: make a folder\n\
+read <file>: show a file's text\n\
+open <file or folder>: open it in an app\n\
+move <path> to <path>: move or rename it\n\
+trash <file or folder>: delete it\n\
+launch <app>: start an app (Files, Notes, Network)\n\
+info: about this computer\n\
 Paths are relative to the home folder. Reply with the command only.\n\
-If the request is not about finding, listing, inspecting or creating files or folders, reply: none";
+If no command fits the request, reply: none";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -24,15 +34,29 @@ pub enum Tool {
     List,
     Inspect,
     Create,
+    /// Broad access (docs/access-design.md).
+    Read,
+    Open,
+    Move,
+    Trash,
+    Launch,
+    /// About the computer; no argument.
+    Info,
     /// No command fits the request (docs/stage1-design.md, B9).
     Nothing,
 }
 
-pub const TOOLS: [Tool; 5] = [
+pub const TOOLS: [Tool; 11] = [
     Tool::Search,
     Tool::List,
     Tool::Inspect,
     Tool::Create,
+    Tool::Read,
+    Tool::Open,
+    Tool::Move,
+    Tool::Trash,
+    Tool::Launch,
+    Tool::Info,
     Tool::Nothing,
 ];
 
@@ -43,6 +67,12 @@ impl Tool {
             Tool::List => "list",
             Tool::Inspect => "inspect",
             Tool::Create => "create",
+            Tool::Read => "read",
+            Tool::Open => "open",
+            Tool::Move => "move",
+            Tool::Trash => "trash",
+            Tool::Launch => "launch",
+            Tool::Info => "info",
             Tool::Nothing => "none",
         }
     }
@@ -108,9 +138,9 @@ pub struct Bella<'m, 't> {
     /// Cache position after the system prompt.
     prefix_len: usize,
     /// First token of each tool word, in `TOOLS` order.
-    tool_first: [u32; 5],
+    tool_first: [u32; 11],
     /// Token ids of each tool word.
-    tool_ids: [Vec<u32>; 5],
+    tool_ids: [Vec<u32>; 11],
     /// `allowed[id]`: the token is made only of path bytes.
     allowed: Vec<bool>,
     newline: Vec<u32>,
@@ -241,12 +271,12 @@ impl<'m, 't> Bella<'m, 't> {
         }
         // Tool: best first-token score among the words.
         let scores = self.tool_first.map(|id| self.st.logits[id as usize]);
-        let mut order = [0usize, 1, 2, 3, 4];
+        let mut order: [usize; 11] = core::array::from_fn(|i| i);
         order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
         let tool = TOOLS[best];
-        if tool == Tool::Nothing {
+        if tool == Tool::Nothing || tool == Tool::Info {
             return Ok(Choice {
                 tool,
                 arg: String::new(),
