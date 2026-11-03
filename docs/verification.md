@@ -77,7 +77,8 @@ ZOO_OS PANIC memory allocation of 160 bytes failed
 
 **Still `OK`** under TCG: `bella-facts`, `bella-access` and `bella`.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 99 cases
+`OK` and 10 skipped because they need an accelerator.
 
 ## Screen results (version 0.88.0)
 
