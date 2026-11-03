@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Qwen3-1.7B in 4 bits; B14 closed as measured (2026-11-03)
+
+- **`cargo xtask requant`** turns the official `Q8_0` file into `Q4_0`.
+  The token embedding stays `Q8_0`, because it is also the output layer.
+  Deterministic. Qwen3 then runs at about Qwen2.5-1.5B's speed, with
+  better summaries and no wrong actions in `assist-check`
+  (docs/qwen3-design.md). The default stays 0.5B until the owner chooses.
+- **B14's key part is not changed:** broker calls measured 2–10 ms, and
+  the 10 s deadline already bounds a hung broker (docs/stage2-design.md
+  §4).
+
 ## Replies as they are written; Qwen3 for evaluation (2026-11-03)
 
 Version 0.93.0. Designs: docs/stream-design.md, docs/qwen3-design.md.

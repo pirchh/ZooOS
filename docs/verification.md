@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The streaming
-section (version 0.93.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Qwen3 4-bit
+section is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Qwen3 4-bit results (2026-11-03)
+
+Design: docs/qwen3-design.md, "The 4-bit copy". This changes `xtask` only,
+not the guest, so there is no version bump.
+
+```
+[requant] …qwen3-1.7b-q8_0.gguf -> …qwen3-1.7b-q4_0.gguf: 196 of 310 tensors Q8_0 -> Q4_0, 1834426016 -> 1129782944 bytes, SHA-256 23bd087a7d67959d942223d49d2978fe43d201a6c4d8e377c6cac726eae38d40
+```
+
+- **A second run** gives the same SHA-256.
+- **On the host,** `cargo xtask infer --bella qwen3-1.7b-q4` says "The
+  capital of France is Paris."
+- **`assist-check --bella qwen3-1.7b-q4`:** `PASS`. 17 of 23 requests
+  with a command were answered right, and 0 of 8 without one were acted
+  on.
+- **With `--accel whpx --bella qwen3-1.7b-q4`:** `bella-talk`,
+  `bella-facts-answer`, `bella-context-answer` and `bella-summary-answer`
+  are all `OK`. The times are in docs/qwen3-design.md.
+- **`cargo test -p xtask --locked`:** passes, including `requant`'s two
+  tests (`half_round_trip`, `q4_block_close_to_q8`).
+
+FULL_SUITE_RESULT
 
 ## Streaming and Qwen3 results (version 0.93.0)
 

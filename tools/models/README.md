@@ -42,6 +42,15 @@ A third model, under evaluation, chosen with `--bella qwen3-1.7b`
     curl -fL -o tools/models/qwen3-1.7b-q8_0.gguf \
       https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/90862c4b9d2787eaed51d12237eafdfe7c5f6077/Qwen3-1.7B-Q8_0.gguf
 
+Its 4-bit copy, `--bella qwen3-1.7b-q4`, is made from that file, not
+downloaded:
+
+    cargo xtask requant --bella qwen3-1.7b   # writes qwen3-1.7b-q4_0.gguf and its .sha256
+
+The result is 1,129,782,944 bytes with SHA-256
+`23bd087a7d67959d942223d49d2978fe43d201a6c4d8e377c6cac726eae38d40`;
+the run is deterministic (docs/qwen3-design.md).
+
 To fetch the default model on a new machine (about 430 MB):
 
     curl -fL -o tools/models/qwen2.5-0.5b-instruct-q4_0.gguf \
