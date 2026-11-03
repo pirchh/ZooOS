@@ -48,6 +48,16 @@ The guest rows also differ in two other ways: the index now runs at idle
 priority, and embeds each line with its file name instead of its full
 path, so they are not a clean comparison of batching alone.
 
+## Progress and cancelling
+
+Progress (`busy reading k/n`) and the checks for Backspace and the
+deadline now come once per batch, not once per token. With WHPX a batch
+of 16 takes about 0.1–0.3 s, which is not noticeable. Under TCG, where
+the engine falls back to SSE, a batch takes seconds. So `bella-model`'s
+busy screenshot can still show "Thinking... (Backspace cancels)" before
+the first "Thinking: reading …"; its check now accepts either. Backspace
+still cancels: `ElephantHandler: request cancelled`.
+
 ## Not done
 
 - **Generating a reply** is still one token at a time; that is inherent:

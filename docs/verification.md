@@ -103,6 +103,13 @@ Three fixes came from those runs:
 - **MagpieHandler stops when Bella has gone.** It checks `channel_peer` before each line it embeds. Closing the desktop mid-index now ends it: `MagpieHandler: Bella has gone; stopping`, then `exit pid=10 … code=0`.
 - **The `--bella` comparison cases** get a chat-model-only disk (`build/model-chat-disk.img`), so the file index does not run beside the model being measured.
 
+**`bella-model`** (TCG, with the model) failed the first full-suite run
+with `screen 1-busy: `Thinking: ` not on screen`. Bella showed "Thinking...
+(Backspace cancels)": under TCG, progress now comes once per batch of 16
+tokens (docs/batch-design.md). The check accepts either form now, and the
+case is `OK`; the cancel still happens (`ElephantHandler: request
+cancelled`).
+
 FULL_SUITE_RESULT
 
 ## Qwen3 4-bit results (2026-11-03)

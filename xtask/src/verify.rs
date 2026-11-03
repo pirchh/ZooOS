@@ -3365,16 +3365,18 @@ fn check_busy_desktop(img: &screen::Image) -> Result<String, String> {
     let title = title(img, "Files", true)?;
     let sel = selected(img, "Photos", true)?;
     no_selected(img, "Documents", true)?;
-    let busy = content(img, "Thinking: ")?;
+    // "Thinking... (Backspace cancels)" until the first batch of the
+    // request is read, then "Thinking: reading …" (docs/batch-design.md).
+    let busy = content(img, "Thinking")?;
     Ok(format!(
-        "while the model works (status `Thinking:` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
+        "while the model works (status `Thinking` at {busy:?}), Files took focus at {title:?} and its selection moved to the 3rd entry at {sel:?}"
     ))
 }
 
 fn check_cancelled(img: &screen::Image) -> Result<String, String> {
     let done = content(img, "Cancelled.")?;
     let hint = content(img, HINT_TEXT)?;
-    no_content(img, "Thinking: ")?;
+    no_content(img, "Thinking")?;
     Ok(format!(
         "`Cancelled.` at {done:?}, ready again at {hint:?}, no longer thinking"
     ))
