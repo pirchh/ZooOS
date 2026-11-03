@@ -130,19 +130,40 @@ impl<'m, 't> Talk<'m, 't> {
     pub fn reply(
         &mut self,
         request: &str,
+        progress: impl FnMut(TalkStep) -> bool,
+    ) -> Result<String, AssistError> {
+        self.reply_with(request, "", progress)
+    }
+
+    /// `reply`, with `facts` the user told Bella earlier (docs/facts-design.md)
+    /// put before the request; empty for none.
+    pub fn reply_with(
+        &mut self,
+        request: &str,
+        facts: &str,
         mut progress: impl FnMut(TalkStep) -> bool,
     ) -> Result<String, AssistError> {
         let request = request.trim();
+        let facts = facts.trim();
+        if facts.len() > crate::assist::MAX_CONTEXT {
+            return Err(AssistError::TooLong);
+        }
         if request.is_empty() {
             return Err(AssistError::Empty);
         }
         if request.len() > BUDGET.max_request {
             return Err(AssistError::TooLong);
         }
-        let mut text = String::from(request);
+        let mut text = String::new();
+        if !facts.is_empty() {
+            text.push_str("(What I told you before: ");
+            text.push_str(facts);
+            text.push_str(")\n");
+        }
+        text.push_str(request);
         text.push_str("<|im_end|>\n<|im_start|>assistant\n");
         let ids = self.tok.encode(&text);
-        if ids.len() > BUDGET.max_request_tokens + 8 {
+        if ids.len() > BUDGET.max_request_tokens + crate::assist::MAX_CONTEXT_TOKENS + 8 {
             return Err(AssistError::TooLong);
         }
         // The request and its reply continue the conversation.

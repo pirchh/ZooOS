@@ -36,6 +36,11 @@ const TRASH: &str = ".Trash";
 /// The assistant's memory of requests and the commands that answered them
 /// (docs/a2-design.md): `request<TAB>command` lines, newest last.
 const MEMORY: &str = ".bella-memory";
+/// What the user told Bella to remember, one fact per line
+/// (docs/facts-design.md).
+const FACTS: &str = ".bella-facts";
+/// Largest facts file kept; the oldest facts go first.
+const FACTS_BYTES: usize = 8 * 1024;
 /// The memory file's name before 0.77.0, moved to `MEMORY` at start.
 const OLD_MEMORY: &str = ".assistant-memory";
 /// Largest memory file kept; the oldest pairs go first.
@@ -227,10 +232,117 @@ impl Otter {
             "move" => self.move_to(arg),
             "trash" => self.trash(&self.resolve_existing(clean(arg)?)),
             "info" if arg.is_empty() => self.info(),
+            // Facts the user told Bella (docs/facts-design.md).
+            "fact-add" => self.fact_add(arg.trim()),
+            "fact-find" => self.fact_find(arg.trim()),
+            "fact-list" if arg.is_empty() => self.fact_list(),
+            "fact-forget" => self.fact_forget(arg.trim()),
             "remember" => self.remember(arg),
             "recall" => self.recall(arg),
             _ => Err("unknown tool"),
         }
+    }
+
+    /// The facts file's lines.
+    fn facts(&self) -> Result<Vec<String>, &'static str> {
+        let mut text = alloc::vec![0u8; FACTS_BYTES];
+        let mut len = 0;
+        while len < text.len() {
+            match file_read(self.home, FACTS, len as u64, &mut text[len..]) {
+                Ok(0) | Err(Error::NotFound) => break,
+                Ok(n) => len += n,
+                Err(e) => return Err(reason(e)),
+            }
+        }
+        Ok(core::str::from_utf8(&text[..len])
+            .unwrap_or("")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    fn write_facts(&self, facts: &[String]) -> Result<(), &'static str> {
+        let mut text = String::new();
+        for f in facts {
+            text.push_str(f);
+            text.push('\n');
+        }
+        let _ = file_create(self.home, FACTS);
+        file_truncate(self.home, FACTS, 0)
+            .and_then(|()| file_write(self.home, FACTS, 0, text.as_bytes()).map(|_| ()))
+            .map_err(reason)
+    }
+
+    fn fact_add(&mut self, fact: &str) -> Result<(), &'static str> {
+        if fact.is_empty() || fact.contains(['\n', '\t']) || fact.len() > 300 {
+            return Err("nothing to remember");
+        }
+        let mut facts = self.facts()?;
+        facts.retain(|f| f != fact);
+        facts.push(String::from(fact));
+        while facts.iter().map(|f| f.len() + 1).sum::<usize>() > FACTS_BYTES {
+            facts.remove(0);
+        }
+        self.write_facts(&facts)?;
+        zoo_rt::log!("OtterHandler: remembered a fact ({} kept)", facts.len());
+        Ok(())
+    }
+
+    /// The facts sharing the most words with `request` (filler dropped), at
+    /// most three, as `| <shared words> <fact>`.
+    fn fact_find(&mut self, request: &str) -> Result<(), &'static str> {
+        let key = words(request);
+        let mut scored: Vec<(usize, String)> = self
+            .facts()?
+            .into_iter()
+            .map(|f| (words(&f).iter().filter(|w| key.contains(w)).count(), f))
+            .filter(|(s, _)| *s > 0)
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        for (s, f) in scored.iter().take(3) {
+            self.line(format_args!("{} {}", s, f))
+                .map_err(|_| "reply failed")?;
+        }
+        Ok(())
+    }
+
+    fn fact_list(&mut self) -> Result<(), &'static str> {
+        let facts = self.facts()?;
+        if facts.is_empty() {
+            self.empty = true;
+        }
+        for f in &facts {
+            self.line(format_args!("{}", f))
+                .map_err(|_| "reply failed")?;
+        }
+        zoo_rt::log!("OtterHandler: listed {} facts", facts.len());
+        Ok(())
+    }
+
+    /// Forgets every fact that shares at least half of its words with
+    /// `about` (Bella asks first).
+    fn fact_forget(&mut self, about: &str) -> Result<(), &'static str> {
+        let key = words(about);
+        let facts = self.facts()?;
+        let (gone, kept): (Vec<String>, Vec<String>) = facts.into_iter().partition(|f| {
+            let w = words(f);
+            let shared = key.iter().filter(|k| w.contains(k)).count();
+            !key.is_empty() && shared * 2 >= key.len()
+        });
+        if gone.is_empty() {
+            self.empty = true;
+            return self
+                .line(format_args!("nothing remembered about that"))
+                .map_err(|_| "reply failed");
+        }
+        self.write_facts(&kept)?;
+        for f in &gone {
+            self.line(format_args!("forgot: {}", f))
+                .map_err(|_| "reply failed")?;
+        }
+        zoo_rt::log!("OtterHandler: forgot {} facts", gone.len());
+        Ok(())
     }
 
     /// The memory file's text (empty if there is none yet).

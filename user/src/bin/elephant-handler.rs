@@ -322,6 +322,8 @@ fn service(chan: Handle) -> u8 {
             continue;
         }
         if let Some(request) = msg.strip_prefix("talk ") {
+            // `talk <request>\t<facts>`: facts the user told Bella before.
+            let (request, facts) = request.split_once('\t').unwrap_or((request, ""));
             // Bella answers in words: text only, never run
             // (docs/talk-design.md).
             let start = ticks();
@@ -359,7 +361,7 @@ fn service(chan: Handle) -> u8 {
                 talk = Some(tk);
             }
             let result = match talk.as_mut() {
-                Some(tk) => tk.reply(request, &mut keep),
+                Some(tk) => tk.reply_with(request, facts, &mut keep),
                 None => Err(AssistError::Cancelled),
             };
             let sent = match (result, stop) {

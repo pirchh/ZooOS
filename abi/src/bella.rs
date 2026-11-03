@@ -91,6 +91,53 @@ pub fn question_about_answer(text: &str) -> bool {
     follow_up(text) && ASKING.iter().any(|a| a.eq_ignore_ascii_case(first))
 }
 
+/// "remember that X", "remember X", "note that X", "don't forget X": the
+/// fact to keep (docs/facts-design.md), or `None`.
+pub fn fact_to_remember(text: &str) -> Option<&str> {
+    let t = text.trim();
+    for p in [
+        "please remember that ",
+        "please remember ",
+        "remember that ",
+        "remember ",
+        "note that ",
+        "don't forget that ",
+        "dont forget that ",
+        "don't forget ",
+        "dont forget ",
+    ] {
+        if t.len() > p.len() && t.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()) {
+            let rest = t[p.len()..].trim();
+            return (rest.len() > 2).then_some(rest);
+        }
+    }
+    None
+}
+
+/// "forget X", "forget that X", "forget about X": what to forget.
+pub fn fact_to_forget(text: &str) -> Option<&str> {
+    let t = text.trim();
+    for p in ["forget about ", "forget that ", "forget "] {
+        if t.len() > p.len() && t.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()) {
+            let rest = t[p.len()..].trim();
+            return (!rest.is_empty()).then_some(rest);
+        }
+    }
+    None
+}
+
+/// "what do you remember?", "what do you know about me?".
+pub fn asks_what_remembered(text: &str) -> bool {
+    [
+        "what do you remember",
+        "what do you know about me",
+        "what have i told you",
+        "what did i tell you",
+    ]
+    .iter()
+    .any(|q| contains_ignoring_case(text, q))
+}
+
 /// Whether `hay` contains `needle`, ASCII letters compared without case.
 fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
     let (h, n) = (hay.as_bytes(), needle.as_bytes());
@@ -179,6 +226,27 @@ mod tests {
         ] {
             assert!(!question_about_answer(t), "{t}");
         }
+    }
+
+    #[test]
+    fn facts() {
+        assert_eq!(
+            fact_to_remember("Remember that my dentist is on Friday"),
+            Some("my dentist is on Friday")
+        );
+        assert_eq!(
+            fact_to_remember("note that Zara likes carrots"),
+            Some("Zara likes carrots")
+        );
+        assert_eq!(fact_to_remember("remember"), None);
+        assert_eq!(fact_to_remember("do you remember my music?"), None);
+        assert_eq!(
+            fact_to_forget("forget about my dentist"),
+            Some("my dentist")
+        );
+        assert_eq!(fact_to_forget("forget"), None);
+        assert!(asks_what_remembered("What do you remember?"));
+        assert!(!asks_what_remembered("where is my music"));
     }
 
     #[test]

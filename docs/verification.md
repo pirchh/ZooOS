@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The broad access
-section (version 0.86.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The facts
+section (version 0.87.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,37 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Facts results (version 0.87.0)
+
+Design: docs/facts-design.md.
+
+**`bella-facts`** (TCG): `OK`.
+
+```
+[31:otter-handler] OtterHandler: remembered a fact (2 kept)
+[30:bella] Bella: from what you told me: my dentist appointment is on Friday
+[38:otter-handler] OtterHandler: listed 2 facts
+[38:otter-handler] OtterHandler: forgot 1 facts
+[38:otter-handler] OtterHandler: listed 1 facts
+```
+
+The `listed 2 facts` with pid 38 comes after a desktop restart.
+
+**`bella-facts-answer`** (`--accel whpx`): `OK`.
+
+```
+[31:elephant-handler] ElephantHandler: said `Your dentist appointment is on Friday.` in 953 ms
+```
+
+**Negative control:** the fact not sent → `FAIL`, ``said `I'm Bella, not a
+dentist. I can't provide dental care.` ``
+
+**Still `OK`:**
+- with WHPX: `bella-talk`, `bella-convo` and `bella-live`;
+- under TCG: `bella`, `bella-memory`, `memory-guard` and `bella-access`.
+
+FULL_SUITE_RESULT
 
 ## Broad access results (version 0.86.0)
 

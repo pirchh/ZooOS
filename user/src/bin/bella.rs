@@ -31,7 +31,10 @@ zoo_rt::entry2!(main);
 const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
-use zoo_abi::bella::{follow_up, question_about_answer, small_talk, typed_command};
+use zoo_abi::bella::{
+    asks_what_remembered, fact_to_forget, fact_to_remember, follow_up, question_about_answer,
+    small_talk, typed_command,
+};
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
@@ -242,14 +245,16 @@ impl App {
                 }
             }
             (Mode::Confirm(req), Key::Char('n') | Key::Back) => {
-                let created = req.starts_with("create ");
-                self.mode = Mode::Typing;
-                self.status = String::from(HINT);
-                self.say(if created {
+                let what = if req.starts_with("create ") {
                     "Not created."
+                } else if req.starts_with("fact-forget ") {
+                    "Kept."
                 } else {
                     "Left where it is."
-                });
+                };
+                self.mode = Mode::Typing;
+                self.status = String::from(HINT);
+                self.say(what);
                 // The choice was wrong: a command typed next answers it.
                 if let Some(r) = self.request.take() {
                     self.unanswered = Some(r);
@@ -282,6 +287,30 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if let Some(fact) = fact_to_remember(text) {
+            // Facts the user tells Bella (docs/facts-design.md).
+            let mut req = String::from("fact-add ");
+            req.push_str(fact);
+            if self.broker(&req) {
+                self.say("Bella: I'll remember that.");
+                zoo_rt::log!("Bella: remembered a fact");
+            }
+            self.request = None;
+        } else if asks_what_remembered(text) {
+            self.say("Bella: You told me:");
+            if !self.broker("fact-list") {
+                self.say("  nothing yet.");
+            }
+            self.request = None;
+        } else if let Some(about) = fact_to_forget(text) {
+            // Forgetting is deleting: ask first (docs/access-design.md).
+            let mut q = String::from("Forget what you told me about ");
+            q.push_str(about);
+            q.push('?');
+            self.say(&q);
+            self.status = String::from("Press y to forget it, n to keep it.");
+            self.mode = Mode::Confirm(alloc::format!("fact-forget {}", about));
+            self.request = None;
         } else if question_about_answer(text) && self.last_exchange.is_some() {
             // "is that it?": answered in words from the conversation
             // (docs/talk-design.md §6).
@@ -289,6 +318,11 @@ impl App {
             self.request = None;
             self.ask_talk(text);
         } else if small_talk(text) {
+            self.request = None;
+            self.ask_talk(text);
+        } else if !self.facts_about(text, 2).is_empty() {
+            // Something the user told Bella answers it ("when is my
+            // dentist?"): a reply in words with those facts.
             self.request = None;
             self.ask_talk(text);
         } else {
@@ -388,6 +422,39 @@ impl App {
                 self.unanswered = Some(r);
             }
         }
+    }
+
+    /// The facts sharing at least `min` words with `text`, joined with
+    /// "; " (at most `EXCHANGE_BYTES`), without showing them.
+    fn facts_about(&mut self, text: &str, min: usize) -> String {
+        let Some(o) = self.otter() else {
+            return String::new();
+        };
+        let mut req = String::from("fact-find ");
+        req.push_str(text);
+        if send_wait(o, req.as_bytes()).is_err() {
+            return String::new();
+        }
+        let mut out = String::new();
+        let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
+        loop {
+            let Ok(n) = zoo_rt::recv(o, &mut buf) else {
+                self.otter = None;
+                return String::new();
+            };
+            let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
+            let Some(rest) = line.strip_prefix("| ") else {
+                break;
+            };
+            let (score, fact) = rest.split_once(' ').unwrap_or(("0", rest));
+            if score.parse::<usize>().unwrap_or(0) >= min {
+                if !out.is_empty() {
+                    out.push_str("; ");
+                }
+                out.push_str(fact);
+            }
+        }
+        shorten(out)
     }
 
     /// `open <path>`: a folder in Files, a file in Notes, through the
@@ -694,6 +761,12 @@ impl App {
         self.talking = Some(String::from(text));
         let mut msg = String::from("talk ");
         msg.push_str(text);
+        let facts = self.facts_about(text, 1);
+        if !facts.is_empty() {
+            msg.push('\t');
+            msg.push_str(&facts);
+            zoo_rt::log!("Bella: from what you told me: {}", facts);
+        }
         let Some(e) = self.elephant else { return };
         if send_wait(e, msg.as_bytes()).is_err() {
             self.model_ended(false);
