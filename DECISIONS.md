@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 2: background programs (2026-11-02)
+
+Version 0.79.0. Design: docs/s2-design.md (B12).
+
+- **New system call `SET_BACKGROUND` (75).** A background program runs
+  only when no other program is ready. After 1 s without a turn it gets
+  one, so it cannot starve.
+- **Input that wakes a task preempts a background program at once.**
+- **ElephantHandler marks itself background.** Measured: input wait
+  during inference dropped from 4.7 ms to 0.25 ms on average; requests
+  are 2-5% slower.
+- **One flag, not priority levels:** inference is the only long
+  computation today.
+
 ## Stage 1: "none of these" and timing lines (2026-11-02)
 
 Version 0.78.0. Design: docs/s1-design.md.

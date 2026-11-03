@@ -54,6 +54,9 @@ const RIGHT_RECV: u8 = 2;
 const RIGHT_WAIT: u8 = 4;
 const RIGHT_KILL: u8 = 8;
 const RFLAGS_IF: u64 = 1 << 9;
+/// A background program that has not run for this many ticks (1 s) gets
+/// a turn even while others are ready (docs/s2-design.md).
+const BACKGROUND_STARVE: u64 = 100;
 /// First id given to an additional thread.
 const FIRST_EXTRA_TID: u64 = 0x1_0000;
 /// User addresses are below this (the canonical lower half).
@@ -174,6 +177,9 @@ struct Proc {
     shm_maps: Vec<(u64, u64, Arc<ShmPages>)>,
     /// May call `log_attach` and `block_attach` (the resident supervisor).
     log_ok: bool,
+    /// Runs only when no other program is ready (docs/s2-design.md, B12):
+    /// set by the program itself with `SET_BACKGROUND`.
+    background: bool,
     /// Program name and arguments, NUL-separated (`args_get`).
     cmdline: String,
     /// Threads that have not exited.
@@ -270,6 +276,9 @@ struct Task {
     sleep_until: Option<u64>,
     /// Blocked in `INPUT_WAIT`: keyboard and mouse interrupts wake it.
     input_wait: bool,
+    /// Tick it last started running (background tasks get a turn after
+    /// `BACKGROUND_STARVE` ticks without one).
+    last_ran: u64,
     /// Linux file calls in progress (docs/linux4-design.md): the replies
     /// BadgerHandler has given this call so far, the next one the re-run
     /// asks for, and whether a request is waiting for its reply.
@@ -341,6 +350,7 @@ impl Task {
             kstack: None,
             sleep_until: None,
             input_wait: false,
+            last_ran: 0,
             fs_results: Vec::new(),
             fs_cursor: 0,
             fs_pending: false,
@@ -377,6 +387,7 @@ impl Proc {
             file_maps: Vec::new(),
             shm_maps: Vec::new(),
             log_ok: false,
+            background: false,
             live: 1,
             members: 1,
             ended: false,
@@ -651,6 +662,12 @@ pub fn on_input(frame: *mut TrapFrame, was_idle: bool) -> *mut TrapFrame {
     dispatch_locked(|s, m| {
         if !input_pending() || !s.wake_input_waiters() {
             return frame;
+        }
+        // Input preempts a background program at once rather than at the
+        // next tick (docs/s2-design.md, B12).
+        if s.current != 0 && s.current_is_background() {
+            s.prefer_user = true;
+            return s.switch_away(frame, m);
         }
         if s.current != 0 {
             return frame;
@@ -947,16 +964,57 @@ impl Scheduler {
     /// woken task by up to a whole tick (docs/s4a-design.md). On timer
     /// ticks the plain round-robin applies, so the kernel shell still gets
     /// its turn while user tasks are busy.
+    ///
+    /// Background programs (`SET_BACKGROUND`, docs/s2-design.md) run only
+    /// when no other task is ready, except that one which has not run for
+    /// `BACKGROUND_STARVE` ticks gets a turn, so it cannot starve.
     fn pick_next(&self) -> usize {
         let n = self.tasks.len();
         let ready = |i: usize| matches!(&self.tasks[i], Some(t) if t.state == State::Ready);
-        let mut order = (1..=n).map(|k| (self.current + k) % n);
-        if self.prefer_user
-            && let Some(i) = order.clone().find(|&i| i != 0 && ready(i))
-        {
+        let background = |i: usize| {
+            self.tasks[i]
+                .as_ref()
+                .and_then(|t| t.proc)
+                .and_then(|p| self.procs[p].as_ref())
+                .is_some_and(|p| p.background)
+        };
+        let order = (1..=n).map(|k| (self.current + k) % n);
+        let now = interrupts::ticks();
+        if let Some(i) = order.clone().find(|&i| {
+            i != 0
+                && ready(i)
+                && background(i)
+                && self.tasks[i]
+                    .as_ref()
+                    .is_some_and(|t| now.saturating_sub(t.last_ran) >= BACKGROUND_STARVE)
+        }) {
             return i;
         }
-        order.find(|&i| ready(i)).unwrap_or(0)
+        if self.prefer_user {
+            if let Some(i) = order
+                .clone()
+                .find(|&i| i != 0 && ready(i) && !background(i))
+            {
+                return i;
+            }
+            if let Some(i) = order.clone().find(|&i| i != 0 && ready(i)) {
+                return i;
+            }
+        }
+        order
+            .clone()
+            .find(|&i| ready(i) && !background(i))
+            .or_else(|| order.clone().find(|&i| ready(i)))
+            .unwrap_or(0)
+    }
+
+    /// Whether the running task belongs to a background program.
+    fn current_is_background(&self) -> bool {
+        self.tasks[self.current]
+            .as_ref()
+            .and_then(|t| t.proc)
+            .and_then(|p| self.procs[p].as_ref())
+            .is_some_and(|p| p.background)
     }
 
     /// Loads, maps and readies the program a command line names (the part
@@ -1272,6 +1330,7 @@ impl Scheduler {
                 unsafe { Cr3::write(want, flags) };
             }
             self.current = i;
+            self.tasks[i].as_mut().expect("activated task").last_ran = interrupts::ticks();
             let t = self.task(i);
             if t.p4.is_some() {
                 // User FS base (thread-local storage). Kernel code does not
@@ -7172,6 +7231,12 @@ impl Scheduler {
                     Some(p) => Outcome::Ret(p.pid as i64),
                     None => err(Error::NotFound),
                 }
+            }
+            sys::SET_BACKGROUND => {
+                // a1 = 1: this program runs only when nothing else is
+                // ready (docs/s2-design.md); 0: back to normal.
+                self.proc(i).background = a1 != 0;
+                Outcome::Ret(0)
             }
             sys::SHM_SIZE => match self.proc(i).get(a1) {
                 Some(HandleEntry {

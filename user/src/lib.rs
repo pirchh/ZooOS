@@ -262,6 +262,12 @@ pub fn shm_map(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::SHM_MAP, h, 0, 0))
 }
 
+/// Marks this program as background work (`true`): it runs only when no
+/// other program is ready, and input preempts it (docs/s2-design.md).
+pub fn set_background(on: bool) -> Result<(), Error> {
+    result(syscall(sys::SET_BACKGROUND, u64::from(on), 0, 0)).map(|_| ())
+}
+
 /// The pid of the process holding the other end of channel `h`.
 pub fn channel_peer(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::CHANNEL_PEER, h, 0, 0))
