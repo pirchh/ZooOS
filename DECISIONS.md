@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Keys under load (2026-11-03)
+
+Version 0.99.0. Design: docs/keys-design.md.
+
+- **`mem_alloc` maps at most 1 MiB per pass** and runs the call again
+  with the lock released, instead of mapping a 1.2 GB heap in one hold.
+  Measured: that hold stalled all 8 processors for seconds and QEMU's
+  keyboard queue dropped keys. Programs see one call, as before.
+- **8 MiB passes were not enough** (4 of 5 runs passed): two services
+  allocating at once took turns with the lock.
+- **A ticket lock was tried and not kept:** fairness does not help when
+  one hold lasts seconds.
+- **PeacockHandler holds up to 256 keys per busy app** and delivers them
+  in order, instead of dropping a key when the app's queue is full.
+
 ## Qwen3-1.7B (4 bits) is Bella's default model (2026-11-03)
 
 Version 0.98.0. **The owner's choice**, after the measurements on 8
