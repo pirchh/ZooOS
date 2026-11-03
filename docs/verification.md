@@ -81,7 +81,9 @@ passed (new `Q6_K` block).
 0..=3000`): the reply prompt's warm-up held the first request back. A
 request now interrupts that warm-up.
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 94 cases `OK`.
+clippy `-D warnings` (`zoo-user`, `xtask`, `zoo-infer`, `zoo-abi`) and
+`cargo fmt --check`: clean.
 
 ## Stage 2 results: Bella's helpers start again (version 0.82.0)
 
