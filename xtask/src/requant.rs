@@ -245,10 +245,8 @@ pub fn run(input: &Path, output: &Path) -> Result<(), String> {
             out.extend_from_slice(src);
         } else {
             let mut q4 = vec![0u8; n / BLOCK * Q4_0_BYTES];
-            for (q8, o) in src
-                .chunks_exact(Q8_0_BYTES)
-                .zip(q4.chunks_exact_mut(Q4_0_BYTES))
-            {
+            let (q4_blocks, _) = q4.as_chunks_mut::<Q4_0_BYTES>();
+            for (q8, o) in src.as_chunks::<Q8_0_BYTES>().0.iter().zip(q4_blocks) {
                 block_q8_to_q4(q8, o);
             }
             out.extend_from_slice(&q4);
@@ -305,7 +303,7 @@ mod tests {
         block_q8_to_q4(&q8, &mut q4);
         let d4 = zoo_infer::quant::f16_to_f32(u16::from_le_bytes([q4[0], q4[1]]));
         for j in 0..BLOCK {
-            let x = 0.01 * f32::from(((j as i32 * 8 - 128) as i8) as f32);
+            let x = 0.01 * f32::from((j as i32 * 8 - 128) as i8);
             let nib = if j < 16 {
                 q4[2 + j] & 15
             } else {
