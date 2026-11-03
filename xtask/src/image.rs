@@ -475,3 +475,58 @@ pub fn build_model_image(
     );
     Ok(img)
 }
+
+/// Block 0 of the model disk starts with this, then the model's length
+/// (8 bytes, little-endian); the kernel's `virtio_blk::MODEL_MAGIC`.
+const MODEL_DISK_MAGIC: &[u8; 8] = b"ZOOMODL1";
+
+/// The read-only model disk (docs/s2-design.md §3):
+/// `build/model-disk.img`, a 4 KiB header block, then the model padded to
+/// whole 4 KiB blocks. Rewritten only when the model file is newer or a
+/// different size.
+pub fn model_disk(root: &Path) -> Result<PathBuf, String> {
+    use std::io::{Read as _, Write as _};
+    let model = crate::infer::model_path(root);
+    let meta = std::fs::metadata(&model).map_err(|e| {
+        format!(
+            "cannot read {} ({e}); see tools/models/README.md",
+            model.display()
+        )
+    })?;
+    let len = meta.len();
+    let out = root.join("build").join("model-disk.img");
+    let blocks = len.div_ceil(4096);
+    let fresh = (|| {
+        let disk = std::fs::metadata(&out).ok()?;
+        if disk.len() != (blocks + 1) * 4096 || disk.modified().ok()? < meta.modified().ok()? {
+            return None;
+        }
+        let mut head = [0u8; 16];
+        std::fs::File::open(&out).ok()?.read_exact(&mut head).ok()?;
+        (&head[..8] == MODEL_DISK_MAGIC && head[8..16] == len.to_le_bytes()).then_some(())
+    })()
+    .is_some();
+    if fresh {
+        println!("[build] model disk (up to date) -> {}", out.display());
+        return Ok(out);
+    }
+    // Checks the pinned SHA-256 before anything is written.
+    let data = crate::infer::load_model(root)?;
+    let mut head = vec![0u8; 4096];
+    head[..8].copy_from_slice(MODEL_DISK_MAGIC);
+    head[8..16].copy_from_slice(&len.to_le_bytes());
+    let pad = vec![0u8; (blocks * 4096 - len) as usize];
+    let tmp = out.with_extension("img.tmp");
+    std::fs::create_dir_all(out.parent().unwrap_or(root))
+        .map_err(|e| format!("cannot create build/: {e}"))?;
+    let mut f =
+        std::fs::File::create(&tmp).map_err(|e| format!("cannot create {}: {e}", tmp.display()))?;
+    f.write_all(&head)
+        .and_then(|()| f.write_all(&data))
+        .and_then(|()| f.write_all(&pad))
+        .map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
+    drop(f);
+    std::fs::rename(&tmp, &out).map_err(|e| format!("cannot move {}: {e}", out.display()))?;
+    println!("[build] model disk ({} MB) -> {}", len >> 20, out.display());
+    Ok(out)
+}

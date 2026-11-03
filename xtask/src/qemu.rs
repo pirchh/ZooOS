@@ -117,6 +117,14 @@ pub fn set_guestfwd(port: Option<u16>) {
     GUESTFWD.store(port.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The read-only model disk the next machine gets, if any
+/// (docs/s2-design.md §3).
+static MODEL_DISK: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn set_model_disk(disk: Option<PathBuf>) {
+    *MODEL_DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;
+}
+
 pub fn set_net(net: Net) {
     NET.store(net as u8, std::sync::atomic::Ordering::Relaxed);
 }
@@ -216,6 +224,22 @@ fn machine_args(
         "none".into(),
         "-no-reboot".into(),
     ];
+    // The model disk: read-only, so a guest bug cannot change it.
+    if let Some(disk) = MODEL_DISK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        args.extend([
+            "-drive".into(),
+            format!(
+                "if=none,id=model,format=raw,readonly=on,file={}",
+                opt_path(disk)?
+            ),
+            "-device".into(),
+            "virtio-blk-pci,drive=model,disable-modern=on".into(),
+        ]);
+    }
     // TCG uses the fixed `qemu64` model. With a hardware accelerator QEMU's
     // default model is used: `-cpu max` made OVMF fault under WHPX.
     if accel == "tcg" {

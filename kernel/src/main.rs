@@ -192,9 +192,14 @@ fn run(mut mem: memory::Memory) -> ! {
     }
     memory::install(mem);
     // The data disk, if QEMU attached one (docs/s5-design.md).
-    match memory::with(virtio_blk::init) {
+    // And the model disk (docs/s2-design.md §3), told apart by its header.
+    let disks = memory::with(virtio_blk::init);
+    match disks.data {
         Some(bytes) => kprintln!("ZOO_OS INFO disk virtio-blk bytes={}", bytes),
         None => kprintln!("ZOO_OS INFO disk none"),
+    }
+    if let Some(bytes) = disks.model {
+        kprintln!("model disk: {} bytes of model", bytes);
     }
     // A USB controller, if there is one (docs/h1-design.md).
     if memory::with(xhci::init).is_none() {
