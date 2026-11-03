@@ -47,6 +47,16 @@ happen.
 | Shorter (titles only where they add something), "User's screen: …" | "You are Bella, … You are focused on … `zoo.rs`." |
 | **"On my screen: …"** (chosen) | **"You are working on `zoo.rs`, a file that is currently open in the "Notes" application."** |
 
+**Version 0.92.0:** a window's title is now written "Notes showing zoo.rs"
+instead of "Notes (zoo.rs)". With the old form the 1.5B model said "You
+are working on the "Notes" file, which is the most recently opened
+document" and failed the case. With the new form:
+
+| Model | Bella said | Time |
+| --- | --- | --- |
+| 0.5B | "You are working on `zoo.rs`, a file that is currently open in the `Notes` application." | 2.2 s |
+| 1.5B | "You are working on the file "zoo.rs" in the Documents folder." | 8.9 s |
+
 ## 3. Safety
 
 **Window titles and file paths reach the model.** Its reply is only

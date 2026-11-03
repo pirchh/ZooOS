@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The save
-section (version 0.91.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The screen
+wording section (version 0.92.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -42,6 +42,23 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Screen wording results (version 0.92.0)
+
+Design: docs/context-design.md. The snapshot now says "Notes showing
+zoo.rs".
+
+**`bella-context-answer`** (`--accel whpx`):
+- 0.5B: `OK`, ``said `You are working on `zoo.rs`, a file that is currently open in the `Notes` application.` in 2160 ms``;
+- 1.5B (`--bella 1.5b`): `OK`, ``said `You are working on the file "zoo.rs" in the Documents folder.` in 8912 ms``. It was `FAIL` before this change.
+
+```
+[30:bella] Bella: the screen: focused: Bella; open: Files, Crash Test, Bella, Notes showing zoo.rs; recently: opened Notes, opened Documents/zoo.rs in Notes
+```
+
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 100 cases
+`OK` and 12 skipped because they need an accelerator. `bella-context`
+(TCG) is `OK` with the new wording.
+
 ## Model comparison: 0.5B and 1.5B (2026-11-03)
 
 `cargo xtask verify --accel whpx --bella 1.5b --case <case>`. The 1.5B
@@ -53,7 +70,7 @@ AVX2 engine), with 4 GiB of guest memory.
 | `bella-talk` | `OK` | `OK` | "I am Bella, the assistant built into ZooOS." / a bicycle joke | 3.6 / 6.5 s |
 | `bella-convo` | `OK` | `OK` | "Yes, it seems you have music files in the Music folder. …" | 6.4 s |
 | `bella-facts-answer` | `OK` | `OK` | "Your dentist appointment is on Friday." | 4.3 s |
-| `bella-context-answer` | `OK` | `FAIL` | "You are working on the "Notes" file, which is the most recently opened document." (no file name) | 9.3 s |
+| `bella-context-answer` | `OK` | `FAIL`; `OK` from 0.92.0 | before: "You are working on the "Notes" file, which is the most recently opened document."; from 0.92.0 ("Notes showing zoo.rs"): "You are working on the file "zoo.rs" in the Documents folder." | 9.3 / 8.9 s |
 | `bella-summary-answer` | `OK` | `OK` | "… shopping for ingredients and a call to the vet regarding Zara the zebra." | 11.9 s |
 | `bella-save` | `OK` | `OK` | the same summary; save, refuse, open | 12.0 / 13.6 s |
 | `bella-live` | `OK` | `OK` | — | — |
