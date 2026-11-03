@@ -50,10 +50,108 @@ pub fn model_path(root: &Path) -> PathBuf {
     root.join("tools").join("models").join(model_file())
 }
 
+/// The embedding model (docs/vectors-design.md), approved by the owner
+/// on 2026-11-03.
+pub const EMBEDDER: &str = "qwen3-embedding-0.6b-q8_0.gguf";
+
+pub fn embedder_path(root: &Path) -> PathBuf {
+    root.join("tools").join("models").join(EMBEDDER)
+}
+
 /// Reads the model and checks it against the pinned SHA-256.
 pub fn load_model(root: &Path) -> Result<Vec<u8>, String> {
+    load_pinned(&model_path(root))
+}
+
+/// Reads the embedding model and checks it against its pinned SHA-256.
+pub fn load_embedder(root: &Path) -> Result<Vec<u8>, String> {
+    load_pinned(&embedder_path(root))
+}
+
+/// The model card's example (huggingface.co/Qwen/Qwen3-Embedding-0.6B):
+/// two queries with the card's web-search instruction, two documents,
+/// and the scores the card prints for them.
+const CARD_TASK: &str =
+    "Given a web search query, retrieve relevant passages that answer the query";
+const CARD_QUERIES: [&str; 2] = ["What is the capital of China?", "Explain gravity"];
+const CARD_DOCS: [&str; 2] = [
+    "The capital of China is Beijing.",
+    "Gravity is a force that attracts two bodies towards each other. It gives weight to physical objects and is responsible for the movement of planets around the sun.",
+];
+const CARD_SCORES: [[f32; 2]; 2] = [[0.7646, 0.1414], [0.1355, 0.6000]];
+/// How far our 8-bit run may be from the card's (bf16) scores.
+const CARD_TOLERANCE: f32 = 0.03;
+
+/// `cargo xtask embed-check`: the card's example at full width (1024), then
+/// Bella's own case at `embed::DIM`: a question about the vet is nearest
+/// the vet line of `Documents/notes.txt` though they share one word.
+pub fn embed_check(root: &Path) -> Result<bool, String> {
+    use zoo_infer::embed::{Embedder, similarity};
+    let data = load_embedder(root)?;
+    let g = zoo_infer::gguf::Gguf::parse(&data).map_err(|e| format!("{e:?}"))?;
+    let model = zoo_infer::model::Model::from_gguf(&g).map_err(|e| format!("{e:?}"))?;
+    let tok = zoo_infer::tokenizer::Tokenizer::from_gguf(&g).map_err(|e| format!("{e:?}"))?;
+    let mut e = Embedder::new(&model, &tok);
+    let full = model.cfg.n_embd;
+    let t0 = std::time::Instant::now();
+    let q: Vec<Vec<f32>> = CARD_QUERIES
+        .iter()
+        .map(|q| e.embed(&format!("Instruct: {CARD_TASK}\nQuery:{q}"), full))
+        .collect::<Result<_, _>>()
+        .map_err(|x| format!("{x:?}"))?;
+    let d: Vec<Vec<f32>> = CARD_DOCS
+        .iter()
+        .map(|t| e.embed(t, full))
+        .collect::<Result<_, _>>()
+        .map_err(|x| format!("{x:?}"))?;
+    let mut ok = true;
+    for (i, qi) in q.iter().enumerate() {
+        for (j, dj) in d.iter().enumerate() {
+            let s = similarity(qi, dj);
+            let want = CARD_SCORES[i][j];
+            let good = (s - want).abs() <= CARD_TOLERANCE;
+            ok &= good;
+            println!(
+                "{} card query {i} / document {j}: {s:.4} (card {want:.4})",
+                if good { "OK  " } else { "FAIL" }
+            );
+        }
+    }
+    println!(
+        "4 embeddings in {:.2}s ({} dims)",
+        t0.elapsed().as_secs_f64(),
+        full
+    );
+    // Bella's case, at the dimensions the index keeps.
+    let lines = [
+        "Documents/notes.txt: Shopping: flour, eggs, milk.",
+        "Documents/notes.txt: Call the vet about Zara the zebra.",
+        "Documents/recipes/pancakes.txt: Whisk, rest 10 minutes, cook on a hot pan.",
+    ];
+    let question = "when do I need to take the zebra to the animal doctor?";
+    let qv = e.query(question).map_err(|x| format!("{x:?}"))?;
+    let mut scores = Vec::new();
+    for l in lines {
+        let v = e.document(l).map_err(|x| format!("{x:?}"))?;
+        scores.push(similarity(&qv, &v));
+    }
+    let best = (0..scores.len())
+        .max_by(|&a, &b| scores[a].total_cmp(&scores[b]))
+        .unwrap_or(0);
+    for (l, s) in lines.iter().zip(&scores) {
+        println!("     {s:.4}  {l}");
+    }
+    let vet = best == 1;
+    println!(
+        "{} \"{question}\" is nearest the vet line",
+        if vet { "OK  " } else { "FAIL" }
+    );
+    Ok(ok && vet)
+}
+
+fn load_pinned(path: &Path) -> Result<Vec<u8>, String> {
     use sha2::{Digest, Sha256};
-    let path = model_path(root);
+    let path = path.to_path_buf();
     let data = std::fs::read(&path).map_err(|e| {
         format!(
             "cannot read {} ({e}); see tools/models/README.md",

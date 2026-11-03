@@ -39,6 +39,7 @@ commands:
                             --model: the normal image with the assistant's
                             model (tools/models/); use with --accel
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
+  embed-check              the embedding model against its model card (docs/vectors-design.md)
   infer [--prompt TEXT] [--tokens N]
                             run the model on the host (tools/models/), print
                             prompt/output token ids, top logits and timing
@@ -219,6 +220,16 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 settle: opts.settle.unwrap_or(Duration::from_millis(1000)),
             };
             verify::run(&root, &tools, &settings)
+        }
+        "embed-check" => {
+            // The embedding model against its model card (docs/vectors-design.md).
+            if infer::embed_check(&root)? {
+                println!("embed-check: PASS");
+                Ok(ExitCode::SUCCESS)
+            } else {
+                println!("embed-check: FAIL");
+                Ok(ExitCode::from(1))
+            }
         }
         "requant" => {
             // Q8_0 -> Q4_0 for the chosen model (docs/qwen3-design.md).

@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Qwen3 4-bit
-section is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The file
+answers section (version 0.94.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,77 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## File answers results (version 0.94.0)
+
+Designs: docs/lookup-design.md, docs/vectors-design.md,
+docs/batch-design.md.
+
+**`cargo xtask embed-check`** (host): `PASS`. The model card's four scores
+are matched within 0.001 (0.7639, 0.1424, 0.1361, 0.6005 against 0.7646,
+0.1414, 0.1355, 0.6000), and the animal-doctor question is nearest the vet
+line (0.7454).
+
+**`bella-lookup`** (TCG): `OK`.
+
+```
+[31:otter-handler] OtterHandler: lookup `vet` found 1 lines in 6 files read
+[30:bella] Bella: answering from Documents/notes.txt
+[31:otter-handler] OtterHandler: lookup `anything unicorns` found 0 lines in 6 files read
+[30:bella] Bella: nothing in the files for that
+```
+
+**`bella-lookup-answer`** (`--accel whpx`): `OK`.
+``answered from files `The vet is called for Zara the zebra.` in 2491 ms (first words at 2090 ms)``
+
+**`bella-vectors`** (`--accel whpx`, with the embedding model on the model
+disk): `OK`.
+
+```
+model disk: 639150592 bytes of embedding model
+[31:magpie-handler] MagpieHandler: read the embedding model from the model disk: 609 MB in 465 ms
+[31:magpie-handler] MagpieHandler: index: 6 files, 152 lines (152 embedded, 0 kept) in 123487 ms
+[30:bella] Bella: the file index is ready (152 lines)
+[31:magpie-handler] MagpieHandler: query: 3 of 152 lines near enough in 1099 ms; best 608
+[30:bella] Bella: answering from Documents/notes.txt, Documents/zoo.rs
+[32:elephant-handler] ElephantHandler: answered from files `The vet about Zara the zebra.` in 3952 ms (first words at 3545 ms)
+…after a desktop restart:
+[38:magpie-handler] MagpieHandler: index: 6 files, 152 lines (0 embedded, 152 kept) in 0 ms
+```
+
+**Negative control:** with `MIN_SCORE` at 0.99, `FAIL`: ``query: 0 of
+152 lines near enough``, then `Bella: nothing in the files for that`.
+
+**Batching is equivalent.** `cargo xtask assist-check` with batching on
+and off gives the same 31 lines (tool, argument, margin): 17 of 23
+answered right and 2 of 8 acted on, as recorded. In the guest, the chat
+model's warm-up went from 3,747 to 3,484 ms for the system prompt and
+from 1,471 to 1,351 ms for the reply prompt (`bella-lookup-answer`).
+
+**Still `OK`:**
+- **Default model, `--accel whpx`:**
+  - `inference`, `bella-talk`, `bella-convo`, `bella-facts-answer`;
+  - `bella-context-answer`, `bella-summary-answer`, `bella-save`, `bella-live`;
+  - `responsiveness`, `model-restart`;
+  - `everyday-model`.
+- **`infer-check`:** `PASS`.
+- **Under TCG:** `bella`, `bella-lookup`, `bella-summary`, `bella-context`, `bella-audit`, `broker-restart`.
+- **`--bella qwen3-1.7b-q4 bella-summary-answer`** and **`--bella 1.5b bella-talk`**.
+
+Three fixes came from those runs:
+- **`everyday-model`** boots the everyday system, whose model disk now holds the embedding model too. Its expected start order gains `magpie-handler` (pid 10), so the chat model is pid 11.
+- **MagpieHandler stops when Bella has gone.** It checks `channel_peer` before each line it embeds. Closing the desktop mid-index now ends it: `MagpieHandler: Bella has gone; stopping`, then `exit pid=10 … code=0`.
+- **The `--bella` comparison cases** get a chat-model-only disk (`build/model-chat-disk.img`), so the file index does not run beside the model being measured.
+
+**`bella-model`** (TCG, with the model) failed the first full-suite run
+with `screen 1-busy: `Thinking: ` not on screen`. Bella showed "Thinking...
+(Backspace cancels)": under TCG, progress now comes once per batch of 16
+tokens (docs/batch-design.md). The check accepts either form now, and the
+case is `OK`; the cancel still happens (`ElephantHandler: request
+cancelled`).
+
+**Full suite** (`cargo xtask verify --skip-model`, TCG, second run): `PASS`,
+101 cases `OK` and 14 skipped because they need an accelerator.
 
 ## Qwen3 4-bit results (2026-11-03)
 

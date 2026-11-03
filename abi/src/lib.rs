@@ -147,15 +147,26 @@ pub mod sys {
     pub const CHANNEL_PEER: u64 = 74;
     /// `a1` = 1: the calling program runs only when no other program is
     /// ready, and input preempts it at once (docs/stage2-design.md, B12);
-    /// `a1` = 0: back to normal.
+    /// `a1` = 0: back to normal; `a1` = 2: idle, below background
+    /// (docs/vectors-design.md).
     pub const SET_BACKGROUND: u64 = 75;
-    /// The model's length in bytes on the read-only model disk, or
-    /// `NOT_FOUND` without one (docs/stage2-design.md §3).
+    /// A model's length in bytes on the read-only model disk, or
+    /// `NOT_FOUND` (docs/stage2-design.md §3): `a1` = which model (0, the
+    /// chat model; 1, the embedding model; docs/vectors-design.md).
     pub const MODEL_SIZE: u64 = 76;
-    /// Reads model blocks: `a1` = first 4 KiB block of the model, `a2` =
-    /// count (at most `BLOCK_RUN_MAX`), `a3` = buffer of count * 4 KiB.
+    /// Reads model blocks: `a1` = first 4 KiB block of the model, with
+    /// which model in its top byte (`MODEL_WHICH_SHIFT`), `a2` = count (at
+    /// most `BLOCK_RUN_MAX`), `a3` = buffer of count * 4 KiB.
     pub const MODEL_READ: u64 = 77;
 }
+
+/// `MODEL_READ`'s block argument carries which model above this bit.
+pub const MODEL_WHICH_SHIFT: u32 = 56;
+/// Models the model disk can hold (docs/vectors-design.md).
+pub const MAX_MODELS: usize = 4;
+/// Which model: Bella's chat model, and the embedding model.
+pub const MODEL_CHAT: u64 = 0;
+pub const MODEL_EMBED: u64 = 1;
 
 /// Handle-message tag: the resident supervisor's channel for one desktop
 /// session (docs/s0-design.md, B5). The supervisor sends it to the kernel

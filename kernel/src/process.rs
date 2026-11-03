@@ -181,6 +181,10 @@ struct Proc {
     /// Runs only when no other program is ready (docs/stage2-design.md, B12):
     /// set by the program itself with `SET_BACKGROUND`.
     background: bool,
+    /// Lower still (`SET_BACKGROUND` 2, docs/vectors-design.md): runs only
+    /// when no normal or background program is ready, and gets no turn
+    /// for waiting. Also `background`.
+    idle: bool,
     /// Program name and arguments, NUL-separated (`args_get`).
     cmdline: String,
     /// Threads that have not exited.
@@ -389,6 +393,7 @@ impl Proc {
             shm_maps: Vec::new(),
             log_ok: false,
             background: false,
+            idle: false,
             live: 1,
             members: 1,
             ended: false,
@@ -983,23 +988,27 @@ impl Scheduler {
     ///
     /// Background programs (`SET_BACKGROUND`, docs/stage2-design.md) run only
     /// when no other task is ready, except that one which has not run for
-    /// `BACKGROUND_STARVE` ticks gets a turn, so it cannot starve.
+    /// `BACKGROUND_STARVE` ticks gets a turn, so it cannot starve. Idle
+    /// programs (docs/vectors-design.md) run only when no normal or
+    /// background task is ready, and get no such turn.
     fn pick_next(&self) -> usize {
         let n = self.tasks.len();
         let ready = |i: usize| matches!(&self.tasks[i], Some(t) if t.state == State::Ready);
-        let background = |i: usize| {
+        // 0 normal, 1 background, 2 idle.
+        let class = |i: usize| {
             self.tasks[i]
                 .as_ref()
                 .and_then(|t| t.proc)
                 .and_then(|p| self.procs[p].as_ref())
-                .is_some_and(|p| p.background)
+                .map_or(0, |p| u8::from(p.background) + u8::from(p.idle))
         };
+        let background = |i: usize| class(i) != 0;
         let order = (1..=n).map(|k| (self.current + k) % n);
         let now = interrupts::ticks();
         if let Some(i) = order.clone().find(|&i| {
             i != 0
                 && ready(i)
-                && background(i)
+                && class(i) == 1
                 && self.tasks[i]
                     .as_ref()
                     .is_some_and(|t| now.saturating_sub(t.last_ran) >= BACKGROUND_STARVE)
@@ -1013,6 +1022,9 @@ impl Scheduler {
             {
                 return i;
             }
+            if let Some(i) = order.clone().find(|&i| i != 0 && ready(i) && class(i) == 1) {
+                return i;
+            }
             if let Some(i) = order.clone().find(|&i| i != 0 && ready(i)) {
                 return i;
             }
@@ -1020,6 +1032,7 @@ impl Scheduler {
         order
             .clone()
             .find(|&i| ready(i) && !background(i))
+            .or_else(|| order.clone().find(|&i| ready(i) && class(i) == 1))
             .or_else(|| order.clone().find(|&i| ready(i)))
             .unwrap_or(0)
     }
@@ -7254,7 +7267,7 @@ impl Scheduler {
                     None => err(Error::NotFound),
                 }
             }
-            sys::MODEL_SIZE => match virtio_blk::model_len() {
+            sys::MODEL_SIZE => match usize::try_from(a1).ok().and_then(virtio_blk::model_len) {
                 Some(len) => Outcome::Ret(len as i64),
                 None => err(Error::NotFound),
             },
@@ -7272,7 +7285,10 @@ impl Scheduler {
                 // SAFETY: a checked, mapped, writable user range of `count`
                 // blocks in the active address space.
                 let buf = unsafe { core::slice::from_raw_parts_mut(a3 as *mut u8, len as usize) };
-                match virtio_blk::model_read(mem, a1, buf) {
+                // Which model rides in the block number's top byte.
+                let which = (a1 >> zoo_abi::MODEL_WHICH_SHIFT) as usize;
+                let block = a1 & ((1 << zoo_abi::MODEL_WHICH_SHIFT) - 1);
+                match virtio_blk::model_read(mem, which, block, buf) {
                     Ok(()) => Outcome::Ret(0),
                     Err(virtio_blk::BlockError::OutOfRange) => err(Error::Inval),
                     Err(virtio_blk::BlockError::NoDevice) => err(Error::NotFound),
@@ -7283,6 +7299,8 @@ impl Scheduler {
                 // a1 = 1: this program runs only when nothing else is
                 // ready (docs/stage2-design.md); 0: back to normal.
                 self.proc(i).background = a1 != 0;
+                // a1 = 2: idle, below background (docs/vectors-design.md).
+                self.proc(i).idle = a1 == 2;
                 Outcome::Ret(0)
             }
             sys::SHM_SIZE => match self.proc(i).get(a1) {

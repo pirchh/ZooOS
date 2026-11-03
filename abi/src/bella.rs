@@ -178,6 +178,33 @@ pub fn summary_stem(path: &str) -> &str {
     }
 }
 
+/// A question about what the user's own files say ("what do my notes say
+/// about the vet?"): answered from lines of those files
+/// (docs/lookup-design.md).
+pub fn asks_my_files(text: &str) -> bool {
+    let about_files = [
+        "my notes",
+        "my files",
+        "my documents",
+        "did i write",
+        "did i note",
+        "have i written",
+        "i wrote",
+    ]
+    .iter()
+    .any(|q| contains_ignoring_case(text, q));
+    // Asking what they say, not where they are ("where are my files").
+    let about_content = [
+        "say", "said", "about", "mention", "anything", "what", "when", "who",
+    ]
+    .iter()
+    .any(|q| {
+        text.split(|c: char| !c.is_ascii_alphabetic())
+            .any(|w| w.eq_ignore_ascii_case(q))
+    });
+    about_files && about_content && !typed_command(text)
+}
+
 /// "forget X", "forget that X", "forget about X": what to forget.
 pub fn fact_to_forget(text: &str) -> Option<&str> {
     let t = text.trim();
@@ -368,6 +395,25 @@ mod tests {
         assert_eq!(summary_stem("todo"), "todo");
         assert_eq!(summary_stem("a/.hidden"), "a/.hidden");
         assert_eq!(summary_stem("v1.2/notes"), "v1.2/notes");
+    }
+
+    #[test]
+    fn my_files() {
+        for t in [
+            "What do my notes say about the vet?",
+            "did I write anything about Zara",
+            "what's in my files about pancakes",
+        ] {
+            assert!(asks_my_files(t), "{t}");
+        }
+        for t in [
+            "where are my files",
+            "open my notes file",
+            "list my documents",
+            "what time is it",
+        ] {
+            assert!(!asks_my_files(t), "{t}");
+        }
     }
 
     #[test]

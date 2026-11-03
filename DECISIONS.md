@@ -150,6 +150,26 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella answers from your files; a file index by meaning (2026-11-03)
+
+Version 0.94.0. Designs: docs/lookup-design.md, docs/vectors-design.md,
+docs/batch-design.md.
+
+- **The owner approved an embedding model.** Qwen3-Embedding-0.6B was
+  chosen because it runs on the engine we have (Qwen3, last-token
+  pooling), is Apache-2.0, and scores among the best small models. A tiny
+  BERT model would be faster, but would need a new engine.
+- **Model disk version 2:** up to 4 models; model 0 stays the chat model,
+  so nothing that reads model 0 changed.
+- **MagpieHandler at a new idle priority:** the first index takes about
+  2 minutes for 152 lines, so it must never compete with the desktop or
+  the chat model.
+- **Word lookup stays** as the fallback while the index is building, and
+  when no embedding model is installed.
+- **Prompts are read in batches of 16:** results identical, 1.4× faster
+  on the host. Reading a prompt is limited by arithmetic, not by memory,
+  so the next speed levers are more cores and 8-bit activations.
+
 ## Qwen3-1.7B in 4 bits; B14 closed as measured (2026-11-03)
 
 - **`cargo xtask requant`** turns the official `Q8_0` file into `Q4_0`.

@@ -174,15 +174,12 @@ impl<'m, 't> Bella<'m, 't> {
             + 16
             + BUDGET.max_arg_tokens;
         let mut st = model.new_state(ctx);
-        for (k, &id) in prefix_ids.iter().enumerate() {
-            if !progress(Step::Prefix {
-                done: k,
-                total: prefix_ids.len(),
-            }) {
-                return Err(AssistError::Cancelled);
-            }
-            // The prefix's scores are never read.
-            model.feed(&mut st, id)?;
+        // The prefix's scores are never read.
+        let total = prefix_ids.len();
+        if !model.read_prompt(&mut st, &prefix_ids, false, |done| {
+            progress(Step::Prefix { done, total })
+        })? {
+            return Err(AssistError::Cancelled);
         }
         let tool_ids = TOOLS.map(|t| tok.encode(t.word()));
         let tool_first = core::array::from_fn(|i| tool_ids[i][0]);
@@ -256,19 +253,12 @@ impl<'m, 't> Bella<'m, 't> {
             return Err(AssistError::TooLong);
         }
         self.st.pos = self.prefix_len;
-        for (k, &id) in ids.iter().enumerate() {
-            if !progress(Step::Request {
-                done: k,
-                total: ids.len(),
-            }) {
-                return Err(AssistError::Cancelled);
-            }
-            // Only the last request token's scores are read.
-            if k + 1 == ids.len() {
-                self.model.forward(&mut self.st, id)?;
-            } else {
-                self.model.feed(&mut self.st, id)?;
-            }
+        // Only the last request token's scores are read.
+        let total = ids.len();
+        if !self.model.read_prompt(&mut self.st, &ids, true, |done| {
+            progress(Step::Request { done, total })
+        })? {
+            return Err(AssistError::Cancelled);
         }
         // Tool: best first-token score among the words.
         let scores = self.tool_first.map(|id| self.st.logits[id as usize]);

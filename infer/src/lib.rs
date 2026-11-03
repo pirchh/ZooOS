@@ -18,6 +18,7 @@ mod avx2;
 pub mod chat;
 #[allow(unsafe_code)]
 pub mod cpu;
+pub mod embed;
 pub mod gguf;
 pub mod model;
 pub mod quant;

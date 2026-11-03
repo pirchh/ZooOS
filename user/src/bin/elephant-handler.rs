@@ -127,6 +127,14 @@ fn reply(chan: Handle, args: core::fmt::Arguments, progress: bool) -> Result<(),
     }
 }
 
+/// Which reply in words a request asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Job {
+    Talk,
+    Summary,
+    FromFiles,
+}
+
 /// What the progress callback saw on the channel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stop {
@@ -324,11 +332,14 @@ fn service(chan: Handle) -> u8 {
         // `talk <request>\t<facts>`: facts the user told Bella before.
         // `summarise <name>\t<text>`: a file's text, summarised in a call
         // of its own (docs/summary-design.md).
+        // `answer <question>\t<lines>`: lines of the user's files that may
+        // answer it (docs/lookup-design.md).
         let job = msg
             .strip_prefix("talk ")
-            .map(|r| (false, r))
-            .or_else(|| msg.strip_prefix("summarise ").map(|r| (true, r)));
-        if let Some((summary, request)) = job {
+            .map(|r| (Job::Talk, r))
+            .or_else(|| msg.strip_prefix("summarise ").map(|r| (Job::Summary, r)))
+            .or_else(|| msg.strip_prefix("answer ").map(|r| (Job::FromFiles, r)));
+        if let Some((job, request)) = job {
             let (request, facts) = request.split_once('\t').unwrap_or((request, ""));
             // Bella answers in words: text only, never run
             // (docs/talk-design.md).
@@ -376,10 +387,11 @@ fn service(chan: Handle) -> u8 {
             {
                 talk = Some(tk);
             }
-            let result = match talk.as_mut() {
-                Some(tk) if summary => tk.summarise(request, facts, &mut keep),
-                Some(tk) => tk.reply_with(request, facts, &mut keep),
-                None => Err(AssistError::Cancelled),
+            let result = match (talk.as_mut(), job) {
+                (Some(tk), Job::Summary) => tk.summarise(request, facts, &mut keep),
+                (Some(tk), Job::FromFiles) => tk.answer_from(request, facts, &mut keep),
+                (Some(tk), Job::Talk) => tk.reply_with(request, facts, &mut keep),
+                (None, _) => Err(AssistError::Cancelled),
             };
             let sent = match (result, stop) {
                 (_, Some(Stop::Closed)) => return 0,
@@ -391,7 +403,11 @@ fn service(chan: Handle) -> u8 {
                 (Ok(text), None) => {
                     zoo_rt::log!(
                         "ElephantHandler: {} `{}` in {} ms (first words at {} ms)",
-                        if summary { "summarised" } else { "said" },
+                        match job {
+                            Job::Summary => "summarised",
+                            Job::FromFiles => "answered from files",
+                            Job::Talk => "said",
+                        },
                         text,
                         (zoo_rt::now_us() - t0) / 1000,
                         first_words.map_or(0, |t| (t - t0) / 1000)

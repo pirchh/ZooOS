@@ -51,6 +51,21 @@ The result is 1,129,782,944 bytes with SHA-256
 `23bd087a7d67959d942223d49d2978fe43d201a6c4d8e377c6cac726eae38d40`;
 the run is deterministic (docs/qwen3-design.md).
 
+The embedding model for Bella's file index (docs/vectors-design.md). The
+owner approved this download on 2026-11-03. When it is here, the model
+disk carries it as model 1:
+
+| Field | Value |
+| --- | --- |
+| Model | Qwen3-Embedding-0.6B, GGUF, `Q8_0` |
+| File | `qwen3-embedding-0.6b-q8_0.gguf`, 639,150,592 bytes |
+| Source | https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF |
+| Pinned commit | `370f27d7550e0def9b39c1f16d3fbaa13aa67728` |
+| SHA-256 | `06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439` (matches the file page) |
+| Licence | Apache-2.0 (model card tag and the file's `general.license`) |
+
+    curl -fL -o tools/models/qwen3-embedding-0.6b-q8_0.gguf       https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/370f27d7550e0def9b39c1f16d3fbaa13aa67728/Qwen3-Embedding-0.6B-Q8_0.gguf
+
 To fetch the default model on a new machine (about 430 MB):
 
     curl -fL -o tools/models/qwen2.5-0.5b-instruct-q4_0.gguf \

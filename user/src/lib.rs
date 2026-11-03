@@ -264,20 +264,37 @@ pub fn shm_map(h: Handle) -> Result<u64, Error> {
 
 /// The model's length in bytes on the model disk (docs/stage2-design.md §3).
 pub fn model_size() -> Result<u64, Error> {
-    result(syscall(sys::MODEL_SIZE, 0, 0, 0))
+    model_size_of(zoo_abi::MODEL_CHAT)
+}
+
+/// Model `which`'s length in bytes on the model disk
+/// (`zoo_abi::MODEL_CHAT`, `zoo_abi::MODEL_EMBED`).
+pub fn model_size_of(which: u64) -> Result<u64, Error> {
+    result(syscall(sys::MODEL_SIZE, which, 0, 0))
 }
 
 /// Reads `buf.len() / 4096` blocks of the model from its block `block`
 /// (at most `zoo_abi::BLOCK_RUN_MAX`; `buf.len()` a multiple of 4 KiB).
 pub fn model_read(block: u64, buf: &mut [u8]) -> Result<(), Error> {
+    model_read_of(zoo_abi::MODEL_CHAT, block, buf)
+}
+
+/// `model_read` of model `which`.
+pub fn model_read_of(which: u64, block: u64, buf: &mut [u8]) -> Result<(), Error> {
     let count = (buf.len() / zoo_abi::BLOCK_BYTES) as u64;
     result(syscall(
         sys::MODEL_READ,
-        block,
+        block | (which << zoo_abi::MODEL_WHICH_SHIFT),
         count,
         buf.as_mut_ptr() as u64,
     ))
     .map(|_| ())
+}
+
+/// Runs this program only when no normal or background program is ready
+/// (docs/vectors-design.md): for work that may wait indefinitely.
+pub fn set_idle() -> Result<(), Error> {
+    result(syscall(sys::SET_BACKGROUND, 2, 0, 0)).map(|_| ())
 }
 
 /// Marks this program as background work (`true`): it runs only when no
