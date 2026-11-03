@@ -61,7 +61,8 @@ The boot then runs as before, to `ZOO_OS SHELL ready`.
 **Negative control:** SIPI one page off: `FAIL` (`early-exit`). The
 processor ran garbage and reset the machine.
 
-FULL_SUITE_RESULT
+**Full suite** (`cargo xtask verify --skip-model`, TCG): `PASS`, 102 cases
+`OK` and 14 skipped because they need an accelerator.
 
 ## 8-bit results (version 0.95.0)
 
