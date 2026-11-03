@@ -150,6 +150,16 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Model cases run with the 1.5B model from the model disk (2026-11-03)
+
+`cargo xtask verify --bella 1.5b` used to skip every Bella model case,
+because the 1.5B model does not fit the boot image's FAT partition. Those
+cases now boot the plain image with the model on the model disk, as
+`run` does. Only `inference` and `bella-model`, which check the model in
+the boot image, are still skipped. The default model is unchanged: it
+stays in the boot image. The default stays 0.5B: the comparison in
+docs/verification.md is the evidence for the owner's choice.
+
 ## Bella saves a summary (2026-11-03)
 
 Version 0.91.0. Design: docs/save-design.md.
