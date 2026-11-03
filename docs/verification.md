@@ -63,7 +63,8 @@ shown and the request is cancelled during the warm-up.
 - **The warm-up not in the background:** `FAIL responsiveness`
   (`tick: mean` 501).
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+clippy `-D warnings` (`zoo-user`, `xtask`) and `cargo fmt --check`: clean.
 
 ## Stage 2 results: background programs (version 0.79.0)
 
