@@ -135,6 +135,8 @@ enum Stop {
 }
 
 fn service(chan: Handle) -> u8 {
+    // Inference yields to the desktop (docs/s2-design.md, B12).
+    let _ = zoo_rt::set_background(true);
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     let Some(file) = fs_find(MODEL).and_then(|i| fs_map(i).ok()) else {
         let _ = log("ElephantHandler: service: model not installed");

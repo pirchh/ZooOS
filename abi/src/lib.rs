@@ -144,6 +144,10 @@ pub mod sys {
     /// service can limit what each client takes (docs/s0-design.md, B7);
     /// `NOT_FOUND` when no process holds it (closed, or in a message).
     pub const CHANNEL_PEER: u64 = 74;
+    /// `a1` = 1: the calling program runs only when no other program is
+    /// ready, and input preempts it at once (docs/s2-design.md, B12);
+    /// `a1` = 0: back to normal.
+    pub const SET_BACKGROUND: u64 = 75;
 }
 
 /// Handle-message tag: the resident supervisor's channel for one desktop

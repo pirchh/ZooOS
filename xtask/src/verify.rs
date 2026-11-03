@@ -2847,7 +2847,12 @@ fn responsiveness_steps() -> Interaction {
     ));
     steps.extend(wiggle(&mut p, 10));
     steps.push(Action::Keys(vec!["f11"]));
-    steps.push(Action::WaitContains("PeacockHandler: input wait".into()));
+    // While the model runs, the mean wait must stay under 15% of a tick
+    // (1.5 ms); it was 47% before scheduler priorities (docs/s2-design.md).
+    steps.push(Action::WaitNumbers(
+        "PeacockHandler: input wait".into(),
+        vec![("input wait", 20, 1000), ("tick: mean", 0, 150)],
+    ));
     // The model was still busy when the figures were taken.
     steps.push(Action::WaitContains(
         "ElephantHandler: chose search `pancake recipe`".into(),

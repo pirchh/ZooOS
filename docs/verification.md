@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The Stage 1
-section (version 0.78.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The Stage 2
+priorities section (version 0.79.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,35 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 2 results: background programs (version 0.79.0)
+
+Design: docs/s2-design.md (B12).
+
+**`responsiveness`** (`--accel whpx`): `OK`, now with a bound on the
+input wait while the model runs:
+
+```
+[verify] in range: [27:peacock-handler] PeacockHandler: input wait 40 events mean 588959 max 21252914 cycles; per mille of a tick: mean 18 longest 666
+```
+
+**Negative control:** ElephantHandler not marking itself background:
+
+```
+FAIL  responsiveness  … `tick: mean` 481 outside 0..=150 in `… input wait 40 events mean 15358729 max 30597298 cycles; per mille of a tick: mean 481 longest 960`
+```
+
+`bella-live` (`--accel whpx`): `OK`. First request 6,103 ms Enter to
+answer (Stage 1: 6,011 ms), second 1,600 ms (1,557 ms).
+
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 93 cases `OK`.
+The scheduler change touches every program, so the accelerator-only
+cases were also run with `--accel whpx`:
+- `everyday-model`, `bella-live` and `responsiveness`: `OK`;
+- `wine-home-1` (74.8 s) and `wine-home-2`: `OK`.
+
+clippy `-D warnings` (kernel, `zoo-user`, `xtask`) and `cargo fmt --check`:
+clean.
 
 ## Stage 1 results: "none of these" and timing (version 0.78.0)
 
