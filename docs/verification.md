@@ -63,7 +63,8 @@ chose ``list `.` `` again.
 
 **Host tests:** `zoo_abi` 17 passed (new `follow_ups`).
 
-FULL_SUITE_RESULT
+**Full `cargo xtask verify --skip-model`** (TCG): `PASS`, 94 cases `OK`.
+clippy `-D warnings` and `cargo fmt --check`: clean.
 
 ## Bella talks; Qwen2.5-1.5B (version 0.83.0)
 
