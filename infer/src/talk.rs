@@ -32,12 +32,15 @@ pub const CONVERSATION_TOKENS: usize = 768;
 /// One unit of progress, reported to the callback; returning `false`
 /// cancels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TalkStep {
+pub enum TalkStep<'a> {
     /// A system-prompt token was fed (`done` of `total`).
     Prefix { done: usize, total: usize },
     /// A request token was fed.
     Request { done: usize, total: usize },
-    /// A reply token was written.
+    /// The reply so far (`text`, cleaned as the final reply is), shown as
+    /// it is written (docs/stream-design.md).
+    Partial { text: &'a str },
+    /// A reply token is about to be written.
     Reply { done: usize },
 }
 
@@ -165,9 +168,10 @@ impl<'m, 't> Talk<'m, 't> {
             text.push_str(")\n");
         }
         text.push_str(request);
-        text.push_str("<|im_end|>\n<|im_start|>assistant\n");
+        text.push_str(chat::reply_open(self.model));
         let ids = self.tok.encode(&text);
-        if ids.len() > BUDGET.max_request_tokens + crate::assist::MAX_CONTEXT_TOKENS + 8 {
+        // 16: the turn's opening, with Qwen3's empty think block.
+        if ids.len() > BUDGET.max_request_tokens + crate::assist::MAX_CONTEXT_TOKENS + 16 {
             return Err(AssistError::TooLong);
         }
         // The request and its reply continue the conversation.
@@ -202,8 +206,9 @@ impl<'m, 't> Talk<'m, 't> {
         prompt.push_str(text);
         prompt.push_str(
             "\n</file>\nSummarise it in one or two sentences, naming the main \
-             things it says.<|im_end|>\n<|im_start|>assistant\n",
+             things it says.",
         );
+        prompt.push_str(chat::reply_open(self.model));
         let ids = self.tok.encode(&prompt);
         if ids.len() > MAX_SUMMARY_TOKENS + 48 {
             return Err(AssistError::TooLong);
@@ -247,6 +252,11 @@ impl<'m, 't> Talk<'m, 't> {
                 break;
             }
             out.push(next);
+            // The words so far, for showing as they come.
+            let so_far = clean(&self.tok.decode(&out));
+            if !progress(TalkStep::Partial { text: &so_far }) {
+                return Err(AssistError::Cancelled);
+            }
             self.model.forward(&mut self.st, next)?;
         }
         if keep {

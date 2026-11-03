@@ -13,6 +13,9 @@ use alloc::vec::Vec;
 
 /// GGUF token type of control tokens such as `<|im_start|>`.
 const TOKEN_CONTROL: i32 = 3;
+/// GGUF token type of added tokens such as Qwen3's `<think>`: matched
+/// literally in input like control tokens, but printable in output.
+const TOKEN_USER_DEFINED: i32 = 4;
 
 pub struct Tokenizer<'a> {
     tokens: Vec<&'a str>,
@@ -75,7 +78,7 @@ impl<'a> Tokenizer<'a> {
         let mut special: Vec<(&str, u32)> = tokens
             .iter()
             .enumerate()
-            .filter(|(i, _)| is_control[*i])
+            .filter(|(i, _)| is_control[*i] || types.get(*i) == Some(&TOKEN_USER_DEFINED))
             .map(|(i, t)| (*t, i as u32))
             .collect();
         special.sort_by_key(|(t, _)| core::cmp::Reverse(t.len()));

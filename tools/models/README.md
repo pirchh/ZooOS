@@ -27,6 +27,21 @@ owner approved this download on 2026-11-02:
     curl -fL -o tools/models/qwen2.5-1.5b-instruct-q4_0.gguf \
       https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_0.gguf
 
+A third model, under evaluation, chosen with `--bella qwen3-1.7b`
+(docs/qwen3-design.md). The owner approved this download on 2026-11-03:
+
+| Field | Value |
+| --- | --- |
+| Model | Qwen3-1.7B, GGUF, `Q8_0` |
+| File | `qwen3-1.7b-q8_0.gguf`, 1,834,426,016 bytes |
+| Source | https://huggingface.co/Qwen/Qwen3-1.7B-GGUF |
+| Pinned commit | `90862c4b9d2787eaed51d12237eafdfe7c5f6077` |
+| SHA-256 | `061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a` (matches the file page) |
+| Licence | Apache-2.0 (model card) |
+
+    curl -fL -o tools/models/qwen3-1.7b-q8_0.gguf \
+      https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/90862c4b9d2787eaed51d12237eafdfe7c5f6077/Qwen3-1.7B-Q8_0.gguf
+
 To fetch the default model on a new machine (about 430 MB):
 
     curl -fL -o tools/models/qwen2.5-0.5b-instruct-q4_0.gguf \

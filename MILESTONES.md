@@ -182,6 +182,7 @@ lands as small, separately verified steps.
 | 2 | Bella's audit trail: a log line per broker request; changes kept in `.bella-audit`; "what did you do?" (docs/audit-design.md) | done 2026-11-03 |
 | 5 | Bella summarises a file in a model call of its own: "summarise Documents/notes.txt" → "a list of items to buy for a shopping trip" in 2.4 s (docs/summary-design.md) | done 2026-11-03 |
 | 5 | Bella saves a summary beside its file ("save that"); the broker's `write` never replaces a file (docs/save-design.md) | done 2026-11-03 |
+| — | Bella answers as she writes (first words 0.3–2.2 s with 0.5B), with an instant line before slow answers; Qwen3-1.7B runs for evaluation (docs/stream-design.md, docs/qwen3-design.md) | done 2026-11-03 |
 | 2 | Still open: keys during broker calls (B14, the deadline is done); narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |
 | — | Bella keeps the conversation: a running chat in the model's cache, noted command results, follow-ups with context (docs/talk-design.md §6) | done 2026-11-03 |

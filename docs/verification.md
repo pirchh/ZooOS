@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The screen
-wording section (version 0.92.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The streaming
+section (version 0.93.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,40 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Streaming and Qwen3 results (version 0.93.0)
+
+Designs: docs/stream-design.md (the timing table for three models),
+docs/qwen3-design.md.
+
+**Default model (0.5B), `--accel whpx`, all `OK`:**
+- `inference`, `bella-talk`, `bella-convo`, `bella-facts-answer` and
+  `bella-context-answer`;
+- `bella-summary-answer`, `bella-save`, `bella-live` and `responsiveness`.
+
+`infer-check` (the engine against the NumPy reference) is `PASS`, with
+the same tokens and a top-5 logit max diff of 0.00005, after the
+tokenizer and chat changes.
+
+**Under TCG, all `OK`:** `bella`, `bella-summary`, `bella-context` and
+`bella-audit`. The latter two cases see the instant lines:
+`Bella: said first: Let me read that file, one moment...` and
+`Bella: said first: Let me look at your screen...`.
+
+**Qwen3-1.7B** (`--bella qwen3-1.7b`, `--accel whpx`):
+- `bella-talk`, `bella-facts-answer`, `bella-context-answer`: `OK`;
+- `bella-summary-answer`: `OK`, after its word check took any of
+  "shopping", "flour" or "the vet" (`Action::WaitSeenAny`). Before, it
+  required "shopping" and failed on a better summary:
+
+```
+ElephantHandler: summarised `The file lists items to buy: flour, eggs, and milk. It also mentions calling the vet about Zara the zebra.` in 14756 ms (first words at 10256 ms)
+```
+
+**Negative control:** with Bella ignoring `part` messages,
+`bella-summary-answer` gives `FAIL` (no `first words on screen`).
+
+FULL_SUITE_RESULT
 
 ## Screen wording results (version 0.92.0)
 

@@ -1,5 +1,5 @@
-//! The Qwen2 transformer (docs/m5b-design.md §2): one token at a time with a
-//! key/value cache. Matrix-vector products run directly on the quantized
+//! The Qwen2 and Qwen3 transformers (docs/m5b-design.md §2,
+//! docs/qwen3-design.md): one token at a time with a key/value cache. Matrix-vector products run directly on the quantized
 //! weights in the mapped file; only small tensors are expanded to f32.
 
 use crate::gguf::{Gguf, GgufError, TensorInfo};
@@ -34,6 +34,10 @@ pub struct Config {
     pub rope_base: f32,
     pub eps: f32,
     pub vocab: usize,
+    /// Qwen3: the chat template opens Bella's turns with an empty
+    /// `<think></think>` block, so the model answers without reasoning
+    /// first (docs/qwen3-design.md).
+    pub qwen3: bool,
 }
 
 /// Rotary frequencies for each pair in a head: `base^(-2i / head_dim)`.
@@ -48,9 +52,13 @@ struct Layer<'a> {
     q: TensorInfo<'a>,
     k: TensorInfo<'a>,
     v: TensorInfo<'a>,
+    /// Qwen2 has q/k/v biases; Qwen3 has none (empty here).
     q_bias: Vec<f32>,
     k_bias: Vec<f32>,
     v_bias: Vec<f32>,
+    /// Qwen3's per-head RMS norms of queries and keys (empty for Qwen2).
+    q_norm: Vec<f32>,
+    k_norm: Vec<f32>,
     o: TensorInfo<'a>,
     ffn_norm: Vec<f32>,
     gate: TensorInfo<'a>,
@@ -75,6 +83,8 @@ pub struct State {
     v_cache: Vec<f32>,
     x: Vec<f32>,
     xb: Vec<f32>,
+    /// Attention output, all query heads (`n_head * head_dim`).
+    xq: Vec<f32>,
     q: Vec<f32>,
     k: Vec<f32>,
     v: Vec<f32>,
@@ -92,6 +102,14 @@ fn small<'a>(g: &Gguf<'a>, name: &str, len: usize) -> Result<Vec<f32>, ModelErro
     let mut out = vec![0.0; len];
     quant::dequantize(t.ty, t.data, &mut out);
     Ok(out)
+}
+
+/// `small`, or nothing when the file has no such tensor.
+fn optional<'a>(g: &Gguf<'a>, name: &str, len: usize) -> Result<Vec<f32>, ModelError> {
+    if g.tensor(name).is_none() {
+        return Ok(Vec::new());
+    }
+    small(g, name, len)
 }
 
 fn matrix<'a>(
@@ -119,6 +137,17 @@ fn rmsnorm(out: &mut [f32], x: &[f32], weight: &[f32], eps: f32) {
     let inv = 1.0 / libm::sqrtf(ss + eps);
     for ((o, &xv), &w) in out.iter_mut().zip(x).zip(weight) {
         *o = xv * inv * w;
+    }
+}
+
+/// RMS-normalises each `weight.len()`-long head of `v` in place.
+fn rmsnorm_heads(v: &mut [f32], weight: &[f32], eps: f32) {
+    for head in v.chunks_exact_mut(weight.len()) {
+        let ss: f32 = head.iter().map(|x| x * x).sum::<f32>() / head.len() as f32;
+        let inv = 1.0 / libm::sqrtf(ss + eps);
+        for (x, &w) in head.iter_mut().zip(weight) {
+            *x *= inv * w;
+        }
     }
 }
 
@@ -150,37 +179,63 @@ fn softmax(x: &mut [f32]) {
 
 impl<'a> Model<'a> {
     pub fn from_gguf(g: &Gguf<'a>) -> Result<Model<'a>, ModelError> {
-        if g.str("general.architecture")? != "qwen2" {
+        let arch = g.str("general.architecture")?;
+        if arch != "qwen2" && arch != "qwen3" {
             return Err(ModelError::NotQwen2);
         }
-        let n_embd = g.u32("qwen2.embedding_length")? as usize;
-        let n_head = g.u32("qwen2.attention.head_count")? as usize;
-        let n_head_kv = g.u32("qwen2.attention.head_count_kv")? as usize;
-        if n_head == 0
-            || n_head_kv == 0
-            || !n_embd.is_multiple_of(n_head)
-            || !n_head.is_multiple_of(n_head_kv)
-        {
+        // The same key under each architecture's prefix.
+        let qwen3 = arch == "qwen3";
+        let key = |q2: &'static str, q3: &'static str| if qwen3 { q3 } else { q2 };
+        let n_embd = g.u32(key("qwen2.embedding_length", "qwen3.embedding_length"))? as usize;
+        let n_head = g.u32(key(
+            "qwen2.attention.head_count",
+            "qwen3.attention.head_count",
+        ))? as usize;
+        let n_head_kv = g.u32(key(
+            "qwen2.attention.head_count_kv",
+            "qwen3.attention.head_count_kv",
+        ))? as usize;
+        if n_head == 0 || n_head_kv == 0 || !n_head.is_multiple_of(n_head_kv) {
+            return Err(ModelError::BadShape);
+        }
+        // Qwen3 states its head size; Qwen2's is the width over the heads.
+        let head_dim = match g.u32(key(
+            "qwen2.attention.key_length",
+            "qwen3.attention.key_length",
+        )) {
+            Ok(d) => d as usize,
+            Err(_) if n_embd.is_multiple_of(n_head) => n_embd / n_head,
+            Err(_) => return Err(ModelError::BadShape),
+        };
+        if head_dim == 0 || !head_dim.is_multiple_of(2) {
             return Err(ModelError::BadShape);
         }
         let embd = *g
             .tensor("token_embd.weight")
             .ok_or(ModelError::MissingTensor)?;
         let cfg = Config {
-            n_layer: g.u32("qwen2.block_count")? as usize,
+            n_layer: g.u32(key("qwen2.block_count", "qwen3.block_count"))? as usize,
             n_embd,
             n_head,
             n_head_kv,
-            head_dim: n_embd / n_head,
-            n_ff: g.u32("qwen2.feed_forward_length")? as usize,
-            rope_base: g.f32("qwen2.rope.freq_base")?,
-            eps: g.f32("qwen2.attention.layer_norm_rms_epsilon")?,
+            head_dim,
+            n_ff: g.u32(key(
+                "qwen2.feed_forward_length",
+                "qwen3.feed_forward_length",
+            ))? as usize,
+            rope_base: g.f32(key("qwen2.rope.freq_base", "qwen3.rope.freq_base"))?,
+            eps: g.f32(key(
+                "qwen2.attention.layer_norm_rms_epsilon",
+                "qwen3.attention.layer_norm_rms_epsilon",
+            ))?,
             vocab: embd.rows,
+            qwen3,
         };
         if embd.cols != n_embd {
             return Err(ModelError::BadShape);
         }
         let kv_dim = cfg.head_dim * n_head_kv;
+        let q_dim = cfg.head_dim * n_head;
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for l in 0..cfg.n_layer {
             let n = |s: &str| {
@@ -190,13 +245,15 @@ impl<'a> Model<'a> {
             };
             layers.push(Layer {
                 attn_norm: small(g, &n("attn_norm.weight"), n_embd)?,
-                q: matrix(g, &n("attn_q.weight"), n_embd, n_embd)?,
+                q: matrix(g, &n("attn_q.weight"), q_dim, n_embd)?,
                 k: matrix(g, &n("attn_k.weight"), kv_dim, n_embd)?,
                 v: matrix(g, &n("attn_v.weight"), kv_dim, n_embd)?,
-                q_bias: small(g, &n("attn_q.bias"), n_embd)?,
-                k_bias: small(g, &n("attn_k.bias"), kv_dim)?,
-                v_bias: small(g, &n("attn_v.bias"), kv_dim)?,
-                o: matrix(g, &n("attn_output.weight"), n_embd, n_embd)?,
+                q_bias: optional(g, &n("attn_q.bias"), q_dim)?,
+                k_bias: optional(g, &n("attn_k.bias"), kv_dim)?,
+                v_bias: optional(g, &n("attn_v.bias"), kv_dim)?,
+                q_norm: optional(g, &n("attn_q_norm.weight"), cfg.head_dim)?,
+                k_norm: optional(g, &n("attn_k_norm.weight"), cfg.head_dim)?,
+                o: matrix(g, &n("attn_output.weight"), n_embd, q_dim)?,
                 ffn_norm: small(g, &n("ffn_norm.weight"), n_embd)?,
                 gate: matrix(g, &n("ffn_gate.weight"), cfg.n_ff, n_embd)?,
                 up: matrix(g, &n("ffn_up.weight"), cfg.n_ff, n_embd)?,
@@ -232,7 +289,8 @@ impl<'a> Model<'a> {
             v_cache: vec![0.0; c.n_layer * max_ctx * kv_dim],
             x: vec![0.0; c.n_embd],
             xb: vec![0.0; c.n_embd],
-            q: vec![0.0; c.n_embd],
+            xq: vec![0.0; c.head_dim * c.n_head],
+            q: vec![0.0; c.head_dim * c.n_head],
             k: vec![0.0; kv_dim],
             v: vec![0.0; kv_dim],
             att: vec![0.0; max_ctx],
@@ -283,6 +341,12 @@ impl<'a> Model<'a> {
             for (a, b) in st.v.iter_mut().zip(&layer.v_bias) {
                 *a += b;
             }
+            if !layer.q_norm.is_empty() {
+                rmsnorm_heads(&mut st.q, &layer.q_norm, c.eps);
+            }
+            if !layer.k_norm.is_empty() {
+                rmsnorm_heads(&mut st.k, &layer.k_norm, c.eps);
+            }
             rope(&mut st.q, hd, pos, &self.freqs);
             rope(&mut st.k, hd, pos, &self.freqs);
             let base = l * st.max_ctx * kv_dim;
@@ -291,7 +355,7 @@ impl<'a> Model<'a> {
 
             // Attention, one query head at a time (grouped-query: `group`
             // query heads share each key/value head).
-            st.xb.fill(0.0);
+            st.xq.fill(0.0);
             for h in 0..c.n_head {
                 let q = &st.q[h * hd..(h + 1) * hd];
                 let kvh = h / group;
@@ -301,7 +365,7 @@ impl<'a> Model<'a> {
                     *a = q.iter().zip(k).map(|(x, y)| x * y).sum::<f32>() * scale;
                 }
                 softmax(att);
-                let out = &mut st.xb[h * hd..(h + 1) * hd];
+                let out = &mut st.xq[h * hd..(h + 1) * hd];
                 for (t, &a) in att.iter().enumerate() {
                     let v = &st.v_cache[base + t * kv_dim + kvh * hd..][..hd];
                     for (o, &vv) in out.iter_mut().zip(v) {
@@ -309,8 +373,8 @@ impl<'a> Model<'a> {
                     }
                 }
             }
-            matvec(&layer.o, &st.xb, &mut st.q);
-            for (x, d) in st.x.iter_mut().zip(&st.q) {
+            matvec(&layer.o, &st.xq, &mut st.xb);
+            for (x, d) in st.x.iter_mut().zip(&st.xb) {
                 *x += d;
             }
 

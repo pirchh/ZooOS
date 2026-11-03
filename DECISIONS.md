@@ -150,6 +150,18 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Replies as they are written; Qwen3 for evaluation (2026-11-03)
+
+Version 0.93.0. Designs: docs/stream-design.md, docs/qwen3-design.md.
+
+- **Owner's choice:** an instant line before slow answers, and replies
+  shown word by word, rather than only faster models.
+- **The reply so far travels as progress** (`part <text>`). It is
+  dropped when Bella's queue is full, and the next one carries all of it.
+- **Qwen3-1.7B downloaded with the owner's approval** and supported in
+  the engine (QK-norm, no biases, thinking off). It stays an evaluation
+  model; the default stays 0.5B until the owner chooses.
+
 ## Screen snapshot wording for both models (2026-11-03)
 
 Version 0.92.0. A window's title is written "Notes showing zoo.rs", not

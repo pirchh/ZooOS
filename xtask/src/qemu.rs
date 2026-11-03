@@ -522,6 +522,9 @@ pub enum Action {
     /// moving past it: for lines whose order against others is not fixed
     /// (a service's start-up next to `SHELL ready`).
     WaitSeen(String),
+    /// `WaitSeen` for any one of these: for a model's wording, which
+    /// differs between models.
+    WaitSeenAny(Vec<String>),
     /// Wait for a line containing this text, and require it to arrive
     /// between `min` and `max` milliseconds (host time) after the previous
     /// waited-for line.
@@ -684,6 +687,12 @@ pub fn run_case(
                 Action::WaitSeen(part) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
                     find_line_containing(complete, 0, part).is_some()
+                }
+                Action::WaitSeenAny(parts) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    parts
+                        .iter()
+                        .any(|p| find_line_containing(complete, 0, p).is_some())
                 }
                 Action::NeverSeen(part) => {
                     if find_line_containing(&text, 0, part).is_some() {

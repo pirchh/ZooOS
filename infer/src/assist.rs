@@ -249,9 +249,10 @@ impl<'m, 't> Bella<'m, 't> {
             text.push_str("\nNow: ");
         }
         text.push_str(request);
-        text.push_str("<|im_end|>\n<|im_start|>assistant\n");
+        text.push_str(chat::reply_open(self.model));
         let ids = self.tok.encode(&text);
-        if ids.len() > BUDGET.max_request_tokens + MAX_CONTEXT_TOKENS + 8 {
+        // 16: the turn's opening, with Qwen3's empty think block.
+        if ids.len() > BUDGET.max_request_tokens + MAX_CONTEXT_TOKENS + 16 {
             return Err(AssistError::TooLong);
         }
         self.st.pos = self.prefix_len;
