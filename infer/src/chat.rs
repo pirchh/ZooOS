@@ -20,6 +20,28 @@ pub fn prompt(system: &str, user: &str) -> String {
     s
 }
 
+/// The end of the user's turn and the opening of the model's. Qwen3's
+/// opening carries an empty `<think></think>` block, as its chat template
+/// writes with thinking off: the model answers at once instead of
+/// reasoning first (docs/qwen3-design.md). Earlier turns kept in a
+/// conversation are written without it, as the template does.
+pub fn reply_open(model: &Model) -> &'static str {
+    if model.cfg.qwen3 {
+        "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    } else {
+        "<|im_end|>\n<|im_start|>assistant\n"
+    }
+}
+
+/// `prompt`, with the model's own opening of its turn.
+pub fn prompt_for(model: &Model, system: &str, user: &str) -> String {
+    let mut s = prompt(system, user);
+    if model.cfg.qwen3 {
+        s.push_str("<think>\n\n</think>\n\n");
+    }
+    s
+}
+
 /// Feeds `prompt_ids`, then greedily generates up to `max_new` tokens,
 /// stopping at the end-of-turn token. `on_token` sees each new token and may
 /// return `false` to stop early (cancellation).

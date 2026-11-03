@@ -11,9 +11,11 @@ use zoo_infer::{Gguf, Model, Tokenizer, chat};
 /// The models Bella can use: (`--bella` name, file in tools/models/), each
 /// pinned by its `.sha256` file (tools/models/README.md). The first is the
 /// default; the test suite uses it.
-pub const MODELS: [(&str, &str); 2] = [
+pub const MODELS: [(&str, &str); 3] = [
     ("0.5b", "qwen2.5-0.5b-instruct-q4_0.gguf"),
     ("1.5b", "qwen2.5-1.5b-instruct-q4_0.gguf"),
+    // Under evaluation (docs/qwen3-design.md).
+    ("qwen3-1.7b", "qwen3-1.7b-q8_0.gguf"),
 ];
 
 static SELECTED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -99,7 +101,7 @@ pub fn run_with_system(
     let g = Gguf::parse(data).map_err(|e| format!("GGUF: {e:?}"))?;
     let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e:?}"))?;
     let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
-    let prompt_ids = tok.encode(&chat::prompt(system, user));
+    let prompt_ids = tok.encode(&chat::prompt_for(&model, system, user));
     let mut st = model.new_state(prompt_ids.len() + max_new + 1);
     let t0 = Instant::now();
     for (k, &id) in prompt_ids.iter().enumerate() {

@@ -5326,6 +5326,10 @@ fn bella_context_steps(model: bool) -> Interaction {
     steps.push(Action::Button(false));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("what am I working on?")));
+    // Said at once, before the snapshot (docs/stream-design.md).
+    steps.push(Action::WaitContains(
+        "Bella: said first: Let me look at your screen...".into(),
+    ));
     steps.push(Action::WaitContains(
         "PeacockHandler: context for Bella".into(),
     ));
@@ -5419,6 +5423,10 @@ fn bella_summary_steps() -> Interaction {
     steps.push(Action::Keys(typed(
         "summarise the file Documents/recipes/pancakes.txt",
     )));
+    // Said at once, before the slow part (docs/stream-design.md).
+    steps.push(Action::WaitContains(
+        "Bella: said first: Let me read that file, one moment...".into(),
+    ));
     // The file is found by its path; its text goes to the model service.
     steps.push(Action::WaitContains(
         "Bella: summarising Documents/recipes/pancakes.txt (".into(),
@@ -5441,11 +5449,14 @@ fn bella_summary_answer_steps() -> Interaction {
         Action::WaitContains("ElephantHandler: warmed up: reply prompt".into()),
         Action::Keys(typed("summarise Documents/notes.txt")),
         Action::WaitContains("Bella: summarising Documents/notes.txt".into()),
+        // The summary appears as it is written (docs/stream-design.md).
+        Action::WaitContains("Bella: first words on screen ".into()),
         Action::WaitContains("ElephantHandler: summarised `".into()),
         Action::Settle(QUIET),
-        // A word only the file holds: its text is not in the log, so it
-        // can only come from the summary.
-        Action::WaitSeen("hopping".into()),
+        // Words only the file holds: its text is not in the log, so they
+        // can only come from the summary. Models word it differently
+        // (0.5B: "shopping"; Qwen3-1.7B: "flour, eggs, and milk").
+        Action::WaitSeenAny(vec!["hopping".into(), "flour".into(), "the vet".into()]),
     ]);
     leave_desktop(&mut steps);
     Interaction { steps }

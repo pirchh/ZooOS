@@ -111,6 +111,11 @@ struct App {
     /// "save that" writes it beside the file (docs/save-design.md).
     summary_of: Option<String>,
     last_summary: Option<(String, String)>,
+    /// The transcript's last line is a reply still being written
+    /// (docs/stream-design.md).
+    streaming: bool,
+    /// Which acknowledgement line comes next (docs/stream-design.md).
+    acks: usize,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -136,6 +141,19 @@ fn shorten(s: String) -> String {
     }
     out
 }
+
+/// Said at once when a request will take the model a while
+/// (docs/stream-design.md); taken in turn so they do not repeat.
+const READING: [&str; 3] = [
+    "Let me read that file, one moment...",
+    "Reading it now, hang tight...",
+    "On it, reading the file...",
+];
+const LOOKING: [&str; 3] = [
+    "Let me look at your screen...",
+    "One sec, checking what's open...",
+    "Looking at your windows...",
+];
 
 fn backoff(failures: u32) -> u64 {
     (BACKOFF << failures.saturating_sub(1).min(5)).min(MAX_BACKOFF)
@@ -167,6 +185,8 @@ fn main(chan: u64, home: u64) -> u8 {
         summarising: None,
         summary_of: None,
         last_summary: None,
+        streaming: false,
+        acks: 0,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -319,6 +339,7 @@ impl App {
             // What is on the screen: asked of the window server, answered
             // in words (docs/context-design.md).
             self.request = None;
+            self.ack(&LOOKING);
             if self.win.context().is_ok() {
                 self.asking_context = Some(String::from(text));
                 self.mode = Mode::Thinking;
@@ -477,6 +498,7 @@ impl App {
     /// a call of its own (docs/summary-design.md): the text is data, it is
     /// capped, and it never joins the conversation.
     fn summarise(&mut self, request: &str, path: &str) {
+        self.ack(&READING);
         let mut req = String::from("read ");
         req.push_str(path);
         self.capture = Some(String::new());
@@ -538,6 +560,16 @@ impl App {
             l.push_str(&to);
             self.say(&l);
         }
+    }
+
+    /// Says the next of `lines` at once, before a slow answer.
+    fn ack(&mut self, lines: &[&str]) {
+        let line = lines[self.acks % lines.len()];
+        self.acks += 1;
+        let mut l = String::from("Bella: ");
+        l.push_str(line);
+        self.say(&l);
+        zoo_rt::log!("Bella: said first: {}", line);
     }
 
     /// The window server's answer to `context?`: the question waiting for
@@ -737,6 +769,8 @@ impl App {
             wait * 10
         );
         self.model_restart_at = Some(zoo_rt::ticks() + wait);
+        // A reply cut off mid-way stays as written; the next starts a line.
+        self.streaming = false;
         if thinking {
             self.mode = Mode::Typing;
             self.status = String::from(HINT);
@@ -959,6 +993,24 @@ impl App {
     }
 
     fn model_reply(&mut self, msg: &str) {
+        if let Some(text) = msg.strip_prefix("part ") {
+            // The reply so far: one transcript line, rewritten as it grows.
+            let mut l = String::from("Bella: ");
+            l.push_str(text);
+            if self.streaming {
+                if let Some(last) = self.lines.back_mut() {
+                    *last = l;
+                }
+            } else {
+                self.say(&l);
+                self.streaming = true;
+                zoo_rt::log!(
+                    "Bella: first words on screen {} ms after Enter",
+                    (zoo_rt::now_us() - self.asked_at) / 1000
+                );
+            }
+            return;
+        }
         if let Some(progress) = msg.strip_prefix("busy ") {
             self.status.clear();
             let _ = write!(self.status, "Thinking: {} (Backspace cancels)", progress);
@@ -967,11 +1019,16 @@ impl App {
         self.mode = Mode::Typing;
         self.status = String::from(HINT);
         let summarising = self.summarising.take();
+        let streamed = core::mem::take(&mut self.streaming);
         if let Some(text) = msg.strip_prefix("say ") {
-            // A reply in words: shown, never run.
+            // A reply in words: shown, never run. It replaces the line
+            // written as it came.
             let mut l = String::from("Bella: ");
             l.push_str(text);
-            self.say(&l);
+            match self.lines.back_mut() {
+                Some(last) if streamed => *last = l,
+                _ => self.say(&l),
+            }
             self.answered("the model, in words");
             // The model keeps its own reply in its conversation; here it is
             // only remembered for a follow-up's command choice.

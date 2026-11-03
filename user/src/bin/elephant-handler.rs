@@ -76,7 +76,7 @@ fn main(start_handle: u64) -> u8 {
         model.cfg.n_layer,
         t1 - t0
     );
-    let ids = tok.encode(&chat::prompt(SYSTEM, prompt));
+    let ids = tok.encode(&chat::prompt_for(&model, SYSTEM, prompt));
     let mut st = model.new_state(ids.len() + expected.len() + 2);
     // Only the last prompt token's scores are read.
     for (k, &id) in ids.iter().enumerate() {
@@ -335,6 +335,7 @@ fn service(chan: Handle) -> u8 {
             let start = ticks();
             let t0 = zoo_rt::now_us();
             let mut stop = None;
+            let mut first_words: Option<u64> = None;
             let mut keep = |step: TalkStep| -> bool {
                 let mut m = [0u8; 16];
                 match try_recv(chan, &mut m) {
@@ -358,6 +359,15 @@ fn service(chan: Handle) -> u8 {
                     TalkStep::Reply { done } => {
                         reply(chan, format_args!("busy writing {}", done), true)
                     }
+                    // The reply so far: Bella shows it as it is written
+                    // (docs/stream-design.md). Dropped when her queue is
+                    // full; the next one carries all of it.
+                    TalkStep::Partial { text } => {
+                        if first_words.is_none() && !text.trim().is_empty() {
+                            first_words = Some(zoo_rt::now_us());
+                        }
+                        reply(chan, format_args!("part {}", text), true)
+                    }
                 };
                 true
             };
@@ -380,10 +390,11 @@ fn service(chan: Handle) -> u8 {
                 (_, Some(Stop::TimedOut)) => reply(chan, format_args!("err timed out"), false),
                 (Ok(text), None) => {
                     zoo_rt::log!(
-                        "ElephantHandler: {} `{}` in {} ms",
+                        "ElephantHandler: {} `{}` in {} ms (first words at {} ms)",
                         if summary { "summarised" } else { "said" },
                         text,
-                        (zoo_rt::now_us() - t0) / 1000
+                        (zoo_rt::now_us() - t0) / 1000,
+                        first_words.map_or(0, |t| (t - t0) / 1000)
                     );
                     reply(chan, format_args!("say {}", text), false)
                 }
