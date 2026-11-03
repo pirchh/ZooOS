@@ -165,6 +165,14 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Asks the window server what is on the screen; it answers with a
+    /// `context:` message (docs/context-design.md).
+    pub fn context(&self) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = l.write_str("context?");
+        self.send_line(&l)
+    }
+
     /// Asks for application `program` to be opened.
     pub fn launch(&self, program: &str) -> Result<(), Error> {
         let mut l = Line::new();

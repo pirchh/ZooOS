@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella sees the screen (2026-11-03)
+
+Version 0.88.0. Design: docs/context-design.md. The first piece of Stage 4.
+
+- **Pull, not subscribe:** for "what am I working on?" and the like,
+  Bella sends `context?`. PeacockHandler answers with the focused window,
+  the open windows (titles where they add something) and the last six
+  things that happened.
+- **The snapshot goes to the reply model** as "On my screen: …". Window
+  titles and paths reach the model; window contents do not.
+
 ## Bella remembers facts (2026-11-03)
 
 Version 0.87.0. Design: docs/facts-design.md.

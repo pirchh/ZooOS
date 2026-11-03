@@ -502,6 +502,8 @@ impl App {
                 path.set(&rest[colon + 1..]);
                 self.request = Some(Request::Open(prog, alloc::boxed::Box::new(path)));
             }
+        } else if msg == b"context?" {
+            self.request = Some(Request::Context);
         } else if let Some(p) = msg.strip_prefix(b"dock-add:") {
             self.request = program_index(p).map(Request::DockAdd);
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
@@ -1031,6 +1033,9 @@ enum Request {
     Launch(usize),
     /// Open this file in a window of this application.
     Open(usize, alloc::boxed::Box<Text>),
+    /// What is on the screen and what just happened, for Bella
+    /// (docs/context-design.md).
+    Context,
 }
 
 /// Whether (u, v) is in the rounded rectangle (x0, y0, x1, y1) of
@@ -1734,6 +1739,9 @@ struct Desktop {
     /// Home directory handle; copies go to Bella.
     home: u64,
     focus: usize,
+    /// The last few things that happened on the desktop, oldest first
+    /// (docs/context-design.md).
+    recent: alloc::collections::VecDeque<Line>,
     /// Window rectangles (x, y, w, h), indexed like `apps`.
     wins: [(usize, usize, usize, usize); WINDOWS],
     /// Drawing order, back to front; the focused window is last.
@@ -2325,6 +2333,9 @@ impl Desktop {
             }
             app.closed = false;
             zoo_rt::log!("PeacockHandler: opened {}", app.label);
+            let mut e = Line::new();
+            let _ = write!(e, "opened {}", app.label);
+            self.happened(e);
             self.damage_window(i);
             self.begin(i, AnimKind::Open);
             // Its dock icon hops as it opens, as on a Mac.
@@ -2589,10 +2600,54 @@ impl Desktop {
         zoo_rt::log!("PeacockHandler: dock loaded ({} kept)", kept);
     }
 
+    /// Keeps `e` among the last six things that happened (for Bella).
+    fn happened(&mut self, e: Line) {
+        if self.recent.len() == 6 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(e);
+    }
+
     /// Something an application asked for (docs/u3-design.md).
     fn app_request(&mut self, i: usize, req: Request) {
         match req {
             Request::DockAdd(prog) => self.keep_in_dock(prog),
+            Request::Context => {
+                let mut l = Line::new();
+                let _ = l.write_str("context:");
+                let f = &self.apps[self.focus];
+                // A window's title only where it says more than its app's
+                // name (Notes' title is its file), to keep this short.
+                let name = |a: &App, l: &mut Line| {
+                    let _ = l.write_str(a.label);
+                    if a.title.as_str() != a.label && !a.title.as_str().is_empty() {
+                        let _ = write!(l, " ({})", a.title.as_str());
+                    }
+                    if a.minimized {
+                        let _ = l.write_str(", minimised");
+                    }
+                };
+                if !f.closed {
+                    let _ = l.write_str("focused: ");
+                    name(f, &mut l);
+                    let _ = l.write_str("; ");
+                }
+                let _ = l.write_str("open: ");
+                let mut first = true;
+                for a in self.apps.iter().filter(|a| !a.closed) {
+                    if !first {
+                        let _ = l.write_str(", ");
+                    }
+                    name(a, &mut l);
+                    first = false;
+                }
+                let _ = l.write_str("; recently: ");
+                for (k, e) in self.recent.iter().enumerate() {
+                    let _ = write!(l, "{}{}", if k == 0 { "" } else { ", " }, e.as_str());
+                }
+                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                zoo_rt::log!("PeacockHandler: context for {}", self.apps[i].label);
+            }
             Request::Launch(prog) => self.dock_click(prog),
             Request::Open(prog, path) => {
                 let w = if self.program_running(prog) {
@@ -2610,6 +2665,9 @@ impl Desktop {
                         self.apps[w].label,
                         path.as_str()
                     );
+                    let mut e = Line::new();
+                    let _ = write!(e, "opened {} in {}", path.as_str(), self.apps[w].label);
+                    self.happened(e);
                 }
             }
             Request::Menu(labels, n) => {
@@ -3029,6 +3087,9 @@ impl Desktop {
         app.closed = true;
         app.minimized = false;
         zoo_rt::log!("PeacockHandler: closed {}", app.label);
+        let mut e = Line::new();
+        let _ = write!(e, "closed {}", app.label);
+        self.happened(e);
         self.minis.retain(|&w| w != i);
         self.focus_another(i);
     }
@@ -4515,6 +4576,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         }),
         home,
         focus: 0,
+        recent: alloc::collections::VecDeque::new(),
         wins: {
             let first = zoo_abi::ui::initial_windows(w, h);
             core::array::from_fn(|i| first[i % PROGRAMS])

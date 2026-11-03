@@ -2,8 +2,8 @@
 
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
-(ignored by Git); rerun the commands to reproduce them. The facts
-section (version 0.87.0) is the current state. Sections before it
+(ignored by Git); rerun the commands to reproduce them. The screen
+section (version 0.88.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,33 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Screen results (version 0.88.0)
+
+Design: docs/context-design.md (with the wording table).
+
+**`bella-context`** (TCG): `OK`.
+
+```
+[27:peacock-handler] PeacockHandler: context for Bella
+[30:bella] Bella: the screen: focused: Bella; open: Files, Crash Test, Bella, Notes (zoo.rs); recently: opened Notes, opened Documents/zoo.rs in Notes
+```
+
+**`bella-context-answer`** (`--accel whpx`): `OK`.
+
+```
+[31:elephant-handler] ElephantHandler: said `You are working on `zoo.rs`, a file that is currently open in the "Notes" application.` in 2256 ms
+```
+
+**Negative control:** no snapshot → `FAIL`, ``said `I am Bella, the
+assistant built into ZooOS, an operating system.` ``
+
+**Still `OK`:**
+- with WHPX: `bella-facts-answer` (with the new context label), `bella-talk`,
+  `bella-convo` and `bella-live`;
+- under TCG: `bella-facts`, `bella-access` and `bella`.
+
+FULL_SUITE_RESULT
 
 ## Facts results (version 0.87.0)
 
