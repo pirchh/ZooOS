@@ -8,8 +8,8 @@ failing, and never stalls the desktop.
 | --- | --- |
 | B12: scheduler priorities; the model runs in the background | done, version 0.79.0 |
 | Warm the system prompt in the background at desktop start | done, version 0.80.0 |
-| The model on the data disk | open |
-| B10: disk requests off the scheduler lock | open |
+| The model on its own disk | done, version 0.81.0 |
+| B10: disk requests off the scheduler lock | measured: 52 µs per request; not changed (§3) |
 | Restart ElephantHandler and OtterHandler with back-off | open |
 | B14: non-blocking broker calls | open |
 | B13: a bounded kernel heap per process | open |
@@ -114,3 +114,79 @@ The first request is now about as fast as later ones, as the roadmap's
   fails on the model service starting late.
 - **ElephantHandler not background, with the warm-up:**
   `FAIL responsiveness` (`tick: mean` 501).
+
+## 3. The model on its own disk
+
+The owner's choice ("model loads from disk"). A3 put the model in the
+everyday system's boot image, where it cost 1.85 s of boot (the boot
+loader reads 411 MB more) and 411 MB of the boot image.
+
+**Why a read-only disk of its own, not the data disk:**
+- The data disk is the home folder's ZooFS 2 (docs/linux10c-design.md).
+  Putting the model in it means writing a 411 MB file into the user's
+  file system from the host, or a first-boot copy.
+- **A separate read-only disk** is a plain file the host writes once, that
+  the guest cannot damage (`readonly=on`), and that is separate from the
+  owner's data.
+- It is what a system partition will be on real disks.
+
+**The disk** (`build/model-disk.img`, `image::model_disk`):
+- **Layout:** block 0 is a header, `ZOOMODL1` then the model's length (8
+  bytes, little-endian); the model follows from block 1, padded to whole
+  4 KiB blocks.
+- **Written once:** only when the model file is newer or a different size,
+  and only after its pinned SHA-256 checks.
+- **Attached** as a second legacy `virtio-blk-pci` drive with
+  `readonly=on`.
+
+**The kernel:**
+- **Finding the disks:** `virtio_blk::init` sets up every legacy virtio
+  block device (up to two). One whose block 0 starts with `ZOOMODL1` is
+  the model disk; the other is the data disk. A model length that would
+  not fit the disk is refused.
+- **New system calls:** `MODEL_SIZE` (76) and `MODEL_READ` (77) read up to
+  16 blocks per call. Any program may read: the model is public,
+  read-only data.
+
+**ElephantHandler:**
+- **Where the model comes from:** the initial filesystem, if the boot image
+  has it (the USB stick, the test images); else the model disk.
+- **Reading it:** it reads the whole model into page-aligned memory, as a
+  background program, and logs `read the model from the model disk: N MB
+  in T ms`.
+- **Bella** warms the model up when it is in either place.
+
+**`cargo xtask run`** now boots the small fast-boot image plus the model
+disk. `--no-model` leaves the disk out. **`usb-image`** keeps the model
+in the boot image, because ZooOS has no USB storage driver yet (Stage 7).
+
+**Measured** (`everyday-model`, `--accel whpx`, from QEMU starting, in
+`serial-times.log`):
+
+| | Model in the boot image (A3) | Model on its disk |
+| --- | --- | --- |
+| Kernel up (`BOOT`) | 2,753 ms | **1,035 ms** |
+| Desktop up (Bella started) | 2,930 ms | **1,210 ms** |
+| Model read into memory | — | 341 ms (408 MB, about 1.2 GB/s), done at 2,355 ms |
+
+- **The boot is 1.72 s faster.**
+- **Bella's model now sits in ElephantHandler's heap** (437 MB peak), not
+  in the initrd: the same memory while Bella runs, none before.
+
+**B10, measured rather than changed:**
+- **The cost:** 408 MB in 341 ms is about 6,500 requests of 64 KiB, so
+  about 52 µs each. Each request polls the device with interrupts off
+  and the scheduler lock held: for that long, nothing else runs.
+- **Why that is small:** 52 µs is 0.5% of a 10 ms tick, and the requests
+  come from a background program.
+- **Why it waits:** interrupt-driven, unlocked disk requests are left
+  until a slower disk (a real one, Stage 7) makes them matter.
+
+**Checks:**
+- **`everyday-model`** boots the fast-boot image plus the model disk, as
+  `run` does, and requires `read the model from the model disk` and the
+  answer.
+  - **Negative control:** no model disk attached → `FAIL` (no model, so
+    no model service starts).
+- **`bella-live`** (the model in the boot image): still `OK`, first answer
+  1,082 ms.

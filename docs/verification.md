@@ -3,7 +3,7 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The Stage 2
-warm-up section (version 0.80.0) is the current state. Sections before it
+model disk section (version 0.81.0) is the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -41,6 +41,31 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Stage 2 results: the model on its own disk (version 0.81.0)
+
+Design: docs/s2-design.md §3.
+
+**`everyday-model`** (`--accel whpx`, the fast-boot image plus
+`build/model-disk.img`): `OK`.
+
+```
+model disk: 428730208 bytes of model
+[10:elephant-handler] ElephantHandler: read the model from the model disk: 408 MB in 341 ms
+[10:elephant-handler] ElephantHandler: warmed up: system prompt 76 tokens in 5499 ms
+[9:bella] Bella: answered in 3142 ms by the model
+```
+
+The request arrived during the warm-up. From `serial-times.log`:
+- `BOOT` at 1,035 ms (A3 image: 2,753 ms);
+- Bella started at 1,210 ms (2,930 ms).
+
+**Negative control:** no model disk attached → `FAIL everyday-model`, no
+model service started.
+
+**`bella-live`** (model in the boot image): `OK`, first answer 1,082 ms.
+
+FULL_SUITE_RESULT
 
 ## Stage 2 results: the warm-up (version 0.80.0)
 

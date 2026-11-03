@@ -2,6 +2,11 @@
 //! `virtio-blk-pci` through the legacy I/O-port interface, one queue,
 //! polled (no interrupts), whole 4 KiB blocks. Enough for the filesystem
 //! service's snapshots; interrupts and the modern interface come later.
+//!
+//! Up to two devices (docs/s2-design.md §3): the data disk, and the read-only
+//! model disk, told apart by the model disk's header in block 0
+//! (`MODEL_MAGIC`, then the model's length in bytes; the model starts at
+//! block 1).
 
 use crate::memory::Memory;
 use spin::Mutex;
@@ -56,7 +61,17 @@ struct Device {
     capacity_sectors: u64,
 }
 
-static DEVICE: Mutex<Option<Device>> = Mutex::new(None);
+/// `DEVICES[DATA]` is the data disk, `DEVICES[MODEL]` the model disk.
+static DEVICES: [Mutex<Option<Device>>; 2] = [Mutex::new(None), Mutex::new(None)];
+const DATA: usize = 0;
+const MODEL: usize = 1;
+
+/// Block 0 of the model disk starts with this, then the model's length
+/// (8 bytes, little-endian).
+pub const MODEL_MAGIC: &[u8; 8] = b"ZOOMODL1";
+
+/// The model's length in bytes, read from the model disk's header.
+static MODEL_LEN: Mutex<u64> = Mutex::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
@@ -104,20 +119,66 @@ fn queue_layout(n: usize) -> (usize, usize) {
     (used_at, used_at + used)
 }
 
-/// Finds and initialises the device. Returns its capacity in bytes, or
-/// `None` if there is no virtio block device.
-pub fn init(mem: &mut Memory) -> Option<u64> {
-    let mut found = None;
-    'scan: for dev in 0..32u8 {
+/// What `init` found.
+pub struct Found {
+    /// The data disk's capacity in bytes.
+    pub data: Option<u64>,
+    /// The model's length in bytes, on the model disk.
+    pub model: Option<u64>,
+}
+
+/// Finds and initialises up to two virtio block devices: the model disk
+/// (block 0 starts with `MODEL_MAGIC`) and the data disk (the other one).
+pub fn init(mem: &mut Memory) -> Found {
+    let mut found = Found {
+        data: None,
+        model: None,
+    };
+    for dev in 0..32u8 {
         for func in 0..8u8 {
             let id = pci_read(0, dev, func, 0);
-            if id & 0xFFFF == u32::from(VIRTIO_VENDOR) && (id >> 16) as u16 == VIRTIO_BLK_LEGACY {
-                found = Some((dev, func));
-                break 'scan;
+            if id & 0xFFFF != u32::from(VIRTIO_VENDOR) || (id >> 16) as u16 != VIRTIO_BLK_LEGACY {
+                continue;
+            }
+            let Some(d) = init_one(mem, dev, func) else {
+                continue;
+            };
+            let bytes = d.capacity_sectors * 512;
+            // Park it in the data slot to read its block 0.
+            let slot = if DEVICES[DATA].lock().is_none() {
+                DATA
+            } else {
+                MODEL
+            };
+            *DEVICES[slot].lock() = Some(d);
+            let mut head = [0u8; BLOCK];
+            let is_model =
+                transfer_on(slot, mem, 0, &mut head, false).is_ok() && &head[..8] == MODEL_MAGIC;
+            if is_model {
+                let len = u64::from_le_bytes(head[8..16].try_into().unwrap_or([0; 8]));
+                // The model must fit on the disk after the header block.
+                if len == 0 || len.div_ceil(BLOCK as u64) + 1 > bytes / BLOCK as u64 {
+                    *DEVICES[slot].lock() = None;
+                    continue;
+                }
+                if slot == DATA {
+                    let d = DEVICES[DATA].lock().take();
+                    *DEVICES[MODEL].lock() = d;
+                }
+                *MODEL_LEN.lock() = len;
+                found.model = Some(len);
+            } else if slot == DATA {
+                found.data = Some(bytes);
+            } else {
+                // A second disk without the header: not used.
+                *DEVICES[MODEL].lock() = None;
             }
         }
     }
-    let (dev, func) = found?;
+    found
+}
+
+fn init_one(mem: &mut Memory, dev: u8, func: u8) -> Option<Device> {
     let bar0 = pci_read(0, dev, func, 0x10);
     if bar0 & 1 == 0 {
         return None; // not an I/O BAR: no legacy interface
@@ -155,7 +216,7 @@ pub fn init(mem: &mut Memory) -> Option<u64> {
     let lo = unsafe { Port::<u32>::new(io + REG_CAPACITY).read() } as u64;
     let hi = unsafe { Port::<u32>::new(io + REG_CAPACITY + 4).read() } as u64;
     let capacity_sectors = lo | (hi << 32);
-    *DEVICE.lock() = Some(Device {
+    Some(Device {
         io,
         queue_size: n,
         queue,
@@ -164,13 +225,35 @@ pub fn init(mem: &mut Memory) -> Option<u64> {
         avail_idx: 0,
         used_seen: 0,
         capacity_sectors,
-    });
-    Some(capacity_sectors * 512)
+    })
 }
 
 /// Capacity in bytes, if a device was found.
 pub fn capacity() -> Option<u64> {
-    DEVICE.lock().as_ref().map(|d| d.capacity_sectors * 512)
+    DEVICES[DATA]
+        .lock()
+        .as_ref()
+        .map(|d| d.capacity_sectors * 512)
+}
+
+/// The model's length in bytes, if there is a model disk.
+pub fn model_len() -> Option<u64> {
+    DEVICES[MODEL].lock().as_ref()?;
+    Some(*MODEL_LEN.lock())
+}
+
+/// Reads `buf.len() / BLOCK` consecutive blocks of the model, starting at
+/// its block `block` (the model's first block is the disk's block 1).
+/// Called with interrupts disabled.
+pub fn model_read(mem: &Memory, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+    let len = model_len().ok_or(BlockError::NoDevice)?;
+    let end = block
+        .checked_add((buf.len() / BLOCK) as u64)
+        .ok_or(BlockError::OutOfRange)?;
+    if end > len.div_ceil(BLOCK as u64) {
+        return Err(BlockError::OutOfRange);
+    }
+    transfer_on(MODEL, mem, block + 1, buf, false)
 }
 
 /// Reads (`write` false) or writes the 4 KiB block `block` through the
@@ -193,11 +276,21 @@ pub fn transfer_run(
     buf: &mut [u8],
     write: bool,
 ) -> Result<(), BlockError> {
+    transfer_on(DATA, mem, block, buf, write)
+}
+
+fn transfer_on(
+    which: usize,
+    mem: &Memory,
+    block: u64,
+    buf: &mut [u8],
+    write: bool,
+) -> Result<(), BlockError> {
     let count = buf.len() / BLOCK;
     if count == 0 || count > MAX_RUN || !buf.len().is_multiple_of(BLOCK) {
         return Err(BlockError::OutOfRange);
     }
-    let mut g = DEVICE.lock();
+    let mut g = DEVICES[which].lock();
     let d = g.as_mut().ok_or(BlockError::NoDevice)?;
     let sectors = (BLOCK / 512) as u64;
     let end = block

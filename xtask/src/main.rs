@@ -170,23 +170,17 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     opts.timeout,
                 );
             }
-            // The everyday system has Bella's model built in when it
-            // is in tools/models/ (docs/a3-design.md); `--no-model` leaves
-            // it out.
+            // The everyday system gets Bella's model on the read-only
+            // model disk when it is in tools/models/ (docs/s2-design.md
+            // §3): the boot image stays small; `--no-model` leaves it out.
             if mode == image::Mode::FastBoot && !opts.no_model {
-                match infer::load_model(&root) {
-                    Ok(data) => {
-                        let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
-                        let img = image::build_model_image(
-                            &root,
-                            &tools,
-                            mode,
-                            &data,
-                            infer::GUEST_PROMPT,
-                            &r.output_ids,
-                        )?;
-                        println!("[run] Bella's model is built in (--no-model to leave it out)");
-                        return qemu::run_interactive(&root, &tools, mode, &img, opts.timeout);
+                match image::model_disk(&root) {
+                    Ok(disk) => {
+                        println!(
+                            "[run] Bella's model is on the model disk {} (--no-model to leave it out)",
+                            disk.display()
+                        );
+                        qemu::set_model_disk(Some(disk));
                     }
                     Err(e) => {
                         println!("[run] no model ({e}); Bella will answer typed commands only")

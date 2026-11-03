@@ -148,6 +148,12 @@ pub mod sys {
     /// ready, and input preempts it at once (docs/s2-design.md, B12);
     /// `a1` = 0: back to normal.
     pub const SET_BACKGROUND: u64 = 75;
+    /// The model's length in bytes on the read-only model disk, or
+    /// `NOT_FOUND` without one (docs/s2-design.md §3).
+    pub const MODEL_SIZE: u64 = 76;
+    /// Reads model blocks: `a1` = first 4 KiB block of the model, `a2` =
+    /// count (at most `BLOCK_RUN_MAX`), `a3` = buffer of count * 4 KiB.
+    pub const MODEL_READ: u64 = 77;
 }
 
 /// Handle-message tag: the resident supervisor's channel for one desktop

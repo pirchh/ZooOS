@@ -340,15 +340,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     crate::infer::GUEST_PROMPT,
                     &r.output_ids,
                 )?,
-                // The everyday image as `run` boots it (docs/a3-design.md).
-                image::build_model_image(
-                    root,
-                    tools,
-                    image::Mode::FastBoot,
-                    &data,
-                    crate::infer::GUEST_PROMPT,
-                    &r.output_ids,
-                )?,
+                // The everyday system as `run` boots it: the plain
+                // fast-boot image and the model disk (docs/s2-design.md §3).
+                (
+                    image::build(root, tools, image::Mode::FastBoot)?,
+                    image::model_disk(root)?,
+                ),
             ))
         }
         Err(e) if s.skip_model => {
@@ -2212,16 +2209,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         Case {
             name: "everyday-model",
             mode: Mode::FastBoot,
-            custom_image: model_image.as_ref().map(|m| m.1.clone()),
+            custom_image: model_image.as_ref().map(|m| m.1.0.clone()),
             disk: Disk::Fresh,
             usb: Usb::None,
             expectation: everyday_model,
             timeout: s.timeout * 4,
             want: "pass",
-            purpose: "the everyday image (as `run` boots it) with the model built in: straight to the desktop, and the Bella answers a request in words",
+            purpose: "the everyday system as `run` boots it: the fast-boot image and the model disk; the model is read from the disk, and Bella answers a request in words",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
+                    // The model comes from the model disk, not the boot
+                    // image (docs/s2-design.md §3).
+                    Action::WaitContains(
+                        "ElephantHandler: read the model from the model disk".into(),
+                    ),
                     Action::Settle(QUIET),
                     // Files -> Crash Test -> Bella.
                     Action::Keys(vec!["tab", "tab"]),
@@ -2405,6 +2407,12 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         };
         qemu::set_usb(c.usb);
+        // The everyday system's model comes on the model disk.
+        qemu::set_model_disk(if c.name == "everyday-model" {
+            model_image.as_ref().map(|m| m.1.1.clone())
+        } else {
+            None
+        });
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {

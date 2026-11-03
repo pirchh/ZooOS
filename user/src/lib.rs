@@ -262,6 +262,24 @@ pub fn shm_map(h: Handle) -> Result<u64, Error> {
     result(syscall(sys::SHM_MAP, h, 0, 0))
 }
 
+/// The model's length in bytes on the model disk (docs/s2-design.md §3).
+pub fn model_size() -> Result<u64, Error> {
+    result(syscall(sys::MODEL_SIZE, 0, 0, 0))
+}
+
+/// Reads `buf.len() / 4096` blocks of the model from its block `block`
+/// (at most `zoo_abi::BLOCK_RUN_MAX`; `buf.len()` a multiple of 4 KiB).
+pub fn model_read(block: u64, buf: &mut [u8]) -> Result<(), Error> {
+    let count = (buf.len() / zoo_abi::BLOCK_BYTES) as u64;
+    result(syscall(
+        sys::MODEL_READ,
+        block,
+        count,
+        buf.as_mut_ptr() as u64,
+    ))
+    .map(|_| ())
+}
+
 /// Marks this program as background work (`true`): it runs only when no
 /// other program is ready, and input preempts it (docs/s2-design.md).
 pub fn set_background(on: bool) -> Result<(), Error> {

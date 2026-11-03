@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Stage 2: the model on its own disk (2026-11-02)
+
+Version 0.81.0. Design: docs/s2-design.md §3.
+
+- **A read-only model disk** (`build/model-disk.img`): a `ZOOMODL1` header
+  block, then the model. Chosen over the data disk to keep the model
+  apart from the owner's files and safe from guest writes.
+- **New system calls `MODEL_SIZE` (76) and `MODEL_READ` (77).** The
+  kernel tells the two virtio disks apart by the header.
+- **`cargo xtask run`** boots the small image plus the model disk: the
+  desktop is up 1.72 s sooner (1,210 ms against 2,930 ms). The model is
+  read in 341 ms in the background.
+- **`usb-image` keeps the model built in** until there is a USB storage
+  driver.
+- **B10 (polled disk requests under the scheduler lock):** measured at
+  about 52 µs per 64 KiB request, and left for Stage 7.
+
 ## Stage 2: the warm-up (2026-11-02)
 
 Version 0.80.0. Design: docs/s2-design.md §2.

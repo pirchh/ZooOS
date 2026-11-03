@@ -7232,6 +7232,31 @@ impl Scheduler {
                     None => err(Error::NotFound),
                 }
             }
+            sys::MODEL_SIZE => match virtio_blk::model_len() {
+                Some(len) => Outcome::Ret(len as i64),
+                None => err(Error::NotFound),
+            },
+            sys::MODEL_READ => {
+                // Any program may read the model: it is public, read-only
+                // data (docs/s2-design.md §3).
+                let count = a2 as usize;
+                if count == 0 || count > zoo_abi::BLOCK_RUN_MAX {
+                    return err(Error::Inval);
+                }
+                let len = (count * BLOCK_BYTES) as u64;
+                if !ok(a3, len, true) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped, writable user range of `count`
+                // blocks in the active address space.
+                let buf = unsafe { core::slice::from_raw_parts_mut(a3 as *mut u8, len as usize) };
+                match virtio_blk::model_read(mem, a1, buf) {
+                    Ok(()) => Outcome::Ret(0),
+                    Err(virtio_blk::BlockError::OutOfRange) => err(Error::Inval),
+                    Err(virtio_blk::BlockError::NoDevice) => err(Error::NotFound),
+                    Err(_) => err(Error::Fault),
+                }
+            }
             sys::SET_BACKGROUND => {
                 // a1 = 1: this program runs only when nothing else is
                 // ready (docs/s2-design.md); 0: back to normal.

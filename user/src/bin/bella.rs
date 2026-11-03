@@ -376,7 +376,8 @@ impl App {
     /// Starts the model service and has it read the system prompt now, in
     /// the background, when the model is installed (docs/s2-design.md).
     fn warm(&mut self) {
-        if zoo_rt::fs_find(MODEL_FILE).is_none() || !self.start_model() {
+        let installed = zoo_rt::fs_find(MODEL_FILE).is_some() || zoo_rt::model_size().is_ok();
+        if !installed || !self.start_model() {
             return;
         }
         if let Some(e) = self.elephant {

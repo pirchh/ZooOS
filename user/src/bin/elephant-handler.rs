@@ -134,11 +134,50 @@ enum Stop {
     Closed,
 }
 
+/// The model's bytes: mapped from the initial filesystem when the boot
+/// image has it (the USB stick, the test images), else read whole from
+/// the read-only model disk into page-aligned memory (docs/s2-design.md
+/// §3). Read as a background program, the read does not hold up the
+/// desktop.
+fn model_bytes() -> Option<&'static [u8]> {
+    if let Some(f) = fs_find(MODEL).and_then(|i| fs_map(i).ok()) {
+        return Some(f);
+    }
+    let len = usize::try_from(zoo_rt::model_size().ok()?).ok()?;
+    let size = len.div_ceil(zoo_abi::BLOCK_BYTES) * zoo_abi::BLOCK_BYTES;
+    let layout = core::alloc::Layout::from_size_align(size, 4096).ok()?;
+    // SAFETY: `layout` has a non-zero size (`len` > 0, checked by the
+    // kernel when it found the disk).
+    let p = unsafe { alloc::alloc::alloc(layout) };
+    if p.is_null() {
+        let _ = log("ElephantHandler: no memory for the model");
+        return None;
+    }
+    // SAFETY: `p` is a fresh allocation of `size` bytes, owned here for
+    // the rest of the process (never freed).
+    let buf: &'static mut [u8] = unsafe { core::slice::from_raw_parts_mut(p, size) };
+    let t = zoo_rt::now_us();
+    let run = zoo_abi::BLOCK_RUN_MAX * zoo_abi::BLOCK_BYTES;
+    for (k, chunk) in buf.chunks_mut(run).enumerate() {
+        let block = (k * zoo_abi::BLOCK_RUN_MAX) as u64;
+        if zoo_rt::model_read(block, chunk).is_err() {
+            let _ = log("ElephantHandler: reading the model disk failed");
+            return None;
+        }
+    }
+    zoo_rt::log!(
+        "ElephantHandler: read the model from the model disk: {} MB in {} ms",
+        len >> 20,
+        (zoo_rt::now_us() - t) / 1000
+    );
+    Some(&buf[..len])
+}
+
 fn service(chan: Handle) -> u8 {
     // Inference yields to the desktop (docs/s2-design.md, B12).
     let _ = zoo_rt::set_background(true);
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
-    let Some(file) = fs_find(MODEL).and_then(|i| fs_map(i).ok()) else {
+    let Some(file) = model_bytes() else {
         let _ = log("ElephantHandler: service: model not installed");
         // Answer every request with the reason until the client leaves.
         loop {
