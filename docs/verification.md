@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-listening section (version 0.112.0), the
+`run --mic` note (version 0.113.0, in the listening section), the
+listening section (0.112.0), the
 microphone section (0.111.0), the
 hearing section (0.110.0), the
 full-accelerator section (0.109.0), the events section (0.108.0),
@@ -66,6 +67,7 @@ docs/listening-design.md: voice detection, the gate, BatHandler, Bella.
 | `voice-bella` (TCG; WHPX, 8 processors) | `OK`: heard in 10.7 s and 103 ms; Notes opened and maximized |
 | `voice-not-for-bella` | `OK`: heard, not for Bella, nothing done |
 | `voice-not-for-bella`, gate passing everything (negative control) | `FAIL`: `Bella: heard` appeared |
+| `run --mic --accel whpx --cpus 8` (0.113.0), SDL reading the test recording instead of the microphone | heard in 152 ms; "Notes fills the screen."; not yet tried with a real voice |
 
 ## Microphone (version 0.111.0)
 

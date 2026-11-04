@@ -211,7 +211,11 @@ lands as small, separately verified steps.
 | 7 | Hardware base and real disks: ECAM, MSI-X, IOMMU, flushes (B11), USB storage | open |
 | 8 | GPU compute: RTX 3050, then RTX 5060 Ti, each milestone a stop point | open |
 | 9 | Voice: sound playback (virtio-sound, `AUDIO_WRITE`, a 440 Hz test measured from QEMU's recording; docs/audio-design.md) | done 2026-11-04 |
-| 9 | Voice: hearing, wake word, speaking: proposal with downloads for the owner (docs/voice-plan.md) | open |
+| 9 | Voice: the plan approved by the owner; Moonshine Tiny and Kokoro-82M pinned (docs/voice-plan.md) | done 2026-11-04 |
+| 9 | Voice: hearing, Moonshine speech to text in `zoo-infer`, 0.1 s a command on 8 processors (docs/hearing-design.md) | done 2026-11-04 |
+| 9 | Voice: the microphone (virtio-sound recording, `AUDIO_READ`, one owner) (docs/microphone-design.md) | done 2026-11-04 |
+| 9 | Voice: listening for "hey Bella": voice detection, the gate, BatHandler; `run --mic` (docs/listening-design.md) | done 2026-11-04 |
+| 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |
 
 ## Desktop steps (towards the owner's macOS-like goal)

@@ -394,8 +394,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     // Hearing (docs/hearing-design.md), when Moonshine is downloaded: all
     // recordings, and two with the first mislabelled (negative).
     let all = crate::hear::VOICES.len() * crate::hear::SENTENCES.len();
-    let hear_image = image::build_hear_image(root, tools, false, all)?;
-    let hear_wrong_image = image::build_hear_image(root, tools, true, 2)?;
+    let hear_image = image::build_hear_image(root, tools, Mode::Normal, false, all)?;
+    let hear_wrong_image = image::build_hear_image(root, tools, Mode::Normal, true, 2)?;
     let mut wine_version = fast_boot_desktop_exits(Mode::FastBoot);
     wine_version.then(&[
         "ZOO_OS SHELL line=linux /usr/bin/wine --version",

@@ -102,12 +102,44 @@ Moonshine must hear it as said. All 8 pass, with utterances of 2440 to
 0.8 s, derived from these two parts; the logs carry no timestamps to
 measure it end to end.
 
+## 5. Trying it with your own voice (`run --mic`, 0.113.0)
+
+    cargo xtask run --mic --accel whpx --cpus 8
+
+This boots the everyday desktop in QEMU, with the hearing model in its
+boot image and Bella's chat model on the model disk. QEMU's sound device
+takes its microphone from this PC's default recording device, through SDL
+(`-audiodev sdl,in.mixing-engine=off,...`, the path the `mic-` cases
+checked).
+
+- Say "Hey Bella, open notes and maximize it".
+- What BatHandler hears is printed on the terminal (`BatHandler: heard
+  ...`).
+- Nothing is saved: the serial output of `run` goes to the terminal only.
+- The microphone is open only while QEMU runs, and only for `run --mic`.
+  `verify` never uses it.
+- This is QEMU only: nothing boots on the PC itself, and its disks and
+  Windows are not touched.
+
+Checked without opening the real microphone. The same command was run
+with `SDL_AUDIODRIVER=disk` and `SDL_DISKAUDIOFILEIN` set to the test
+recording, so SDL read the file instead:
+- QEMU started with the sound device;
+- BatHandler listened with 8 threads;
+- it heard "Hey, Bella, open notes and maximize it." in 152 ms;
+- Bella reported "Notes fills the screen."
+
+**Not yet tried with a person's voice or a real microphone.** A room's
+noise, distance from the microphone and a person's voice may need the
+detector's levels changed (§2). A PC with no recording device is not
+tested either.
+
 ## Not done
 
 - Bella answering aloud (Kokoro).
-- The hearing model on the everyday model disk, and a microphone in
-  `cargo xtask run`. Desktop cases count on fixed process numbers, so this
-  waits for its own step.
+- The hearing model on the everyday model disk (`run --mic` carries it in
+  the boot image instead). Desktop cases count on fixed process numbers,
+  so this waits for its own step.
 - Intel HD Audio for real PCs; Silero VAD for noisy rooms.
 - Telling a request apart from Bella's own voice once she speaks, for
   example by not listening while she plays.

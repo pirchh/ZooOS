@@ -1,60 +1,124 @@
-# Start here
+# ZooOS
 
-This is the implementation handoff for the ZooOS project (formerly the placeholder OriginsOS). It is not
-Stonepyre. Copy this entire folder into its own new project/repository before
-implementation. Do not point the coding agent at only the architecture document.
+An independent x86-64 operating system written in Rust (minimal assembly),
+with a macOS-style desktop and **Bella**, a local assistant that runs open
+models on the CPU. You can type to her or talk to her. Version 0.113.0.
 
-Read in order: AGENTS.md, ARCHITECTURE.md, DECISIONS.md, BUILD.md,
-MILESTONES.md, COMPATIBILITY.md. Then use CLAUDE_PROMPT.md.
+**Where it runs today: QEMU.** A USB stick image exists for real PCs, but
+it has not been booted on real hardware yet. Real-hardware tests happen
+only on the owner's other machines, never on the development PC
+(AGENTS.md).
 
-The architecture is a proposal. The first authorized implementation scope is M0
-and M1 only. Status (2026-10-30): M0–M4 are implemented, plus the interim console. The kernel boots under QEMU/UEFI, sets up its own CPU
-tables, memory management and a preemptive scheduler, and runs isolated user
-programs from a read-only initial filesystem: the Zookeeper supervisor and
-its handlers talk over channels, survive a crashing handler and stop one that
-never yields. Then a small debug shell appears on screen (`help` lists its
-commands; `ps`, `ls`, `run`). Type `desktop` for the first graphical desktop:
-a menu bar, a Files window and a crash-test window, driven by the keyboard
-(Tab, arrows, Enter, Backspace; Esc returns to the shell). Everything else in
-ARCHITECTURE.md is unimplemented.
+## What works
 
-Quick start (after installing the prerequisites in tools/firmware/README.md):
+Each item below is implemented and checked in QEMU by `cargo xtask verify`.
+docs/verification.md records the results, and MILESTONES.md lists every
+step with its design document.
 
-    cargo xtask doctor
-    cargo xtask verify
-    cargo xtask run
+- **Kernel:**
+  - boots under UEFI through the `bootloader` crate;
+  - paging, a preemptive scheduler on every processor (SMP), isolated user
+    programs, channels and shared memory;
+  - drivers: virtio GPU (several monitors), block, network and sound
+    (playback and recording); USB keyboard and mouse (xHCI, hubs); PS/2;
+    local APIC timer.
+- **Services:** Zookeeper supervises animal-named handlers, restarting
+  them by policy:
+  - BadgerHandler: the filesystem;
+  - BeaverHandler: logs;
+  - PeacockHandler: the window server;
+  - Bella's helpers: ElephantHandler (the model), MagpieHandler (the file
+    index), OtterHandler (the file broker), BatHandler (hearing).
+- **Desktop:** windows with animations, a dock and menu bar, light and dark
+  appearances, several windows per app, and tiling. The apps are Files
+  (Finder-style, with Trash), Notes (an editor that saves to disk), Network
+  and Bella.
+- **Storage:** ZooFS 2, the home folder on disk, crash-safe across reboots.
+- **Linux system calls:** unmodified musl programs, static and dynamic.
+  Wine 11.0 (built from source) runs Windows' `cmd.exe`.
+- **Networking:** IPv4, DHCP, DNS, TCP and plain HTTP. There is no TLS
+  (HTTPS) yet.
+- **Bella:**
+  - **Models:** Qwen3-1.7B (4-bit) by default, and Qwen3-Embedding-0.6B
+    for searching your files by meaning. Weights are open (Apache-2.0 or
+    MIT), downloaded rather than committed.
+  - **Commands:** opens, maximizes, minimizes, closes and tiles windows,
+    across monitors; runs requests of several steps ("open notes and
+    files, then put them side by side").
+  - **Inside apps:** writes notes and fetches pages.
+  - **Files:** reads, moves and summarises them, and answers from them.
+  - **Memory:** remembers facts you tell her; the audit trail ("what did
+    you do?") lists her changes.
+  - **Speed:** a command takes about 0.5–0.8 s on 8 processors.
+- **Voice:**
+  - Moonshine Tiny turns speech to text in about 0.1 s for a spoken
+    command on 8 processors.
+  - A voice detector and a "hey Bella" gate pick out requests: "Hey Bella,
+    open notes and maximize it" works through the microphone.
+  - Tested with recorded speech only (docs/listening-design.md).
 
-`run` boots the fast-boot build, which skips the boot-check programs
-(docs/b1-design.md) and starts in the desktop (docs/d6-design.md; Escape
-leaves it for the debug shell). `cargo xtask run --mode normal` boots with
-the checks into the shell, as `verify` does.
+## Not done yet
 
-Naming: the project was renamed from the placeholder OriginsOS to ZooOS on
-2026-10-30. Technical identifiers use zoo-os. The runtime/service supervisor
-planned for M3 will be called Zookeeper, and services animal-named handlers.
-A web, GitHub and crates.io check found no OS or product called ZooOS; no
-legal trademark search has been done. See DECISIONS.md.
+- **Voice:** Bella can't answer aloud yet (Kokoro-82M is approved and
+  next).
+- **Real hardware:** no booted real PC; no Intel HD Audio sound driver; no
+  real-GPU driver or GPU compute.
+- **Networking:** HTTPS.
+- **Windows apps:** beyond `cmd.exe` (Opera, Battle.net and WoW are later
+  milestones).
 
-Files:
-- ARCHITECTURE.md: system diagrams and product direction.
-- DECISIONS.md: initial decisions and explicitly unresolved choices.
-- BUILD.md: reproducibility and command contract.
-- MILESTONES.md: staged scope and acceptance criteria.
-- AGENTS.md: instructions for implementing agents.
-- COMPATIBILITY.md: application and infrastructure feasibility investigations.
-- CLAUDE_PROMPT.md: ready-to-use kickoff prompt.
-- kernel/, xtask/: the kernel and the host build/run/verify tool.
-- abi/: system call ABI and the ELF and initrd parsers, shared by all.
-- user/: the user runtime (`zoo_rt`) and programs (Zookeeper, handlers).
-- docs/m2-design.md: M2 memory, interrupt and timer design.
-- docs/console-design.md: interim screen, keyboard and debug shell design.
-- docs/m3-design.md: processes, system calls, IPC and Zookeeper.
-- docs/m4-design.md: the window server, desktop apps and session.
-- docs/m5a-design.md: floating point, user heap and file mapping for M5.
-- docs/m5b-design.md: the local inference engine (infer/).
-- infer/: the inference engine; tools/reference/: its NumPy cross-check.
-- tools/models/: model provenance (weights are downloaded, not committed).
-- docs/feasibility/: Wine-hosting and GPU desk studies (both BLOCKED today).
-- docs/verification.md: commands, versions and results actually observed.
-- tools/firmware/README.md: QEMU and firmware setup and provenance.
+See MILESTONES.md for the full list.
 
+## Quick start
+
+Prerequisites (QEMU, firmware, the pinned Rust nightly) are in
+tools/firmware/README.md and BUILD.md.
+
+    cargo xtask doctor                  # check the tools; installs nothing
+    cargo xtask verify --skip-model     # the whole test suite in QEMU
+    cargo xtask run                     # the desktop in a QEMU window
+
+For faster runs, add `--accel whpx --cpus 8` on Windows, or `--accel kvm`
+on Linux.
+
+Bella's models are downloaded separately. Without them she answers typed
+commands only. tools/models/README.md gives each file with its source,
+pinned commit and SHA-256. With them:
+
+    cargo xtask run --accel whpx --cpus 8         # Bella with her models
+    cargo xtask run --mic --accel whpx --cpus 8   # ...and listening on this PC's microphone
+
+`--mic` connects QEMU's microphone to this PC's default recording device
+while QEMU runs. Say "Hey Bella, open notes and maximize it". Other
+options: `--monitors N` (several monitors), `--mode normal` (the boot
+checks, then a debug shell), and `cargo xtask usb-image` (a stick image
+for real PCs).
+
+## Repository
+
+| Path | What it is |
+| --- | --- |
+| `kernel/` | the kernel |
+| `user/` | the runtime (`zoo_rt`) and every program: Zookeeper, handlers, apps, tests |
+| `abi/` | the system call ABI and formats shared by kernel and programs |
+| `infer/` | the inference engine: GGUF, Qwen, Moonshine, voice detection |
+| `c/` | C test programs (Zig toolchain) |
+| `xtask/` | the host tool: build, run, verify, model checks, images |
+| `seed/` | files packed into the boot image (home folder, `etc/`) |
+| `tools/` | toolchain, firmware and model provenance; the NumPy reference implementations |
+| `docs/` | a design document per step; `verification.md` is the record of results |
+
+Project documents:
+- AGENTS.md: rules for contributors and agents.
+- ARCHITECTURE.md: system diagrams and direction; parts are proposals.
+- DECISIONS.md: decisions and their reasons.
+- BUILD.md: build and command contract.
+- MILESTONES.md: the steps and their status.
+- COMPATIBILITY.md: Windows application feasibility.
+
+## Name
+
+The project was renamed from the placeholder OriginsOS to ZooOS on
+2026-10-30. Technical identifiers use `zoo-os`. A web, GitHub and
+crates.io search found no other OS called ZooOS; no trademark search has
+been done (DECISIONS.md).

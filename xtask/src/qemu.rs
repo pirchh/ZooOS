@@ -153,6 +153,15 @@ pub fn set_mic(raw: Option<PathBuf>) {
     *MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()) = raw;
 }
 
+/// A sound device whose microphone is the host's default recording
+/// device, through SDL (`run --mic`; docs/listening-design.md). Only for
+/// interactive runs the owner asked for: verify never uses it.
+static LIVE_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_live_mic(on: bool) {
+    LIVE_MIC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn mic_input() -> Option<PathBuf> {
     MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
@@ -284,7 +293,7 @@ fn machine_args(
         ]);
     }
     // A virtio sound device whose microphone is a file (SDL disk audio).
-    if mic_input().is_some() {
+    if mic_input().is_some() || LIVE_MIC.load(std::sync::atomic::Ordering::Relaxed) {
         args.extend([
             "-audiodev".into(),
             "sdl,id=snd0,in.mixing-engine=off,\

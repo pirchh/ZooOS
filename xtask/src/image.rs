@@ -493,6 +493,7 @@ pub fn build_model_image(
 pub fn build_hear_image(
     root: &Path,
     tools: &Tools,
+    mode: Mode,
     mislabelled: bool,
     files: usize,
 ) -> Result<Option<PathBuf>, String> {
@@ -513,7 +514,7 @@ pub fn build_hear_image(
         println!("[build] no recordings for the hearing cases: {e}");
         return Ok(None);
     }
-    let _ = build(root, tools, Mode::Normal)?;
+    let _ = build(root, tools, mode)?;
     let base = initrd(root, tools)?;
     let mut archive =
         std::fs::read(&base).map_err(|e| format!("cannot read {}: {e}", base.display()))?;
@@ -577,9 +578,11 @@ pub fn build_hear_image(
     for e in zoo_abi::tar::read(&archive) {
         e.map_err(|e| format!("hearing initrd self-check failed: {e:?}"))?;
     }
-    let out_dir = root
-        .join("build")
-        .join(if mislabelled { "hear-wrong" } else { "hear" });
+    let out_dir = root.join("build").join(match (mode, mislabelled) {
+        (_, true) => "hear-wrong".to_string(),
+        (Mode::Normal, false) => "hear".to_string(),
+        (m, false) => format!("hear-{}", m.name()),
+    });
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let initrd_path = out_dir.join("initrd-hear.tar");
@@ -587,7 +590,7 @@ pub fn build_hear_image(
         .map_err(|e| format!("cannot write {}: {e}", initrd_path.display()))?;
     let elf = root
         .join("target")
-        .join(format!("kernel-{}", Mode::Normal.name()))
+        .join(format!("kernel-{}", mode.name()))
         .join(KERNEL_TARGET)
         .join("release")
         .join(KERNEL_PACKAGE);
