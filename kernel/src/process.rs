@@ -1110,6 +1110,43 @@ impl Scheduler {
     /// `BACKGROUND_STARVE` ticks gets a turn, so it cannot starve. Idle
     /// programs (docs/vectors-design.md) run only when no normal or
     /// background task is ready, and get no such turn.
+    /// Every task, for finding a hang: id, state, what it waits on, and
+    /// the system call it is in (from its saved frame, while switched out).
+    fn dump_tasks(&self) {
+        kprintln!("ZOO_OS DUMP tasks tick={}", interrupts::ticks());
+        for t in self.tasks.iter().flatten() {
+            let call = if t.on_cpu == NO_CPU && t.frame != 0 && t.proc.is_some() {
+                // SAFETY: `frame` is the saved trap frame of a task that is
+                // not running on any processor (`on_cpu == NO_CPU`), kept
+                // valid until it runs again; the scheduler lock is held, so
+                // no processor can pick it meanwhile. Only read.
+                let f = unsafe { &*(t.frame as *const TrapFrame) };
+                alloc::format!("{} rip={:#x}", f.rax, f.rip)
+            } else {
+                String::from("-")
+            };
+            kprintln!(
+                "ZOO_OS DUMP pid={} tid={} name={} state={:?} cpu={} call={} restart={} futex={:?} sleep={:?} input={} fs_pending={} fs_results={} vfork={:?} sig_pending={:#x} alloc={:?}",
+                t.pid,
+                t.tid,
+                t.name,
+                t.state,
+                t.on_cpu,
+                call,
+                t.restart,
+                t.futex,
+                t.sleep_until,
+                t.input_wait,
+                t.fs_pending,
+                t.fs_results.len(),
+                t.vfork_child,
+                t.sig_pending,
+                t.alloc_progress
+            );
+        }
+        kprintln!("ZOO_OS DUMP end");
+    }
+
     fn pick_next(&self) -> usize {
         if self.cpu != 0 {
             return self.pick_ap();
@@ -9971,9 +10008,21 @@ fn dispatch_locked<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> Optio
     sched_run(f)
 }
 
+/// Set by F12 on the PS/2 keyboard (or the harness on a timeout): the
+/// next tick prints every task (docs/verification.md, "task dump").
+static DUMP_TASKS: AtomicBool = AtomicBool::new(false);
+
+/// Asks for a task dump on the next tick.
+pub fn request_dump() {
+    DUMP_TASKS.store(true, Ordering::Relaxed);
+}
+
 pub fn on_timer(frame: *mut TrapFrame) -> *mut TrapFrame {
     dispatch_locked(|s, m| {
         s.reap(m);
+        if DUMP_TASKS.swap(false, Ordering::Relaxed) {
+            s.dump_tasks();
+        }
         let now = interrupts::ticks();
         for t in s.tasks.iter_mut().flatten() {
             if t.state == State::Blocked && t.sleep_until.is_some_and(|d| now >= d) {

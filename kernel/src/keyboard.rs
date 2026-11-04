@@ -46,6 +46,10 @@ pub fn on_interrupt() {
 /// never nest, so there is still one producer at a time.
 pub fn push(byte: u8) {
     RECEIVED.fetch_add(1, Ordering::Relaxed);
+    // F12 (set 1 make code): a task dump on the next tick, for hangs.
+    if byte == 0x58 {
+        crate::process::request_dump();
+    }
     let head = HEAD.load(Ordering::Relaxed);
     let tail = TAIL.load(Ordering::Acquire);
     if head.wrapping_sub(tail) >= CAPACITY {
