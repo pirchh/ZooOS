@@ -1329,6 +1329,9 @@ impl App {
     fn hearing_said(&mut self, msg: &str) {
         if msg == "listening" {
             zoo_rt::log!("Bella: listening for \"hey Bella\"");
+        } else if msg == "name" {
+            // Her name alone: the request follows.
+            zoo_rt::log!("Bella: heard her name; listening for the request");
         } else if let Some(why) = msg.strip_prefix("none:") {
             zoo_rt::log!("Bella: not listening: {}", why);
             if let Some(b) = self.bat.take() {

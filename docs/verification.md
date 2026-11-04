@@ -73,6 +73,9 @@ docs/listening-design.md: voice detection, the gate, BatHandler, Bella.
 | 0.114.0: `cargo test -p zoo-infer listen`; the same tests on the old detector (negative control) | 8 passed; the two new ones fail on the old detector |
 | 0.114.0: `hear-check` with recordings in a −45 dB room; with the old detector (negative control) | `PASS` (one utterance each, 2380–2800 ms); old detector `FAIL` (6.6–7.1 s) |
 | 0.114.0: `voice-bella`, `voice-not-for-bella` on the noisy-room input | `OK`: room level −45 dB; heard at −19 dB |
+| `run --mic`, the owner's voice, second try | speech heard; the request split by a pause ("They bellow," / "Maximize my notes.") |
+| 0.114.0: `voice-pause` (her name, a pause, the request) | `OK`: name ("Hey villa"), request heard after it, Notes maximized; failed before the tick drain |
+| 0.114.0: xtask killed during `run`; with the old guard (negative control) | QEMU ended with xtask; old guard: QEMU kept running |
 
 ## Microphone (version 0.111.0)
 

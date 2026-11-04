@@ -1874,3 +1874,10 @@ Version 0.114.0. docs/listening-design.md §6.
   sentences ("Della said ...") are not taken as requests.
 - **The hearing test is SnowyOwlTest:** `ermine-test` was already a Linux
   test program's name.
+- **Her name, a pause, then the request** is one request (5 s); people
+  pause after a wake word.
+- **Speech not for Bella is never logged as words.** The microphone hears
+  whatever is said in the room.
+- **Recording drains on the timer tick,** not only on reads.
+- **xtask's children end with xtask** (a Windows job object): a stopped run
+  must not keep the microphone open.

@@ -9,8 +9,98 @@ pub struct ChildGuard {
     name: String,
 }
 
+/// Puts `child` in a job object that ends it when xtask ends, however xtask
+/// ends (Ctrl+C, a crash, being killed): `Drop` below does not run then.
+/// `run --mic` once left QEMU listening to the microphone after Ctrl+C
+/// (docs/listening-design.md §7). The job's handle is never closed here;
+/// Windows closes it as xtask exits, and that ends every process in it.
+#[cfg(windows)]
+fn end_with_xtask(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    struct BasicLimits {
+        per_process_user_time: i64,
+        per_job_user_time: i64,
+        limit_flags: u32,
+        minimum_working_set: usize,
+        maximum_working_set: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+    #[repr(C)]
+    struct IoCounters([u64; 6]);
+    /// `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`.
+    #[repr(C)]
+    struct ExtendedLimits {
+        basic: BasicLimits,
+        io: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(attributes: *mut std::ffi::c_void, name: *const u16) -> isize;
+        fn SetInformationJobObject(
+            job: isize,
+            class: i32,
+            info: *const std::ffi::c_void,
+            len: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+    }
+
+    static JOB: OnceLock<Option<isize>> = OnceLock::new();
+    let job = *JOB.get_or_init(|| {
+        // SAFETY: no attributes and no name (null pointers are allowed);
+        // the result is a handle or 0.
+        let job = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if job == 0 {
+            return None;
+        }
+        // SAFETY: an all-zero JOBOBJECT_EXTENDED_LIMIT_INFORMATION is valid
+        // (no limits); only the kill-on-close flag is set.
+        let mut limits: ExtendedLimits = unsafe { std::mem::zeroed() };
+        limits.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `limits` is a live JOBOBJECT_EXTENDED_LIMIT_INFORMATION of
+        // the size passed, for the job handle just created.
+        let ok = unsafe {
+            SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                (&raw const limits).cast(),
+                std::mem::size_of::<ExtendedLimits>() as u32,
+            )
+        };
+        (ok != 0).then_some(job)
+    });
+    let assigned = job.is_some_and(|job| {
+        // SAFETY: `job` is the job created above, kept open for the rest of
+        // the process; the child's handle is live while `child` is.
+        unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as isize) != 0 }
+    });
+    if !assigned {
+        eprintln!(
+            "[xtask] warning: could not tie process {} to xtask; if xtask is killed, end it by hand",
+            child.id()
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn end_with_xtask(_child: &Child) {}
+
 impl ChildGuard {
     pub fn new(child: Child, name: &str) -> Self {
+        end_with_xtask(&child);
         ChildGuard {
             child: Some(child),
             name: name.to_string(),

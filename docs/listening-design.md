@@ -185,6 +185,32 @@ several times. Nothing happened. BatHandler had heard:
 
 Still to confirm with the owner's voice (`run --mic`).
 
+## 7. The second try (0.114.0)
+
+With the new detector the owner's speech came through as sensible
+utterances: about −40 dB against a room at −60 to −87 dB. "hey Bella,
+maximize my notes" still did nothing. It came out as two utterances,
+"They bellow," and "Maximize my notes.", because the owner paused after
+the name. Three more problems showed in the same session:
+
+| Found | Fix |
+| --- | --- |
+| A pause after her name splits the request; "hey" heard as "they" | `name_only`: her name alone makes BatHandler take the next utterance within 5 s as the request (`heard ... after her name`). Greetings include "they", "hay", "hei", "eh". After a greeting, up to two letters off "Bella" count for words of 4–6 letters ("bellow", "villa"), one for 7 ("Bellamy" does not). "hello", "below", "yellow" and other real words never count |
+| BatHandler logged every utterance's words, including conversation not meant for Bella | **Speech not for Bella is never logged as words**, only `speech not for Bella (N ms at L dB)`. Only requests and her name are logged as text |
+| While BatHandler transcribed, the device's 10 receive buffers (400 ms) filled, and the rest was lost, here the request after her name | **The timer tick drains the device into the 8 s ring** (`virtio_sound::tick`, `try_lock`, no allocation), so recording goes on while the reader is busy |
+| Ctrl+C in the terminal ended xtask but not QEMU: the microphone stayed open after the run was "stopped" | **Every child of xtask is in a job object that ends it when xtask ends** (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, `xtask/src/process.rs`) |
+
+Verified:
+- **`voice-pause` (new):** the microphone plays "Hey Bella.", a second of
+  room noise, then "Open notes and maximize it.". BatHandler heard her name
+  ("Hey villa"), then the request "after her name", and Bella maximized
+  Notes. It failed before the tick drain: the request was never heard.
+- **`voice-not-for-bella`:** now passes with `speech not for Bella (2500 ms
+  at -18 dB)` and no words.
+- **QEMU cleanup:** xtask was killed outright during `run`. With the job
+  object, QEMU ended with it. With the old guard (negative control), QEMU
+  kept running.
+
 ## Not done
 
 - Bella answering aloud (Kokoro).

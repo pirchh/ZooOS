@@ -405,6 +405,12 @@ pub const SENTENCES: [(&str, &str); 4] = [
     ("dentist", "Take a note that the dentist is on Friday."),
     ("monitor", "Put notes maximized on monitor 3."),
 ];
+/// Phrases recorded in the microphone voice only, for `voice-pause`:
+/// her name, then the request after a pause.
+pub const PAUSE_PARTS: [(&str, &str); 2] = [
+    ("hey-bella", "Hey Bella."),
+    ("request", "Open notes and maximize it."),
+];
 /// The host voices (Windows' System.Speech), each saying every sentence.
 pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Desktop"];
 
@@ -421,10 +427,23 @@ const MIC_VOICE: usize = 1;
 /// everything), as a real microphone gives it.
 pub fn mic_input(root: &Path, sentence: &str, silent: bool, room: bool) -> Result<PathBuf, String> {
     make_recordings(root)?;
-    let wav_file = wav_path(root, MIC_VOICE, sentence);
-    let wav = read(&wav_file)?;
-    let pcm = zoo_infer::hear::wav_samples(&wav)
-        .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))?;
+    let samples_of = |name: &str| -> Result<Vec<u8>, String> {
+        let wav_file = wav_path(root, MIC_VOICE, name);
+        let wav = read(&wav_file)?;
+        zoo_infer::hear::wav_samples(&wav)
+            .map(<[u8]>::to_vec)
+            .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))
+    };
+    // `pause`: her name, a second of quiet, then the request.
+    let pcm = if sentence == "pause" {
+        let mut p = samples_of(PAUSE_PARTS[0].0)?;
+        p.resize(p.len() + 2 * zoo_infer::hear::RATE, 0);
+        p.extend(samples_of(PAUSE_PARTS[1].0)?);
+        p
+    } else {
+        samples_of(sentence)?
+    };
+    let pcm = pcm.as_slice();
     let second = 2 * zoo_infer::hear::RATE;
     let mut raw = vec![0u8; second];
     if silent {
@@ -479,7 +498,8 @@ pub fn make_recordings(root: &Path) -> Result<(), String> {
     );
     let mut needed = false;
     for (v, voice) in VOICES.iter().enumerate() {
-        for (name, text) in SENTENCES {
+        let extra: &[(&str, &str)] = if v == MIC_VOICE { &PAUSE_PARTS } else { &[] };
+        for &(name, text) in SENTENCES.iter().chain(extra) {
             let p = wav_path(root, v, name);
             if p.is_file() {
                 continue;

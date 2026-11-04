@@ -1992,6 +1992,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "voice-pause",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a pause after her name (docs/listening-design.md §7): the microphone plays \"Hey Bella.\", a second of room noise, then \"Open notes and maximize it.\"; BatHandler takes the second utterance as the request and Bella carries it out",
+            interaction: Some(voice_pause_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "voice-not-for-bella",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
@@ -3315,7 +3328,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // `mic-` cases: a microphone that plays a known recording
         // (docs/microphone-design.md).
         if c.name.starts_with("mic-") || c.name.starts_with("voice-") {
-            let sentence = if c.name == "voice-not-for-bella" {
+            let sentence = if c.name == "voice-pause" {
+                "pause"
+            } else if c.name == "voice-not-for-bella" {
                 "split"
             } else {
                 "open-notes"
@@ -4356,6 +4371,26 @@ fn mouse_steps() -> Interaction {
 /// starts BatHandler, and the microphone plays one sentence. `for_bella`:
 /// "Hey Bella, open notes and maximize it." must be carried out; else
 /// "Put notes on the left and files on the right." must be heard and left.
+fn voice_pause_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains("BatHandler: heard her name".into()));
+    steps.push(Action::WaitContains(
+        "Bella: heard her name; listening for the request".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Open notes and maximize it.\" after her name".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: 2 steps: Open notes | maximize it".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
 fn voice_steps(for_bella: bool) -> Interaction {
     let mut steps = start_desktop();
     // BatHandler says it listens before Bella logs it.
@@ -4382,10 +4417,10 @@ fn voice_steps(for_bella: bool) -> Interaction {
     } else {
         steps.push(Action::WaitContains(
             // The sentence's last mark varies (".", ",").
-            "BatHandler: heard \"Put notes on the left and files on the right".into(),
+            "BatHandler: speech not for Bella (".into(),
         ));
-        // That line ends "; not for Bella"; the proof is that she never
-        // heard it and nothing moved.
+        // Its words are not logged (docs/listening-design.md §7); the
+        // proof is that she never heard it and nothing moved.
         steps.push(Action::Settle(QUIET));
         steps.push(Action::NeverSeen("Bella: heard".into()));
         steps.push(Action::NeverSeen("PeacockHandler: placed Notes".into()));
