@@ -48,7 +48,7 @@ fn recallable(command: &str) -> bool {
     RECALLABLE.contains(&command.split(' ').next().unwrap_or(""))
 }
 /// The model, in the initial filesystem (as ElephantHandler finds it).
-const MODEL_FILE: &str = "models/qwen2.5-0.5b-instruct-q4_0.gguf";
+const MODEL_FILE: &str = zoo_abi::CHAT_MODEL_FILE;
 const HINT: &str = "Ask in words, or type a command (search, read, open, move, trash, info...).";
 /// A remembered request at least this alike (percent of shared words)
 /// is answered from memory, without the model (docs/a2-design.md).
@@ -1051,11 +1051,12 @@ impl App {
     }
 
     /// Starts MagpieHandler, the file index (docs/vectors-design.md),
-    /// when the model disk holds an embedding model.
+    /// when the model disk or the boot image holds an embedding model.
     fn start_magpie(&mut self) {
         if self.magpie.is_some()
             || self.home == NO_HANDLE
-            || zoo_rt::model_size_of(zoo_abi::MODEL_EMBED).is_err()
+            || (zoo_rt::model_size_of(zoo_abi::MODEL_EMBED).is_err()
+                && zoo_rt::fs_find(zoo_abi::EMBED_MODEL_FILE).is_none())
         {
             return;
         }

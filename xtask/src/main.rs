@@ -13,6 +13,7 @@ mod qemu;
 mod qmp;
 mod requant;
 mod screen;
+mod uefi_image;
 mod verify;
 
 use std::path::PathBuf;
@@ -99,21 +100,13 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             // step, on a device they choose (docs/usb-boot.md).
             opts.reject_all()?;
             let tools = config::Tools::resolve_build_only();
-            // The model too, when it is there (docs/a3-design.md).
-            let img = match infer::load_model(&root) {
-                Ok(data) if !opts.no_model => {
-                    let r = infer::run(&data, infer::GUEST_PROMPT, infer::GUEST_TOKENS)?;
-                    println!("[usb-image] with Bella's model (--no-model to leave it out)");
-                    image::build_model_image(
-                        &root,
-                        &tools,
-                        image::Mode::FastBoot,
-                        &data,
-                        infer::GUEST_PROMPT,
-                        &r.output_ids,
-                    )?
-                }
-                _ => image::build(&root, &tools, image::Mode::FastBoot)?,
+            // The models too, when they are there: a real PC has no model
+            // disk (docs/usb-model-design.md).
+            let img = if opts.no_model {
+                image::build(&root, &tools, image::Mode::FastBoot)?
+            } else {
+                println!("[usb-image] with Bella's models (--no-model to leave them out)");
+                image::build_usb_image(&root, &tools)?
             };
             let dir = root.join("build").join("usb");
             std::fs::create_dir_all(&dir)
@@ -177,6 +170,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     &tools,
                     image::Mode::Normal,
                     &data,
+                    None,
                     infer::GUEST_PROMPT,
                     &r.output_ids,
                 )?;
@@ -293,6 +287,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 &tools,
                 image::Mode::Normal,
                 &data,
+                None,
                 infer::GUEST_PROMPT,
                 &r.output_ids,
             )?;

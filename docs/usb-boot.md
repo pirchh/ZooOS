@@ -16,12 +16,14 @@ a USB stick.
 
 1. `cargo xtask usb-image` builds the everyday image (fast boot, starts in
    the desktop) and copies it to `build/usb/zoo-os-usb.img`, printing its
-   size and SHA-256. It writes no device. Since A3 it includes the
-   Bella's model when `tools/models/` has it (about 410 MB more, so a
-   stick of 1 GB or larger); `--no-model` builds the small image.
-   The stick keeps the model in its boot image: `cargo xtask run` puts it
-   on a separate model disk instead (docs/stage2-design.md §3), but ZooOS has
-   no USB storage driver yet to read such a disk on a real PC.
+   size and SHA-256. It writes no device. Since 0.101.0 it includes
+   Bella's chat model (Qwen3-1.7B, 4 bits) and the embedding model when
+   `tools/models/` has them: 1.8 GB, so **a stick of 2 GB or larger and
+   a PC with at least 4 GB of memory** (docs/usb-model-design.md);
+   `--no-model` builds the small image. The stick keeps the models in
+   its boot image: `cargo xtask run` puts them on a separate model disk
+   instead (docs/stage2-design.md §3), but ZooOS has no USB storage
+   driver yet to read such a disk on a real PC.
 2. The owner writes that file to a USB stick they choose, with a tool such
    as Rufus (DD mode) or balenaEtcher, **double-checking the target is the
    stick**. Everything on the stick is erased. The agent never writes to a

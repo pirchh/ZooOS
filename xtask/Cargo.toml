@@ -10,6 +10,10 @@ publish.workspace = true
 # custom targets. Must match the kernel's bootloader_api version exactly.
 bootloader = { version = "=0.11.17", default-features = false, features = ["uefi"] }
 sha2 = "0.11.1"
+# The FAT partition and GPT disk for images of any size
+# (docs/usb-model-design.md): the versions bootloader 0.11.17 already uses.
+fatfs = { version = "=0.3.6", default-features = false, features = ["std", "alloc"] }
+gpt = "=3.1.0"
 # Renders the UI font atlas from Inter at build time (docs/u1-design.md).
 fontdue = "=0.9.3"
 # ustar writer for the initial filesystem (same format the kernel reads).

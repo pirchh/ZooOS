@@ -143,9 +143,19 @@ fn main(chan: u64, home: u64) -> u8 {
     }
 }
 
-/// The embedding model's bytes, read whole from the model disk into
-/// page-aligned memory, as ElephantHandler reads its model.
+/// The embedding model's bytes: mapped from the initial filesystem when
+/// the boot image has it (a USB stick; docs/usb-model-design.md), else
+/// read whole from the model disk into page-aligned memory, as
+/// ElephantHandler reads its model.
 fn embedder_bytes() -> Option<&'static [u8]> {
+    if let Some(f) = zoo_rt::fs_find(zoo_abi::EMBED_MODEL_FILE).and_then(|i| zoo_rt::fs_map(i).ok())
+    {
+        zoo_rt::log!(
+            "MagpieHandler: the embedding model is in the boot image ({} MB)",
+            f.len() >> 20
+        );
+        return Some(f);
+    }
     let len = usize::try_from(zoo_rt::model_size_of(zoo_abi::MODEL_EMBED).ok()?).ok()?;
     let size = len.div_ceil(zoo_abi::BLOCK_BYTES) * zoo_abi::BLOCK_BYTES;
     let layout = core::alloc::Layout::from_size_align(size, 4096).ok()?;
