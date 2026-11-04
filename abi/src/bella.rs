@@ -52,26 +52,80 @@ pub fn typed_command(text: &str) -> bool {
     })
 }
 
-/// The request after Bella's name when `text` speaks to her: an optional
-/// greeting ("hey", "hi", "ok", "okay", "hello"), then "Bella", then the
-/// request, with any punctuation between them ("Hey, Bella. Open notes",
-/// "OK Bella: split"). `None` when it does not start that way or nothing
-/// follows the name (docs/listening-design.md).
-pub fn addressed(text: &str) -> Option<&str> {
-    const GREETINGS: [&str; 5] = ["hey", "hi", "ok", "okay", "hello"];
+/// Greetings before her name, including how speech to text writes "hey"
+/// ("they", "hay": the owner's "hey Bella" came out "They bellow").
+const GREETINGS: [&str; 9] = [
+    "hey", "hi", "ok", "okay", "hello", "they", "hay", "hei", "eh",
+];
+/// Words near "bella" that are words of their own, never her name.
+const NOT_HER_NAME: [&str; 8] = [
+    "hello", "below", "bells", "belly", "fella", "fellow", "yellow", "jelly",
+];
+
+/// Where `text` speaks to Bella: whether it starts with an optional
+/// greeting, then her name, and what follows (the request, perhaps empty).
+/// After a greeting, a word up to two letters from "Bella" counts ("hey
+/// Bela", "they bellow"); without one the name must be exact.
+fn after_name(text: &str) -> Option<&str> {
     let not_word = |c: char| !c.is_ascii_alphanumeric() && c != '\'';
     let mut rest = text.trim_start_matches(not_word);
     let word = |t: &str| -> usize { t.find(not_word).unwrap_or(t.len()) };
     let w = word(rest);
-    if GREETINGS.iter().any(|g| rest[..w].eq_ignore_ascii_case(g)) {
+    let greeted = GREETINGS.iter().any(|g| rest[..w].eq_ignore_ascii_case(g));
+    if greeted {
         rest = rest[w..].trim_start_matches(not_word);
     }
     let w = word(rest);
-    if !rest[..w].eq_ignore_ascii_case("bella") {
+    let name = &rest[..w];
+    let near =
+        greeted && near_bella(name) && !NOT_HER_NAME.iter().any(|n| name.eq_ignore_ascii_case(n));
+    if !(name.eq_ignore_ascii_case("bella") || near) {
         return None;
     }
-    let req = rest[w..].trim_start_matches(not_word).trim_end();
-    (!req.is_empty()).then_some(req)
+    Some(rest[w..].trim_start_matches(not_word).trim_end())
+}
+
+/// The request after Bella's name when `text` speaks to her: an optional
+/// greeting ("hey", "hi", "ok", "okay", "hello"; "they", "hay" as speech
+/// to text writes "hey"), then "Bella", then the request, with any
+/// punctuation between ("Hey, Bella. Open notes", "OK Bella: split").
+/// `None` when it does not start that way or nothing follows the name
+/// (docs/listening-design.md).
+pub fn addressed(text: &str) -> Option<&str> {
+    after_name(text).filter(|r| !r.is_empty())
+}
+
+/// Whether `text` is her name and nothing else ("Hey Bella.", "They
+/// bellow,"): someone who pauses after the name, the request to follow.
+pub fn name_only(text: &str) -> bool {
+    after_name(text).is_some_and(|r| r.is_empty())
+}
+
+/// Whether `w` is close to "bella": at most two letters changed, added or
+/// removed for a word of 4 to 6 letters ("bellow"), one for 7 letters
+/// ("Bellamy" is someone else).
+fn near_bella(w: &str) -> bool {
+    let a = b"bella";
+    let b = w.as_bytes();
+    if b.len() < 4 || b.len() > 7 || !b.is_ascii() {
+        return false;
+    }
+    let lower = |c: u8| c.to_ascii_lowercase();
+    // Edit distance, row by row (at most 7 letters).
+    let mut prev = [0usize; 8];
+    for (j, p) in prev.iter_mut().enumerate().take(b.len() + 1) {
+        *p = j;
+    }
+    for (i, &ca) in a.iter().enumerate() {
+        let mut cur = [0usize; 8];
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let sub = prev[j] + usize::from(ca != lower(cb));
+            cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()] <= if b.len() <= 6 { 2 } else { 1 }
 }
 
 /// `text` without a leading "hey Bella" or "Bella" (`addressed`), so a
@@ -373,6 +427,27 @@ mod tests {
         assert_eq!(addressed("Hey Bellamy, open notes"), None);
         assert_eq!(addressed("Put notes on the left"), None);
         assert_eq!(addressed("hey there bella open notes"), None);
+        assert_eq!(addressed("Hey Bela, open notes"), Some("open notes"));
+        assert_eq!(
+            addressed("hey bello maximize notes"),
+            Some("maximize notes")
+        );
+        assert_eq!(addressed("Bela, open notes"), None);
+        assert_eq!(addressed("Della, open notes"), None);
+        assert_eq!(addressed("hey hello open notes"), None);
+        assert_eq!(addressed("Abele maximize my notes."), None);
+        // The owner's voice (docs/listening-design.md §7).
+        assert!(name_only("They bellow,"));
+        assert!(name_only("Hey Bella."));
+        assert!(!name_only("Maximize my notes."));
+        assert!(!name_only("Hey Bella, open notes"));
+        assert_eq!(
+            addressed("They bellow, maximize my notes."),
+            Some("maximize my notes.")
+        );
+        assert_eq!(addressed("hey below the line"), None);
+        assert_eq!(addressed("they yellow car"), None);
+        assert_eq!(addressed("They said hello"), None);
     }
 
     #[test]

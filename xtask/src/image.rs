@@ -39,7 +39,7 @@ pub const USER_PROGRAMS: [&str; 30] = [
     "magpie-handler",
     "network",
     "orca-test",
-    "ermine-test",
+    "snowyowl-test",
     "reindeer-test",
     "bat-handler",
 ];
@@ -486,7 +486,7 @@ pub fn build_model_image(
 /// The hearing image (docs/hearing-design.md): the normal system with
 /// Moonshine (`models/hear.gguf`), the host voice's recordings
 /// (`test/hear/*.wav`) and what each says (`test/hear.txt`) in its boot
-/// image, for ErmineTest. `None` when the model is not downloaded or the
+/// image, for SnowyOwlTest. `None` when the model is not downloaded or the
 /// host cannot make the recordings. With `mislabelled`, the first
 /// recording is listed with another recording's sentence (the negative
 /// case), and only the first `files` recordings are listed.
@@ -551,7 +551,7 @@ pub fn build_hear_image(
             )
         })
         .collect();
-    let mic_path = crate::hear::mic_input(root, "open-notes", false)?;
+    let mic_path = crate::hear::mic_input(root, "open-notes", false, false)?;
     let mic_raw =
         std::fs::read(&mic_path).map_err(|e| format!("cannot read {}: {e}", mic_path.display()))?;
     let mut entries: Vec<(&str, &[u8])> = vec![

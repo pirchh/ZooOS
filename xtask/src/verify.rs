@@ -1858,7 +1858,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
-            name: "hear-ermine",
+            name: "hear-snowyowl",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
             disk: Disk::Fresh,
@@ -1866,22 +1866,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run ermine-test",
-                    "ZOO_OS PROC start pid=26 name=ermine-test",
-                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                    "ZOO_OS SHELL line=run snowyowl-test",
+                    "ZOO_OS PROC start pid=26 name=snowyowl-test",
+                    "ZOO_OS PROC exit pid=26 name=snowyowl-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 6,
             want: "pass",
-            purpose: "hearing (docs/hearing-design.md): ErmineTest transcribes 8 recordings of the host's two voices with Moonshine Tiny in ZooOS; every transcript must be the sentence said",
+            purpose: "hearing (docs/hearing-design.md): SnowyOwlTest transcribes 8 recordings of the host's two voices with Moonshine Tiny in ZooOS; every transcript must be the sentence said",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run ermine-test")),
-                    Action::WaitContains("ErmineTest: Moonshine ready".into()),
-                    Action::WaitContains(format!("ErmineTest: {all} of {all} heard right")),
-                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=ermine-test code=0".into()),
+                    Action::Keys(typed("run snowyowl-test")),
+                    Action::WaitContains("SnowyOwlTest: Moonshine ready".into()),
+                    Action::WaitContains(format!("SnowyOwlTest: {all} of {all} heard right")),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=snowyowl-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -1895,21 +1895,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run ermine-test",
-                    "ZOO_OS PROC start pid=26 name=ermine-test",
-                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                    "ZOO_OS SHELL line=run snowyowl-test",
+                    "ZOO_OS PROC start pid=26 name=snowyowl-test",
+                    "ZOO_OS PROC exit pid=26 name=snowyowl-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 3,
             want: "unexpected-marker",
-            purpose: "negative: the first recording listed with another sentence; ErmineTest must report it misheard and exit 1, so a pass of `hear-ermine` means the transcripts were compared",
+            purpose: "negative: the first recording listed with another sentence; SnowyOwlTest must report it misheard and exit 1, so a pass of `hear-snowyowl` means the transcripts were compared",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run ermine-test")),
-                    Action::WaitContains("ErmineTest: MISHEARD".into()),
-                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=ermine-test".into()),
+                    Action::Keys(typed("run snowyowl-test")),
+                    Action::WaitContains("SnowyOwlTest: MISHEARD".into()),
+                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=snowyowl-test".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -1989,6 +1989,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "\"hey Bella\" (docs/listening-design.md): the microphone plays \"Hey Bella, open notes and maximize it.\"; BatHandler finds the utterance, hears it and passes it to Bella, who opens Notes and maximizes it",
             interaction: Some(voice_steps(true)),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "voice-pause",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a pause after her name (docs/listening-design.md §7): the microphone plays \"Hey Bella.\", a second of room noise, then \"Open notes and maximize it.\"; BatHandler takes the second utterance as the request and Bella carries it out",
+            interaction: Some(voice_pause_steps()),
             screen_checks: vec![],
         },
         Case {
@@ -3315,7 +3328,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // `mic-` cases: a microphone that plays a known recording
         // (docs/microphone-design.md).
         if c.name.starts_with("mic-") || c.name.starts_with("voice-") {
-            let sentence = if c.name == "voice-not-for-bella" {
+            let sentence = if c.name == "voice-pause" {
+                "pause"
+            } else if c.name == "voice-not-for-bella" {
                 "split"
             } else {
                 "open-notes"
@@ -3324,6 +3339,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 root,
                 sentence,
                 c.name == "mic-silence",
+                // The voice cases hear a noisy room, as `run --mic` does.
+                c.name.starts_with("voice-"),
             )?));
         } else {
             qemu::set_mic(None);
@@ -4354,6 +4371,26 @@ fn mouse_steps() -> Interaction {
 /// starts BatHandler, and the microphone plays one sentence. `for_bella`:
 /// "Hey Bella, open notes and maximize it." must be carried out; else
 /// "Put notes on the left and files on the right." must be heard and left.
+fn voice_pause_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains("BatHandler: heard her name".into()));
+    steps.push(Action::WaitContains(
+        "Bella: heard her name; listening for the request".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Open notes and maximize it.\" after her name".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: 2 steps: Open notes | maximize it".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
 fn voice_steps(for_bella: bool) -> Interaction {
     let mut steps = start_desktop();
     // BatHandler says it listens before Bella logs it.
@@ -4380,10 +4417,10 @@ fn voice_steps(for_bella: bool) -> Interaction {
     } else {
         steps.push(Action::WaitContains(
             // The sentence's last mark varies (".", ",").
-            "BatHandler: heard \"Put notes on the left and files on the right".into(),
+            "BatHandler: speech not for Bella (".into(),
         ));
-        // That line ends "; not for Bella"; the proof is that she never
-        // heard it and nothing moved.
+        // Its words are not logged (docs/listening-design.md §7); the
+        // proof is that she never heard it and nothing moved.
         steps.push(Action::Settle(QUIET));
         steps.push(Action::NeverSeen("Bella: heard".into()));
         steps.push(Action::NeverSeen("PeacockHandler: placed Notes".into()));

@@ -723,6 +723,25 @@ pub fn read(out: &mut [u8]) -> Result<usize, &'static str> {
     Ok(n)
 }
 
+/// From the timer tick: moves what the device recorded into the ring and
+/// hands its buffers back, so recording goes on while the reader is busy
+/// (only `RBUFS` buffers, 400 ms, sit with the device). Skipped when the
+/// driver is in use: a read is draining it anyway. Allocates nothing: the
+/// ring's capacity is reserved and it never grows.
+pub fn tick() {
+    let Some(mut g) = SOUND.try_lock() else {
+        return;
+    };
+    if let Some(snd) = g.as_mut()
+        && snd.input.as_ref().is_some_and(|i| i.recording)
+    {
+        let (hdr, hdr_phys) = (snd.hdr, snd.hdr_phys);
+        if let Some(input) = snd.input.as_mut() {
+            input.drain(hdr, hdr_phys);
+        }
+    }
+}
+
 /// Stops the microphone (its owner exited).
 pub fn stop_recording() {
     let mut g = SOUND.lock();

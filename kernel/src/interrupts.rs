@@ -201,6 +201,8 @@ extern "x86-interrupt" fn breakpoint(_frame: InterruptStackFrame) {
 pub fn on_timer_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::xhci::poll();
+    // Recorded sound into its ring, read or not (docs/listening-design.md §7).
+    crate::virtio_sound::tick();
     crate::serial::pump();
     crate::console::render();
     if crate::apic::active() {

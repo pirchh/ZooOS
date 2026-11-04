@@ -57,10 +57,10 @@ four sentences in two voices.
    8, the same tokens, encoder within 2.9e-4, logits within 5.4e-4.
    Negative control: without the decoder's rotary positions, 6 of 8 FAIL
    ("Put notes on the left and files on the left and files ...").
-3. **In ZooOS:** the `hear-ermine` case boots an image with the GGUF file
-   and the recordings in its boot image. ErmineTest transcribes every one
+3. **In ZooOS:** the `hear-snowyowl` case boots an image with the GGUF file
+   and the recordings in its boot image. SnowyOwlTest transcribes every one
    and exits 0 only if all are heard right. `hear-mislabelled` lists the
-   first recording with another sentence: ErmineTest reports `MISHEARD`
+   first recording with another sentence: SnowyOwlTest reports `MISHEARD`
    and exits 1, which the case requires.
 
 "Monitor three" is written "monitor 3"; the expected sentence says so,
@@ -68,7 +68,7 @@ and Bella reads both (`assist::monitor_named`).
 
 ## 4. Speed
 
-ErmineTest, 8 recordings, 24.9 s of audio in all (`hear-ermine`):
+SnowyOwlTest, 8 recordings, 24.9 s of audio in all (`hear-snowyowl`):
 
 | Machine | Total | First recording (3.4 s of audio) |
 | --- | --- | --- |

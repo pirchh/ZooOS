@@ -1,4 +1,4 @@
-//! ErmineTest: the hearing test (docs/hearing-design.md). Transcribes the
+//! SnowyOwlTest: the hearing test (docs/hearing-design.md). Transcribes the
 //! recordings in the boot image with Moonshine (`models/hear.gguf`) and
 //! compares each with the sentence said, from `test/hear.txt` (lines of
 //! `<file>|<sentence>`). Exits 0 when every one was heard right, 1 if any
@@ -28,32 +28,32 @@ fn main(_start: u64) -> u8 {
         zoo_infer::par::set_pool(pool);
     }
     let (Some(model), Some(list)) = (file(MODEL), file(LIST)) else {
-        let _ = zoo_rt::log("ErmineTest: the boot image has no hearing model or list");
+        let _ = zoo_rt::log("SnowyOwlTest: the boot image has no hearing model or list");
         return 2;
     };
     let t = zoo_rt::now_us();
     let g = match zoo_infer::Gguf::parse(model) {
         Ok(g) => g,
         Err(e) => {
-            zoo_rt::log!("ErmineTest: {} is not a GGUF file: {:?}", MODEL, e);
+            zoo_rt::log!("SnowyOwlTest: {} is not a GGUF file: {:?}", MODEL, e);
             return 2;
         }
     };
     let h = match Hearing::from_gguf(&g) {
         Ok(h) => h,
         Err(e) => {
-            zoo_rt::log!("ErmineTest: {}: {}", MODEL, e.name());
+            zoo_rt::log!("SnowyOwlTest: {}: {}", MODEL, e.name());
             return 2;
         }
     };
     zoo_rt::log!(
-        "ErmineTest: Moonshine ready in {} ms ({} MB, {} threads)",
+        "SnowyOwlTest: Moonshine ready in {} ms ({} MB, {} threads)",
         (zoo_rt::now_us() - t) / 1000,
         model.len() >> 20,
         zoo_infer::par::width()
     );
     let Ok(list) = core::str::from_utf8(list) else {
-        let _ = zoo_rt::log("ErmineTest: the list is not text");
+        let _ = zoo_rt::log("SnowyOwlTest: the list is not text");
         return 2;
     };
     let (mut right, mut total) = (0, 0);
@@ -66,7 +66,7 @@ fn main(_start: u64) -> u8 {
         let mut path = alloc::string::String::from("test/hear/");
         path.push_str(name);
         let Some(pcm) = file(&path).and_then(hear::wav_samples) else {
-            zoo_rt::log!("ErmineTest: {} is missing or not 16 kHz mono", name);
+            zoo_rt::log!("SnowyOwlTest: {} is missing or not 16 kHz mono", name);
             continue;
         };
         let audio = hear::samples_from_i16(pcm);
@@ -74,7 +74,7 @@ fn main(_start: u64) -> u8 {
         let text = match h.transcribe(&audio) {
             Ok(text) => text,
             Err(e) => {
-                zoo_rt::log!("ErmineTest: {}: {}", name, e.name());
+                zoo_rt::log!("SnowyOwlTest: {}: {}", name, e.name());
                 continue;
             }
         };
@@ -87,7 +87,7 @@ fn main(_start: u64) -> u8 {
             right += 1;
         }
         zoo_rt::log!(
-            "ErmineTest: {} {} in {} ms ({} ms of audio): \"{}\"",
+            "SnowyOwlTest: {} {} in {} ms ({} ms of audio): \"{}\"",
             if ok { "heard" } else { "MISHEARD" },
             name,
             us / 1000,
@@ -96,7 +96,7 @@ fn main(_start: u64) -> u8 {
         );
     }
     zoo_rt::log!(
-        "ErmineTest: {} of {} heard right, {} ms for {} ms of audio",
+        "SnowyOwlTest: {} of {} heard right, {} ms for {} ms of audio",
         right,
         total,
         heard_us / 1000,

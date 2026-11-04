@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-`run --mic` note (version 0.113.0, in the listening section), the
+detector fix after the first real voice (version 0.114.0, in the
+listening section), the `run --mic` note (0.113.0), the
 listening section (0.112.0), the
 microphone section (0.111.0), the
 hearing section (0.110.0), the
@@ -67,7 +68,14 @@ docs/listening-design.md: voice detection, the gate, BatHandler, Bella.
 | `voice-bella` (TCG; WHPX, 8 processors) | `OK`: heard in 10.7 s and 103 ms; Notes opened and maximized |
 | `voice-not-for-bella` | `OK`: heard, not for Bella, nothing done |
 | `voice-not-for-bella`, gate passing everything (negative control) | `FAIL`: `Bella: heard` appeared |
-| `run --mic --accel whpx --cpus 8` (0.113.0), SDL reading the test recording instead of the microphone | heard in 152 ms; "Notes fills the screen."; not yet tried with a real voice |
+| `run --mic --accel whpx --cpus 8` (0.113.0), SDL reading the test recording instead of the microphone | heard in 152 ms; "Notes fills the screen." |
+| `run --mic`, the owner's voice (0.113.0) | failed: room noise taken as 12 s utterances, "hey Bella" lost ("Abele maximize my notes.") |
+| 0.114.0: `cargo test -p zoo-infer listen`; the same tests on the old detector (negative control) | 8 passed; the two new ones fail on the old detector |
+| 0.114.0: `hear-check` with recordings in a −45 dB room; with the old detector (negative control) | `PASS` (one utterance each, 2380–2800 ms); old detector `FAIL` (6.6–7.1 s) |
+| 0.114.0: `voice-bella`, `voice-not-for-bella` on the noisy-room input | `OK`: room level −45 dB; heard at −19 dB |
+| `run --mic`, the owner's voice, second try | speech heard; the request split by a pause ("They bellow," / "Maximize my notes.") |
+| 0.114.0: `voice-pause` (her name, a pause, the request) | `OK`: name ("Hey villa"), request heard after it, Notes maximized; failed before the tick drain |
+| 0.114.0: xtask killed during `run`; with the old guard (negative control) | QEMU ended with xtask; old guard: QEMU kept running |
 
 ## Microphone (version 0.111.0)
 
@@ -89,8 +97,8 @@ by the host's speech synthesizer.
 | --- | --- |
 | `cargo xtask hear-check` | `PASS`: 8 of 8 heard as said, the reference's tokens; encoder within 2.9e-4, logits within 5.4e-4 |
 | `hear-check`, no decoder rotary (negative control) | `FAIL`: 6 of 8 misheard |
-| `hear-ermine` (TCG, 1 processor) | `OK`: 8 of 8 heard right, 90.2 s for 24.9 s of audio |
-| `hear-ermine` (WHPX, 1 and 8 processors) | `OK`: 2.41 s and 0.73 s |
+| `hear-snowyowl` (TCG, 1 processor) | `OK`: 8 of 8 heard right, 90.2 s for 24.9 s of audio |
+| `hear-snowyowl` (WHPX, 1 and 8 processors) | `OK`: 2.41 s and 0.73 s |
 | `hear-mislabelled` (negative case) | rejected as intended: `code=1` after `MISHEARD open-notes-0.wav` |
 
 ## The whole suite with an accelerator (version 0.109.0)

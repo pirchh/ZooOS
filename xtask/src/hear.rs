@@ -405,6 +405,12 @@ pub const SENTENCES: [(&str, &str); 4] = [
     ("dentist", "Take a note that the dentist is on Friday."),
     ("monitor", "Put notes maximized on monitor 3."),
 ];
+/// Phrases recorded in the microphone voice only, for `voice-pause`:
+/// her name, then the request after a pause.
+pub const PAUSE_PARTS: [(&str, &str); 2] = [
+    ("hey-bella", "Hey Bella."),
+    ("request", "Open notes and maximize it."),
+];
 /// The host voices (Windows' System.Speech), each saying every sentence.
 pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Desktop"];
 
@@ -416,13 +422,28 @@ const MIC_VOICE: usize = 1;
 /// The raw microphone input (16-bit mono at 16 kHz) for a `mic-` or
 /// `voice-` case: one second of silence, the recording of `sentence`
 /// (a `SENTENCES` name), two seconds of silence; or, with `silent`, the
-/// same length of silence (the negative case).
-pub fn mic_input(root: &Path, sentence: &str, silent: bool) -> Result<PathBuf, String> {
+/// same length of silence (the negative case). With `room`, the recording
+/// in a noisy room instead (`in_room`: digital silence, then noise under
+/// everything), as a real microphone gives it.
+pub fn mic_input(root: &Path, sentence: &str, silent: bool, room: bool) -> Result<PathBuf, String> {
     make_recordings(root)?;
-    let wav_file = wav_path(root, MIC_VOICE, sentence);
-    let wav = read(&wav_file)?;
-    let pcm = zoo_infer::hear::wav_samples(&wav)
-        .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))?;
+    let samples_of = |name: &str| -> Result<Vec<u8>, String> {
+        let wav_file = wav_path(root, MIC_VOICE, name);
+        let wav = read(&wav_file)?;
+        zoo_infer::hear::wav_samples(&wav)
+            .map(<[u8]>::to_vec)
+            .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))
+    };
+    // `pause`: her name, a second of quiet, then the request.
+    let pcm = if sentence == "pause" {
+        let mut p = samples_of(PAUSE_PARTS[0].0)?;
+        p.resize(p.len() + 2 * zoo_infer::hear::RATE, 0);
+        p.extend(samples_of(PAUSE_PARTS[1].0)?);
+        p
+    } else {
+        samples_of(sentence)?
+    };
+    let pcm = pcm.as_slice();
     let second = 2 * zoo_infer::hear::RATE;
     let mut raw = vec![0u8; second];
     if silent {
@@ -431,7 +452,21 @@ pub fn mic_input(root: &Path, sentence: &str, silent: bool) -> Result<PathBuf, S
         raw.extend_from_slice(pcm);
     }
     raw.resize(raw.len() + 2 * second, 0);
-    let out = wav_dir(root).join(if silent {
+    if room {
+        let pcm16: Vec<i16> = pcm
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
+            .collect();
+        raw = in_room(&pcm16, 9)
+            .iter()
+            .flat_map(|s| s.to_le_bytes())
+            .collect();
+    }
+    let out = wav_dir(root).join(if room {
+        format!("mic-{sentence}-room.raw")
+    } else if silent {
         format!("mic-{sentence}-silence.raw")
     } else {
         format!("mic-{sentence}.raw")
@@ -463,7 +498,8 @@ pub fn make_recordings(root: &Path) -> Result<(), String> {
     );
     let mut needed = false;
     for (v, voice) in VOICES.iter().enumerate() {
-        for (name, text) in SENTENCES {
+        let extra: &[(&str, &str)] = if v == MIC_VOICE { &PAUSE_PARTS } else { &[] };
+        for &(name, text) in SENTENCES.iter().chain(extra) {
             let p = wav_path(root, v, name);
             if p.is_file() {
                 continue;
@@ -509,6 +545,30 @@ fn python(root: &Path) -> Result<PathBuf, String> {
     } else {
         Err("reference venv missing; see tools/reference/README.md".into())
     }
+}
+
+/// The room noise `hear-check` mixes in (dB of full scale, RMS).
+const ROOM_DB: f32 = -45.0;
+
+/// `speech` as a microphone in a room gives it: 300 ms of digital silence
+/// (the device starting), 1.5 s of noise, the speech with the noise under
+/// it, and 2 s of noise. The noise is a fixed pseudo-random hiss.
+pub fn in_room(speech: &[i16], seed: u32) -> Vec<i16> {
+    let mut x = seed.wrapping_add(1);
+    let amp = 10f32.powf(ROOM_DB / 20.0) * 32767.0 * 3f32.sqrt();
+    let mut noise = move || {
+        x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        ((x >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * amp
+    };
+    let mut out = vec![0i16; 16 * 300];
+    out.extend((0..16 * 1500).map(|_| noise() as i16));
+    out.extend(
+        speech
+            .iter()
+            .map(|&s| (f32::from(s) + noise()).clamp(-32768.0, 32767.0) as i16),
+    );
+    out.extend((0..16 * 2000).map(|_| noise() as i16));
+    out
 }
 
 fn max_diff(a: &[f32], b: &[f32]) -> f32 {
@@ -618,6 +678,29 @@ pub fn check(root: &Path) -> Result<bool, String> {
                 }
                 ok
             };
+            // The same in a room (what `run --mic` met): 300 ms of digital
+            // silence, then noise at ROOM_DB under everything.
+            let noisy = in_room(&pcm16, v as u32 * 4 + name.len() as u32);
+            let mut det = zoo_infer::listen::Detector::new();
+            let mut in_noise = det.push(&noisy);
+            in_noise.extend(det.finish());
+            // One utterance about as long as the speech: the noise must not
+            // keep it going (the old detector ran on for 7 s).
+            let room_ok = in_noise.len() == 1 && in_noise[0].len() <= pcm16.len() + 16 * 500 && {
+                let u: Vec<f32> = in_noise[0].iter().map(|&s| s as f32 / 32768.0).collect();
+                let heard = h.transcribe(&u).map_err(|e| e.name().to_string())?;
+                let ok = zoo_infer::hear::same_words(&heard, said);
+                if !ok {
+                    println!("     in the noisy room it was heard as {heard:?}");
+                }
+                ok
+            };
+            println!(
+                "     in a room at {ROOM_DB} dB: {} utterance(s) {:?} ms",
+                in_noise.len(),
+                in_noise.iter().map(|u| u.len() / 16).collect::<Vec<_>>()
+            );
+            let detected_ok = detected_ok && room_ok;
             let for_bella = zoo_abi::bella::addressed(&text).is_some();
             let gate_ok = for_bella == said.to_ascii_lowercase().starts_with("hey bella");
             println!(
