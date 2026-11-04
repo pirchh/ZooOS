@@ -307,6 +307,18 @@ pub fn audio_write(samples: &[u8]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
+/// Claims `name` for this process alone (docs/one-bella-design.md):
+/// `Err(Busy)` while another live process holds it; released at exit.
+pub fn claim(name: &str) -> Result<(), Error> {
+    result(syscall(
+        sys::CLAIM,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        0,
+    ))
+    .map(|_| ())
+}
+
 /// What the microphone recorded since the last call (16-bit mono at
 /// 16 kHz), into `buf`; the bytes copied, 0 when nothing new is there
 /// (docs/microphone-design.md). The first call starts recording.

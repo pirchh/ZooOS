@@ -587,6 +587,9 @@ struct Scheduler {
     /// The process recording from the microphone
     /// (docs/microphone-design.md).
     mic_owner: Option<u64>,
+    /// Names claimed by one process each (`CLAIM`,
+    /// docs/one-bella-design.md): name and holder pid.
+    claims: Vec<(String, u64)>,
     /// The kernel's end of the current desktop session's control channel,
     /// with that session's Zookeeper pid.
     control: Option<(u64, HandleEntry)>,
@@ -713,6 +716,7 @@ pub fn init() {
             display_owner: None,
             net_owner: None,
             mic_owner: None,
+            claims: Vec::new(),
             control: None,
             supervisor: None,
             prefer_user: true,
@@ -1425,6 +1429,10 @@ impl Scheduler {
             .collect();
         for k in borrowers {
             self.finish(k, ExitStatus::Killed);
+        }
+        if let Some(k) = self.claims.iter().position(|(_, p)| *p == pid) {
+            let (name, _) = self.claims.swap_remove(k);
+            kprintln!("ZOO_OS INFO claim released name={} pid={}", name, pid);
         }
         if self.mic_owner == Some(pid) {
             self.mic_owner = None;
@@ -7571,6 +7579,51 @@ impl Scheduler {
                     Ok(n) => Outcome::Ret(n as i64),
                     Err("no-sound-device") => err(Error::NotFound),
                     Err(_) => err(Error::Busy),
+                }
+            }
+            sys::CLAIM => {
+                // One live process per name (docs/one-bella-design.md).
+                let len = a2 as usize;
+                if len == 0 || len > zoo_abi::MAX_CLAIM {
+                    return err(Error::Inval);
+                }
+                if !ok(a1, a2, false) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: the range was just checked to be mapped, readable
+                // user memory in the active address space; it is copied
+                // before anything else runs.
+                let bytes = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
+                let Ok(name) = core::str::from_utf8(bytes) else {
+                    return err(Error::Inval);
+                };
+                let name = String::from(name);
+                let me = self.task(i).pid;
+                let live = |tasks: &[Option<Task>], pid: u64| {
+                    tasks
+                        .iter()
+                        .flatten()
+                        .any(|t| t.pid == pid && t.state != State::Exited)
+                };
+                match self.claims.iter().position(|(n, _)| *n == name) {
+                    Some(k) if self.claims[k].1 == me => Outcome::Ret(0),
+                    Some(k) if live(&self.tasks, self.claims[k].1) => {
+                        kprintln!(
+                            "ZOO_OS INFO claim refused name={} pid={} holder={}",
+                            name,
+                            me,
+                            self.claims[k].1
+                        );
+                        err(Error::Busy)
+                    }
+                    found => {
+                        if let Some(k) = found {
+                            self.claims.swap_remove(k);
+                        }
+                        kprintln!("ZOO_OS INFO claim name={} pid={}", name, me);
+                        self.claims.push((name, me));
+                        Outcome::Ret(0)
+                    }
                 }
             }
             sys::AUDIO_READ => {
