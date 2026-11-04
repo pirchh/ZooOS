@@ -47,6 +47,8 @@ maximize <app>: open an app and make it fill the screen\n\
 minimize <app>: hide an app's window in the dock\n\
 close <app>: quit an app\n\
 split <apps>: tile windows side by side\n\
+write <text>: write text down in Notes\n\
+browse <address>: open a web page in the Network app\n\
 info: this computer's storage and memory\n\
 Paths are relative to the home folder. Reply with the command only.\n\
 Examples:\n\
@@ -89,6 +91,10 @@ pub enum Tool {
     Close,
     /// Two apps side by side (docs/tiling-design.md).
     Split,
+    /// App actions (docs/actions-design.md): a line in Notes, a page in
+    /// Network.
+    Write,
+    Browse,
     /// An app's window to a monitor; never chosen by the model's scores,
     /// only when the request names a monitor (docs/monitors-design.md).
     Show,
@@ -98,7 +104,7 @@ pub enum Tool {
     Nothing,
 }
 
-pub const TOOLS: [Tool; 15] = [
+pub const TOOLS: [Tool; 17] = [
     Tool::Search,
     Tool::List,
     Tool::Inspect,
@@ -112,6 +118,8 @@ pub const TOOLS: [Tool; 15] = [
     Tool::Minimize,
     Tool::Close,
     Tool::Split,
+    Tool::Write,
+    Tool::Browse,
     Tool::Info,
     Tool::Nothing,
 ];
@@ -121,7 +129,12 @@ impl Tool {
     pub const fn is_window(self) -> bool {
         matches!(
             self,
-            Tool::Maximize | Tool::Minimize | Tool::Close | Tool::Split
+            Tool::Maximize
+                | Tool::Minimize
+                | Tool::Close
+                | Tool::Split
+                | Tool::Write
+                | Tool::Browse
         )
     }
 
@@ -140,6 +153,8 @@ impl Tool {
             Tool::Minimize => "minimize",
             Tool::Close => "close",
             Tool::Split => "split",
+            Tool::Write => "write",
+            Tool::Browse => "browse",
             Tool::Show => "show",
             Tool::Info => "info",
             Tool::Nothing => "none",
@@ -389,6 +404,25 @@ impl<'m, 't> Bella<'m, 't> {
                 });
             }
         }
+        // `write` and `browse`: the text and the address are the request's
+        // own (docs/actions-design.md); the model's argument only when
+        // none is found.
+        if tool == Tool::Write || tool == Tool::Browse {
+            let own = if tool == Tool::Write {
+                note_text(request)
+            } else {
+                address_in(request).map(String::from).unwrap_or_default()
+            };
+            if !own.is_empty() {
+                return Ok(Choice {
+                    tool,
+                    arg: own,
+                    margin,
+                    request_tokens: ids.len(),
+                    arg_tokens: 0,
+                });
+            }
+        }
         // `split`: the model decides it is a split; which apps, in which
         // order, comes from the request's own words (the model's argument
         // put them in the prompt's order; docs/tiling-design.md).
@@ -555,6 +589,93 @@ pub fn apps_named(text: &str, bella: bool) -> Vec<&'static str> {
         }
     }
     apps
+}
+
+/// The text a `write` request asks to write down: "write down buy milk in
+/// my notes" → "buy milk" (docs/actions-design.md).
+pub fn note_text(request: &str) -> String {
+    let mut t = request.trim();
+    let starts = |t: &str, p: &str| t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p);
+    // Leading asks and verbs, as often as they come.
+    loop {
+        let before = t;
+        for p in [
+            "hey bella",
+            "bella",
+            "please",
+            "can you",
+            "could you",
+            "would you",
+            "write down",
+            "write",
+            "take a note that",
+            "take a note",
+            "make a note that",
+            "make a note",
+            "note down",
+            "note that",
+            "jot down",
+            "add",
+            "put",
+        ] {
+            if starts(t, p) && t[p.len()..].starts_with([' ', ':', ',']) {
+                t = t[p.len()..].trim_start_matches([' ', ':', ',']);
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    // Trailing places and courtesy.
+    loop {
+        let before = t;
+        let lower = t.to_ascii_lowercase();
+        for s in [
+            " please",
+            " in my notes",
+            " to my notes",
+            " in notes",
+            " to notes",
+            " in the notes app",
+            " in a note",
+            " in my notes app",
+            " down",
+        ] {
+            if lower.ends_with(s) {
+                t = t[..t.len() - s.len()].trim_end();
+                break;
+            }
+        }
+        if t == before {
+            break;
+        }
+    }
+    String::from(t.trim_matches(['"', '\'', ' ', '.']))
+}
+
+/// The web address a request names: a word with a dot in it
+/// ("example.com", "10.0.2.100", "http://example.com/"), or "localhost".
+pub fn address_in(request: &str) -> Option<&str> {
+    request
+        .split_whitespace()
+        .map(|w| {
+            w.trim_end_matches([',', '?', '!', ')'])
+                .trim_end_matches('.')
+        })
+        .find(|w| {
+            let host = w
+                .strip_prefix("http://")
+                .unwrap_or(w)
+                .split('/')
+                .next()
+                .unwrap_or("");
+            host.eq_ignore_ascii_case("localhost")
+                || (host.contains('.')
+                    && !host.starts_with('.')
+                    && host
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':')))
+        })
 }
 
 /// The monitor a request names: "monitor 2", "screen three", "the second
@@ -733,6 +854,27 @@ pub fn prefix_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_and_addresses() {
+        assert_eq!(note_text("write down buy milk in my notes"), "buy milk");
+        assert_eq!(
+            note_text("hey bella take a note: call the vet tomorrow"),
+            "call the vet tomorrow"
+        );
+        assert_eq!(note_text("can you add eggs to my notes please"), "eggs");
+        assert_eq!(note_text("write buy milk"), "buy milk");
+        assert_eq!(address_in("go to example.com please"), Some("example.com"));
+        assert_eq!(
+            address_in("open the page at 10.0.2.100"),
+            Some("10.0.2.100")
+        );
+        assert_eq!(
+            address_in("browse http://example.org/news."),
+            Some("http://example.org/news")
+        );
+        assert_eq!(address_in("open my notes"), None);
+    }
 
     #[test]
     fn monitors_named() {

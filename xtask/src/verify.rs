@@ -930,6 +930,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-actions",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "app actions (docs/actions-design.md): `write buy milk` asks Notes (opened for it) through the window server to add a line and save; Notes' answer comes back to Bella",
+            interaction: Some(bella_actions_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-facts",
             mode: Mode::Normal,
             custom_image: None,
@@ -1774,6 +1787,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitFor("ZOO_OS PROC exit pid=26 name=gyrfalcon-test code=0".into()),
                 ],
             }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "net-bella-browse",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: network_app_expectation(&normal),
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "Bella's `browse` (docs/actions-design.md): the Network app is opened for it, connects and fetches http://10.0.2.100/ from the harness's server; its answer comes back to Bella",
+            interaction: Some(bella_browse_steps()),
             screen_checks: vec![],
         },
         Case {
@@ -2649,6 +2675,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-actions-model",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "an app action in words (docs/actions-design.md): \"hey bella take a note that the dentist is on friday\" makes the model choose `write`, and Notes writes the request's own text (needs --accel)",
+            interaction: Some(bella_actions_model_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2822,6 +2861,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-tiling-model"
                 | "bella-steps-model"
                 | "gpu-monitors-model"
+                | "bella-actions-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2884,6 +2924,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-tiling-model"
                 | "bella-steps-model"
                 | "gpu-monitors-model"
+                | "bella-actions-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -3009,7 +3050,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         });
         // `net-http`: a small HTTP server on the host, which the guest
         // reaches at 10.0.2.100:80 (docs/n2-design.md).
-        let server = if c.name == "net-http" || c.name == "net-app" {
+        let server = if matches!(c.name, "net-http" | "net-app" | "net-bella-browse") {
             Some(TestServer::start()?)
         } else {
             None
@@ -5662,6 +5703,74 @@ fn bella_windows_steps() -> Interaction {
         "Bella: the window server says: Notes is not open.".into(),
     ));
     steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+/// `bella-actions`: a line written in Notes for Bella.
+fn bella_actions_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("write down buy milk")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: Bella asks Notes: do:write:buy milk".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Notes: wrote a line in Documents/notes.txt".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"buy milk\" in Documents/notes.txt.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("written"));
+    Interaction { steps }
+}
+
+/// `bella-actions-model`: a note in words.
+fn bella_actions_model_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed(
+        "hey bella take a note that the dentist is on friday",
+    )));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose write `the dentist is on friday`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"the dentist is on friday\" in Documents/notes.txt."
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("noted"));
+    Interaction { steps }
+}
+
+/// `net-bella-browse`: a page fetched in Network for Bella.
+fn bella_browse_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("browse 10.0.2.100")));
+    steps.extend([
+        Action::WaitFor("ZOO_OS PROC start pid=31 name=network".into()),
+        Action::WaitContains("Network: connected 10.0.2.15 via 10.0.2.2".into()),
+        Action::WaitContains(
+            "Network: fetched http://10.0.2.100/ (10.0.2.100): 92 bytes, `HTTP/1.0 200 OK`".into(),
+        ),
+        Action::WaitContains("Bella: the window server says: Fetched 10.0.2.100:".into()),
+        Action::Settle(QUIET),
+        Action::Screenshot("1-fetched"),
+        // Network has the keyboard: Esc ends the session.
+        Action::Keys(vec!["esc"]),
+        Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
+    ]);
     Interaction { steps }
 }
 

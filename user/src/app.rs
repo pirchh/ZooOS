@@ -182,6 +182,23 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Asks application `program` to do `action` with `arg`
+    /// (`zoo_abi::actions`); answered with `window-done:<sentence>`
+    /// (docs/actions-design.md).
+    pub fn act(&self, program: &str, action: &str, arg: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "do:{}:{}:{}", program, action, arg);
+        self.send_line(&l)
+    }
+
+    /// Answers an action this application was asked to do: what it did,
+    /// in one sentence for the asker to show.
+    pub fn did(&self, sentence: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "did:{}", sentence);
+        self.send_line(&l)
+    }
+
     /// Asks for the two front windows side by side; answered with
     /// `window-done:` (docs/tiling-design.md).
     pub fn split_front(&self) -> Result<(), Error> {
@@ -215,6 +232,9 @@ pub enum Event<'a> {
     SideClick(usize),
     /// Open this file (a path from home).
     Open(&'a str),
+    /// Do this action (`zoo_abi::actions`) with this argument; answer
+    /// with `Window::did` (docs/actions-design.md).
+    Do(&'a str, &'a str),
 }
 
 impl Event<'_> {
@@ -235,6 +255,11 @@ impl Event<'_> {
             if let Some(n) = msg.strip_prefix(prefix) {
                 return num(n).map(make);
             }
+        }
+        if let Some(rest) = msg.strip_prefix(b"do:") {
+            let rest = core::str::from_utf8(rest).ok()?;
+            let (action, arg) = rest.split_once(':').unwrap_or((rest, ""));
+            return Some(Event::Do(action, arg));
         }
         let path = msg.strip_prefix(b"open:")?;
         core::str::from_utf8(path).ok().map(Event::Open)

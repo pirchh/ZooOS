@@ -322,6 +322,9 @@ struct App {
     held: alloc::collections::VecDeque<Line>,
     /// Keys held during the current burst, for the log line when it ends.
     held_burst: usize,
+    /// The window that asked it to do an action, waiting for its answer
+    /// (docs/actions-design.md).
+    asked_by: Option<usize>,
     /// Its name in the dock and banners, e.g. "Crash Test".
     label: &'static str,
     program: &'static str,
@@ -360,6 +363,7 @@ impl App {
     fn new(prog: usize) -> App {
         let (label, program, wants_home) = CATALOG[prog];
         App {
+            asked_by: None,
             held: alloc::collections::VecDeque::new(),
             held_burst: 0,
             label,
@@ -518,6 +522,26 @@ impl App {
             self.request = program_index(p).map(Request::DockAdd);
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
             self.request = program_index(p).map(Request::Launch);
+        } else if let Some(rest) = msg.strip_prefix(b"do:") {
+            // do:<program>:<action>:<argument>, checked against the
+            // manifest (docs/actions-design.md).
+            self.request = Some(match zoo_abi::actions::parse(rest) {
+                Some((a, arg)) if a.effect != zoo_abi::actions::Effect::Delete => {
+                    match program_index(a.program.as_bytes()) {
+                        Some(prog) => {
+                            let mut line = alloc::boxed::Box::new(Line::new());
+                            let _ = write!(line, "do:{}:{}", a.name, arg);
+                            Request::Do(prog, line)
+                        }
+                        None => Request::BadDo,
+                    }
+                }
+                _ => Request::BadDo,
+            });
+        } else if let Some(said) = msg.strip_prefix(b"did:") {
+            let mut t = alloc::boxed::Box::new(Line::new());
+            let _ = t.write_str(core::str::from_utf8(said).unwrap_or("done"));
+            self.request = Some(Request::Did(t));
         } else if msg == b"split-front" {
             self.request = Some(Request::SplitFront);
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
@@ -1094,6 +1118,13 @@ enum Request {
     /// The two front windows side by side ("split these two windows";
     /// docs/tiling-design.md).
     SplitFront,
+    /// An application action for another (docs/actions-design.md): the
+    /// target program and the `do:<action>:<argument>` line it gets.
+    Do(usize, alloc::boxed::Box<Line>),
+    /// This application's answer to an action it was asked to do.
+    Did(alloc::boxed::Box<Line>),
+    /// An invocation the manifest refuses.
+    BadDo,
 }
 
 /// What an application may ask done to another's window: Bella's
@@ -2820,6 +2851,50 @@ impl Desktop {
                 zoo_rt::log!("PeacockHandler: context for {}", self.apps[i].label);
             }
             Request::Launch(prog) => self.dock_click(prog),
+            Request::Do(prog, line) => {
+                // Opened, shown or raised, as a dock click does; then the
+                // front window of it gets the action.
+                self.dock_click(prog);
+                let label = CATALOG[prog].0;
+                match self.front_window_of(prog, App::visible) {
+                    Some(w) if w != i => {
+                        self.apps[w].asked_by = Some(i);
+                        let _ = zoo_rt::send(self.apps[w].chan, line.as_str().as_bytes());
+                        zoo_rt::log!(
+                            "PeacockHandler: {} asks {}: {}",
+                            self.apps[i].label,
+                            label,
+                            line.as_str()
+                        );
+                        let mut e = Line::new();
+                        let _ = write!(e, "asked {} to {}", label, line.as_str());
+                        self.happened(e);
+                    }
+                    _ => {
+                        let mut l = Line::new();
+                        let _ = write!(l, "window-done:Error: {} could not be opened.", label);
+                        let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                    }
+                }
+            }
+            Request::Did(said) => {
+                if let Some(asker) = self.apps[i].asked_by.take()
+                    && self.apps[asker].running
+                {
+                    let mut l = Line::new();
+                    let _ = write!(l, "window-done:{}", said.as_str());
+                    let _ = zoo_rt::send(self.apps[asker].chan, l.as_str().as_bytes());
+                    zoo_rt::log!(
+                        "PeacockHandler: {} did: {}",
+                        self.apps[i].label,
+                        said.as_str()
+                    );
+                }
+            }
+            Request::BadDo => {
+                let _ = zoo_rt::send(self.apps[i].chan, b"window-done:Error: no app can do that.");
+                zoo_rt::log!("PeacockHandler: an action the manifest refuses");
+            }
             Request::SplitFront => {
                 let said = self.split_front(i);
                 let mut l = Line::new();
@@ -4825,6 +4900,7 @@ impl Desktop {
 
     /// Handles an application whose channel closed: it has ended.
     fn app_ended(&mut self, i: usize) {
+        self.apps[i].asked_by = None;
         self.apps[i].held.clear();
         self.apps[i].held_burst = 0;
         self.damage_window(i);

@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Application actions (2026-11-04)
+
+Version 0.105.0. Design: docs/actions-design.md. Bella roadmap Stage 4,
+first part.
+
+- **A static manifest in `zoo_abi`,** checked by the window server, so an
+  app can only be asked what it declares, and delete-effect actions are
+  refused until confirmation exists.
+- **The window server routes and remembers who asked;** the app that did
+  the work writes the sentence Bella shows.
+- **Two actions first:** Notes `write` (dictation) and Network `fetch`.
+  Files needs none: `open` shows folders.
+- **The text and address come from the request,** as for tiling.
+
 ## More than one monitor (2026-11-04)
 
 Version 0.104.0. Design: docs/monitors-design.md.

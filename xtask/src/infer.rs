@@ -509,6 +509,19 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["split"],
         &["Files and Files"],
     ),
+    // App actions (docs/actions-design.md).
+    ("write down buy milk in my notes", &["write"], &["buy milk"]),
+    (
+        "take a note: call the vet tomorrow",
+        &["write"],
+        &["call the vet tomorrow"],
+    ),
+    ("go to example.com", &["browse"], &["example.com"]),
+    (
+        "show me the web page at 10.0.2.100",
+        &["browse"],
+        &["10.0.2.100"],
+    ),
     ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),

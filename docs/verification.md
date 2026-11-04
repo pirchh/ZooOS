@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-monitors section (version 0.104.0), the multi-step section (0.103.0),
+actions section (version 0.105.0), the monitors section (0.104.0), the
+multi-step section (0.103.0),
 the tiling section (0.102.0),
 the USB-models section (0.101.0),
 the window-actions section
@@ -46,6 +47,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Application actions (version 0.105.0)
+
+docs/actions-design.md.
+
+| Case | Result |
+| --- | --- |
+| `bella-actions` (TCG) | `OK`: Notes writes "buy milk" for Bella and answers |
+| `bella-actions` without the answer passed back (negative control) | `FAIL`: no `Wrote "buy milk"` line within 120 s |
+| `net-bella-browse` (TCG, isolated network) | `OK`: Network fetches http://10.0.2.100/ for Bella (200 OK, 92 bytes) |
+| `bella-actions-model` (`--accel whpx --cpus 8`) | `OK` 3 of 3: ``chose write `the dentist is on friday` ``, 519–530 ms |
+| `assist-check` (Qwen3) | `PASS`: 36 of 38, 0 of 8 |
+| `assist-check --bella 0.5b` | `PASS`: 18 of 38, 1 of 8 |
 
 ## More than one monitor (version 0.104.0)
 
