@@ -72,6 +72,10 @@ pub fn typed_command_with(text: &str, app_word: impl Fn(&str) -> bool) -> bool {
 const GREETINGS: [&str; 9] = [
     "hey", "hi", "ok", "okay", "hello", "they", "hay", "hei", "eh",
 ];
+/// Words people say before a request without meaning anything by them.
+const FILLERS: [&str; 12] = [
+    "um", "uh", "erm", "er", "so", "and", "well", "alright", "right", "now", "oh", "ah",
+];
 /// Words near "bella" that are words of their own, never her name.
 const NOT_HER_NAME: [&str; 8] = [
     "hello", "below", "bells", "belly", "fella", "fellow", "yellow", "jelly",
@@ -85,6 +89,15 @@ fn after_name(text: &str) -> Option<&str> {
     let not_word = |c: char| !c.is_ascii_alphanumeric() && c != '\'';
     let mut rest = text.trim_start_matches(not_word);
     let word = |t: &str| -> usize { t.find(not_word).unwrap_or(t.len()) };
+    // Up to three words of filler before the greeting or her name ("um,
+    // so, hey Bella"): spoken requests seldom start cleanly.
+    for _ in 0..3 {
+        let w = word(rest);
+        if !FILLERS.iter().any(|f| rest[..w].eq_ignore_ascii_case(f)) {
+            break;
+        }
+        rest = rest[w..].trim_start_matches(not_word);
+    }
     let w = word(rest);
     let first = &rest[..w];
     // Speech to text writes "hey" many ways ("they", "pay", "hay"): a 3–4
@@ -96,6 +109,14 @@ fn after_name(text: &str) -> Option<&str> {
             && (distance(first, "hey") <= 1 || ends("ay") || ends("ey")));
     if greeted {
         rest = rest[w..].trim_start_matches(not_word);
+        // "okay so Bella": filler after the greeting too.
+        for _ in 0..2 {
+            let w = word(rest);
+            if !FILLERS.iter().any(|f| rest[..w].eq_ignore_ascii_case(f)) {
+                break;
+            }
+            rest = rest[w..].trim_start_matches(not_word);
+        }
     }
     let w = word(rest);
     let name = &rest[..w];
@@ -477,6 +498,20 @@ mod tests {
         assert_eq!(addressed("Pay billah, remove milk."), Some("remove milk."));
         assert_eq!(addressed("Say hello to everyone"), None);
         assert_eq!(addressed("Pay the bill"), None);
+        // Filler before her name (the owner's demo, docs/listening-design.md §8).
+        assert_eq!(
+            addressed("Um, so, hey Bella, open notes."),
+            Some("open notes.")
+        );
+        assert_eq!(
+            addressed("Okay so Bella what time is it"),
+            Some("what time is it")
+        );
+        assert_eq!(
+            addressed("So Bella, what's in my notes?"),
+            Some("what's in my notes?")
+        );
+        assert_eq!(addressed("So I told Bella about it"), None);
     }
 
     #[test]

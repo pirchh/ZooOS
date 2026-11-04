@@ -120,6 +120,12 @@ fn main(chan: u64) -> u8 {
     }
     let mut det = Detector::new();
     let mut msg = [0u8; 64];
+    // `run --mic --show-heard`: every transcript is logged, for tuning;
+    // by default speech not for Bella stays unlogged.
+    let show_heard = zoo_rt::fs_find("etc/show-heard").is_some();
+    if show_heard {
+        let _ = zoo_rt::log("BatHandler: showing every transcript (--show-heard)");
+    }
     let mut listening = false;
     // The room's level as the detector sees it, logged when it settles and
     // when it shifts, for tuning against a real microphone.
@@ -228,12 +234,22 @@ fn main(chan: u64) -> u8 {
                 );
                 say(chan, "heard:", &text);
             } else {
-                // Not for Bella: what was said stays unlogged.
-                zoo_rt::log!(
-                    "BatHandler: speech not for Bella ({} ms at {} dB)",
-                    speech_ms,
-                    level
-                );
+                // Not for Bella: what was said stays unlogged, unless the
+                // owner asked to see it.
+                if show_heard {
+                    zoo_rt::log!(
+                        "BatHandler: speech not for Bella ({} ms at {} dB): \"{}\"",
+                        speech_ms,
+                        level,
+                        text
+                    );
+                } else {
+                    zoo_rt::log!(
+                        "BatHandler: speech not for Bella ({} ms at {} dB)",
+                        speech_ms,
+                        level
+                    );
+                }
             }
         }
     }
