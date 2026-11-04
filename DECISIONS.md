@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Window actions (2026-11-03)
+
+Version 0.100.0. Design: docs/window-actions-design.md. First step of the
+owner's voice-control goal.
+
+- **The window server does the action and says what it did**
+  (`window-done:`), so Bella never reports an action that did not happen.
+- **`maximize` opens the app first,** so "open Notes and maximize it" is
+  one command, not a request of two steps.
+- **The same functions as the traffic lights and the dock,** so the
+  animations and the dock stay right.
+- **0.5B does not get the new words:** listed in its prompt, they made it
+  act on 4 of 8 requests that have no command (1 before). Qwen3 got all
+  four new requests right and still acts on none of the 8.
+
 ## Keys under load (2026-11-03)
 
 Version 0.99.0. Design: docs/keys-design.md.

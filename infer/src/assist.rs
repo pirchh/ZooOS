@@ -29,8 +29,8 @@ Paths are relative to the home folder. Reply with the command only.\n\
 If no command fits the request, reply: none";
 
 /// Qwen3's version (docs/qwen3-design.md): the same commands, with
-/// examples (none worded like `assist-check`'s requests) and a narrower
-/// "none". Qwen3 chose `none` for plain file requests with `SYSTEM`; the
+/// examples (none worded like `assist-check`'s requests), a narrower
+/// "none", and the window actions (docs/window-actions-design.md). Qwen3 chose `none` for plain file requests with `SYSTEM`; the
 /// 0.5B model copies the examples, so it keeps `SYSTEM`.
 pub const SYSTEM_QWEN3: &str = "You turn a request about the user's files and apps into one command.\n\
 Commands:\n\
@@ -43,6 +43,9 @@ open <file or folder>: open it in an app\n\
 move <path> to <path>: move or rename it\n\
 trash <file or folder>: delete it\n\
 launch <app>: start an app (Files, Notes, Network)\n\
+maximize <app>: open an app and make it fill the screen\n\
+minimize <app>: hide an app's window in the dock\n\
+close <app>: quit an app\n\
 info: about this computer\n\
 Paths are relative to the home folder. Reply with the command only.\n\
 Examples:\n\
@@ -53,8 +56,9 @@ How big is Downloads? -> inspect Downloads\n\
 Write me a poem -> none\n\
 Reply none only when the request is not about the user's files, folders, apps or this computer.";
 
-/// The apps `launch` can start (the list in the prompts). A launch of
-/// anything else is no command: there is no such app.
+/// The apps `launch`, `maximize`, `minimize` and `close` can name (the
+/// list in the prompts). Any other name is no command: there is no such
+/// app.
 pub const LAUNCHABLE: [&str; 3] = ["Files", "Notes", "Network"];
 
 /// The system prompt for `model`.
@@ -78,13 +82,17 @@ pub enum Tool {
     Move,
     Trash,
     Launch,
+    /// Window actions on an app (docs/window-actions-design.md).
+    Maximize,
+    Minimize,
+    Close,
     /// About the computer; no argument.
     Info,
     /// No command fits the request (docs/stage1-design.md, B9).
     Nothing,
 }
 
-pub const TOOLS: [Tool; 11] = [
+pub const TOOLS: [Tool; 14] = [
     Tool::Search,
     Tool::List,
     Tool::Inspect,
@@ -94,11 +102,19 @@ pub const TOOLS: [Tool; 11] = [
     Tool::Move,
     Tool::Trash,
     Tool::Launch,
+    Tool::Maximize,
+    Tool::Minimize,
+    Tool::Close,
     Tool::Info,
     Tool::Nothing,
 ];
 
 impl Tool {
+    /// `maximize`, `minimize` or `close`.
+    pub const fn is_window(self) -> bool {
+        matches!(self, Tool::Maximize | Tool::Minimize | Tool::Close)
+    }
+
     pub const fn word(self) -> &'static str {
         match self {
             Tool::Search => "search",
@@ -110,6 +126,9 @@ impl Tool {
             Tool::Move => "move",
             Tool::Trash => "trash",
             Tool::Launch => "launch",
+            Tool::Maximize => "maximize",
+            Tool::Minimize => "minimize",
+            Tool::Close => "close",
             Tool::Info => "info",
             Tool::Nothing => "none",
         }
@@ -176,11 +195,15 @@ pub struct Bella<'m, 't> {
     /// Cache position after the system prompt.
     prefix_len: usize,
     /// First token of each tool word, in `TOOLS` order.
-    tool_first: [u32; 11],
+    tool_first: [u32; TOOLS.len()],
     /// Token ids of each tool word.
-    tool_ids: [Vec<u32>; 11],
+    tool_ids: [Vec<u32>; TOOLS.len()],
     /// `allowed[id]`: the token is made only of path bytes.
     allowed: Vec<bool>,
+    /// Whether the prompt lists the window actions: Qwen3's does; with
+    /// them, 0.5B acted on 4 of 8 requests that have no command
+    /// (docs/window-actions-design.md), so its prompt does not.
+    windows: bool,
     newline: Vec<u32>,
 }
 
@@ -241,6 +264,7 @@ impl<'m, 't> Bella<'m, 't> {
             tool_ids,
             allowed,
             newline: tok.encode("\n"),
+            windows: model.cfg.qwen3,
         })
     }
 
@@ -299,8 +323,15 @@ impl<'m, 't> Bella<'m, 't> {
             return Err(AssistError::Cancelled);
         }
         // Tool: best first-token score among the words.
-        let scores = self.tool_first.map(|id| self.st.logits[id as usize]);
-        let mut order: [usize; 11] = core::array::from_fn(|i| i);
+        let mut scores = self.tool_first.map(|id| self.st.logits[id as usize]);
+        if !self.windows {
+            for (k, t) in TOOLS.iter().enumerate() {
+                if t.is_window() {
+                    scores[k] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let mut order: [usize; TOOLS.len()] = core::array::from_fn(|i| i);
         order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
@@ -354,9 +385,13 @@ impl<'m, 't> Bella<'m, 't> {
             let name = name.strip_suffix(" app").unwrap_or(name);
             a.eq_ignore_ascii_case(name.trim())
         });
-        let (tool, arg) = match (tool, app) {
-            (Tool::Launch, Some(a)) => (tool, String::from(*a)),
-            (Tool::Launch, None) => (Tool::Nothing, String::new()),
+        let names_app = matches!(
+            tool,
+            Tool::Launch | Tool::Maximize | Tool::Minimize | Tool::Close
+        );
+        let (tool, arg) = match (names_app, app) {
+            (true, Some(a)) => (tool, String::from(*a)),
+            (true, None) => (Tool::Nothing, String::new()),
             _ => (tool, arg),
         };
         Ok(Choice {

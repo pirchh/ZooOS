@@ -39,8 +39,9 @@ use zoo_abi::bella::{
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 10] = [
+const RECALLABLE: [&str; 13] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
+    "maximize", "minimize", "close",
 ];
 
 fn recallable(command: &str) -> bool {
@@ -222,6 +223,9 @@ fn main(chan: u64, home: u64) -> u8 {
                     if let Some(ctx) = buf[..n].strip_prefix(b"context:") {
                         let ctx = String::from(core::str::from_utf8(ctx).unwrap_or(""));
                         p.got_context(&ctx);
+                    } else if let Some(said) = buf[..n].strip_prefix(b"window-done:") {
+                        let said = String::from(core::str::from_utf8(said).unwrap_or(""));
+                        p.window_done(&said);
                     } else if let Some(key) = Key::parse(&buf[..n]) {
                         p.key(key);
                     }
@@ -529,6 +533,11 @@ impl App {
             self.open(path.trim());
         } else if let Some(app) = text.strip_prefix("launch ") {
             self.launch(app.trim());
+        } else if let Some((action, app)) = ["maximize", "minimize", "close"]
+            .iter()
+            .find_map(|a| Some((*a, text.strip_prefix(a)?.strip_prefix(' ')?)))
+        {
+            self.window_action(action, app.trim());
         } else if self.broker(text) {
             self.learn(text);
         } else {
@@ -762,10 +771,12 @@ impl App {
         }
     }
 
-    /// `launch <app>`: opens an application by its name.
-    fn launch(&mut self, app: &str) {
+    /// The program of the application called `app`, or says there is
+    /// none.
+    fn program_of(&mut self, app: &str) -> Option<&'static str> {
         let a = app.to_ascii_lowercase();
-        let program = match a.trim_end_matches(" app") {
+        let a = a.strip_prefix("the ").unwrap_or(&a);
+        Some(match a.trim_end_matches(" app") {
             "files" | "finder" | "file browser" => "files",
             "notes" | "editor" | "text editor" => "notes",
             "network" | "internet" | "web" => "network",
@@ -774,8 +785,38 @@ impl App {
                 let mut l = String::from("Error: no app called ");
                 l.push_str(app);
                 self.say(&l);
-                return;
+                return None;
             }
+        })
+    }
+
+    /// `maximize`, `minimize` or `close <app>`: asks the window server,
+    /// which answers with what it did (`window_done`;
+    /// docs/window-actions-design.md).
+    fn window_action(&mut self, action: &str, app: &str) {
+        let Some(program) = self.program_of(app) else {
+            return;
+        };
+        if self.win.window(action, program).is_ok() {
+            zoo_rt::log!("Bella: asked to {} {}", action, program);
+            let mut cmd = String::from(action);
+            cmd.push(' ');
+            cmd.push_str(app);
+            self.learn(&cmd);
+        }
+    }
+
+    /// The window server's sentence for a window action.
+    fn window_done(&mut self, said: &str) {
+        zoo_rt::log!("Bella: the window server says: {}", said);
+        self.say(said);
+        let _ = self.draw();
+    }
+
+    /// `launch <app>`: opens an application by its name.
+    fn launch(&mut self, app: &str) {
+        let Some(program) = self.program_of(app) else {
+            return;
         };
         if self.win.launch(program).is_ok() {
             let mut l = String::from("Opened ");

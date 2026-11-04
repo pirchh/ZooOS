@@ -3,10 +3,11 @@
 //! model. Pure text rules, kept here so the host can test them.
 
 /// The commands the user can type (docs/access-design.md adds `read`,
-/// `open`, `move`, `trash`, `launch` and `info`).
-pub const COMMANDS: [&str; 11] = [
+/// `open`, `move`, `trash`, `launch` and `info`; docs/window-actions-design.md
+/// `maximize`, `minimize` and `close`).
+pub const COMMANDS: [&str; 14] = [
     "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
-    "info",
+    "info", "maximize", "minimize", "close",
 ];
 
 /// Words that make a line a sentence rather than a typed command:
@@ -293,9 +294,15 @@ mod tests {
             "trash Documents/old",
             "info",
             "move Documents/notes.txt to Music",
+            "maximize notes",
+            "minimize Files",
+            "close Network",
         ] {
             assert!(typed_command(t), "{t}");
         }
+        // In words: a request for the model.
+        assert!(!typed_command("maximize my notes please"));
+        assert!(!typed_command("close the notes app"));
     }
 
     #[test]

@@ -518,6 +518,14 @@ impl App {
             self.request = program_index(p).map(Request::DockAdd);
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
             self.request = program_index(p).map(Request::Launch);
+        } else if let Some(rest) = msg.strip_prefix(b"window:") {
+            // window:<action>:<program>
+            if let Some(colon) = rest.iter().position(|&b| b == b':')
+                && let Some(action) = WinAction::parse(&rest[..colon])
+                && let Some(prog) = program_index(&rest[colon + 1..])
+            {
+                self.request = Some(Request::Window(action, prog));
+            }
         }
         false
     }
@@ -1046,6 +1054,29 @@ enum Request {
     /// What is on the screen and what just happened, for Bella
     /// (docs/context-design.md).
     Context,
+    /// Do this to a window of this application (docs/window-actions-design.md).
+    Window(WinAction, usize),
+}
+
+/// What an application may ask done to another's window: Bella's
+/// `maximize`, `minimize` and `close` (docs/window-actions-design.md).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WinAction {
+    /// Open it if need be, bring it to the front, and fill the screen.
+    Maximize,
+    Minimize,
+    Close,
+}
+
+impl WinAction {
+    fn parse(s: &[u8]) -> Option<WinAction> {
+        match s {
+            b"maximize" => Some(WinAction::Maximize),
+            b"minimize" => Some(WinAction::Minimize),
+            b"close" => Some(WinAction::Close),
+            _ => None,
+        }
+    }
 }
 
 /// Whether (u, v) is in the rounded rectangle (x0, y0, x1, y1) of
@@ -2659,6 +2690,12 @@ impl Desktop {
                 zoo_rt::log!("PeacockHandler: context for {}", self.apps[i].label);
             }
             Request::Launch(prog) => self.dock_click(prog),
+            Request::Window(action, prog) => {
+                let said = self.window_action(action, prog);
+                let mut l = Line::new();
+                let _ = write!(l, "window-done:{}", said.as_str());
+                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+            }
             Request::Open(prog, path) => {
                 let w = if self.program_running(prog) {
                     self.new_window_of(prog)
@@ -3102,6 +3139,73 @@ impl Desktop {
         self.happened(e);
         self.minis.retain(|&w| w != i);
         self.focus_another(i);
+    }
+
+    /// The frontmost window of application `prog` that `want` accepts.
+    fn front_window_of(&self, prog: usize, want: impl Fn(&App) -> bool) -> Option<usize> {
+        let of = |i: usize| self.apps[i].prog == prog && !self.apps[i].closed;
+        self.order
+            .iter()
+            .rev()
+            .copied()
+            .find(|&i| of(i) && want(&self.apps[i]))
+            .or_else(|| (0..WINDOWS).find(|&i| of(i) && want(&self.apps[i])))
+    }
+
+    /// Does `action` to application `prog`'s frontmost window, as the
+    /// lights and the dock would; returns the sentence the asking
+    /// application shows (docs/window-actions-design.md).
+    fn window_action(&mut self, action: WinAction, prog: usize) -> Line {
+        let label = CATALOG[prog].0;
+        let mut said = Line::new();
+        match action {
+            WinAction::Maximize => {
+                // Opened, shown or raised, as a dock click does.
+                self.dock_click(prog);
+                match self.front_window_of(prog, App::visible) {
+                    Some(w) => {
+                        if self.unzoomed[w].is_none() {
+                            self.toggle_zoom(w);
+                        }
+                        self.set_focus(w);
+                        let _ = write!(said, "{} fills the screen.", label);
+                        let mut e = Line::new();
+                        let _ = write!(e, "maximized {}", label);
+                        self.happened(e);
+                    }
+                    None => {
+                        let _ = write!(said, "Error: {} could not be opened.", label);
+                    }
+                }
+            }
+            WinAction::Minimize => match self.front_window_of(prog, App::visible) {
+                Some(w) => {
+                    self.minimize(w);
+                    let _ = write!(said, "Minimized {}; it is in the dock.", label);
+                    let mut e = Line::new();
+                    let _ = write!(e, "minimized {}", label);
+                    self.happened(e);
+                }
+                None => {
+                    let _ = write!(said, "{} has no window showing.", label);
+                }
+            },
+            WinAction::Close => match self.front_window_of(prog, |a| a.running) {
+                Some(w) => {
+                    self.close_app(w);
+                    let _ = write!(said, "Closed {}.", label);
+                }
+                None => {
+                    let _ = write!(said, "{} is not open.", label);
+                }
+            },
+        }
+        zoo_rt::log!(
+            "PeacockHandler: window action for {}: {}",
+            label,
+            said.as_str()
+        );
+        said
     }
 
     /// The yellow light: hides the window; the dock shows it again.
