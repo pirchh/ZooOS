@@ -584,6 +584,9 @@ struct Scheduler {
     display_owner: Option<u64>,
     /// The process holding the network device (docs/n1-design.md).
     net_owner: Option<u64>,
+    /// The process recording from the microphone
+    /// (docs/microphone-design.md).
+    mic_owner: Option<u64>,
     /// The kernel's end of the current desktop session's control channel,
     /// with that session's Zookeeper pid.
     control: Option<(u64, HandleEntry)>,
@@ -709,6 +712,7 @@ pub fn init() {
             kstack_used: [false; KSTACK_SLOTS],
             display_owner: None,
             net_owner: None,
+            mic_owner: None,
             control: None,
             supervisor: None,
             prefer_user: true,
@@ -1421,6 +1425,11 @@ impl Scheduler {
             .collect();
         for k in borrowers {
             self.finish(k, ExitStatus::Killed);
+        }
+        if self.mic_owner == Some(pid) {
+            self.mic_owner = None;
+            crate::virtio_sound::stop_recording();
+            kprintln!("ZOO_OS INFO microphone released pid={}", pid);
         }
         if self.net_owner == Some(pid) {
             self.net_owner = None;
@@ -7561,6 +7570,39 @@ impl Scheduler {
                 match crate::virtio_sound::write(samples) {
                     Ok(n) => Outcome::Ret(n as i64),
                     Err("no-sound-device") => err(Error::NotFound),
+                    Err(_) => err(Error::Busy),
+                }
+            }
+            sys::AUDIO_READ => {
+                // One program records at a time: the first reader owns the
+                // microphone until it exits (docs/microphone-design.md).
+                let me = self.task(i).pid;
+                if let Some(owner) = self.mic_owner
+                    && owner != me
+                    && self
+                        .tasks
+                        .iter()
+                        .flatten()
+                        .any(|t| t.pid == owner && t.state != State::Exited)
+                {
+                    return err(Error::Busy);
+                }
+                let len = (a2 as usize).min(zoo_abi::AUDIO_READ_MAX);
+                if !ok(a1, len as u64, true) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped, writable user range of `len`
+                // bytes in the active address space.
+                let out = unsafe { core::slice::from_raw_parts_mut(a1 as *mut u8, len) };
+                match crate::virtio_sound::read(out) {
+                    Ok(n) => {
+                        if self.mic_owner != Some(me) {
+                            self.mic_owner = Some(me);
+                            kprintln!("ZOO_OS INFO microphone attached pid={}", me);
+                        }
+                        Outcome::Ret(n as i64)
+                    }
+                    Err("no-sound-device" | "no-microphone") => err(Error::NotFound),
                     Err(_) => err(Error::Busy),
                 }
             }

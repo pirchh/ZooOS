@@ -82,7 +82,7 @@ The host (`hear-check`, one thread, unoptimised xtask with the engine at
 
 ## Not done
 
-- A microphone: virtio-sound recording, then Intel HD Audio.
+- Intel HD Audio for real PCs (recording in QEMU: docs/microphone-design.md).
 - Voice detection (Silero VAD, approved) and the "hey Bella" gate.
 - Hearing from the model disk (the model is only in the hearing image's
   boot image), and Bella acting on what was heard.

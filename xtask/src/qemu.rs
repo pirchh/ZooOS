@@ -143,6 +143,20 @@ pub fn set_audio(wav: Option<PathBuf>) {
     *AUDIO_WAV.lock().unwrap_or_else(|e| e.into_inner()) = wav;
 }
 
+/// A sound device for the next machine whose microphone plays this raw
+/// file (16-bit mono at 16 kHz), through SDL's disk audio driver
+/// (docs/microphone-design.md). Its output goes to `sdl-out.raw` in the
+/// run folder.
+static MIC_INPUT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn set_mic(raw: Option<PathBuf>) {
+    *MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()) = raw;
+}
+
+fn mic_input() -> Option<PathBuf> {
+    MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 pub fn set_model_disk(disk: Option<PathBuf>) {
     *MODEL_DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;
 }
@@ -265,6 +279,17 @@ fn machine_args(
         args.extend([
             "-audiodev".into(),
             format!("wav,id=snd0,path={}", opt_path(wav)?),
+            "-device".into(),
+            "virtio-sound-pci,audiodev=snd0".into(),
+        ]);
+    }
+    // A virtio sound device whose microphone is a file (SDL disk audio).
+    if mic_input().is_some() {
+        args.extend([
+            "-audiodev".into(),
+            "sdl,id=snd0,in.mixing-engine=off,\
+             out.fixed-settings=on,out.frequency=48000,out.channels=2,out.format=s16"
+                .into(),
             "-device".into(),
             "virtio-sound-pci,audiodev=snd0".into(),
         ]);
@@ -649,7 +674,14 @@ pub fn run_case(
     let open = |name: &str| {
         fs::File::create(dir.join(name)).map_err(|e| format!("cannot create {name}: {e}"))
     };
-    let child = Command::new(qemu)
+    let mut cmd = Command::new(qemu);
+    if let Some(raw) = mic_input() {
+        // SDL's disk driver: capture reads this file, playback writes one.
+        cmd.env("SDL_AUDIODRIVER", "disk")
+            .env("SDL_DISKAUDIOFILEIN", &raw)
+            .env("SDL_DISKAUDIOFILE", dir.join("sdl-out.raw"));
+    }
+    let child = cmd
         .args(&args)
         .stdin(Stdio::null())
         .stdout(open("qemu-stdout.log")?)
