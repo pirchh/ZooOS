@@ -6,9 +6,9 @@
 /// adds `read`, `open`, `move`, `trash`, `launch` and `info`;
 /// docs/window-actions-design.md `maximize`, `minimize` and `close`). App
 /// actions' words come from the registry (`typed_command_with`).
-pub const COMMANDS: [&str; 16] = [
+pub const COMMANDS: [&str; 17] = [
     "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
-    "info", "maximize", "minimize", "close", "split", "show",
+    "info", "maximize", "minimize", "close", "split", "show", "layout",
 ];
 
 /// Words that make a line a sentence rather than a typed command:
