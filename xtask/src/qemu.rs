@@ -998,6 +998,13 @@ pub fn run_case(
                     None => "?".into(),
                 },
             };
+            // Scroll Lock: the kernel prints every task and what it waits
+            // on (docs/verification.md, "task dump"), so a hang says why.
+            if let Some(q) = qmp_conn.as_mut()
+                && q.send_key("scroll_lock").is_ok()
+            {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
             break Outcome::Timeout(format!("no {next} within {timeout:?}"));
         }
         std::thread::sleep(POLL);
