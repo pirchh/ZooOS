@@ -1861,3 +1861,16 @@ Version 0.112.0. Design: docs/listening-design.md.
   processes of every desktop with models.
 - **The microphone ring grew to 8 s:** a reader busy hearing an utterance,
   or a machine starting its desktop, reads late.
+
+## Voice detection after the first real voice (2026-11-04)
+
+Version 0.114.0. docs/listening-design.md §6.
+
+- **Background = the quietest frame of the last 3 seconds** (minimum
+  statistics), digital silence left out, instead of a level that rose
+  2.5 dB a second: it took a microphone's opening silence as the room.
+- **One letter off "Bella" counts after a greeting.** Speech to text
+  misspells names; without a greeting the name stays exact, so ordinary
+  sentences ("Della said ...") are not taken as requests.
+- **The hearing test is SnowyOwlTest:** `ermine-test` was already a Linux
+  test program's name.

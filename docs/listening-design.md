@@ -49,7 +49,7 @@ more (DECISIONS.md, "Listening").
 | --- | --- |
 | Frame | 20 ms (320 samples) |
 | Speech frame | 12 dB above the background and above −50 dBFS |
-| Background | follows quieter frames down at once, rises 0.05 dB a frame (2.5 dB/s) in every frame |
+| Background | the quietest frame of the last 3 s, leaving out digital silence (below −90 dBFS) (since 0.114.0, §6) |
 | Start | 3 speech frames in a row; the utterance keeps the 200 ms before |
 | End | 700 ms without speech (pauses between words stay inside); at most 200 ms of that tail is kept |
 | Limits | 12 s at most; fewer than 10 speech frames (200 ms) is a click, dropped |
@@ -133,6 +133,57 @@ recording, so SDL read the file instead:
 noise, distance from the microphone and a person's voice may need the
 detector's levels changed (§2). A PC with no recording device is not
 tested either.
+
+## 6. The first real voice (0.114.0)
+
+The owner tried `run --mic` and said "hey Bella, maximize my notes"
+several times. Nothing happened. BatHandler had heard:
+
+| Heard | What it was |
+| --- | --- |
+| "So" (11920 ms) | room noise taken as speech, cut at the 12 s limit |
+| "Abele maximize my notes." (3740 ms) | the owner, with "hey Bella" lost, so not for Bella |
+| "????…" (12000 ms) | room noise again |
+| "You" (1820 ms) | noise |
+
+**The cause was the detector's background level.**
+- The microphone starts with digital silence, and the first version took
+  that as the background (about −120 dB).
+- The room's noise then looked like speech, and the background could rise
+  only 2.5 dB a second, so it took about 25 s to catch up.
+- Meanwhile the detector stayed "in speech" until the 12 s limit, and the
+  soft start of "hey Bella" was lost.
+- The test recordings have exact silence around speech, so no case met
+  this.
+
+**Fixes:**
+- The background is now the quietest frame of the last 3 seconds, with
+  digital silence (below −90 dBFS) left out. Speech dips toward the room's
+  level between syllables, so the background holds during speech. Steady
+  noise, such as a fan turned up, becomes background within 3 s.
+- The gate accepts a word one letter from "Bella" after a greeting ("hey
+  Bela", "hey Bello"). Without a greeting the name must be exact.
+- BatHandler logs `room level N dB` when the background settles and when
+  it shifts by 6 dB. Each `heard` line gives the utterance's level, so a
+  real microphone's numbers can be compared with the detector's
+  thresholds.
+
+**Tests that reproduce it:**
+- **Unit tests:** `digital_silence_then_room_noise` (300 ms of zeros, room
+  noise at −45 dB, a request, more noise) and `louder_room_becomes_background`
+  (−60 dB, then −40 dB). Both failed on the old detector, with no
+  utterance ever ending and 3940 ms of noise taken as speech; both pass
+  now.
+- **`hear-check`:** it also puts every recording in a noisy room
+  (`in_room`: 300 ms of digital silence, then −45 dB noise under
+  everything). There must be one utterance, no longer than the recording
+  plus 0.5 s, heard as said. It passes, with utterances of 2380–2800 ms.
+  With the old detector it fails: the utterances run on to 6.6–7.1 s.
+- **QEMU cases:** the `voice-` cases now hear that noisy room through the
+  microphone. Measured: `room level -45 dB`, "Hey Bella, open notes and
+  maximize it." at −19 dB, Notes maximized.
+
+Still to confirm with the owner's voice (`run --mic`).
 
 ## Not done
 

@@ -1,8 +1,9 @@
 //! Voice detection (docs/listening-design.md): finds where speech starts
 //! and ends in 16 kHz mono audio by its loudness against the background,
 //! so speech to text only sees utterances (Moonshine writes "You" for
-//! silence). No model: frames of 20 ms, a background level that follows
-//! the quietest frames, speech when a frame is well above it.
+//! silence). No model: frames of 20 ms; the background is the quietest
+//! frame of the last 3 seconds (speech dips between syllables, steady noise
+//! does not), and speech is a frame well above it.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -25,10 +26,13 @@ const MAX_FRAMES: usize = 600;
 /// Utterances with fewer loud frames than this (200 ms) are dropped as
 /// clicks.
 const MIN_LOUD: usize = 10;
-/// How fast the background level rises, dB per frame (2.5 dB/s), in every
-/// frame: a steady noise becomes background within seconds, while a
-/// pause in speech pulls it back down at once.
-const RISE_DB: f32 = 0.05;
+/// Frames over which the background is the quietest (3 s): longer than
+/// any unbroken sound in speech, short enough that a fan turned up is
+/// background within seconds.
+const WINDOW: usize = 150;
+/// Below this a frame is digital silence (a device starting, a muted
+/// input): it says nothing about the room and is left out (-90 dBFS).
+const SILENT_DB: f32 = -90.0;
 
 /// Loudness of a frame in dB of full scale.
 pub fn level_db(frame: &[i16]) -> f32 {
@@ -44,7 +48,8 @@ pub struct Detector {
     before: VecDeque<Vec<i16>>,
     /// The utterance so far, when in one.
     speech: Option<Vec<i16>>,
-    background_db: Option<f32>,
+    /// Levels of the last `WINDOW` frames that were not digital silence.
+    levels: VecDeque<f32>,
     loud_run: usize,
     quiet_run: usize,
     /// Loud frames in the utterance so far.
@@ -64,7 +69,7 @@ impl Detector {
             partial: Vec::new(),
             before: VecDeque::new(),
             speech: None,
-            background_db: None,
+            levels: VecDeque::new(),
             loud_run: 0,
             quiet_run: 0,
             loud_in: 0,
@@ -74,7 +79,7 @@ impl Detector {
 
     /// The background level now (dB of full scale), once a frame was seen.
     pub fn background_db(&self) -> Option<f32> {
-        self.background_db
+        self.levels.iter().copied().reduce(f32::min)
     }
 
     /// Feeds samples; returns every utterance they complete, in order.
@@ -101,15 +106,14 @@ impl Detector {
 
     fn frame(&mut self, f: Vec<i16>) -> Option<Vec<i16>> {
         let db = level_db(&f);
-        let bg = *self.background_db.get_or_insert(db);
-        let loud = db > bg + ABOVE_DB && db > FLOOR_DB;
-        // The background follows quieter frames down at once, louder ones
-        // up slowly.
-        self.background_db = Some(if db < bg {
-            db
-        } else {
-            bg + RISE_DB.min(db - bg)
-        });
+        if db > SILENT_DB {
+            if self.levels.len() == WINDOW {
+                self.levels.pop_front();
+            }
+            self.levels.push_back(db);
+        }
+        let bg = self.background_db().unwrap_or(db);
+        let loud = db > SILENT_DB && db > bg + ABOVE_DB && db > FLOOR_DB;
         self.frames_in += 1;
         if let Some(sp) = self.speech.as_mut() {
             sp.extend_from_slice(&f);
@@ -166,6 +170,61 @@ mod tests {
         (0..ms * 16)
             .map(|i| if i % 2 == 0 { 10 } else { -10 })
             .collect()
+    }
+
+    /// Room noise: a fixed pseudo-random hiss of about `db` dB of full
+    /// scale.
+    fn room(ms: usize, db: f32, seed: &mut u32) -> Vec<i16> {
+        // Uniform in -a..a has RMS a / sqrt(3).
+        let a = libm::powf(10.0, db / 20.0) * 32767.0 * 1.732;
+        (0..ms * 16)
+            .map(|_| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                ((*seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * a
+            })
+            .map(|v| v as i16)
+            .collect()
+    }
+
+    /// What `run --mic` showed (docs/listening-design.md §6): the
+    /// microphone starts with digital silence, then a room's noise at
+    /// -45 dB. The noise must become background, not 12-second
+    /// "utterances", and the one request after it must be found whole.
+    #[test]
+    fn digital_silence_then_room_noise() {
+        let mut seed = 1;
+        let mut d = Detector::new();
+        let mut a = vec![0i16; 16 * 300];
+        a.extend(room(3000, -45.0, &mut seed));
+        let speech_at = a.len();
+        let burst = tone(1500, 0.1);
+        let noise = room(1500, -45.0, &mut seed);
+        a.extend(burst.iter().zip(&noise).map(|(s, n)| s.saturating_add(*n)));
+        a.extend(room(3000, -45.0, &mut seed));
+        let us = d.push(&a);
+        assert_eq!(
+            us.len(),
+            1,
+            "utterances of {:?} ms",
+            us.iter().map(|u| u.len() / 16).collect::<Vec<_>>()
+        );
+        let ms = us[0].len() / 16;
+        assert!((1600..=1960).contains(&ms), "{ms} ms");
+        let _ = speech_at;
+    }
+
+    /// Room noise that changes level (a fan turned up) becomes background
+    /// within the 3-second window when nobody speaks.
+    #[test]
+    fn louder_room_becomes_background() {
+        let mut seed = 7;
+        let mut d = Detector::new();
+        let mut a = room(2000, -60.0, &mut seed);
+        a.extend(room(8000, -40.0, &mut seed));
+        let us = d.push(&a);
+        let total: usize = us.iter().map(|u| u.len() / 16).sum();
+        assert!(total <= 4000, "{total} ms of noise taken as speech");
+        assert!(d.push(&room(5000, -40.0, &mut seed)).is_empty());
     }
 
     #[test]

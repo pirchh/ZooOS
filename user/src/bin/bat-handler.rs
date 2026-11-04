@@ -110,6 +110,10 @@ fn main(chan: u64) -> u8 {
     let mut det = Detector::new();
     let mut msg = [0u8; 64];
     let mut listening = false;
+    // The room's level as the detector sees it, logged when it settles and
+    // when it shifts, for tuning against a real microphone.
+    let mut room_logged: Option<i32> = None;
+    let mut samples_in = 0usize;
     loop {
         // Bella gone: stop listening (the microphone is released at exit).
         match try_recv(chan, &mut msg) {
@@ -153,6 +157,14 @@ fn main(chan: u64) -> u8 {
             .iter()
             .map(|b| i16::from_le_bytes(*b))
             .collect();
+        samples_in += samples.len();
+        if let Some(bg) = det.background_db()
+            && samples_in >= 3 * hear::RATE
+            && room_logged.is_none_or(|r| (bg as i32 - r).abs() >= 6)
+        {
+            room_logged = Some(bg as i32);
+            zoo_rt::log!("BatHandler: room level {} dB", bg as i32);
+        }
         for u in det.push(&samples) {
             let audio: Vec<f32> = u.iter().map(|&s| f32::from(s) / 32768.0).collect();
             let t = zoo_rt::now_us();
@@ -162,9 +174,10 @@ fn main(chan: u64) -> u8 {
             let ms = (zoo_rt::now_us() - t) / 1000;
             let for_bella = zoo_abi::bella::addressed(&text).is_some();
             zoo_rt::log!(
-                "BatHandler: heard \"{}\" ({} ms of speech, {} ms to hear){}",
+                "BatHandler: heard \"{}\" ({} ms of speech at {} dB, {} ms to hear){}",
                 text,
                 audio.len() * 1000 / hear::RATE,
+                zoo_infer::listen::level_db(&u) as i32,
                 ms,
                 if for_bella { "" } else { "; not for Bella" }
             );

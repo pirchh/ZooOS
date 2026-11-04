@@ -1858,7 +1858,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
-            name: "hear-ermine",
+            name: "hear-snowyowl",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
             disk: Disk::Fresh,
@@ -1866,22 +1866,22 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run ermine-test",
-                    "ZOO_OS PROC start pid=26 name=ermine-test",
-                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                    "ZOO_OS SHELL line=run snowyowl-test",
+                    "ZOO_OS PROC start pid=26 name=snowyowl-test",
+                    "ZOO_OS PROC exit pid=26 name=snowyowl-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 6,
             want: "pass",
-            purpose: "hearing (docs/hearing-design.md): ErmineTest transcribes 8 recordings of the host's two voices with Moonshine Tiny in ZooOS; every transcript must be the sentence said",
+            purpose: "hearing (docs/hearing-design.md): SnowyOwlTest transcribes 8 recordings of the host's two voices with Moonshine Tiny in ZooOS; every transcript must be the sentence said",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run ermine-test")),
-                    Action::WaitContains("ErmineTest: Moonshine ready".into()),
-                    Action::WaitContains(format!("ErmineTest: {all} of {all} heard right")),
-                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=ermine-test code=0".into()),
+                    Action::Keys(typed("run snowyowl-test")),
+                    Action::WaitContains("SnowyOwlTest: Moonshine ready".into()),
+                    Action::WaitContains(format!("SnowyOwlTest: {all} of {all} heard right")),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=snowyowl-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -1895,21 +1895,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run ermine-test",
-                    "ZOO_OS PROC start pid=26 name=ermine-test",
-                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                    "ZOO_OS SHELL line=run snowyowl-test",
+                    "ZOO_OS PROC start pid=26 name=snowyowl-test",
+                    "ZOO_OS PROC exit pid=26 name=snowyowl-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 3,
             want: "unexpected-marker",
-            purpose: "negative: the first recording listed with another sentence; ErmineTest must report it misheard and exit 1, so a pass of `hear-ermine` means the transcripts were compared",
+            purpose: "negative: the first recording listed with another sentence; SnowyOwlTest must report it misheard and exit 1, so a pass of `hear-snowyowl` means the transcripts were compared",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run ermine-test")),
-                    Action::WaitContains("ErmineTest: MISHEARD".into()),
-                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=ermine-test".into()),
+                    Action::Keys(typed("run snowyowl-test")),
+                    Action::WaitContains("SnowyOwlTest: MISHEARD".into()),
+                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=snowyowl-test".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -3324,6 +3324,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 root,
                 sentence,
                 c.name == "mic-silence",
+                // The voice cases hear a noisy room, as `run --mic` does.
+                c.name.starts_with("voice-"),
             )?));
         } else {
             qemu::set_mic(None);
