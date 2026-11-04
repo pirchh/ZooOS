@@ -622,6 +622,29 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["browse"],
         &["10.0.2.100"],
     ),
+    // The owner's spoken session (docs/listening-design.md §7), and the
+    // registry's Notes edits (docs/registry-design.md).
+    (
+        "add flowers, egg and milk to my notes",
+        &["write"],
+        &["flowers, egg and milk"],
+    ),
+    (
+        "delete flowers, egg and milk from my notes",
+        &["remove"],
+        &["flowers, egg and milk"],
+    ),
+    ("take milk off my list", &["remove"], &["milk"]),
+    (
+        "change egg to bread in my notes",
+        &["change"],
+        &["egg\u{1f}bread"],
+    ),
+    (
+        "replace milk with oat milk in my notes",
+        &["change"],
+        &["milk\u{1f}oat milk"],
+    ),
     ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),
@@ -643,7 +666,11 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
     let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
     println!("engine: {}", zoo_infer::cpu::backend());
     let t0 = Instant::now();
-    let mut a = Bella::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
+    let mut a =
+        Bella::new(&model, &tok, registry(root)?, |_| true).map_err(|e| format!("{e:?}"))?;
+    for s in &a.skipped {
+        println!("registry: left out {s}");
+    }
     println!(
         "system prompt: {} tokens in {:.1}s",
         a.prefix_tokens(),
@@ -663,8 +690,8 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
             let c = a
                 .choose_in(follow, &context, |_| true)
                 .map_err(|e| format!("{e:?}"))?;
-            print!("{follow:?} -> {} {:?}", c.tool.word(), c.arg);
-            if c.tool.word() == "none" || c.arg.is_empty() {
+            print!("{follow:?} -> {} {:?}", c.word.as_str(), c.arg);
+            if c.word.as_str() == "none" || c.arg.is_empty() {
                 let r = talk.reply(follow, |_| true).map_err(|e| format!("{e:?}"))?;
                 print!("; Bella says: {r:?}");
             }
@@ -676,12 +703,12 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
         let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
         println!(
             "{req:?} -> {} {:?} (margin {:.2})",
-            c.tool.word(),
+            c.word.as_str(),
             c.arg,
             c.margin
         );
         // No command fits: Bella answers in words (docs/talk-design.md).
-        if c.tool.word() == "none" {
+        if c.word.as_str() == "none" {
             let t = Instant::now();
             let mut talk =
                 zoo_infer::talk::Talk::new(&model, &tok, |_| true).map_err(|e| format!("{e:?}"))?;
@@ -703,11 +730,11 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
     for &(req, tools, args) in ASSIST_CASES {
         let t = Instant::now();
         let c = a.choose(req, |_| true).map_err(|e| format!("{e:?}"))?;
-        let good = tools.contains(&c.tool.word()) && args.contains(&c.arg.as_str());
+        let good = tools.contains(&c.word.as_str()) && args.contains(&c.arg.as_str());
         ok &= good;
         if tools.contains(&"none") {
             without += 1;
-            acted += usize::from(c.tool.word() != "none");
+            acted += usize::from(c.word.as_str() != "none");
         } else {
             with += 1;
             right += usize::from(good);
@@ -717,7 +744,7 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
             "{} {:<45} -> {} {:?} (margin {:.2}, {} + {} tokens, {:.1}s){}",
             if good { "OK  " } else { "FAIL" },
             format!("{req:?}"),
-            c.tool.word(),
+            c.word.as_str(),
             c.arg,
             c.margin,
             c.request_tokens,
@@ -749,3 +776,26 @@ pub fn assist_check(root: &Path, extra: Option<&str>) -> Result<bool, String> {
 const MIN_RIGHT: usize = 17;
 /// Of 8 without one (0.5B: 2).
 const MAX_ACTED: usize = 2;
+
+/// The registry the boot image carries (docs/registry-design.md), read
+/// from `seed/etc/actions/`.
+pub fn registry(root: &Path) -> Result<zoo_infer::registry::Registry, String> {
+    let dir = root.join("seed/etc/actions");
+    let mut reg = zoo_infer::registry::Registry::default();
+    let mut skipped = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| format!("cannot read {}: {e}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "actions"))
+        .collect();
+    files.sort();
+    for f in files {
+        let text =
+            std::fs::read_to_string(&f).map_err(|e| format!("cannot read {}: {e}", f.display()))?;
+        reg.add_file(&text, &mut skipped);
+    }
+    if !skipped.is_empty() {
+        return Err(format!("registry: {}", skipped.join("; ")));
+    }
+    Ok(reg)
+}

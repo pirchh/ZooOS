@@ -45,6 +45,8 @@ commands:
                             --mic: the desktop with the hearing model; QEMU's
                             microphone is this PC's default recording device,
                             so \"hey Bella, ...\" works (docs/listening-design.md)
+                            --show-heard (with --mic): log every transcript,
+                            also speech not for Bella (off by default)
   hear-gguf                 convert Moonshine Tiny to GGUF (docs/hearing-design.md)
   hear-check                speech to text against the NumPy reference
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
@@ -219,7 +221,9 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 if mode != image::Mode::FastBoot {
                     return Err("--mic runs the everyday desktop (fast-boot) only".into());
                 }
-                let Some(img) = image::build_hear_image(&root, &tools, mode, false, 0)? else {
+                let Some(img) =
+                    image::build_hear_image(&root, &tools, mode, false, 0, opts.show_heard)?
+                else {
                     return Err(
                         "--mic needs the hearing model (tools/models/README.md, \"Voice\")".into(),
                     );
@@ -414,6 +418,8 @@ struct Options {
     /// `run --mic`: Bella listens on the host's microphone
     /// (docs/listening-design.md).
     mic: bool,
+    /// `run --mic --show-heard`: every transcript logged, for tuning.
+    show_heard: bool,
 }
 
 impl Options {
@@ -433,6 +439,7 @@ impl Options {
                 "--model" => o.model = true,
                 "--no-model" => o.no_model = true,
                 "--mic" => o.mic = true,
+                "--show-heard" => o.show_heard = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--bella" => o.bella = Some(value("--bella")?),
                 "--portable" => o.portable = true,

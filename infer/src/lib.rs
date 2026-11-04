@@ -24,9 +24,11 @@ pub mod gguf;
 pub mod hear;
 pub mod listen;
 pub mod model;
+pub mod notes;
 #[allow(unsafe_code)]
 pub mod par;
 pub mod quant;
+pub mod registry;
 pub mod steps;
 pub mod talk;
 pub mod tokenizer;

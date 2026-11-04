@@ -1881,3 +1881,26 @@ Version 0.114.0. docs/listening-design.md §6.
 - **Recording drains on the timer tick,** not only on reads.
 - **xtask's children end with xtask** (a Windows job object): a stopped run
   must not keep the microphone open.
+
+## The action registry (2026-11-04)
+
+Version 0.115.0. Design: docs/registry-design.md. The owner's direction:
+Bella must be data-driven, so a new app feature reaches her without
+changing her.
+
+- **One file per app in the boot image** (`etc/actions/<program>.actions`),
+  not announcements from running apps: actions of a closed app must work.
+- **Plain text, line per key,** read by ElephantHandler (the model's
+  commands and prompt), Bella (slots, asking, dispatch) and PeacockHandler
+  (checks). `zoo_abi::actions` is gone.
+- **Slots are filled from the request's own words** by the entry's verbs,
+  places and joins; the model writes only a single text slot no words
+  fill. An action the request cannot fill is no command.
+- **Command words must start with distinct first tokens;** a colliding
+  entry is left out and logged.
+- **`delete` actions are always asked about,** by the asking app; the
+  window server passes them on.
+- **The newest matching line wins** for remove and change, until notes can
+  be named as targets.
+- **The system's own commands stay in code** for now: files and windows
+  are served by the broker and the window server, not by an app.

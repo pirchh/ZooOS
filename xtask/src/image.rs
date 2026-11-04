@@ -490,12 +490,16 @@ pub fn build_model_image(
 /// host cannot make the recordings. With `mislabelled`, the first
 /// recording is listed with another recording's sentence (the negative
 /// case), and only the first `files` recordings are listed.
+/// The marker that makes BatHandler log every transcript (`--show-heard`).
+pub const SHOW_HEARD_FILE: &str = "etc/show-heard";
+
 pub fn build_hear_image(
     root: &Path,
     tools: &Tools,
     mode: Mode,
     mislabelled: bool,
     files: usize,
+    show_heard: bool,
 ) -> Result<Option<PathBuf>, String> {
     let gguf = crate::hear::gguf_path(root);
     if !gguf.is_file() {
@@ -561,6 +565,11 @@ pub fn build_hear_image(
         ("test/mic.txt", crate::hear::MIC_SENTENCE.as_bytes()),
         ("test/mic.raw", &mic_raw),
     ];
+    // `run --mic --show-heard`: BatHandler logs every transcript, not only
+    // those for Bella (docs/listening-design.md §8).
+    if show_heard {
+        entries.push((SHOW_HEARD_FILE, b"on\n"));
+    }
     for (n, d) in &wavs {
         entries.push((n, d));
     }

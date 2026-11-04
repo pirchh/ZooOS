@@ -405,12 +405,18 @@ pub const SENTENCES: [(&str, &str); 4] = [
     ("dentist", "Take a note that the dentist is on Friday."),
     ("monitor", "Put notes maximized on monitor 3."),
 ];
-/// Phrases recorded in the microphone voice only, for `voice-pause`:
-/// her name, then the request after a pause.
-pub const PAUSE_PARTS: [(&str, &str); 2] = [
+/// Phrases recorded in the microphone voice only: `voice-pause` (her
+/// name, then the request after a pause) and `voice-confirm` (a delete,
+/// then "yes" to her question).
+pub const PAUSE_PARTS: [(&str, &str); 4] = [
     ("hey-bella", "Hey Bella."),
     ("request", "Open notes and maximize it."),
+    ("remove-milk", "Hey Bella, remove milk."),
+    ("yes", "Yes."),
 ];
+/// Quiet before "yes" in `voice-confirm`: the question comes only once
+/// the request was heard, which takes seconds under TCG (12 s).
+const ANSWER_GAP_SECONDS: usize = 12;
 /// The host voices (Windows' System.Speech), each saying every sentence.
 pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Desktop"];
 
@@ -435,10 +441,16 @@ pub fn mic_input(root: &Path, sentence: &str, silent: bool, room: bool) -> Resul
             .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))
     };
     // `pause`: her name, a second of quiet, then the request.
-    let pcm = if sentence == "pause" {
-        let mut p = samples_of(PAUSE_PARTS[0].0)?;
-        p.resize(p.len() + 2 * zoo_infer::hear::RATE, 0);
-        p.extend(samples_of(PAUSE_PARTS[1].0)?);
+    // `confirm`: a delete, quiet while she asks, then "yes".
+    let pcm = if sentence == "pause" || sentence == "confirm" {
+        let (first, second, gap) = if sentence == "pause" {
+            (PAUSE_PARTS[0].0, PAUSE_PARTS[1].0, 1)
+        } else {
+            (PAUSE_PARTS[2].0, PAUSE_PARTS[3].0, ANSWER_GAP_SECONDS)
+        };
+        let mut p = samples_of(first)?;
+        p.resize(p.len() + gap * 2 * zoo_infer::hear::RATE, 0);
+        p.extend(samples_of(second)?);
         p
     } else {
         samples_of(sentence)?

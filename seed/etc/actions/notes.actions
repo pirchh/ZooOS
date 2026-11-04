@@ -1,0 +1,26 @@
+# What Notes can do for Bella (docs/registry-design.md). Bella's commands,
+# the model's prompt and the window server's checks are made from this.
+app notes
+
+action write
+  about write text down in Notes
+  effect change
+  slots text
+  verbs write down | write | add | put | note down | note that | jot down | take a note that | take a note | make a note that | make a note
+  places in my notes | to my notes | in notes | to notes | in the notes app | in a note | in my notes app | on my list | to my list | down
+
+action remove
+  about take a line or an item out of Notes
+  effect delete
+  slots text
+  verbs remove | delete | erase | take | cross off | cross | scratch | get rid of | drop
+  places from my notes | from notes | from the notes | off my notes | out of my notes | off my list | off the list | from my list | from the list | for my notes | in my notes | off | out
+  ask Remove "{text}" from your notes?
+
+action change
+  about change words in Notes
+  effect change
+  slots old new
+  joins to | with | for | into
+  verbs change | replace | swap | switch | edit | correct
+  places in my notes | in notes | on my list

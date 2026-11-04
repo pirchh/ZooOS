@@ -182,6 +182,20 @@ fn model_bytes() -> Option<&'static [u8]> {
     Some(&buf[..len])
 }
 
+/// The app actions the model can choose (docs/registry-design.md), read
+/// from the boot image; what was left out is logged.
+fn registry() -> zoo_infer::registry::Registry {
+    let (reg, skipped) = zoo_rt::registry::load();
+    for s in &skipped {
+        zoo_rt::log!("ElephantHandler: registry: left out {}", s);
+    }
+    zoo_rt::log!(
+        "ElephantHandler: registry: {} app actions",
+        reg.actions.len()
+    );
+    reg
+}
+
 fn service(chan: Handle) -> u8 {
     // Inference yields to the desktop (docs/stage2-design.md, B12).
     let _ = zoo_rt::set_background(true);
@@ -265,7 +279,7 @@ fn service(chan: Handle) -> u8 {
             if assistant.is_none() {
                 let t = zoo_rt::now_us();
                 let mut closed = false;
-                let made = Bella::new(&model, &tok, |step| {
+                let made = Bella::new(&model, &tok, registry(), |step| {
                     // A request is waiting: show it the set-up's progress.
                     if let (Some(_), Step::Prefix { done, total }) = (&pending, step) {
                         let _ = reply(chan, format_args!("busy setup {}/{}", done, total), true);
@@ -509,7 +523,7 @@ fn service(chan: Handle) -> u8 {
         if assistant.is_none() {
             let t = ticks();
             let tu = zoo_rt::now_us();
-            let made = Bella::new(&model, &tok, |s| keep_going(chan, s, &mut stop));
+            let made = Bella::new(&model, &tok, registry(), |s| keep_going(chan, s, &mut stop));
             setup_us = zoo_rt::now_us() - tu;
             match made {
                 Ok(a) => {
@@ -557,7 +571,7 @@ fn service(chan: Handle) -> u8 {
                     c.arg_tokens,
                     elapsed
                 );
-                zoo_rt::log!("ElephantHandler: chose {} `{}`", c.tool.word(), c.arg);
+                zoo_rt::log!("ElephantHandler: chose {} `{}`", c.word, c.arg);
                 // One timing line per request (docs/stage1-design.md): set-up
                 // (the system prompt, first request only), reading the
                 // request, writing the argument, and the heap.
@@ -577,12 +591,7 @@ fn service(chan: Handle) -> u8 {
                 );
                 reply(
                     chan,
-                    format_args!(
-                        "tool {} {} {}",
-                        c.tool.word(),
-                        (c.margin * 100.0) as i32,
-                        c.arg
-                    ),
+                    format_args!("tool {} {} {}", c.word, (c.margin * 100.0) as i32, c.arg),
                     false,
                 )
             }

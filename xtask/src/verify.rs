@@ -394,8 +394,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     // Hearing (docs/hearing-design.md), when Moonshine is downloaded: all
     // recordings, and two with the first mislabelled (negative).
     let all = crate::hear::VOICES.len() * crate::hear::SENTENCES.len();
-    let hear_image = image::build_hear_image(root, tools, Mode::Normal, false, all)?;
-    let hear_wrong_image = image::build_hear_image(root, tools, Mode::Normal, true, 2)?;
+    let hear_image = image::build_hear_image(root, tools, Mode::Normal, false, all, false)?;
+    let hear_wrong_image = image::build_hear_image(root, tools, Mode::Normal, true, 2, false)?;
     let mut wine_version = fast_boot_desktop_exits(Mode::FastBoot);
     wine_version.then(&[
         "ZOO_OS SHELL line=linux /usr/bin/wine --version",
@@ -932,6 +932,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "requests of several steps (docs/multi-step-design.md): \"launch notes and files, then minimize files\" runs both in order; \"open notes and maximize it\" opens notes.txt, then \"it\" is Notes",
             interaction: Some(bella_steps_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "bella-notes",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "the action registry (docs/registry-design.md): Notes' write, change and remove, all from etc/actions/notes.actions; `remove` asks first, y removes and n keeps",
+            interaction: Some(bella_notes_steps()),
             screen_checks: vec![],
         },
         Case {
@@ -2002,6 +2015,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             want: "pass",
             purpose: "a pause after her name (docs/listening-design.md §7): the microphone plays \"Hey Bella.\", a second of room noise, then \"Open notes and maximize it.\"; BatHandler takes the second utterance as the request and Bella carries it out",
             interaction: Some(voice_pause_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "voice-confirm",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a spoken yes (docs/registry-design.md): the microphone plays \"Hey Bella, remove milk.\", then \"Yes.\"; Bella asks before the delete, takes the spoken answer without her name, and Notes takes milk off the shopping line",
+            interaction: Some(voice_confirm_steps()),
             screen_checks: vec![],
         },
         Case {
@@ -3330,6 +3356,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if c.name.starts_with("mic-") || c.name.starts_with("voice-") {
             let sentence = if c.name == "voice-pause" {
                 "pause"
+            } else if c.name == "voice-confirm" {
+                "confirm"
             } else if c.name == "voice-not-for-bella" {
                 "split"
             } else {
@@ -4386,6 +4414,21 @@ fn voice_pause_steps() -> Interaction {
     ));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+fn voice_confirm_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Remove \"milk\" from your notes?".into(),
+    ));
+    steps.push(Action::WaitContains("BatHandler: heard \"Yes".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Took \"milk\" off \"Shopping: flour, eggs, milk.\" in Documents/notes.txt."
+            .into(),
     ));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
@@ -6165,6 +6208,61 @@ fn bella_events_steps() -> Interaction {
 }
 
 /// `bella-actions`: a line written in Notes for Bella.
+/// `bella-notes` (docs/registry-design.md): typed commands, so no model;
+/// Notes comes to the front for each action, so Bella is clicked again
+/// before the next.
+fn bella_notes_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // One pointer for every click: it moves relative to where it is.
+    let mut p = Ptr::start();
+    let mut back_to_bella = |steps: &mut Vec<Action>| {
+        steps.push(p.to(title_bar(ASSISTANT_WIN)));
+        steps.push(Action::Button(true));
+        steps.push(Action::Button(false));
+        steps.push(Action::Settle(QUIET));
+    };
+    steps.push(Action::Keys(typed("write flowers, egg and milk")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"flowers, egg and milk\" in Documents/notes.txt."
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    steps.push(Action::Keys(typed("change egg to bread")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Changed \"egg\" to \"bread\" in Documents/notes.txt."
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    // A delete: asked first; y goes ahead.
+    steps.push(Action::Keys(typed("remove milk")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Remove \"milk\" from your notes?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Took \"milk\" off \"flowers, bread and milk\" in Documents/notes.txt."
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    // n keeps it.
+    steps.push(Action::Keys(typed("remove flowers")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Remove \"flowers\" from your notes?".into(),
+    ));
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::WaitContains("Bella: answered no: Kept.".into()));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("Took \"flowers\"".into()));
+    steps.push(Action::Screenshot("edited"));
+    Interaction { steps }
+}
+
 fn bella_actions_steps() -> Interaction {
     let mut steps = start_desktop();
     // Files -> Crash Test -> Bella.

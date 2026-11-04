@@ -429,7 +429,7 @@ impl Browser {
         let entry = |l: usize| l.checked_sub(1).filter(|&k| k < count);
         match ev {
             Event::Open(path) => self.show(path),
-            // Files declares no actions (zoo_abi::actions).
+            // Files registers no actions (docs/registry-design.md).
             Event::Do(..) => {}
             Event::SideClick(k) => {
                 if let Some(&(_, icon, path)) = PLACES.get(k)

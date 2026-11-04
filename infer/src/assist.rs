@@ -8,6 +8,7 @@
 
 use crate::chat;
 use crate::model::{Model, ModelError, State};
+use crate::registry::Registry;
 use crate::tokenizer::Tokenizer;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -32,7 +33,7 @@ If no command fits the request, reply: none";
 /// examples (none worded like `assist-check`'s requests), a narrower
 /// "none", and the window actions (docs/window-actions-design.md). Qwen3 chose `none` for plain file requests with `SYSTEM`; the
 /// 0.5B model copies the examples, so it keeps `SYSTEM`.
-pub const SYSTEM_QWEN3: &str = "You turn a request about the user's files and apps into one command.\n\
+pub const SYSTEM_QWEN3_HEAD: &str = "You turn a request about the user's files and apps into one command.\n\
 Commands:\n\
 search <words>: find where files are, by name or text\n\
 list <folder>: show what is inside a folder\n\
@@ -46,10 +47,22 @@ launch <app>: start an app (Files, Notes, Network)\n\
 maximize <app>: open an app and make it fill the screen\n\
 minimize <app>: hide an app's window in the dock\n\
 close <app>: quit an app\n\
-split <apps>: tile windows side by side\n\
-write <text>: write text down in Notes\n\
-browse <address>: open a web page in the Network app\n\
-info: this computer's storage and memory\n\
+split <apps>: tile windows side by side\n";
+
+/// Qwen3's prompt: the system's own commands, then every registered app
+/// action's line (docs/registry-design.md), then the rest.
+pub fn system_qwen3(reg: &Registry) -> String {
+    let mut s = String::from(SYSTEM_QWEN3_HEAD);
+    for a in &reg.actions {
+        s.push_str(&a.prompt_line());
+        s.push('\n');
+    }
+    s.push_str(SYSTEM_QWEN3_TAIL);
+    s
+}
+
+/// The prompt after the registry's lines.
+pub const SYSTEM_QWEN3_TAIL: &str = "info: this computer's storage and memory\n\
 Paths are relative to the home folder. Reply with the command only.\n\
 Examples:\n\
 Where did I put my budget? -> search budget\n\
@@ -64,12 +77,12 @@ Reply none only when the request is not about the user's files, folders, apps or
 /// app.
 pub const LAUNCHABLE: [&str; 3] = ["Files", "Notes", "Network"];
 
-/// The system prompt for `model`.
-pub fn system_for(model: &Model) -> &'static str {
+/// The system prompt for `model`; Qwen3's lists the registry's actions.
+pub fn system_for(model: &Model, reg: &Registry) -> String {
     if model.cfg.qwen3 {
-        SYSTEM_QWEN3
+        system_qwen3(reg)
     } else {
-        SYSTEM
+        String::from(SYSTEM)
     }
 }
 
@@ -91,10 +104,9 @@ pub enum Tool {
     Close,
     /// Two apps side by side (docs/tiling-design.md).
     Split,
-    /// App actions (docs/actions-design.md): a line in Notes, a page in
-    /// Network.
-    Write,
-    Browse,
+    /// A registered app action (docs/registry-design.md): its index in the
+    /// registry.
+    App(usize),
     /// An app's window to a monitor; never chosen by the model's scores,
     /// only when the request names a monitor (docs/monitors-design.md).
     Show,
@@ -104,7 +116,8 @@ pub enum Tool {
     Nothing,
 }
 
-pub const TOOLS: [Tool; 17] = [
+/// The system's own commands; registered app actions follow them.
+pub const TOOLS: [Tool; 15] = [
     Tool::Search,
     Tool::List,
     Tool::Inspect,
@@ -118,8 +131,6 @@ pub const TOOLS: [Tool; 17] = [
     Tool::Minimize,
     Tool::Close,
     Tool::Split,
-    Tool::Write,
-    Tool::Browse,
     Tool::Info,
     Tool::Nothing,
 ];
@@ -129,12 +140,7 @@ impl Tool {
     pub const fn is_window(self) -> bool {
         matches!(
             self,
-            Tool::Maximize
-                | Tool::Minimize
-                | Tool::Close
-                | Tool::Split
-                | Tool::Write
-                | Tool::Browse
+            Tool::Maximize | Tool::Minimize | Tool::Close | Tool::Split | Tool::App(_)
         )
     }
 
@@ -153,8 +159,8 @@ impl Tool {
             Tool::Minimize => "minimize",
             Tool::Close => "close",
             Tool::Split => "split",
-            Tool::Write => "write",
-            Tool::Browse => "browse",
+            // Its word is in the registry (`Choice::word`).
+            Tool::App(_) => "app",
             Tool::Show => "show",
             Tool::Info => "info",
             Tool::Nothing => "none",
@@ -187,6 +193,8 @@ pub const BUDGET: Budget = Budget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub tool: Tool,
+    /// The command word: the tool's, or a registered action's.
+    pub word: String,
     pub arg: String,
     /// Score of the chosen tool word minus the runner-up's.
     pub margin: f32,
@@ -221,10 +229,18 @@ pub struct Bella<'m, 't> {
     pub st: State,
     /// Cache position after the system prompt.
     prefix_len: usize,
-    /// First token of each tool word, in `TOOLS` order.
-    tool_first: [u32; TOOLS.len()],
+    /// The commands the model chooses among: `TOOLS`, then the registry's
+    /// actions (Qwen3 only).
+    tools: Vec<Tool>,
+    /// First token of each tool word, in `tools` order.
+    tool_first: Vec<u32>,
     /// Token ids of each tool word.
-    tool_ids: [Vec<u32>; TOOLS.len()],
+    tool_ids: Vec<Vec<u32>>,
+    /// The app actions (docs/registry-design.md).
+    registry: Registry,
+    /// Registered actions left out, and why (a word whose first token
+    /// another command already starts with).
+    pub skipped: Vec<String>,
     /// `allowed[id]`: the token is made only of path bytes.
     allowed: Vec<bool>,
     /// Whether the prompt lists the window actions: Qwen3's does; with
@@ -251,9 +267,43 @@ impl<'m, 't> Bella<'m, 't> {
     pub fn new(
         model: &'m Model<'m>,
         tok: &'t Tokenizer<'t>,
+        registry: Registry,
         mut progress: impl FnMut(Step) -> bool,
     ) -> Result<Self, AssistError> {
-        let prefix = prefix_text_with(system_for(model));
+        // The model chooses by first token: an action whose word starts
+        // like another command's is left out (and out of the prompt).
+        let mut tools: Vec<Tool> = TOOLS.to_vec();
+        let mut tool_ids: Vec<Vec<u32>> = TOOLS.iter().map(|t| tok.encode(t.word())).collect();
+        let mut kept = Registry::default();
+        let mut skipped = Vec::new();
+        if model.cfg.qwen3 {
+            for a in registry.actions {
+                let ids = tok.encode(&a.word);
+                match tool_ids.iter().position(|t| t.first() == ids.first()) {
+                    Some(k) if !ids.is_empty() => skipped.push(alloc::format!(
+                        "{}.{}: `{}` starts like `{}`",
+                        a.program,
+                        a.name,
+                        a.word,
+                        if k < TOOLS.len() {
+                            String::from(TOOLS[k].word())
+                        } else {
+                            kept.actions[k - TOOLS.len()].word.clone()
+                        }
+                    )),
+                    _ if ids.is_empty() => {
+                        skipped.push(alloc::format!("{}.{}: no word", a.program, a.name))
+                    }
+                    _ => {
+                        tools.push(Tool::App(kept.actions.len()));
+                        tool_ids.push(ids);
+                        kept.actions.push(a);
+                    }
+                }
+            }
+        }
+        let registry = kept;
+        let prefix = prefix_text_with(&system_for(model, &registry));
         let prefix_ids = tok.encode(&prefix);
         // Prefix + request (+ template tokens) + tool word + argument.
         let ctx = prefix_ids.len()
@@ -269,8 +319,7 @@ impl<'m, 't> Bella<'m, 't> {
         })? {
             return Err(AssistError::Cancelled);
         }
-        let tool_ids = TOOLS.map(|t| tok.encode(t.word()));
-        let tool_first = core::array::from_fn(|i| tool_ids[i][0]);
+        let tool_first = tool_ids.iter().map(|t| t[0]).collect();
         let mut bytes = Vec::new();
         let allowed = (0..tok.vocab_size() as u32)
             .map(|id| {
@@ -287,8 +336,11 @@ impl<'m, 't> Bella<'m, 't> {
             tok,
             st,
             prefix_len: prefix_ids.len(),
+            tools,
             tool_first,
             tool_ids,
+            registry,
+            skipped,
             allowed,
             newline: tok.encode("\n"),
             windows: model.cfg.qwen3,
@@ -312,6 +364,30 @@ impl<'m, 't> Bella<'m, 't> {
     /// exchange described in `context` (empty for none;
     /// docs/talk-design.md §6).
     pub fn choose_in(
+        &mut self,
+        request: &str,
+        context: &str,
+        progress: impl FnMut(Step) -> bool,
+    ) -> Result<Choice, AssistError> {
+        let mut c = self.choose_inner(request, context, progress)?;
+        c.word = String::from(self.word_of(c.tool));
+        Ok(c)
+    }
+
+    /// The command word of `tool`.
+    pub fn word_of(&self, tool: Tool) -> &str {
+        match tool {
+            Tool::App(i) => &self.registry.actions[i].word,
+            t => t.word(),
+        }
+    }
+
+    /// The registered actions the model can choose.
+    pub fn registry(&self) -> &Registry {
+        &self.registry
+    }
+
+    fn choose_inner(
         &mut self,
         request: &str,
         context: &str,
@@ -350,19 +426,23 @@ impl<'m, 't> Bella<'m, 't> {
             return Err(AssistError::Cancelled);
         }
         // Tool: best first-token score among the words.
-        let mut scores = self.tool_first.map(|id| self.st.logits[id as usize]);
+        let mut scores: Vec<f32> = self
+            .tool_first
+            .iter()
+            .map(|&id| self.st.logits[id as usize])
+            .collect();
         if !self.windows {
-            for (k, t) in TOOLS.iter().enumerate() {
+            for (k, t) in self.tools.iter().enumerate() {
                 if t.is_window() {
                     scores[k] = f32::NEG_INFINITY;
                 }
             }
         }
-        let mut order: [usize; TOOLS.len()] = core::array::from_fn(|i| i);
+        let mut order: Vec<usize> = (0..self.tools.len()).collect();
         order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
-        let tool = TOOLS[best];
+        let tool = self.tools[best];
         // A monitor named with an app: the window goes there, filled when
         // the request says so, split when the model chose a split, else
         // as it is (docs/monitors-design.md).
@@ -396,6 +476,7 @@ impl<'m, 't> Bella<'m, 't> {
                     (Tool::Show, alloc::format!("{}{on}", apps.join(" and ")))
                 };
                 return Ok(Choice {
+                    word: String::new(),
                     tool,
                     arg,
                     margin,
@@ -404,18 +485,19 @@ impl<'m, 't> Bella<'m, 't> {
                 });
             }
         }
-        // `write` and `browse`: the text and the address are the request's
-        // own (docs/actions-design.md); the model's argument only when
-        // none is found.
-        if tool == Tool::Write || tool == Tool::Browse {
-            let own = if tool == Tool::Write {
-                note_text(request)
-            } else {
-                address_in(request).map(String::from).unwrap_or_default()
-            };
-            if !own.is_empty() {
+        // A registered action: its slots come from the request's own words
+        // (docs/registry-design.md); the model writes a single text slot
+        // only when none is found. An action the request cannot fill (no
+        // address for `browse`, no "to" for `change`) is not a fit: no
+        // command ("what's the weather today?" chose `browse`).
+        if let Tool::App(i) = tool {
+            let action = &self.registry.actions[i];
+            let own = action.fill(request);
+            let model_may_write = action.slots.len() == 1 && action.slots[0] != "address";
+            if !own.is_empty() || !model_may_write {
                 return Ok(Choice {
-                    tool,
+                    word: String::new(),
+                    tool: if own.is_empty() { Tool::Nothing } else { tool },
                     arg: own,
                     margin,
                     request_tokens: ids.len(),
@@ -429,6 +511,7 @@ impl<'m, 't> Bella<'m, 't> {
         if tool == Tool::Split {
             return Ok(match split_request(request) {
                 Some(arg) => Choice {
+                    word: String::new(),
                     tool,
                     arg,
                     margin,
@@ -436,6 +519,7 @@ impl<'m, 't> Bella<'m, 't> {
                     arg_tokens: 0,
                 },
                 None => Choice {
+                    word: String::new(),
                     tool: Tool::Nothing,
                     arg: String::new(),
                     margin,
@@ -446,6 +530,7 @@ impl<'m, 't> Bella<'m, 't> {
         }
         if tool == Tool::Nothing || tool == Tool::Info {
             return Ok(Choice {
+                word: String::new(),
                 tool,
                 arg: String::new(),
                 margin,
@@ -514,6 +599,7 @@ impl<'m, 't> Bella<'m, 't> {
                 said.join(" and ")
             };
             return Ok(Choice {
+                word: String::new(),
                 tool,
                 arg,
                 margin,
@@ -531,6 +617,7 @@ impl<'m, 't> Bella<'m, 't> {
             _ => (tool, arg),
         };
         Ok(Choice {
+            word: String::new(),
             tool,
             arg,
             margin,
@@ -589,68 +676,6 @@ pub fn apps_named(text: &str, bella: bool) -> Vec<&'static str> {
         }
     }
     apps
-}
-
-/// The text a `write` request asks to write down: "write down buy milk in
-/// my notes" → "buy milk" (docs/actions-design.md).
-pub fn note_text(request: &str) -> String {
-    let mut t = request.trim();
-    let starts = |t: &str, p: &str| t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p);
-    // Leading asks and verbs, as often as they come.
-    loop {
-        let before = t;
-        for p in [
-            "hey bella",
-            "bella",
-            "please",
-            "can you",
-            "could you",
-            "would you",
-            "write down",
-            "write",
-            "take a note that",
-            "take a note",
-            "make a note that",
-            "make a note",
-            "note down",
-            "note that",
-            "jot down",
-            "add",
-            "put",
-        ] {
-            if starts(t, p) && t[p.len()..].starts_with([' ', ':', ',']) {
-                t = t[p.len()..].trim_start_matches([' ', ':', ',']);
-            }
-        }
-        if t == before {
-            break;
-        }
-    }
-    // Trailing places and courtesy.
-    loop {
-        let before = t;
-        let lower = t.to_ascii_lowercase();
-        for s in [
-            " please",
-            " in my notes",
-            " to my notes",
-            " in notes",
-            " to notes",
-            " in the notes app",
-            " in a note",
-            " in my notes app",
-            " down",
-        ] {
-            if lower.ends_with(s) {
-                t = t[..t.len() - s.len()].trim_end();
-                break;
-            }
-        }
-        if t == before {
-            break;
-        }
-    }
-    String::from(t.trim_matches(['"', '\'', ' ', '.']))
 }
 
 /// The web address a request names: a word with a dot in it
@@ -857,13 +882,6 @@ mod tests {
 
     #[test]
     fn notes_and_addresses() {
-        assert_eq!(note_text("write down buy milk in my notes"), "buy milk");
-        assert_eq!(
-            note_text("hey bella take a note: call the vet tomorrow"),
-            "call the vet tomorrow"
-        );
-        assert_eq!(note_text("can you add eggs to my notes please"), "eggs");
-        assert_eq!(note_text("write buy milk"), "buy milk");
         assert_eq!(address_in("go to example.com please"), Some("example.com"));
         assert_eq!(
             address_in("open the page at 10.0.2.100"),

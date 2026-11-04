@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-detector fix after the first real voice (version 0.114.0, in the
+registry section (version 0.115.0), the
+detector fix after the first real voice (0.114.0, in the
 listening section), the `run --mic` note (0.113.0), the
 listening section (0.112.0), the
 microphone section (0.111.0), the
@@ -56,6 +57,46 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Task dump, and an intermittent Wine hang (version 0.115.0)
+
+**The task dump:** Scroll Lock on the PS/2 keyboard sets a flag (F12 is the
+desktop's test key for crashing the window server), and the next timer
+tick prints every task as a `ZOO_OS INFO dump` line: pid, tid, name, state,
+processor, the system call it is in (`rax` and `rip` from its saved frame
+while switched out), restart, futex, sleep deadline, file request pending,
+vfork child, pending signals and an allocation in progress. **The harness
+presses Scroll Lock when a case times out,** so a hang's serial log says what each
+task waited on.
+
+**The hang it was added for:** `wine-cmd` stalled while Wine created its
+prefix, after `copy error 1812` (which passing runs also show).
+
+| Build | `wine-cmd` runs |
+| --- | --- |
+| `main` (0.114.0) | 4 passed (176–218 s), one with 200 KB of padding in the boot image |
+| the registry branch before the dump | 6 timed out (480 s, and once 960 s), 1 passed |
+| the registry branch with the dump | 5 passed (165–212 s) |
+
+**Ruled out:**
+- the registry folder (removed: it still hung);
+- the boot image's size (padded `main` passed);
+- the harness's QEMU set-up (unchanged).
+
+The branch changes only user programs, which have exited before Wine
+starts. A check on every tick then made the hang go away. Both point to a
+timing-sensitive race in the kernel or the Linux layer that this branch
+made more likely, **not fixed**. If it recurs, the dump will show it.
+
+## The action registry (version 0.115.0)
+
+docs/registry-design.md: app actions from `etc/actions/*.actions`.
+
+| Check | Result |
+| --- | --- |
+| `bella-notes`; with `remove` deleted from the data file (negative control) | `OK` (write, change, remove asks, y/n); `FAIL` without the entry |
+| `voice-confirm`: a spoken delete and a spoken "yes" | `OK`: milk taken off the shopping line |
+| `assist-check` with the owner's phrasings | 41 of 43; 1 of 8 no-command requests acted on (margin 0.67) |
 
 ## Listening for "hey Bella" (version 0.112.0)
 

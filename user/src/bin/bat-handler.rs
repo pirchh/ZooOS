@@ -24,6 +24,8 @@ zoo_rt::entry!(main);
 const IDLE_TICKS: u64 = 2;
 /// After her name alone, how long the request may take to start (5 s).
 const AFTER_NAME_US: u64 = 5_000_000;
+/// After Bella asks a question, how long the answer may take (10 s).
+const ANSWER_US: u64 = 10_000_000;
 /// The room's level is logged when it moves this far (dB) from the last
 /// logged value, at most every `ROOM_LOG_US` (30 s).
 const ROOM_LOG_DB: i32 = 10;
@@ -118,16 +120,29 @@ fn main(chan: u64) -> u8 {
     }
     let mut det = Detector::new();
     let mut msg = [0u8; 64];
+    // `run --mic --show-heard`: every transcript is logged, for tuning;
+    // by default speech not for Bella stays unlogged.
+    let show_heard = zoo_rt::fs_find("etc/show-heard").is_some();
+    if show_heard {
+        let _ = zoo_rt::log("BatHandler: showing every transcript (--show-heard)");
+    }
     let mut listening = false;
     // The room's level as the detector sees it, logged when it settles and
     // when it shifts, for tuning against a real microphone.
     let mut room_logged: Option<(i32, u64)> = None;
     let mut samples_in = 0usize;
     // Until when an utterance is the request after her name alone.
-    let mut name_until: Option<u64> = None;
+    // Until when an utterance is the request after her name alone, or
+    // the answer to her question, and which.
+    let mut name_until: Option<(u64, &str)> = None;
     loop {
         // Bella gone: stop listening (the microphone is released at exit).
         match try_recv(chan, &mut msg) {
+            // Bella asked a question: the next utterance is the answer,
+            // with or without her name.
+            Ok(n) if &msg[..n] == b"await" => {
+                name_until = Some((zoo_rt::now_us() + ANSWER_US, "as her answer"));
+            }
             Ok(_) | Err(Error::Again) => {}
             Err(_) => {
                 let _ = close(chan);
@@ -188,7 +203,10 @@ fn main(chan: u64) -> u8 {
             let ms = (zoo_rt::now_us() - t) / 1000;
             let speech_ms = audio.len() * 1000 / hear::RATE;
             let level = zoo_infer::listen::level_db(&u) as i32;
-            let after_name = name_until.take().is_some_and(|until| t <= until);
+            let after_name = name_until
+                .take()
+                .filter(|(until, _)| t <= *until)
+                .map(|(_, why)| why);
             if zoo_abi::bella::addressed(&text).is_some() {
                 zoo_rt::log!(
                     "BatHandler: heard \"{}\" ({} ms of speech at {} dB, {} ms to hear)",
@@ -203,24 +221,35 @@ fn main(chan: u64) -> u8 {
                     "BatHandler: heard her name (\"{}\"); the request may follow",
                     text
                 );
-                name_until = Some(zoo_rt::now_us() + AFTER_NAME_US);
+                name_until = Some((zoo_rt::now_us() + AFTER_NAME_US, "after her name"));
                 say(chan, "name", "");
-            } else if after_name {
+            } else if let Some(why) = after_name {
                 zoo_rt::log!(
-                    "BatHandler: heard \"{}\" after her name ({} ms of speech at {} dB, {} ms to hear)",
+                    "BatHandler: heard \"{}\" {} ({} ms of speech at {} dB, {} ms to hear)",
                     text,
+                    why,
                     speech_ms,
                     level,
                     ms
                 );
                 say(chan, "heard:", &text);
             } else {
-                // Not for Bella: what was said stays unlogged.
-                zoo_rt::log!(
-                    "BatHandler: speech not for Bella ({} ms at {} dB)",
-                    speech_ms,
-                    level
-                );
+                // Not for Bella: what was said stays unlogged, unless the
+                // owner asked to see it.
+                if show_heard {
+                    zoo_rt::log!(
+                        "BatHandler: speech not for Bella ({} ms at {} dB): \"{}\"",
+                        speech_ms,
+                        level,
+                        text
+                    );
+                } else {
+                    zoo_rt::log!(
+                        "BatHandler: speech not for Bella ({} ms at {} dB)",
+                        speech_ms,
+                        level
+                    );
+                }
             }
         }
     }

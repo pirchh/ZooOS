@@ -215,6 +215,8 @@ lands as small, separately verified steps.
 | 9 | Voice: hearing, Moonshine speech to text in `zoo-infer`, 0.1 s a command on 8 processors (docs/hearing-design.md) | done 2026-11-04 |
 | 9 | Voice: the microphone (virtio-sound recording, `AUDIO_READ`, one owner) (docs/microphone-design.md) | done 2026-11-04 |
 | 9 | Voice: listening for "hey Bella": voice detection, the gate, BatHandler; `run --mic` (docs/listening-design.md) | done 2026-11-04 |
+| — | The action registry: apps declare their actions in `etc/actions/*.actions`; Bella's commands, prompt, slots, asking and the window server's checks come from it; Notes remove and change; spoken yes/no (docs/registry-design.md) | done 2026-11-04 |
+| — | Targets (Notes' titled notes), pattern learning, ask when unsure | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |
 

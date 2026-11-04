@@ -34,7 +34,7 @@ const MAX_INPUT: usize = 120;
 use zoo_abi::bella::{
     asks_about_activity, asks_my_files, asks_what_bella_did, asks_what_remembered, fact_to_forget,
     fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
-    summary_stem, typed_command, wants_saved,
+    summary_stem, wants_saved,
 };
 /// Window server events Bella keeps (docs/events-design.md).
 const EVENTS_KEPT: usize = 5;
@@ -67,6 +67,26 @@ const RECALLABLE: [&str; 15] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
     "maximize", "minimize", "close", "split", "show",
 ];
+
+/// A spoken answer: yes (`Some(true)`), no (`Some(false)`), or neither.
+fn spoken_answer(text: &str) -> Option<bool> {
+    let lower = text.to_ascii_lowercase();
+    let first = lower
+        .split(|c: char| !c.is_ascii_alphabetic() && c != '\'')
+        .find(|w| !w.is_empty())
+        .unwrap_or("");
+    const YES: [&str; 10] = [
+        "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please", "correct", "right",
+    ];
+    const NO: [&str; 7] = ["no", "nope", "nah", "cancel", "stop", "don't", "keep"];
+    if lower.starts_with("do it") || lower.starts_with("go ahead") || YES.contains(&first) {
+        Some(true)
+    } else if NO.contains(&first) || lower.starts_with("never mind") {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 fn recallable(command: &str) -> bool {
     RECALLABLE.contains(&command.split(' ').next().unwrap_or(""))
@@ -157,6 +177,8 @@ struct App {
     /// BatHandler, her hearing (docs/listening-design.md), while it
     /// listens.
     bat: Option<Handle>,
+    /// What apps can do for her (docs/registry-design.md).
+    registry: zoo_infer::registry::Registry,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -244,6 +266,13 @@ fn main(chan: u64, home: u64) -> u8 {
         magpie: None,
         magpie_ready: false,
         bat: None,
+        registry: {
+            let (reg, skipped) = zoo_rt::registry::load();
+            for s in &skipped {
+                zoo_rt::log!("Bella: registry: left out {}", s);
+            }
+            reg
+        },
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -394,14 +423,19 @@ impl App {
                 let req = req.clone();
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
-                if self.broker(&req) {
+                if let Some(inv) = req.strip_prefix("app ") {
+                    // A registered action, asked about (`app_action`). Not
+                    // remembered: its words change with every request.
+                    self.request = None;
+                    self.invoke(inv);
+                } else if self.broker(&req) {
                     self.learn(&req);
                 }
             }
             (Mode::Confirm(req), Key::Char('n') | Key::Back) => {
                 let what = if req.starts_with("create ") {
                     "Not created."
-                } else if req.starts_with("fact-forget ") {
+                } else if req.starts_with("fact-forget ") || req.starts_with("app ") {
                     "Kept."
                 } else {
                     "Left where it is."
@@ -409,6 +443,7 @@ impl App {
                 self.drop_steps();
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
+                zoo_rt::log!("Bella: answered no: {}", what);
                 self.say(what);
                 // The choice was wrong: a command typed next answers it.
                 if let Some(r) = self.request.take() {
@@ -508,7 +543,7 @@ impl App {
 
     fn submit_one(&mut self, text: &str) {
         self.asked_at = zoo_rt::now_us();
-        if typed_command(text) {
+        if zoo_abi::bella::typed_command_with(text, |w| self.registry.find_word(w).is_some()) {
             // Typed by the user: it may answer an earlier request.
             self.request = self.unanswered.take();
             self.command(text);
@@ -686,21 +721,13 @@ impl App {
             }
         } else if let Some(path) = text.strip_prefix("open ") {
             self.open(path.trim());
-        } else if text.starts_with("write ") {
-            // A line in Notes (docs/actions-design.md): the whole command,
-            // so "write down X" loses its "down".
-            let t = zoo_infer::assist::note_text(text);
-            if t.is_empty() || self.win.act("notes", "write", &t).is_err() {
-                self.say("Error: nothing to write.");
-            } else {
-                zoo_rt::log!("Bella: asked Notes to write a line");
-            }
-        } else if let Some(a) = text.strip_prefix("browse ") {
-            // A page in Network (docs/actions-design.md).
-            let a = zoo_infer::assist::address_in(a).unwrap_or(a.trim());
-            if self.win.act("network", "fetch", a).is_ok() {
-                zoo_rt::log!("Bella: asked Network to fetch {}", a);
-            }
+        } else if let Some(action) = self
+            .registry
+            .find_word(text.split(' ').next().unwrap_or(""))
+            .cloned()
+        {
+            // A registered app action (docs/registry-design.md).
+            self.app_action(&action, text);
         } else if let Some(apps) = text.strip_prefix("launch ") {
             // "launch Notes and Files": each (docs/multi-step-design.md).
             for app in String::from(apps).split(" and ") {
@@ -1344,11 +1371,74 @@ impl App {
             let mut echo = String::from("You said: ");
             echo.push_str(text);
             self.say(&echo);
-            if matches!(self.mode, Mode::Typing) && self.steps.is_empty() {
+            if matches!(self.mode, Mode::Confirm(_)) {
+                // The answer to her question, spoken.
+                match spoken_answer(text) {
+                    Some(true) => self.key(Key::Char('y')),
+                    Some(false) => self.key(Key::Char('n')),
+                    None => {
+                        self.say("Say yes or no.");
+                        self.await_answer();
+                    }
+                }
+            } else if matches!(self.mode, Mode::Typing) && self.steps.is_empty() {
                 self.submit(&String::from(text));
             } else {
                 self.say("I heard you, but I am still working on the last request.");
             }
+        }
+    }
+
+    /// `text` as the registered action `action` (docs/registry-design.md):
+    /// its slots are the model's (already joined) or filled from `text`'s
+    /// own words; a delete is asked about first, anything else is sent.
+    fn app_action(&mut self, action: &zoo_infer::registry::Action, text: &str) {
+        use zoo_infer::registry::{Effect, SLOT_SEP};
+        let rest = text[action.word.len()..].trim();
+        let filled = if rest.contains(SLOT_SEP) {
+            String::from(rest)
+        } else {
+            action.fill(text)
+        };
+        if filled.is_empty() {
+            self.say(&alloc::format!(
+                "Error: I could not tell what to {} from that.",
+                action.about
+            ));
+            return;
+        }
+        let inv = alloc::format!("{}:{}:{}", action.program, action.name, filled);
+        if action.effect == Effect::Delete {
+            let q = action.question(&filled);
+            zoo_rt::log!("Bella: asks: {}", q);
+            self.say(&q);
+            self.status = String::from("Say yes or press y to go ahead; no or n leaves it.");
+            self.mode = Mode::Confirm(alloc::format!("app {}", inv));
+            self.await_answer();
+        } else {
+            self.invoke(&inv);
+        }
+    }
+
+    /// Sends `<program>:<action>:<slots>` through the window server.
+    fn invoke(&mut self, inv: &str) {
+        let mut parts = inv.splitn(3, ':');
+        let (Some(program), Some(name), Some(arg)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return;
+        };
+        if self.win.act(program, name, arg).is_ok() {
+            zoo_rt::log!("Bella: asked {} to {}", program, name);
+        } else {
+            self.say("Error: the window server did not take that.");
+        }
+    }
+
+    /// Asks BatHandler to pass on the next thing said, without "hey Bella"
+    /// (the answer to her question).
+    fn await_answer(&mut self) {
+        if let Some(b) = self.bat {
+            let _ = send(b, b"await");
         }
     }
 

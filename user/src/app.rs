@@ -183,7 +183,7 @@ impl Window {
     }
 
     /// Asks application `program` to do `action` with `arg`
-    /// (`zoo_abi::actions`); answered with `window-done:<sentence>`
+    /// (the registry, docs/registry-design.md); answered with `window-done:<sentence>`
     /// (docs/actions-design.md).
     pub fn act(&self, program: &str, action: &str, arg: &str) -> Result<(), Error> {
         let mut l = Line::new();
@@ -240,7 +240,7 @@ pub enum Event<'a> {
     SideClick(usize),
     /// Open this file (a path from home).
     Open(&'a str),
-    /// Do this action (`zoo_abi::actions`) with this argument; answer
+    /// Do this action (the registry, docs/registry-design.md) with this argument; answer
     /// with `Window::did` (docs/actions-design.md).
     Do(&'a str, &'a str),
 }

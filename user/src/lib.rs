@@ -17,6 +17,7 @@ mod heap;
 pub use heap::stats as heap_stats;
 pub mod net;
 pub mod pool;
+pub mod registry;
 pub mod thread;
 pub mod vm;
 

@@ -46,6 +46,11 @@ pub fn on_interrupt() {
 /// never nest, so there is still one producer at a time.
 pub fn push(byte: u8) {
     RECEIVED.fetch_add(1, Ordering::Relaxed);
+    // Scroll Lock (set 1 make code): a task dump on the next tick, for
+    // hangs. F12 is the desktop's test key for crashing the window server.
+    if byte == 0x46 {
+        crate::process::request_dump();
+    }
     let head = HEAD.load(Ordering::Relaxed);
     let tail = TAIL.load(Ordering::Acquire);
     if head.wrapping_sub(tail) >= CAPACITY {

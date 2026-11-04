@@ -4,7 +4,6 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-pub mod actions;
 pub mod bella;
 pub mod dns;
 pub mod elf;
