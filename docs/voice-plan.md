@@ -86,7 +86,7 @@ base.en if converting is a problem.
 
 1. Recording in the virtio-sound driver.
 2. The speech-to-text engine in `zoo-infer`, checked against the reference
-   on known WAV files.
+   on known WAV files. **Done** (docs/hearing-design.md, 0.110.0).
 3. Voice detection and the "hey Bella" gate.
 4. Kokoro text to speech through `AUDIO_WRITE`.
 5. Intel HD Audio for real PCs.

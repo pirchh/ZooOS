@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 27] = [
+pub const USER_PROGRAMS: [&str; 28] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -39,6 +39,7 @@ pub const USER_PROGRAMS: [&str; 27] = [
     "magpie-handler",
     "network",
     "orca-test",
+    "ermine-test",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
@@ -478,6 +479,119 @@ pub fn build_model_image(
         img.display()
     );
     Ok(img)
+}
+
+/// The hearing image (docs/hearing-design.md): the normal system with
+/// Moonshine (`models/hear.gguf`), the host voice's recordings
+/// (`test/hear/*.wav`) and what each says (`test/hear.txt`) in its boot
+/// image, for ErmineTest. `None` when the model is not downloaded or the
+/// host cannot make the recordings. With `mislabelled`, the first
+/// recording is listed with another recording's sentence (the negative
+/// case), and only the first `files` recordings are listed.
+pub fn build_hear_image(
+    root: &Path,
+    tools: &Tools,
+    mislabelled: bool,
+    files: usize,
+) -> Result<Option<PathBuf>, String> {
+    let gguf = crate::hear::gguf_path(root);
+    if !gguf.is_file() {
+        if !crate::hear::moonshine_dir(root)
+            .join("model.safetensors")
+            .is_file()
+        {
+            println!(
+                "[build] no hearing model (tools/models/README.md, \"Voice\"): hearing cases skipped"
+            );
+            return Ok(None);
+        }
+        crate::hear::convert(root)?;
+    }
+    if let Err(e) = crate::hear::make_recordings(root) {
+        println!("[build] no recordings for the hearing cases: {e}");
+        return Ok(None);
+    }
+    let _ = build(root, tools, Mode::Normal)?;
+    let base = initrd(root, tools)?;
+    let mut archive =
+        std::fs::read(&base).map_err(|e| format!("cannot read {}: {e}", base.display()))?;
+    archive.truncate(archive.len().saturating_sub(2 * zoo_abi::tar::BLOCK));
+    let model = std::fs::read(&gguf).map_err(|e| format!("cannot read {}: {e}", gguf.display()))?;
+    let mut list = String::new();
+    let mut wavs = Vec::new();
+    for (v, _) in crate::hear::VOICES.iter().enumerate() {
+        for (k, (name, said)) in crate::hear::SENTENCES.iter().enumerate() {
+            let file = format!("{name}-{v}.wav");
+            let p = crate::hear::wav_path(root, v, name);
+            let data =
+                std::fs::read(&p).map_err(|e| format!("cannot read {}: {e}", p.display()))?;
+            let said = if mislabelled && wavs.is_empty() {
+                crate::hear::SENTENCES[(k + 1) % crate::hear::SENTENCES.len()].1
+            } else {
+                said
+            };
+            list.push_str(&format!(
+                "{file}|{said}
+"
+            ));
+            wavs.push((format!("test/hear/{file}"), data));
+        }
+    }
+    wavs.truncate(files);
+    let list: String = list
+        .lines()
+        .take(files)
+        .map(|l| {
+            format!(
+                "{l}
+"
+            )
+        })
+        .collect();
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("models/hear.gguf", &model),
+        ("test/hear.txt", list.as_bytes()),
+    ];
+    for (n, d) in &wavs {
+        entries.push((n, d));
+    }
+    for (name, data) in entries {
+        let header = zoo_abi::tar::header(name, data.len())
+            .ok_or_else(|| format!("cannot make a tar header for {name}"))?;
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(data);
+        archive.resize(
+            archive.len().div_ceil(zoo_abi::tar::BLOCK) * zoo_abi::tar::BLOCK,
+            0,
+        );
+    }
+    archive.extend_from_slice(&[0; 2 * zoo_abi::tar::BLOCK]);
+    for e in zoo_abi::tar::read(&archive) {
+        e.map_err(|e| format!("hearing initrd self-check failed: {e:?}"))?;
+    }
+    let out_dir = root
+        .join("build")
+        .join(if mislabelled { "hear-wrong" } else { "hear" });
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
+    let initrd_path = out_dir.join("initrd-hear.tar");
+    std::fs::write(&initrd_path, &archive)
+        .map_err(|e| format!("cannot write {}: {e}", initrd_path.display()))?;
+    let elf = root
+        .join("target")
+        .join(format!("kernel-{}", Mode::Normal.name()))
+        .join(KERNEL_TARGET)
+        .join("release")
+        .join(KERNEL_PACKAGE);
+    let img = out_dir.join("zoo-os-hear-uefi.img");
+    crate::uefi_image::create(&elf, &initrd_path, None, &img)?;
+    println!(
+        "[build] hearing image ({} recordings, initrd {} MB) -> {}",
+        wavs.len(),
+        archive.len() >> 20,
+        img.display()
+    );
+    Ok(Some(img))
 }
 
 /// The USB stick's image (docs/usb-model-design.md): the everyday

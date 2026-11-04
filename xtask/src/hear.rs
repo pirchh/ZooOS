@@ -465,22 +465,6 @@ pub fn make_recordings(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The words of `s`, lower case, without punctuation.
-pub fn words(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 fn python(root: &Path) -> Result<PathBuf, String> {
     let p = root.join("tools/reference/.venv/Scripts/python.exe");
     let p = if p.is_file() {
@@ -566,8 +550,10 @@ pub fn check(root: &Path) -> Result<bool, String> {
                 .collect();
             let raw = read(&dump)?;
             let r: Vec<f32> = raw
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
                 .collect();
             let (r_enc, r_first) = r.split_at(r.len().saturating_sub(first.len()));
             let enc_diff = if r_enc.len() == enc.len() {
@@ -576,7 +562,7 @@ pub fn check(root: &Path) -> Result<bool, String> {
                 f32::INFINITY
             };
             let logit_diff = max_diff(&first, r_first);
-            let heard_ok = words(&text) == words(said);
+            let heard_ok = zoo_infer::hear::same_words(&text, said);
             let same = ids == ref_ids;
             let ok = heard_ok && same && enc_diff <= ENC_TOLERANCE && logit_diff <= LOGIT_TOLERANCE;
             all_ok &= ok;

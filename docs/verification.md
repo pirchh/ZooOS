@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-full-accelerator section (version 0.109.0), the events section (0.108.0),
+hearing section (version 0.110.0), the
+full-accelerator section (0.109.0), the events section (0.108.0),
 the sound section (0.107.0), the
 draft-model section (0.106.0), the
 actions section (0.105.0),
@@ -51,6 +52,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Hearing (version 0.110.0)
+
+docs/hearing-design.md: Moonshine Tiny speech to text, on recordings made
+by the host's speech synthesizer.
+
+| Check | Result |
+| --- | --- |
+| `cargo xtask hear-check` | `PASS`: 8 of 8 heard as said, the reference's tokens; encoder within 2.9e-4, logits within 5.4e-4 |
+| `hear-check`, no decoder rotary (negative control) | `FAIL`: 6 of 8 misheard |
+| `hear-ermine` (TCG, 1 processor) | `OK`: 8 of 8 heard right, 90.2 s for 24.9 s of audio |
+| `hear-ermine` (WHPX, 1 and 8 processors) | `OK`: 2.41 s and 0.73 s |
+| `hear-mislabelled` (negative case) | rejected as intended: `code=1` after `MISHEARD open-notes-0.wav` |
 
 ## The whole suite with an accelerator (version 0.109.0)
 

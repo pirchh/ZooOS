@@ -1813,3 +1813,17 @@ The owner approved docs/voice-plan.md as recommended.
   is "hey Bella" at the start of a transcript.
 - **Silero VAD** (MIT) is approved, fetched when voice detection is built.
 - Pinned in tools/models/README.md ("Voice") and `tools/models/voice/*.sha256`.
+
+## Hearing (2026-11-04)
+
+Version 0.110.0. Design: docs/hearing-design.md.
+
+- **Converted to GGUF, F32:** the engine's reader, model files and
+  parallel products serve Moonshine as they serve the chat model; 8-bit
+  weights were not needed (0.1 s for a command on 8 processors).
+- **Test speech from the host's own synthesizer** (Windows System.Speech),
+  so the sentences are known and nothing is downloaded. The recordings are
+  made on demand under `build/voice/`; on a host without it the hearing
+  cases are skipped, as the Wine cases are without their export.
+- **The model and recordings in a dedicated boot image** for now; the
+  model disk keeps its two models until hearing has a microphone to serve.

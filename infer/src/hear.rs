@@ -101,8 +101,10 @@ pub struct Hearing<'a> {
 
 fn floats(t: &TensorInfo) -> Vec<f32> {
     t.data
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect()
 }
 
@@ -495,8 +497,10 @@ impl<'a> Hearing<'a> {
 
 /// 16-bit samples as floats in -1..1.
 pub fn samples_from_i16(pcm: &[u8]) -> Vec<f32> {
-    pcm.chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
         .collect()
 }
 
@@ -523,4 +527,51 @@ pub fn wav_samples(wav: &[u8]) -> Option<&[u8]> {
         at += 8 + len + (len & 1);
     }
     None
+}
+
+/// Whether `a` and `b` are the same words, ignoring case and punctuation
+/// ("Hey Bella, open notes." and "hey bella open notes").
+pub fn same_words(a: &str, b: &str) -> bool {
+    let words = |s: &str| {
+        let mut out = String::new();
+        for w in s
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+        {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&w.to_lowercase());
+        }
+        out
+    };
+    words(a) == words(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn words_compare() {
+        assert!(same_words("Hey Bella, open notes.", "hey bella open notes"));
+        assert!(!same_words("monitor 3", "monitor three"));
+    }
+
+    #[test]
+    fn wav_needs_16k_mono() {
+        let mut w = alloc::vec::Vec::new();
+        w.extend_from_slice(b"RIFF\0\0\0\0WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&[1, 0, 1, 0]);
+        w.extend_from_slice(&16000u32.to_le_bytes());
+        w.extend_from_slice(&32000u32.to_le_bytes());
+        w.extend_from_slice(&[2, 0, 16, 0]);
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&4u32.to_le_bytes());
+        w.extend_from_slice(&[1, 0, 2, 0]);
+        assert_eq!(wav_samples(&w), Some(&[1u8, 0, 2, 0][..]));
+        w[24..28].copy_from_slice(&44100u32.to_le_bytes());
+        assert_eq!(wav_samples(&w), None);
+    }
 }

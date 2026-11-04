@@ -391,6 +391,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
 
     // Wine (docs/linux10-design.md), when tools/wine/export.sh has run.
     let wine_image = image::build_wine_image(root, tools)?;
+    // Hearing (docs/hearing-design.md), when Moonshine is downloaded: all
+    // recordings, and two with the first mislabelled (negative).
+    let all = crate::hear::VOICES.len() * crate::hear::SENTENCES.len();
+    let hear_image = image::build_hear_image(root, tools, false, all)?;
+    let hear_wrong_image = image::build_hear_image(root, tools, true, 2)?;
     let mut wine_version = fast_boot_desktop_exits(Mode::FastBoot);
     wine_version.then(&[
         "ZOO_OS SHELL line=linux /usr/bin/wine --version",
@@ -1853,6 +1858,63 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "hear-ermine",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run ermine-test",
+                    "ZOO_OS PROC start pid=26 name=ermine-test",
+                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "hearing (docs/hearing-design.md): ErmineTest transcribes 8 recordings of the host's two voices with Moonshine Tiny in ZooOS; every transcript must be the sentence said",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run ermine-test")),
+                    Action::WaitContains("ErmineTest: Moonshine ready".into()),
+                    Action::WaitContains(format!("ErmineTest: {all} of {all} heard right")),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=ermine-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "hear-mislabelled",
+            mode: Mode::Normal,
+            custom_image: hear_wrong_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run ermine-test",
+                    "ZOO_OS PROC start pid=26 name=ermine-test",
+                    "ZOO_OS PROC exit pid=26 name=ermine-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 3,
+            want: "unexpected-marker",
+            purpose: "negative: the first recording listed with another sentence; ErmineTest must report it misheard and exit 1, so a pass of `hear-ermine` means the transcripts were compared",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run ermine-test")),
+                    Action::WaitContains("ErmineTest: MISHEARD".into()),
+                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=ermine-test".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "net-bella-browse",
             mode: Mode::Normal,
             custom_image: None,
@@ -2944,6 +3006,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if model_case && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: model unavailable (--skip-model)\n",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
+        if c.name.starts_with("hear-") && c.custom_image.is_none() {
+            let line = format!(
+                "SKIP  {:<22} not run: no hearing model or host voice (tools/models/README.md, \"Voice\")
+",
                 c.name
             );
             print!("{line}");
