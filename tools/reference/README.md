@@ -15,3 +15,9 @@ Then, with the model in tools/models/:
     cargo xtask infer-check
 
 Tested with Python 3.12 and numpy 2.3.4 (pinned in requirements.txt).
+
+`moonshine_ref.py` is the same kind of reference for Moonshine speech to
+text (docs/hearing-design.md), with the voice model in
+tools/models/voice/:
+
+    cargo xtask hear-check

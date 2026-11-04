@@ -1,6 +1,8 @@
 # Voice plan: proposal for the owner (2026-11-04)
 
-Status: **a proposal; nothing here is downloaded or decided.** The owner's
+Status: **approved by the owner on 2026-11-04** as recommended: Moonshine
+Tiny, Kokoro-82M (CC BY attribution accepted), Silero VAD; no espeak-ng,
+no openWakeWord (DECISIONS.md, "Voice models"). Written as a proposal; the owner's
 end goal is "Hey Bella, open Notes and maximize it on my screen", spoken,
 with Bella answering aloud (docs/bella-roadmap.md, Stage 9). Window
 actions, tiling, several steps, monitors and app actions are done; playback
@@ -84,7 +86,7 @@ base.en if converting is a problem.
 
 1. Recording in the virtio-sound driver.
 2. The speech-to-text engine in `zoo-infer`, checked against the reference
-   on known WAV files.
+   on known WAV files. **Done** (docs/hearing-design.md, 0.110.0).
 3. Voice detection and the "hey Bella" gate.
 4. Kokoro text to speech through `AUDIO_WRITE`.
 5. Intel HD Audio for real PCs.

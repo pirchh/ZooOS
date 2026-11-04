@@ -21,6 +21,7 @@ pub mod cpu;
 pub mod draft;
 pub mod embed;
 pub mod gguf;
+pub mod hear;
 pub mod model;
 #[allow(unsafe_code)]
 pub mod par;
