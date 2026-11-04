@@ -150,6 +150,17 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Window server events (2026-11-04)
+
+Version 0.108.0. Design: docs/events-design.md. Stage 4, second part.
+
+- **Push, never wait:** subscribers get `event:<what>`; a full queue
+  misses events (counted), so a stuck app cannot slow the desktop.
+- **Focus changes go to subscribers only,** not to the screen snapshot's
+  list.
+- **Bella uses events for "it" in window commands only,** so file
+  follow-ups keep their meaning.
+
 ## Sound: virtio-sound playback (2026-11-04)
 
 Version 0.107.0. Design: docs/audio-design.md; the voice proposal is

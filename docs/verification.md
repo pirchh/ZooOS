@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-sound section (version 0.107.0), the draft-model section (0.106.0), the
+events section (version 0.108.0), the sound section (0.107.0), the
+draft-model section (0.106.0), the
 actions section (0.105.0),
 the monitors section (0.104.0), the
 multi-step section (0.103.0),
@@ -49,6 +50,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Window server events (version 0.108.0)
+
+docs/events-design.md.
+
+| Case | Result |
+| --- | --- |
+| `bella-events` (TCG) | `OK`: Notes opened by the user; `maximize it` maximizes Notes |
+| `bella-events`, Bella not subscribing (negative control) | `FAIL`: no `"it" is Notes` within 120 s |
 
 ## Sound (version 0.107.0)
 

@@ -325,6 +325,10 @@ struct App {
     /// The window that asked it to do an action, waiting for its answer
     /// (docs/actions-design.md).
     asked_by: Option<usize>,
+    /// It asked for the window server's events (`events:on`), and how many
+    /// it missed (docs/events-design.md).
+    subscribed: bool,
+    missed_events: u32,
     /// Its name in the dock and banners, e.g. "Crash Test".
     label: &'static str,
     program: &'static str,
@@ -364,6 +368,8 @@ impl App {
         let (label, program, wants_home) = CATALOG[prog];
         App {
             asked_by: None,
+            subscribed: false,
+            missed_events: 0,
             held: alloc::collections::VecDeque::new(),
             held_burst: 0,
             label,
@@ -542,6 +548,9 @@ impl App {
             let mut t = alloc::boxed::Box::new(Line::new());
             let _ = t.write_str(core::str::from_utf8(said).unwrap_or("done"));
             self.request = Some(Request::Did(t));
+        } else if msg == b"events:on" {
+            // Events from now on (docs/events-design.md).
+            self.subscribed = true;
         } else if msg == b"split-front" {
             self.request = Some(Request::SplitFront);
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
@@ -2345,6 +2354,13 @@ impl Desktop {
         } else if self.order[WINDOWS - 1] != i {
             self.damage_window(i);
         }
+        if i != self.focus {
+            // Focus changes go to subscribers only, not to `recent`
+            // (the screen snapshot's list stays as it was).
+            let mut e = Line::new();
+            let _ = write!(e, "focused {}", self.apps[i].label);
+            self.broadcast(e.as_str());
+        }
         self.focus = i;
         let mut order = [0; WINDOWS];
         let mut k = 0;
@@ -2586,7 +2602,7 @@ impl Desktop {
                         let _ = l.write_str("rclick:none");
                     }
                 }
-                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                self.post(i, l.as_str().as_bytes());
             }
             return;
         };
@@ -2702,7 +2718,7 @@ impl Desktop {
         if let (MenuAction::App(k), Some(i)) = (a, owner) {
             let mut l = Line::new();
             let _ = write!(l, "menu-choose:{}", k);
-            let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+            self.post(i, l.as_str().as_bytes());
             return;
         }
         let label = CATALOG[prog].0;
@@ -2804,10 +2820,32 @@ impl Desktop {
 
     /// Keeps `e` among the last six things that happened (for Bella).
     fn happened(&mut self, e: Line) {
+        self.broadcast(e.as_str());
         if self.recent.len() == 6 {
             self.recent.pop_front();
         }
         self.recent.push_back(e);
+    }
+
+    /// Sends `event:<what>` to every application that subscribed
+    /// (docs/events-design.md). A subscriber whose queue is full misses it:
+    /// the window server never waits for one.
+    fn broadcast(&mut self, what: &str) {
+        let mut l = Line::new();
+        let _ = write!(l, "event:{}", what);
+        for a in self.apps.iter_mut().filter(|a| a.subscribed && a.running) {
+            // Behind held replies and keys, an event would take their room.
+            if !a.held.is_empty() || zoo_rt::send(a.chan, l.as_str().as_bytes()).is_err() {
+                a.missed_events += 1;
+                if a.missed_events.is_power_of_two() {
+                    zoo_rt::log!(
+                        "PeacockHandler: {} missed {} events (its queue was full)",
+                        a.label,
+                        a.missed_events
+                    );
+                }
+            }
+        }
     }
 
     /// Something an application asked for (docs/u3-design.md).
@@ -2847,7 +2885,7 @@ impl Desktop {
                 for (k, e) in self.recent.iter().enumerate() {
                     let _ = write!(l, "{}{}", if k == 0 { "" } else { ", " }, e.as_str());
                 }
-                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                self.post(i, l.as_str().as_bytes());
                 zoo_rt::log!("PeacockHandler: context for {}", self.apps[i].label);
             }
             Request::Launch(prog) => self.dock_click(prog),
@@ -2859,7 +2897,7 @@ impl Desktop {
                 match self.front_window_of(prog, App::visible) {
                     Some(w) if w != i => {
                         self.apps[w].asked_by = Some(i);
-                        let _ = zoo_rt::send(self.apps[w].chan, line.as_str().as_bytes());
+                        self.post(w, line.as_str().as_bytes());
                         zoo_rt::log!(
                             "PeacockHandler: {} asks {}: {}",
                             self.apps[i].label,
@@ -2873,7 +2911,7 @@ impl Desktop {
                     _ => {
                         let mut l = Line::new();
                         let _ = write!(l, "window-done:Error: {} could not be opened.", label);
-                        let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                        self.post(i, l.as_str().as_bytes());
                     }
                 }
             }
@@ -2883,7 +2921,7 @@ impl Desktop {
                 {
                     let mut l = Line::new();
                     let _ = write!(l, "window-done:{}", said.as_str());
-                    let _ = zoo_rt::send(self.apps[asker].chan, l.as_str().as_bytes());
+                    self.post(asker, l.as_str().as_bytes());
                     zoo_rt::log!(
                         "PeacockHandler: {} did: {}",
                         self.apps[i].label,
@@ -2892,20 +2930,20 @@ impl Desktop {
                 }
             }
             Request::BadDo => {
-                let _ = zoo_rt::send(self.apps[i].chan, b"window-done:Error: no app can do that.");
+                self.post(i, b"window-done:Error: no app can do that.");
                 zoo_rt::log!("PeacockHandler: an action the manifest refuses");
             }
             Request::SplitFront => {
                 let said = self.split_front(i);
                 let mut l = Line::new();
                 let _ = write!(l, "window-done:{}", said.as_str());
-                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                self.post(i, l.as_str().as_bytes());
             }
             Request::Window(action, prog, m, monitor) => {
                 let said = self.window_action(action, prog, m, monitor);
                 let mut l = Line::new();
                 let _ = write!(l, "window-done:{}", said.as_str());
-                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+                self.post(i, l.as_str().as_bytes());
             }
             Request::Open(prog, path) => {
                 let w = if self.program_running(prog) {
@@ -2917,7 +2955,7 @@ impl Desktop {
                 if let Some(w) = w {
                     let mut l = Line::new();
                     let _ = write!(l, "open:{}", path.as_str());
-                    let _ = zoo_rt::send(self.apps[w].chan, l.as_str().as_bytes());
+                    self.post(w, l.as_str().as_bytes());
                     zoo_rt::log!(
                         "PeacockHandler: {} opens {}",
                         self.apps[w].label,
@@ -3767,7 +3805,7 @@ impl Desktop {
             let _ = write!(l, "{}:{}", if double { "dclick" } else { "click" }, k);
             self.last_line = if double { (0, WINDOWS, 0) } else { (now, i, k) };
         }
-        let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+        self.post(i, l.as_str().as_bytes());
     }
 
     /// Redraws the damaged areas and shows them; records the frame's cost.
@@ -4867,6 +4905,24 @@ impl Desktop {
         }
     }
 
+    /// Queues `msg` for app `i` behind anything held for it, delivered in
+    /// order as it reads: replies (`window-done:`, `context:`, clicks) are
+    /// never lost to a full queue (docs/events-design.md). Events, which may
+    /// be missed, go straight (`broadcast`).
+    fn post(&mut self, i: usize, msg: &[u8]) {
+        let app = &mut self.apps[i];
+        if !app.running {
+            return;
+        }
+        let mut l = Line::new();
+        let _ = l.write_str(core::str::from_utf8(msg).unwrap_or(""));
+        app.held.push_back(l);
+        if app.held.len() > HELD_KEYS {
+            app.held.pop_front();
+        }
+        self.deliver_keys(i);
+    }
+
     /// Sends app `i` the keys held for it while its queue has room. A full
     /// queue keeps them for the next pass of the main loop: a busy app (at
     /// desktop start the models are read from disk) loses no typing
@@ -4890,7 +4946,7 @@ impl Desktop {
         }
         if app.held_burst > 0 {
             zoo_rt::log!(
-                "PeacockHandler: {} was busy; held up to {} keys, all delivered",
+                "PeacockHandler: {} was busy; held up to {} messages, all delivered",
                 app.label,
                 app.held_burst
             );
@@ -4901,6 +4957,7 @@ impl Desktop {
     /// Handles an application whose channel closed: it has ended.
     fn app_ended(&mut self, i: usize) {
         self.apps[i].asked_by = None;
+        self.apps[i].subscribed = false;
         self.apps[i].held.clear();
         self.apps[i].held_burst = 0;
         self.damage_window(i);

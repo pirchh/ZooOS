@@ -36,6 +36,9 @@ use zoo_abi::bella::{
     fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
     summary_stem, typed_command, wants_saved,
 };
+/// Window server events Bella keeps (docs/events-design.md).
+const EVENTS_KEPT: usize = 5;
+
 /// `args` without a trailing " on monitor N" or " on the next monitor",
 /// and the monitor ("2", "next"; docs/monitors-design.md).
 fn take_monitor(args: &str) -> (String, Option<String>) {
@@ -124,6 +127,9 @@ struct App {
     /// run, for "it" (docs/multi-step-design.md).
     steps: VecDeque<String>,
     last_step: String,
+    /// The window server's last few events, newest last
+    /// (docs/events-design.md).
+    events: VecDeque<String>,
     /// A question about the screen, waiting for the window server's
     /// `context:` answer (docs/context-design.md).
     asking_context: Option<String>,
@@ -223,6 +229,7 @@ fn main(chan: u64, home: u64) -> u8 {
         following: false,
         steps: VecDeque::new(),
         last_step: String::new(),
+        events: VecDeque::new(),
         asking_context: None,
         capture: None,
         summarising: None,
@@ -237,6 +244,8 @@ fn main(chan: u64, home: u64) -> u8 {
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
     }
+    // What happens on the desktop, for "it" (docs/events-design.md).
+    let _ = p.win.subscribe();
     p.warm();
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
@@ -250,6 +259,8 @@ fn main(chan: u64, home: u64) -> u8 {
                     if let Some(ctx) = buf[..n].strip_prefix(b"context:") {
                         let ctx = String::from(core::str::from_utf8(ctx).unwrap_or(""));
                         p.got_context(&ctx);
+                    } else if let Some(ev) = buf[..n].strip_prefix(b"event:") {
+                        p.event(core::str::from_utf8(ev).unwrap_or(""));
                     } else if let Some(said) = buf[..n].strip_prefix(b"window-done:") {
                         let said = String::from(core::str::from_utf8(said).unwrap_or(""));
                         p.window_done(&said);
@@ -405,6 +416,10 @@ impl App {
         // "Hey Bella, ..." is how a spoken request starts: the rest is the
         // request ("hey" alone made it small talk).
         let text = zoo_abi::bella::strip_address(text);
+        // "maximize it" after the user opened Notes: the app the last
+        // events name (docs/events-design.md).
+        let resolved = self.it_from_events(text);
+        let text = resolved.as_str();
         // Several steps: each runs on its own, in order
         // (docs/multi-step-design.md).
         // A single typed command never has two steps ("move a to b").
@@ -418,6 +433,44 @@ impl App {
         }
         self.last_step.clear();
         self.submit_one(text);
+    }
+
+    /// One of the window server's events: kept, the last few.
+    fn event(&mut self, what: &str) {
+        if self.events.len() == EVENTS_KEPT {
+            self.events.pop_front();
+        }
+        self.events.push_back(String::from(what));
+    }
+
+    /// `text` with "it", "that" or "them" naming the app of the newest
+    /// event that names one other than Bella, for window commands only
+    /// ("open it" after a search still means the file found). Unchanged
+    /// otherwise.
+    fn it_from_events(&self, text: &str) -> String {
+        const WINDOW_VERBS: [&str; 10] = [
+            "maximize", "maximise", "minimize", "minimise", "close", "quit", "hide", "split",
+            "tile", "show",
+        ];
+        let first = text.split_whitespace().next().unwrap_or("");
+        if !WINDOW_VERBS.iter().any(|v| v.eq_ignore_ascii_case(first))
+            || !zoo_infer::assist::apps_named(text, false).is_empty()
+        {
+            return String::from(text);
+        }
+        let Some(app) = self
+            .events
+            .iter()
+            .rev()
+            .find_map(|e| zoo_infer::assist::apps_named(e, false).first().copied())
+        else {
+            return String::from(text);
+        };
+        let resolved = zoo_infer::assist::resolve_it(text, app);
+        if resolved != text {
+            zoo_rt::log!("Bella: \"it\" is {} (from the desktop's events)", app);
+        }
+        resolved
     }
 
     /// Runs the next step, with "it" naming the apps of the one before.

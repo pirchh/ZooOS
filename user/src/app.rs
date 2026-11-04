@@ -199,6 +199,14 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Asks for the window server's events (`event:<what>`: opened,
+    /// closed, minimized, focused, ...; docs/events-design.md).
+    pub fn subscribe(&self) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = l.write_str("events:on");
+        self.send_line(&l)
+    }
+
     /// Asks for the two front windows side by side; answered with
     /// `window-done:` (docs/tiling-design.md).
     pub fn split_front(&self) -> Result<(), Error> {
