@@ -2,12 +2,13 @@
 //! typed command, small talk answered in words, or a request for the
 //! model. Pure text rules, kept here so the host can test them.
 
-/// The commands the user can type (docs/access-design.md adds `read`,
-/// `open`, `move`, `trash`, `launch` and `info`; docs/window-actions-design.md
-/// `maximize`, `minimize` and `close`).
-pub const COMMANDS: [&str; 18] = [
+/// The system's own commands the user can type (docs/access-design.md
+/// adds `read`, `open`, `move`, `trash`, `launch` and `info`;
+/// docs/window-actions-design.md `maximize`, `minimize` and `close`). App
+/// actions' words come from the registry (`typed_command_with`).
+pub const COMMANDS: [&str; 16] = [
     "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
-    "info", "maximize", "minimize", "close", "split", "show", "write", "browse",
+    "info", "maximize", "minimize", "close", "split", "show",
 ];
 
 /// Words that make a line a sentence rather than a typed command:
@@ -21,10 +22,24 @@ pub const SENTENCE_WORDS: [&str; 20] = [
 /// Whether `text` is a typed command: a command word, then a path or
 /// search words, and none of `SENTENCE_WORDS`.
 pub fn typed_command(text: &str) -> bool {
+    typed_command_with(text, |_| false)
+}
+
+/// `typed_command`, with `app_word` saying which words are registered app
+/// actions (docs/registry-design.md). Their text is free, "and" and "to"
+/// included ("write flowers, egg and milk", "change egg to bread"); only
+/// a sentence word right after the command word makes it a request
+/// ("write me a poem", "remove my old notes").
+pub fn typed_command_with(text: &str, app_word: impl Fn(&str) -> bool) -> bool {
     let mut words = text.split_whitespace();
     let Some(first) = words.next() else {
         return false;
     };
+    if app_word(first) {
+        return words
+            .next()
+            .is_some_and(|w| !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w)));
+    }
     if !COMMANDS.contains(&first) {
         return false;
     }
@@ -71,7 +86,14 @@ fn after_name(text: &str) -> Option<&str> {
     let mut rest = text.trim_start_matches(not_word);
     let word = |t: &str| -> usize { t.find(not_word).unwrap_or(t.len()) };
     let w = word(rest);
-    let greeted = GREETINGS.iter().any(|g| rest[..w].eq_ignore_ascii_case(g));
+    let first = &rest[..w];
+    // Speech to text writes "hey" many ways ("they", "pay", "hay"): a 3–4
+    // letter word that sounds like it (one letter off, or ending "ay" or
+    // "ey") counts, since her name must follow.
+    let ends = |e: &str| first.len() >= 2 && first[first.len() - 2..].eq_ignore_ascii_case(e);
+    let greeted = GREETINGS.iter().any(|g| first.eq_ignore_ascii_case(g))
+        || ((3..=4).contains(&first.len())
+            && (distance(first, "hey") <= 1 || ends("ay") || ends("ey")));
     if greeted {
         rest = rest[w..].trim_start_matches(not_word);
     }
@@ -102,16 +124,19 @@ pub fn name_only(text: &str) -> bool {
 }
 
 /// Whether `w` is close to "bella": at most two letters changed, added or
-/// removed for a word of 4 to 6 letters ("bellow"), one for 7 letters
+/// removed for a word of 4 to 6 letters ("bellow", "billah"), one for 7
 /// ("Bellamy" is someone else).
 fn near_bella(w: &str) -> bool {
-    let a = b"bella";
-    let b = w.as_bytes();
-    if b.len() < 4 || b.len() > 7 || !b.is_ascii() {
-        return false;
+    (4..=7).contains(&w.len()) && distance(w, "bella") <= if w.len() <= 6 { 2 } else { 1 }
+}
+
+/// Letters changed, added or removed between `a` and `b` (ASCII, any
+/// case; at most 7 letters each, else a large number).
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() > 7 || b.len() > 7 || !a.is_ascii() || !b.is_ascii() {
+        return usize::MAX;
     }
-    let lower = |c: u8| c.to_ascii_lowercase();
-    // Edit distance, row by row (at most 7 letters).
     let mut prev = [0usize; 8];
     for (j, p) in prev.iter_mut().enumerate().take(b.len() + 1) {
         *p = j;
@@ -120,12 +145,12 @@ fn near_bella(w: &str) -> bool {
         let mut cur = [0usize; 8];
         cur[0] = i + 1;
         for (j, &cb) in b.iter().enumerate() {
-            let sub = prev[j] + usize::from(ca != lower(cb));
+            let sub = prev[j] + usize::from(!ca.eq_ignore_ascii_case(&cb));
             cur[j + 1] = sub.min(prev[j + 1] + 1).min(cur[j] + 1);
         }
         prev = cur;
     }
-    prev[b.len()] <= if b.len() <= 6 { 2 } else { 1 }
+    prev[b.len()]
 }
 
 /// `text` without a leading "hey Bella" or "Bella" (`addressed`), so a
@@ -448,6 +473,10 @@ mod tests {
         assert_eq!(addressed("hey below the line"), None);
         assert_eq!(addressed("they yellow car"), None);
         assert_eq!(addressed("They said hello"), None);
+        // Heard in the voice-confirm case (docs/registry-design.md).
+        assert_eq!(addressed("Pay billah, remove milk."), Some("remove milk."));
+        assert_eq!(addressed("Say hello to everyone"), None);
+        assert_eq!(addressed("Pay the bill"), None);
     }
 
     #[test]
@@ -484,6 +513,25 @@ mod tests {
         assert!(!typed_command("close the notes app"));
         assert!(!typed_command("split my screen please"));
         assert!(!typed_command("show Documents"));
+        // Registered app actions (docs/registry-design.md).
+        let app = |w: &str| ["write", "remove", "change", "browse"].contains(&w);
+        for t in [
+            "write flowers, egg and milk",
+            "remove milk",
+            "change egg to bread",
+            "browse example.com",
+        ] {
+            assert!(typed_command_with(t, app), "{t}");
+        }
+        for t in [
+            "write me a poem",
+            "remove my old notes please",
+            "write",
+            "change the world",
+        ] {
+            assert!(!typed_command_with(t, app), "{t}");
+        }
+        assert!(!typed_command("write flowers"), "not registered here");
     }
 
     #[test]

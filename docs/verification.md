@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-detector fix after the first real voice (version 0.114.0, in the
+registry section (version 0.115.0), the
+detector fix after the first real voice (0.114.0, in the
 listening section), the `run --mic` note (0.113.0), the
 listening section (0.112.0), the
 microphone section (0.111.0), the
@@ -56,6 +57,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## The action registry (version 0.115.0)
+
+docs/registry-design.md: app actions from `etc/actions/*.actions`.
+
+| Check | Result |
+| --- | --- |
+| `bella-notes`; with `remove` deleted from the data file (negative control) | `OK` (write, change, remove asks, y/n); `FAIL` without the entry |
+| `voice-confirm`: a spoken delete and a spoken "yes" | `OK`: milk taken off the shopping line |
+| `assist-check` with the owner's phrasings | 41 of 43; 1 of 8 no-command requests acted on (margin 0.67) |
 
 ## Listening for "hey Bella" (version 0.112.0)
 

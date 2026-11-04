@@ -529,21 +529,11 @@ impl App {
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
             self.request = program_index(p).map(Request::Launch);
         } else if let Some(rest) = msg.strip_prefix(b"do:") {
-            // do:<program>:<action>:<argument>, checked against the
-            // manifest (docs/actions-design.md).
-            self.request = Some(match zoo_abi::actions::parse(rest) {
-                Some((a, arg)) if a.effect != zoo_abi::actions::Effect::Delete => {
-                    match program_index(a.program.as_bytes()) {
-                        Some(prog) => {
-                            let mut line = alloc::boxed::Box::new(Line::new());
-                            let _ = write!(line, "do:{}:{}", a.name, arg);
-                            Request::Do(prog, line)
-                        }
-                        None => Request::BadDo,
-                    }
-                }
-                _ => Request::BadDo,
-            });
+            // do:<program>:<action>:<slots>: checked against the
+            // registry by the desktop (`Desktop::checked_do`).
+            let mut line = alloc::boxed::Box::new(Line::new());
+            let _ = line.write_str(core::str::from_utf8(rest).unwrap_or(""));
+            self.request = Some(Request::DoAsked(line));
         } else if let Some(said) = msg.strip_prefix(b"did:") {
             let mut t = alloc::boxed::Box::new(Line::new());
             let _ = t.write_str(core::str::from_utf8(said).unwrap_or("done"));
@@ -1132,7 +1122,10 @@ enum Request {
     Do(usize, alloc::boxed::Box<Line>),
     /// This application's answer to an action it was asked to do.
     Did(alloc::boxed::Box<Line>),
-    /// An invocation the manifest refuses.
+    /// An invocation as asked (`<program>:<action>:<slots>`), before the
+    /// registry's check.
+    DoAsked(alloc::boxed::Box<Line>),
+    /// An invocation the registry refuses.
     BadDo,
 }
 
@@ -1839,6 +1832,8 @@ struct Banner {
 }
 
 struct Desktop {
+    /// What apps can do for others (docs/registry-design.md).
+    registry: zoo_infer::registry::Registry,
     screen: Screen,
     /// Each window's cached image (docs/u2-compositor-design.md).
     layers: [Layer; WINDOWS],
@@ -1956,6 +1951,27 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// `DoAsked` checked against the registry (docs/registry-design.md):
+    /// the action is registered with as many slots as it declares, and its
+    /// program is one the desktop runs. `delete` actions too; the asker
+    /// confirms them with the user first. Other requests as they are.
+    fn checked_do(&self, req: Request) -> Request {
+        let Request::DoAsked(raw) = req else {
+            return req;
+        };
+        match self.registry.check(raw.as_str()) {
+            Some((a, arg)) => match program_index(a.program.as_bytes()) {
+                Some(prog) => {
+                    let mut line = alloc::boxed::Box::new(Line::new());
+                    let _ = write!(line, "do:{}:{}", a.name, arg);
+                    Request::Do(prog, line)
+                }
+                None => Request::BadDo,
+            },
+            None => Request::BadDo,
+        }
+    }
+
     fn face(&self, id: FaceId) -> Face<'static> {
         self.atlas
             .face(id.scaled(self.screen.s))
@@ -2929,9 +2945,10 @@ impl Desktop {
                     );
                 }
             }
-            Request::BadDo => {
+            // `checked_do` turned it into `Do` or `BadDo` already.
+            Request::BadDo | Request::DoAsked(_) => {
                 self.post(i, b"window-done:Error: no app can do that.");
-                zoo_rt::log!("PeacockHandler: an action the manifest refuses");
+                zoo_rt::log!("PeacockHandler: an action the registry refuses");
             }
             Request::SplitFront => {
                 let said = self.split_front(i);
@@ -5093,6 +5110,13 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         alloc::boxed::Box::leak(alloc::vec![0u32; dw * dh].into_boxed_slice())
     };
     let mut desk = Desktop {
+        registry: {
+            let (reg, skipped) = zoo_rt::registry::load();
+            for s in &skipped {
+                zoo_rt::log!("PeacockHandler: registry: left out {}", s);
+            }
+            reg
+        },
         layers: [const { Layer::new() }; WINDOWS],
         scratch: Vec::new(),
         icons: Vec::new(),
@@ -5342,6 +5366,7 @@ fn main(_start_handle: u64, home: u64) -> u8 {
                     Ok(n) => {
                         let changed = desk.apps[i].apply(&msg[..n]);
                         if let Some(req) = desk.apps[i].request.take() {
+                            let req = desk.checked_do(req);
                             desk.app_request(i, req);
                             dirty = true;
                         }

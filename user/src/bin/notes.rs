@@ -204,6 +204,8 @@ fn main(channel: u64, home: u64) -> u8 {
                         // Bella's `write` (docs/actions-design.md).
                         let said = if action == "write" {
                             ed.append_line(text)
+                        } else if action == "remove" || action == "change" {
+                            ed.edit(action, text)
                         } else {
                             alloc::format!("Error: Notes cannot {}.", action)
                         };
@@ -356,6 +358,46 @@ impl Editor {
             alloc::format!("Wrote it in {}, but saving failed.", self.path())
         } else {
             alloc::format!("Wrote \"{}\" in {}.", text, self.path())
+        }
+    }
+
+    /// Bella's `remove` and `change` (docs/registry-design.md §4): the
+    /// edit made on the whole text, saved at once; what it did, for her.
+    fn edit(&mut self, action: &str, arg: &str) -> alloc::string::String {
+        if let Some(why) = self.read_only {
+            return alloc::format!("Error: {} cannot be changed ({}).", self.path(), why);
+        }
+        let text = alloc::string::String::from_utf8_lossy(&self.text[..self.len]).into_owned();
+        let done = if action == "remove" {
+            zoo_infer::notes::remove(&text, arg)
+        } else {
+            arg.split_once(zoo_infer::registry::SLOT_SEP)
+                .and_then(|(old, new)| zoo_infer::notes::change(&text, old, new))
+        };
+        let Some((new_text, said)) = done else {
+            return alloc::format!(
+                "Error: \"{}\" is not in {}.",
+                arg.split(zoo_infer::registry::SLOT_SEP)
+                    .next()
+                    .unwrap_or(arg),
+                self.path()
+            );
+        };
+        if new_text.len() > CAPACITY {
+            return alloc::format!("Error: {} is full.", self.path());
+        }
+        self.text.clear();
+        self.text.extend_from_slice(new_text.as_bytes());
+        self.len = self.text.len();
+        self.roles.clear();
+        self.roles.resize(self.len, TEXT);
+        self.cursor = self.cursor.min(self.len);
+        self.editing = !self.save();
+        zoo_rt::log!("Notes: {} in {}", action, self.path());
+        if self.editing {
+            alloc::format!("{} {}, but saving failed.", said, self.path())
+        } else {
+            alloc::format!("{} {}.", said, self.path())
         }
     }
 
