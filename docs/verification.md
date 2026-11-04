@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-microphone section (version 0.111.0), the
+listening section (version 0.112.0), the
+microphone section (0.111.0), the
 hearing section (0.110.0), the
 full-accelerator section (0.109.0), the events section (0.108.0),
 the sound section (0.107.0), the
@@ -53,6 +54,18 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Listening for "hey Bella" (version 0.112.0)
+
+docs/listening-design.md: voice detection, the gate, BatHandler, Bella.
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p zoo-infer listen` | 6 passed (bursts, silence, pauses, clicks, steady noise) |
+| `cargo xtask hear-check` | `PASS`: one utterance per padded recording, heard as said; the gate passes exactly the 2 "Hey Bella" recordings |
+| `voice-bella` (TCG; WHPX, 8 processors) | `OK`: heard in 10.7 s and 103 ms; Notes opened and maximized |
+| `voice-not-for-bella` | `OK`: heard, not for Bella, nothing done |
+| `voice-not-for-bella`, gate passing everything (negative control) | `FAIL`: `Bella: heard` appeared |
 
 ## Microphone (version 0.111.0)
 

@@ -1842,3 +1842,22 @@ Version 0.111.0. Design: docs/microphone-design.md.
   off: the only QEMU input on Windows that reads a file, and with the
   engine on the samples were changed. The PC's own microphone is never
   used.
+
+## Listening (2026-11-04)
+
+Version 0.112.0. Design: docs/listening-design.md.
+
+- **An energy voice detector instead of Silero VAD, for now.** Silero is
+  published as ONNX or TorchScript only; running it means an ONNX runtime
+  of our own. The energy detector needs no download and is tested exactly;
+  Silero stays approved for noisy rooms.
+- **BatHandler, a helper Bella starts,** as she starts her model, broker
+  and file index: the microphone is hers while she runs.
+- **Only when a hearing model is installed,** so desktops without one keep
+  their processes (and the process numbers the cases expect).
+- **The gate is word-based** (`addressed`), and typed requests use it too.
+- **The hearing model is not on the everyday model disk yet,** nor a
+  microphone in `cargo xtask run`; a separate step, as it changes the
+  processes of every desktop with models.
+- **The microphone ring grew to 8 s:** a reader busy hearing an utterance,
+  or a machine starting its desktop, reads late.

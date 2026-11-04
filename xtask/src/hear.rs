@@ -413,12 +413,13 @@ pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Deskto
 pub const MIC_SENTENCE: &str = "Hey Bella, open notes and maximize it.";
 const MIC_VOICE: usize = 1;
 
-/// The raw microphone input (16-bit mono at 16 kHz) for a `mic-` case:
-/// one second of silence, the recording, two seconds of silence; or, with
-/// `silent`, the same length of silence (the negative case).
-pub fn mic_input(root: &Path, silent: bool) -> Result<PathBuf, String> {
+/// The raw microphone input (16-bit mono at 16 kHz) for a `mic-` or
+/// `voice-` case: one second of silence, the recording of `sentence`
+/// (a `SENTENCES` name), two seconds of silence; or, with `silent`, the
+/// same length of silence (the negative case).
+pub fn mic_input(root: &Path, sentence: &str, silent: bool) -> Result<PathBuf, String> {
     make_recordings(root)?;
-    let wav_file = wav_path(root, MIC_VOICE, "open-notes");
+    let wav_file = wav_path(root, MIC_VOICE, sentence);
     let wav = read(&wav_file)?;
     let pcm = zoo_infer::hear::wav_samples(&wav)
         .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))?;
@@ -431,9 +432,9 @@ pub fn mic_input(root: &Path, silent: bool) -> Result<PathBuf, String> {
     }
     raw.resize(raw.len() + 2 * second, 0);
     let out = wav_dir(root).join(if silent {
-        "mic-silence.raw"
+        format!("mic-{sentence}-silence.raw")
     } else {
-        "mic-in.raw"
+        format!("mic-{sentence}.raw")
     });
     std::fs::write(&out, &raw).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(out)
@@ -593,7 +594,46 @@ pub fn check(root: &Path) -> Result<bool, String> {
                 f32::INFINITY
             };
             let logit_diff = max_diff(&first, r_first);
-            let heard_ok = zoo_infer::hear::same_words(&text, said);
+            // Voice detection on the recording between silences
+            // (docs/listening-design.md): exactly one utterance, heard
+            // the same, addressed to Bella only when it says "hey Bella".
+            let pcm16: Vec<i16> = pcm
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b))
+                .collect();
+            let mut padded = vec![0i16; 16000];
+            padded.extend_from_slice(&pcm16);
+            padded.extend(std::iter::repeat_n(0i16, 32000));
+            let mut det = zoo_infer::listen::Detector::new();
+            let mut utterances = det.push(&padded);
+            utterances.extend(det.finish());
+            let detected_ok = utterances.len() == 1 && {
+                let u: Vec<f32> = utterances[0].iter().map(|&s| s as f32 / 32768.0).collect();
+                let heard = h.transcribe(&u).map_err(|e| e.name().to_string())?;
+                let ok = zoo_infer::hear::same_words(&heard, said);
+                if !ok {
+                    println!("     the detected utterance was heard as {heard:?}");
+                }
+                ok
+            };
+            let for_bella = zoo_abi::bella::addressed(&text).is_some();
+            let gate_ok = for_bella == said.to_ascii_lowercase().starts_with("hey bella");
+            println!(
+                "     voice detection: {} utterance(s){}; {}",
+                utterances.len(),
+                utterances
+                    .first()
+                    .map(|u| format!(" of {} ms", u.len() / 16))
+                    .unwrap_or_default(),
+                if for_bella {
+                    "addressed to Bella"
+                } else {
+                    "not for Bella"
+                }
+            );
+            let heard_ok = zoo_infer::hear::same_words(&text, said) && detected_ok && gate_ok;
             let same = ids == ref_ids;
             let ok = heard_ok && same && enc_diff <= ENC_TOLERANCE && logit_diff <= LOGIT_TOLERANCE;
             all_ok &= ok;

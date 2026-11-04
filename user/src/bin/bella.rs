@@ -154,6 +154,9 @@ struct App {
     /// (docs/vectors-design.md), and whether its first index is built.
     magpie: Option<Handle>,
     magpie_ready: bool,
+    /// BatHandler, her hearing (docs/listening-design.md), while it
+    /// listens.
+    bat: Option<Handle>,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -240,6 +243,7 @@ fn main(chan: u64, home: u64) -> u8 {
         sources: None,
         magpie: None,
         magpie_ready: false,
+        bat: None,
     };
     if p.win.title("Bella").is_err() || p.win.lines(ROWS).is_err() || p.draw().is_err() {
         return 0;
@@ -247,6 +251,8 @@ fn main(chan: u64, home: u64) -> u8 {
     // What happens on the desktop, for "it" (docs/events-design.md).
     let _ = p.win.subscribe();
     p.warm();
+    // Listening for "hey Bella" (docs/listening-design.md).
+    p.start_hearing();
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let mut busy = false;
@@ -309,6 +315,22 @@ fn main(chan: u64, home: u64) -> u8 {
                 Err(_) => {
                     let _ = close(m);
                     p.magpie = None;
+                }
+            }
+        }
+        // What BatHandler heard said to Bella (docs/listening-design.md).
+        if let Some(b) = p.bat {
+            match try_recv(b, &mut buf) {
+                Ok(n) => {
+                    busy = true;
+                    let msg = String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
+                    p.hearing_said(&msg);
+                }
+                Err(Error::Again) => {}
+                Err(_) => {
+                    let _ = close(b);
+                    p.bat = None;
+                    zoo_rt::log!("Bella: her hearing ended");
                 }
             }
         }
@@ -1277,6 +1299,53 @@ impl App {
         }
         if let Some(e) = self.elephant {
             let _ = send_wait(e, b"warm");
+        }
+    }
+
+    /// Starts BatHandler, her hearing, when a hearing model is installed
+    /// (the boot image or the model disk); it says `none:` and ends when
+    /// there is no microphone.
+    fn start_hearing(&mut self) {
+        let installed = zoo_rt::fs_find(zoo_abi::HEAR_MODEL_FILE).is_some()
+            || zoo_rt::model_size_of(zoo_abi::MODEL_HEAR).is_ok();
+        if !installed {
+            return;
+        }
+        let Ok((mine, theirs)) = channel_create() else {
+            return;
+        };
+        match spawn("bat-handler", Some(theirs)) {
+            Ok(process) => {
+                let _ = close(process);
+                self.bat = Some(mine);
+            }
+            Err(_) => {
+                let _ = close(mine);
+            }
+        }
+    }
+
+    /// A message from BatHandler: a request said to her, as if typed.
+    fn hearing_said(&mut self, msg: &str) {
+        if msg == "listening" {
+            zoo_rt::log!("Bella: listening for \"hey Bella\"");
+        } else if let Some(why) = msg.strip_prefix("none:") {
+            zoo_rt::log!("Bella: not listening: {}", why);
+            if let Some(b) = self.bat.take() {
+                let _ = close(b);
+            }
+        } else if let Some(text) = msg.strip_prefix("heard:") {
+            // Spoken sentences end in a mark the typed ones lack (".", ",").
+            let text = text.trim().trim_end_matches(['.', '!', ',', ';']);
+            zoo_rt::log!("Bella: heard \"{}\"", text);
+            let mut echo = String::from("You said: ");
+            echo.push_str(text);
+            self.say(&echo);
+            if matches!(self.mode, Mode::Typing) && self.steps.is_empty() {
+                self.submit(&String::from(text));
+            } else {
+                self.say("I heard you, but I am still working on the last request.");
+            }
         }
     }
 

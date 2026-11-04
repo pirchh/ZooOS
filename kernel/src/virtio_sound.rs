@@ -10,8 +10,8 @@
 //!
 //! Recording: input stream 1, 16-bit mono at 16 kHz (what speech to text
 //! reads). Every receive buffer stays queued; one the device has filled is
-//! copied into a two-second ring and handed straight back, so `read` never
-//! waits either. When the ring is full the oldest samples are dropped.
+//! copied into an eight-second ring and handed straight back, so `read` never
+//! waits either. When the ring (8 s) is full the oldest samples are dropped.
 
 use crate::kprintln;
 use crate::memory::Memory;
@@ -67,8 +67,9 @@ const INPUT_STREAM: u32 = 1;
 const RPERIOD: usize = 1280;
 /// Receive periods queued: 400 ms.
 const RBUFS: usize = 10;
-/// The recording ring: two seconds.
-const RING: usize = 64_000;
+/// The recording ring: eight seconds (a program busy hearing, or a
+/// machine busy starting the desktop, reads late).
+const RING: usize = 256_000;
 /// Receive headers start here in the header page (transmit ones below).
 const RHDR: usize = 1024;
 

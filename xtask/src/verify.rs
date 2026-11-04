@@ -1979,6 +1979,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "voice-bella",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "\"hey Bella\" (docs/listening-design.md): the microphone plays \"Hey Bella, open notes and maximize it.\"; BatHandler finds the utterance, hears it and passes it to Bella, who opens Notes and maximizes it",
+            interaction: Some(voice_steps(true)),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "voice-not-for-bella",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "the \"hey Bella\" gate (docs/listening-design.md): the microphone plays \"Put notes on the left and files on the right.\" without her name; BatHandler hears it and Bella must not act on it",
+            interaction: Some(voice_steps(false)),
+            screen_checks: vec![],
+        },
+        Case {
             name: "net-bella-browse",
             mode: Mode::Normal,
             custom_image: None,
@@ -3076,7 +3102,11 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             report.push_str(&line);
             continue;
         }
-        if (c.name.starts_with("hear-") || c.name.starts_with("mic-")) && c.custom_image.is_none() {
+        if (c.name.starts_with("hear-")
+            || c.name.starts_with("mic-")
+            || c.name.starts_with("voice-"))
+            && c.custom_image.is_none()
+        {
             let line = format!(
                 "SKIP  {:<22} not run: no hearing model or host voice (tools/models/README.md, \"Voice\")
 ",
@@ -3284,8 +3314,17 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         }
         // `mic-` cases: a microphone that plays a known recording
         // (docs/microphone-design.md).
-        if c.name.starts_with("mic-") {
-            qemu::set_mic(Some(crate::hear::mic_input(root, c.name == "mic-silence")?));
+        if c.name.starts_with("mic-") || c.name.starts_with("voice-") {
+            let sentence = if c.name == "voice-not-for-bella" {
+                "split"
+            } else {
+                "open-notes"
+            };
+            qemu::set_mic(Some(crate::hear::mic_input(
+                root,
+                sentence,
+                c.name == "mic-silence",
+            )?));
         } else {
             qemu::set_mic(None);
         }
@@ -4310,6 +4349,47 @@ fn mouse_steps() -> Interaction {
 }
 
 // ---- D2 partial-redraw cases (docs/d2-design.md §3-4) ------------------
+
+/// The `voice-` cases (docs/listening-design.md): the desktop starts, Bella
+/// starts BatHandler, and the microphone plays one sentence. `for_bella`:
+/// "Hey Bella, open notes and maximize it." must be carried out; else
+/// "Put notes on the left and files on the right." must be heard and left.
+fn voice_steps(for_bella: bool) -> Interaction {
+    let mut steps = start_desktop();
+    // BatHandler says it listens before Bella logs it.
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains(
+        "Bella: listening for \"hey Bella\"".into(),
+    ));
+    if for_bella {
+        // Moonshine writes "Hey Bella," or "Hey, Bella,".
+        steps.push(Action::WaitContains(
+            "Bella, open notes and maximize it.\" (".into(),
+        ));
+        steps.push(Action::WaitContains(
+            "Bella, open notes and maximize it\"".into(),
+        ));
+        steps.push(Action::WaitContains(
+            "Bella: 2 steps: open notes | maximize it".into(),
+        ));
+        steps.push(Action::WaitContains("Bella: step: maximize Notes".into()));
+        steps.push(Action::WaitContains(
+            "Bella: the window server says: Notes fills the screen.".into(),
+        ));
+        steps.push(Action::Settle(QUIET));
+    } else {
+        steps.push(Action::WaitContains(
+            // The sentence's last mark varies (".", ",").
+            "BatHandler: heard \"Put notes on the left and files on the right".into(),
+        ));
+        // That line ends "; not for Bella"; the proof is that she never
+        // heard it and nothing moved.
+        steps.push(Action::Settle(QUIET));
+        steps.push(Action::NeverSeen("Bella: heard".into()));
+        steps.push(Action::NeverSeen("PeacockHandler: placed Notes".into()));
+    }
+    Interaction { steps }
+}
 
 fn start_desktop() -> Vec<Action> {
     vec![
