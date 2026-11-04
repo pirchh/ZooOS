@@ -190,6 +190,7 @@ lands as small, separately verified steps.
 | — | More than one processor, step 1: the other processors start (MADT, SIPI, trampoline) and park (docs/smp-design.md) | done 2026-11-03 |
 | — | More than one processor, steps 2–3: tasks on every processor; the model's work split across them; 0.5B under a second for every case with 8 processors (docs/smp-design.md) | done 2026-11-03 |
 | — | Qwen3-1.7B (4 bits) is Bella's default model (owner's choice); 0.5B stays as `--bella 0.5b` (DECISIONS.md) | done 2026-11-03 |
+| — | Bella's models on the USB stick: images of any size (xtask lays out FAT and GPT); Qwen3 and the embedding model in the stick's boot image; process exit measured (docs/usb-model-design.md) | done 2026-11-03 |
 | — | Keys under load: `mem_alloc` in 1 MiB passes (a 1.2 GB heap stalled all processors for seconds); the window server holds keys for a busy app (docs/keys-design.md) | done 2026-11-03 |
 | 2 | Still open: narrowing the broker's rights | open |
 | — | Bella talks (replies in words; small talk; sentence routing) and `--bella 1.5b` (Q6_K, 4 GiB heap) (docs/talk-design.md) | done 2026-11-02 |

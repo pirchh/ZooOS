@@ -550,8 +550,9 @@ enum Outcome {
     Crash,
 }
 
-/// Pages one pass of `mem_alloc` maps (1 MiB, about 1.5 ms) before it
-/// lets the lock go (docs/keys-design.md).
+/// Pages one pass of `mem_alloc` maps (1 MiB; about 20 Mcycles, a few
+/// ms, measured with 8 processors) before it lets the lock go
+/// (docs/keys-design.md).
 const ALLOC_STEP: u64 = 256;
 
 fn err(e: Error) -> Outcome {

@@ -150,6 +150,23 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Bella's models on the USB stick (2026-11-03)
+
+Version 0.101.0. Design: docs/usb-model-design.md. Hardening before the
+first real-PC test.
+
+- **xtask builds the FAT partition and GPT disk itself** from the files
+  `bootloader` exports. Its own builder leaves no room for the FAT
+  tables, and failed above about 600 MB. Rather than patch or fork the
+  bootloader crate, the layout (about 100 lines, the same as its
+  `gpt.rs`) moved to xtask, with the same pinned `fatfs` and `gpt`.
+- **The stick carries both models in its boot image,** mapped in place.
+  A real PC has no model disk until ZooOS has a USB storage driver.
+- **`verify` keeps the model disk for the Bella cases;** only
+  `usb-model` checks the stick's image.
+- **Process exit was measured, not changed:** at most 20 Mcycles of lock
+  for a 1.2 GB process.
+
 ## Window actions (2026-11-03)
 
 Version 0.100.0. Design: docs/window-actions-design.md. First step of the

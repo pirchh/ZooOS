@@ -353,6 +353,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     tools,
                     image::Mode::Normal,
                     &data,
+                    None,
                     crate::infer::GUEST_PROMPT,
                     &r.output_ids,
                 )?
@@ -2455,6 +2456,40 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "usb-model",
+            mode: Mode::FastBoot,
+            // Built when the case runs: 1.7 GB (docs/usb-model-design.md).
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: everyday_model.clone(),
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "the USB stick's image (docs/usb-model-design.md): the everyday system with Qwen3 and the embedding model in its boot image and no model disk, as on a real PC; both models are mapped from the boot image and Bella finds the pancake recipe (needs --accel)",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
+                    Action::WaitContains(
+                        "MagpieHandler: the embedding model is in the boot image".into(),
+                    ),
+                    Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
+                    Action::WaitContains("ElephantHandler: warmed up: system prompt".into()),
+                    Action::Settle(QUIET),
+                    // Files -> Crash Test -> Bella.
+                    Action::Keys(vec!["tab", "tab"]),
+                    Action::Settle(QUIET),
+                    Action::Keys(typed("Find my pancake recipe")),
+                    Action::WaitContains("ElephantHandler: chose search `pancake".into()),
+                    Action::WaitContains("Bella: answered in ".into()),
+                    Action::Settle(QUIET),
+                    Action::NeverSeen("from the model disk".into()),
+                    Action::Keys(vec!["esc"]),
+                    Action::WaitFor("ZOO_OS DISPLAY released pid=6".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "smp-keys",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2710,6 +2745,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-lookup-answer"
                 | "bella-vectors"
                 | "smp-keys"
+                | "usb-model"
                 | "bella-save"
         );
         if model_case && model_on_disk && matches!(c.name, "inference" | "bella-model") {
@@ -2768,6 +2804,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-lookup-answer"
                 | "bella-vectors"
                 | "smp-keys"
+                | "usb-model"
                 | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
@@ -2787,6 +2824,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             .expect("every mode was built")
             .1;
         let img = c.custom_image.as_ref().unwrap_or(img);
+        // The USB stick's image is 1.7 GB: built only when its case runs.
+        let usb_img;
+        let img = if c.name == "usb-model" {
+            usb_img = image::build_usb_image(root, tools)?;
+            &usb_img
+        } else {
+            img
+        };
         println!(
             "[verify] case {} ({}; timeout {:?})",
             c.name, c.purpose, c.timeout
@@ -2820,11 +2865,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // were measured at 2).
         let big_model = model_on_disk
             && (model_case || matches!(c.name, "bella-vectors" | "bella-learn" | "bella-save"));
-        qemu::set_memory_gib(if big_model || c.name == "everyday-model" {
-            4
-        } else {
-            2
-        });
+        qemu::set_memory_gib(
+            if big_model || matches!(c.name, "everyday-model" | "usb-model") {
+                4
+            } else {
+                2
+            },
+        );
         // The other processors (docs/smp-design.md).
         qemu::set_cpus(if c.name == "smp-keys" {
             s.cpus.max(8)
@@ -2834,15 +2881,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             s.cpus
         });
         // The everyday system's model comes on the model disk.
-        qemu::set_model_disk(
-            if matches!(c.name, "everyday-model" | "bella-vectors" | "smp-keys") {
-                model_image.as_ref().map(|m| m.1.1.clone())
-            } else if model_case && model_on_disk {
-                model_image.as_ref().and_then(|m| m.3.clone())
-            } else {
-                None
-            },
-        );
+        qemu::set_model_disk(if c.name == "usb-model" {
+            // A real PC has none.
+            None
+        } else if matches!(c.name, "everyday-model" | "bella-vectors" | "smp-keys") {
+            model_image.as_ref().map(|m| m.1.1.clone())
+        } else if model_case && model_on_disk {
+            model_image.as_ref().and_then(|m| m.3.clone())
+        } else {
+            None
+        });
         // `net-` cases get an isolated network, `net-open` the open one
         // (docs/n1-design.md).
         qemu::set_net(if c.name == "net-open" {

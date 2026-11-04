@@ -25,7 +25,7 @@ use zoo_rt::{Error, Handle, Line, fs_find, fs_map, log, recv, send, ticks, try_r
 
 zoo_rt::entry!(main);
 
-const MODEL: &str = "models/qwen2.5-0.5b-instruct-q4_0.gguf";
+const MODEL: &str = zoo_abi::CHAT_MODEL_FILE;
 const EXPECTED: &str = "test/elephant.txt";
 const SYSTEM: &str = "You are a helpful assistant.";
 

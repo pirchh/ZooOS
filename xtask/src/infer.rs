@@ -51,11 +51,14 @@ pub fn model_file() -> &'static str {
     })
 }
 
-/// Largest model the boot image's FAT partition takes; a larger one goes
-/// on the model disk (docs/talk-design.md).
+/// Largest model `verify` puts in the normal boot image for the cases
+/// that check it there (`inference`, `bella-model`); with a larger one
+/// the Bella cases read it from the model disk, as `run` does. Any size
+/// fits a boot image since docs/usb-model-design.md (the USB stick holds
+/// Qwen3 and the embedding model); this keeps the verified setup.
 pub const BOOT_IMAGE_MODEL_MAX: u64 = 600 << 20;
 
-/// Whether the chosen model fits in the boot image.
+/// Whether `verify` puts the chosen model in the boot image.
 pub fn model_in_boot_image(root: &Path) -> bool {
     std::fs::metadata(model_path(root)).is_ok_and(|m| m.len() <= BOOT_IMAGE_MODEL_MAX)
 }

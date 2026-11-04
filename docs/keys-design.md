@@ -29,7 +29,9 @@ drops the rest. The kernel's own 256-byte ring never filled.
 
 ## 2. The fix: large allocations in passes
 
-`mem_alloc` maps at most `ALLOC_STEP` pages (256, 1 MiB) per pass. A request
+`mem_alloc` maps at most `ALLOC_STEP` pages (256, 1 MiB; measured at
+about 20 Mcycles per pass with 8 processors, docs/usb-model-design.md)
+per pass. A request
 larger than that:
 
 1. takes its whole address range at once (`heap_next` moves first), so
@@ -86,6 +88,7 @@ model read took 1381–2386 ms for 1077 MB, as before (1763–2053 ms).
 - The scheduler lock is still one lock and a spin lock without fairness
   (docs/smp-design.md); a ticket lock alone did not fix this (5 of 5 runs
   still lost keys) and was not kept.
-- Other long holds may exist for paths these tests do not reach: a process
-  exiting frees its pages under the lock.
+- A process exiting frees its pages under the lock: measured in 0.101.0
+  (docs/usb-model-design.md), killing the 1.2 GB model service held it
+  no more than 20 Mcycles. Freeing is fast; zeroing was the slow part.
 - Keys still go through the boot processor's IRQ1 only.

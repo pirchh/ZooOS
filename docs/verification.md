@@ -3,8 +3,9 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-window-actions section (version 0.100.0), the keys-under-load section
-(0.99.0) and the default-model section (0.98.0) are the current state. Sections before it
+USB-models section (version 0.101.0), the window-actions section
+(0.100.0), the keys-under-load section (0.99.0) and the default-model
+section (0.98.0) are the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -42,6 +43,22 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Bella's models on the USB stick (version 0.101.0)
+
+Disk images are built by `xtask/src/uefi_image.rs` (docs/usb-model-design.md):
+`bootloader` 0.11.17's own builder failed above about 600 MB ("No space
+left on device"). `cargo xtask usb-image` now carries Qwen3-1.7B and the
+embedding model: `build/usb/zoo-os-usb.img`, 1,796,276,224 bytes.
+
+    cargo xtask verify --accel whpx --cpus 8 --case usb-model
+
+| Case | Result |
+| --- | --- |
+| `usb-model` (stick's image, no model disk, 4 GiB) | `OK`: both models mapped from the boot image; `chose search` for "Find my pancake recipe"; answered in 1169 ms |
+| `usb-model`, MagpieHandler looking for a wrong file (negative control) | `FAIL`: `ZOO_OS PROC exit pid=10 name=magpie-handler code=3` |
+| `bella-model` with Qwen3 (1.13 GB boot image), `BOOT_IMAGE_MODEL_MAX` raised for the check | `OK` |
+| `model-restart` with lock timing lines (not committed) | `OK`; killing the 1.2 GB model service held the lock at most 20 Mcycles |
 
 ## Window actions (version 0.100.0)
 

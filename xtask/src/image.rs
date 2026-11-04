@@ -321,17 +321,13 @@ pub fn build(root: &Path, tools: &Tools, mode: Mode) -> Result<PathBuf, String> 
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let img = out_dir.join(format!("zoo-os-{}-uefi.img", mode.name()));
-    let mut boot = bootloader::UefiBoot::new(&elf);
-    boot.set_ramdisk(&initrd);
     let mut config = bootloader::BootConfig::default();
     if matches!(mode, Mode::BigScreen) {
         // Ask the firmware for a screen wider than the desktop's back
         // buffer, as on large monitors (docs/usb-boot.md).
         config.frame_buffer.minimum_framebuffer_width = Some(2000);
     }
-    boot.set_boot_config(&config);
-    boot.create_disk_image(&img)
-        .map_err(|e| format!("failed to create UEFI disk image {}: {e:#}", img.display()))?;
+    crate::uefi_image::create(&elf, &initrd, Some(&config), &img)?;
     println!("[build] image ({}) -> {}", mode.name(), img.display());
     Ok(img)
 }
@@ -395,10 +391,7 @@ pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, S
         .join("release")
         .join(KERNEL_PACKAGE);
     let img = out_dir.join("zoo-os-wine-uefi.img");
-    bootloader::UefiBoot::new(&elf)
-        .set_ramdisk(&initrd_path)
-        .create_disk_image(&img)
-        .map_err(|e| format!("failed to create {}: {e:#}", img.display()))?;
+    crate::uefi_image::create(&elf, &initrd_path, None, &img)?;
     println!(
         "[build] wine image ({files} Wine files, initrd {} MB) -> {}",
         archive.len() >> 20,
@@ -413,21 +406,17 @@ pub fn build_wine_image(root: &Path, tools: &Tools) -> Result<Option<PathBuf>, S
 /// other cases do not carry 430 MB each.
 /// Image `mode` with the assistant's model added to its initial filesystem
 /// (docs/m5c2-design.md; for the everyday image, docs/a3-design.md).
+/// `embedder`, when given, goes in too (the USB stick, which has no model
+/// disk; docs/usb-model-design.md).
 pub fn build_model_image(
     root: &Path,
     tools: &Tools,
     mode: Mode,
     model: &[u8],
+    embedder: Option<&[u8]>,
     prompt: &str,
     expected: &[u32],
 ) -> Result<PathBuf, String> {
-    if model.len() as u64 > crate::infer::BOOT_IMAGE_MODEL_MAX {
-        return Err(format!(
-            "the model ({} MB) is too large for the boot image (at most {} MB):              use the model disk (`run` without `--model`) or `--bella 0.5b`",
-            model.len() >> 20,
-            crate::infer::BOOT_IMAGE_MODEL_MAX >> 20
-        ));
-    }
     let plain = build(root, tools, mode)?;
     let _ = plain;
     let base = initrd(root, tools)?;
@@ -442,10 +431,14 @@ pub fn build_model_image(
 ",
         ids.join(",")
     );
-    for (name, data) in [
-        ("models/qwen2.5-0.5b-instruct-q4_0.gguf", model),
+    let mut files = vec![
+        (zoo_abi::CHAT_MODEL_FILE, model),
         ("test/elephant.txt", spec.as_bytes()),
-    ] {
+    ];
+    if let Some(e) = embedder {
+        files.push((zoo_abi::EMBED_MODEL_FILE, e));
+    }
+    for (name, data) in files {
         let header = zoo_abi::tar::header(name, data.len())
             .ok_or_else(|| format!("cannot make a tar header for {name}"))?;
         archive.extend_from_slice(&header);
@@ -460,7 +453,11 @@ pub fn build_model_image(
         .map(|e| e.map_err(|e| format!("model initrd self-check failed: {e:?}")))
         .collect::<Result<Vec<_>, _>>()?
         .len();
-    let out_dir = root.join("build").join(format!("{}-model", mode.name()));
+    let out_dir = root.join("build").join(format!(
+        "{}-model{}",
+        mode.name(),
+        if embedder.is_some() { "-usb" } else { "" }
+    ));
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let initrd_path = out_dir.join("initrd-model.tar");
@@ -473,16 +470,46 @@ pub fn build_model_image(
         .join("release")
         .join(KERNEL_PACKAGE);
     let img = out_dir.join(format!("zoo-os-{}-model-uefi.img", mode.name()));
-    bootloader::UefiBoot::new(&elf)
-        .set_ramdisk(&initrd_path)
-        .create_disk_image(&img)
-        .map_err(|e| format!("failed to create {}: {e:#}", img.display()))?;
+    crate::uefi_image::create(&elf, &initrd_path, None, &img)?;
     println!(
         "[build] model image ({count} files, initrd {} MB) -> {}",
         archive.len() >> 20,
         img.display()
     );
     Ok(img)
+}
+
+/// The USB stick's image (docs/usb-model-design.md): the everyday
+/// (fast-boot) system with Bella's chat model and, when `tools/models/`
+/// has it, the embedding model in its boot image, since a real PC has no
+/// model disk. Without the chat model: the plain everyday image.
+pub fn build_usb_image(root: &Path, tools: &Tools) -> Result<PathBuf, String> {
+    let data = match crate::infer::load_model(root) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("[usb-image] no chat model ({e}): building without Bella's model");
+            return build(root, tools, Mode::FastBoot);
+        }
+    };
+    let embedder = if crate::infer::embedder_path(root).exists() {
+        Some(crate::infer::load_embedder(root)?)
+    } else {
+        None
+    };
+    let r = crate::infer::run(
+        &data,
+        crate::infer::GUEST_PROMPT,
+        crate::infer::GUEST_TOKENS,
+    )?;
+    build_model_image(
+        root,
+        tools,
+        Mode::FastBoot,
+        &data,
+        embedder.as_deref(),
+        crate::infer::GUEST_PROMPT,
+        &r.output_ids,
+    )
 }
 
 /// Block 0 of the model disk starts with this, then the number of models,
