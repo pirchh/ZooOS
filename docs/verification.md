@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-events section (version 0.108.0), the sound section (0.107.0), the
+full-accelerator section (version 0.109.0), the events section (0.108.0),
+the sound section (0.107.0), the
 draft-model section (0.106.0), the
 actions section (0.105.0),
 the monitors section (0.104.0), the
@@ -50,6 +51,27 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## The whole suite with an accelerator (version 0.109.0)
+
+`cargo xtask verify --accel whpx --cpus 8` runs every case, the model ones
+included (the TCG suite skips 23). First run, at 0.108.0: 127 `OK`, 2
+skipped (`inference`, `bella-model`: the model is not in the boot image),
+3 `FAIL`, none in a model case:
+
+| Case | Why | Change |
+| --- | --- | --- |
+| `smp-boot` | waited for `smp cpus=4`; with `--cpus 8` the kernel starts 8 | waits for `s.cpus.max(4)` |
+| `negative-triple-fault` | under WHPX a triple fault stops the guest instead of resetting it, so QEMU never exits early | skipped under an accelerator (still runs, and passes, under TCG) |
+| `file-speed` | BowheadTest closed its BadgerHandler's channels before killing it, so the handler sometimes ended on its own first (`exit ... code=0` where the case expects `killed`); again in the second full run | BowheadTest kills it first, then closes the channels |
+
+After the changes: `smp-boot` `OK` under both; `negative-triple-fault`
+skipped under WHPX and `OK` (`early-exit`) under TCG; `file-speed` `OK` 5
+of 5 under WHPX with 8 processors and `OK` under TCG.
+
+Second full WHPX run (with the first two changes, before the `file-speed`
+one): 128 `OK`, 3 skipped (`inference`, `bella-model`,
+`negative-triple-fault`), 1 `FAIL` (`file-speed`, the race above).
 
 ## Window server events (version 0.108.0)
 
