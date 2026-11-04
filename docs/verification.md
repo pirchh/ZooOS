@@ -58,6 +58,36 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Task dump, and an intermittent Wine hang (version 0.115.0)
+
+**The task dump:** Scroll Lock on the PS/2 keyboard sets a flag (F12 is the
+desktop's test key for crashing the window server), and the next timer
+tick prints every task as a `ZOO_OS INFO dump` line: pid, tid, name, state,
+processor, the system call it is in (`rax` and `rip` from its saved frame
+while switched out), restart, futex, sleep deadline, file request pending,
+vfork child, pending signals and an allocation in progress. **The harness
+presses Scroll Lock when a case times out,** so a hang's serial log says what each
+task waited on.
+
+**The hang it was added for:** `wine-cmd` stalled while Wine created its
+prefix, after `copy error 1812` (which passing runs also show).
+
+| Build | `wine-cmd` runs |
+| --- | --- |
+| `main` (0.114.0) | 4 passed (176–218 s), one with 200 KB of padding in the boot image |
+| the registry branch before the dump | 6 timed out (480 s, and once 960 s), 1 passed |
+| the registry branch with the dump | 5 passed (165–212 s) |
+
+**Ruled out:**
+- the registry folder (removed: it still hung);
+- the boot image's size (padded `main` passed);
+- the harness's QEMU set-up (unchanged).
+
+The branch changes only user programs, which have exited before Wine
+starts. A check on every tick then made the hang go away. Both point to a
+timing-sensitive race in the kernel or the Linux layer that this branch
+made more likely, **not fixed**. If it recurs, the dump will show it.
+
 ## The action registry (version 0.115.0)
 
 docs/registry-design.md: app actions from `etc/actions/*.actions`.

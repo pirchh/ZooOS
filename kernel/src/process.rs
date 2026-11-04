@@ -1113,7 +1113,7 @@ impl Scheduler {
     /// Every task, for finding a hang: id, state, what it waits on, and
     /// the system call it is in (from its saved frame, while switched out).
     fn dump_tasks(&self) {
-        kprintln!("ZOO_OS DUMP tasks tick={}", interrupts::ticks());
+        kprintln!("ZOO_OS INFO dump tasks tick={}", interrupts::ticks());
         for t in self.tasks.iter().flatten() {
             let call = if t.on_cpu == NO_CPU && t.frame != 0 && t.proc.is_some() {
                 // SAFETY: `frame` is the saved trap frame of a task that is
@@ -1126,7 +1126,7 @@ impl Scheduler {
                 String::from("-")
             };
             kprintln!(
-                "ZOO_OS DUMP pid={} tid={} name={} state={:?} cpu={} call={} restart={} futex={:?} sleep={:?} input={} fs_pending={} fs_results={} vfork={:?} sig_pending={:#x} alloc={:?}",
+                "ZOO_OS INFO dump pid={} tid={} name={} state={:?} cpu={} call={} restart={} futex={:?} sleep={:?} input={} fs_pending={} fs_results={} vfork={:?} sig_pending={:#x} alloc={:?}",
                 t.pid,
                 t.tid,
                 t.name,
@@ -1144,7 +1144,7 @@ impl Scheduler {
                 t.alloc_progress
             );
         }
-        kprintln!("ZOO_OS DUMP end");
+        kprintln!("ZOO_OS INFO dump end");
     }
 
     fn pick_next(&self) -> usize {
@@ -10008,7 +10008,7 @@ fn dispatch_locked<R>(f: impl FnOnce(&mut Scheduler, &mut Memory) -> R) -> Optio
     sched_run(f)
 }
 
-/// Set by F12 on the PS/2 keyboard (or the harness on a timeout): the
+/// Set by Scroll Lock on the PS/2 keyboard (or the harness on a timeout): the
 /// next tick prints every task (docs/verification.md, "task dump").
 static DUMP_TASKS: AtomicBool = AtomicBool::new(false);
 
