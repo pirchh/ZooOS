@@ -611,6 +611,21 @@ impl App {
             }
         } else if let Some(path) = text.strip_prefix("open ") {
             self.open(path.trim());
+        } else if text.starts_with("write ") {
+            // A line in Notes (docs/actions-design.md): the whole command,
+            // so "write down X" loses its "down".
+            let t = zoo_infer::assist::note_text(text);
+            if t.is_empty() || self.win.act("notes", "write", &t).is_err() {
+                self.say("Error: nothing to write.");
+            } else {
+                zoo_rt::log!("Bella: asked Notes to write a line");
+            }
+        } else if let Some(a) = text.strip_prefix("browse ") {
+            // A page in Network (docs/actions-design.md).
+            let a = zoo_infer::assist::address_in(a).unwrap_or(a.trim());
+            if self.win.act("network", "fetch", a).is_ok() {
+                zoo_rt::log!("Bella: asked Network to fetch {}", a);
+            }
         } else if let Some(apps) = text.strip_prefix("launch ") {
             // "launch Notes and Files": each (docs/multi-step-design.md).
             for app in String::from(apps).split(" and ") {

@@ -12,7 +12,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 use zoo_abi::ui::mark;
-use zoo_rt::app::{Key, MAX_LINES, Window};
+use zoo_rt::app::{Event, Key, MAX_LINES, Window};
 use zoo_rt::net::{IpText, Lease, Mac, MacText, Stack, net_attach};
 use zoo_rt::{Error, Line, recv};
 
@@ -66,6 +66,20 @@ fn main(channel: u64) -> u8 {
             Err(Error::PeerClosed) => return 0,
             Err(_) => return 4,
         };
+        // Bella's `browse` (docs/actions-design.md): as if typed and Enter.
+        if let Some(Event::Do(action, target)) = Event::parse(&buf[..n]) {
+            let said = if action == "fetch" && !target.trim().is_empty() {
+                app.input = String::from(target.trim());
+                let target = app.input.clone();
+                app.fetch(&target);
+                let first = app.result.first().map_or("", |l| l.as_str());
+                alloc::format!("Fetched {}: {}", target, first.trim())
+            } else {
+                alloc::format!("Error: Network cannot {}.", action)
+            };
+            let _ = app.win.did(&said);
+            continue;
+        }
         match Key::parse(&buf[..n]) {
             Some(Key::Char(c)) if app.input.len() < MAX_INPUT && !c.is_control() => {
                 app.input.push(c)

@@ -5,9 +5,9 @@
 /// The commands the user can type (docs/access-design.md adds `read`,
 /// `open`, `move`, `trash`, `launch` and `info`; docs/window-actions-design.md
 /// `maximize`, `minimize` and `close`).
-pub const COMMANDS: [&str; 16] = [
+pub const COMMANDS: [&str; 18] = [
     "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
-    "info", "maximize", "minimize", "close", "split", "show",
+    "info", "maximize", "minimize", "close", "split", "show", "write", "browse",
 ];
 
 /// Words that make a line a sentence rather than a typed command:

@@ -200,7 +200,15 @@ fn main(channel: u64, home: u64) -> u8 {
         loop {
             match try_recv(channel, &mut msg) {
                 Ok(n) => {
-                    if let Some(Event::Open(path)) = Event::parse(&msg[..n]) {
+                    if let Some(Event::Do(action, text)) = Event::parse(&msg[..n]) {
+                        // Bella's `write` (docs/actions-design.md).
+                        let said = if action == "write" {
+                            ed.append_line(text)
+                        } else {
+                            alloc::format!("Error: Notes cannot {}.", action)
+                        };
+                        let _ = win.did(&said);
+                    } else if let Some(Event::Open(path)) = Event::parse(&msg[..n]) {
                         if ed.editing {
                             ed.save();
                         }
@@ -318,6 +326,36 @@ impl Editor {
                 zoo_rt::log!("Notes: cannot save {}: {}", path, e.name());
                 false
             }
+        }
+    }
+
+    /// `text` as a line of its own at the end, saved at once; what it did,
+    /// for the asker (the `write` action, docs/actions-design.md).
+    fn append_line(&mut self, text: &str) -> alloc::string::String {
+        if let Some(why) = self.read_only {
+            return alloc::format!("Error: {} cannot be changed ({}).", self.path(), why);
+        }
+        let text = text.trim();
+        if self.len + text.len() + 2 > CAPACITY {
+            return alloc::format!("Error: {} is full.", self.path());
+        }
+        self.cursor = self.len;
+        if self.len > 0 && self.text[self.len - 1] != b'\n' {
+            self.insert(b'\n');
+        }
+        for b in text
+            .bytes()
+            .filter(|b| *b == b'\t' || (0x20..0x7F).contains(b))
+        {
+            self.insert(b);
+        }
+        self.insert(b'\n');
+        self.editing = !self.save();
+        zoo_rt::log!("Notes: wrote a line in {}", self.path());
+        if self.editing {
+            alloc::format!("Wrote it in {}, but saving failed.", self.path())
+        } else {
+            alloc::format!("Wrote \"{}\" in {}.", text, self.path())
         }
     }
 
