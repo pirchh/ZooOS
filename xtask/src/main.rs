@@ -4,6 +4,7 @@ mod config;
 mod cprog;
 mod doctor;
 mod font;
+mod hear;
 mod image;
 mod infer;
 mod markers;
@@ -41,6 +42,8 @@ commands:
                             model (tools/models/); use with --accel
                             --monitors N: N monitors side by side (1 to 4,
                             QEMU shows each in its own tab; docs/monitors-design.md)
+  hear-gguf                 convert Moonshine Tiny to GGUF (docs/hearing-design.md)
+  hear-check                speech to text against the NumPy reference
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
   embed-check              the embedding model against its model card (docs/vectors-design.md)
   infer [--prompt TEXT] [--tokens N]
@@ -236,6 +239,21 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 println!("embed-check: FAIL");
                 Ok(ExitCode::from(1))
             }
+        }
+        "hear-gguf" => {
+            // Moonshine Tiny as one GGUF file (docs/hearing-design.md).
+            hear::convert(&root)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        "hear-check" => {
+            // The engine against the NumPy reference (docs/hearing-design.md).
+            let ok = hear::check(&root)?;
+            println!("hear-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         "requant" => {
             // Q8_0 -> Q4_0 for the chosen model (docs/qwen3-design.md).
