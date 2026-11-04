@@ -1790,6 +1790,55 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "audio-tone",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run orca-test",
+                    "ZOO_OS PROC start pid=26 name=orca-test",
+                    "ZOO_OS PROC exit pid=26 name=orca-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "sound (docs/audio-design.md): OrcaTest plays one second of 440 Hz through the virtio-sound driver; QEMU records it to a WAV file whose pitch and length the harness measures",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run orca-test")),
+                    Action::WaitContains("ZOO_OS INFO sound stream started".into()),
+                    Action::WaitContains("OrcaTest: played 1000 ms of 440 Hz".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=orca-test code=0".into()),
+                    // The last 200 ms still play after the last write.
+                    Action::Settle(QUIET),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "audio-silence",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: normal.clone(),
+            timeout: s.timeout * 2,
+            want: "audio-mismatch",
+            purpose: "negative: the same machine playing nothing; the WAV check must reject it (no tone), so a pass of `audio-tone` means a tone was played",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Settle(QUIET),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "net-bella-browse",
             mode: Mode::Normal,
             custom_image: None,
@@ -3056,6 +3105,21 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             None
         };
         qemu::set_guestfwd(server.as_ref().map(|s| s.port));
+        // `audio-` cases: a sound device recorded to a WAV file.
+        let wav = root
+            .join("build")
+            .join("runs")
+            .join(c.name)
+            .join("audio.wav");
+        if c.name.starts_with("audio-") {
+            let _ = std::fs::remove_file(&wav);
+            if let Some(dir) = wav.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            qemu::set_audio(Some(wav.clone()));
+        } else {
+            qemu::set_audio(None);
+        }
         let r = qemu::run_case(
             root,
             tools,
@@ -3103,6 +3167,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         detail = format!("screen {name}: {why} ({})", ppm.display());
                         break;
                     }
+                }
+            }
+        }
+        // The tone in the recording (docs/audio-design.md).
+        if kind == "pass" && c.name.starts_with("audio-") {
+            match check_tone(&wav, 440.0) {
+                Ok(summary) => detail = format!("{detail}\n      audio: {summary}"),
+                Err(why) => {
+                    kind = "audio-mismatch".into();
+                    detail = format!("audio: {why} ({})", wav.display());
                 }
             }
         }
@@ -5704,6 +5778,74 @@ fn bella_windows_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
+}
+
+/// Measures the tone QEMU recorded (docs/audio-design.md): the loud part of
+/// the first channel must last at least 0.8 s, and its pitch, from
+/// rising zero crossings, be within 2% of `hz`.
+fn check_tone(wav: &Path, hz: f64) -> Result<String, String> {
+    let b = std::fs::read(wav).map_err(|e| format!("no recording: {e}"))?;
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err("not a WAV file".into());
+    }
+    let (mut rate, mut channels, mut bits) = (0u32, 0u16, 0u16);
+    let mut data: &[u8] = &[];
+    let mut at = 12;
+    while at + 8 <= b.len() {
+        let id = &b[at..at + 4];
+        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+        let body = at + 8;
+        if id == b"fmt " && body + 16 <= b.len() {
+            channels = u16::from_le_bytes([b[body + 2], b[body + 3]]);
+            rate = u32::from_le_bytes(b[body + 4..body + 8].try_into().unwrap());
+            bits = u16::from_le_bytes([b[body + 14], b[body + 15]]);
+        } else if id == b"data" {
+            // QEMU fills in the length when it closes the file; a killed
+            // QEMU leaves it 0: then the rest of the file.
+            let end = if len == 0 || body + len > b.len() {
+                b.len()
+            } else {
+                body + len
+            };
+            data = &b[body..end];
+            break;
+        }
+        at = body + len + (len & 1);
+    }
+    if rate == 0 || channels == 0 || bits != 16 {
+        return Err(format!(
+            "unexpected format: {rate} Hz, {channels} channels, {bits} bits"
+        ));
+    }
+    let frame = 2 * usize::from(channels);
+    let left: Vec<f64> = data
+        .chunks_exact(frame)
+        .map(|f| f64::from(i16::from_le_bytes([f[0], f[1]])))
+        .collect();
+    // Loud samples: above a tenth of the tone's level (12 000).
+    let loud: Vec<usize> = (0..left.len())
+        .filter(|&i| left[i].abs() > 1_200.0)
+        .collect();
+    let (Some(&first), Some(&last)) = (loud.first(), loud.last()) else {
+        return Err(format!(
+            "no tone: {:.2} s recorded, all quiet",
+            left.len() as f64 / f64::from(rate)
+        ));
+    };
+    let secs = (last - first) as f64 / f64::from(rate);
+    let rising = (first + 1..=last)
+        .filter(|&i| left[i - 1] < 0.0 && left[i] >= 0.0)
+        .count();
+    let measured = rising as f64 / secs.max(1e-9);
+    if secs < 0.8 {
+        return Err(format!("tone too short: {secs:.2} s"));
+    }
+    if (measured - hz).abs() > hz * 0.02 {
+        return Err(format!("tone at {measured:.1} Hz, wanted {hz:.0} Hz"));
+    }
+    Ok(format!(
+        "{measured:.1} Hz for {secs:.2} s ({rate} Hz, {channels} channels recorded)"
+    ))
 }
 
 /// `bella-actions`: a line written in Notes for Bella.

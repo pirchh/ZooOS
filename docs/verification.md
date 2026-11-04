@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-draft-model section (version 0.106.0), the actions section (0.105.0),
+sound section (version 0.107.0), the draft-model section (0.106.0), the
+actions section (0.105.0),
 the monitors section (0.104.0), the
 multi-step section (0.103.0),
 the tiling section (0.102.0),
@@ -48,6 +49,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Sound (version 0.107.0)
+
+docs/audio-design.md: virtio-sound playback, QEMU recording to WAV.
+
+| Case | Result |
+| --- | --- |
+| `audio-tone` | `OK`: 439.8 Hz for 1.00 s |
+| `audio-silence` (negative case) | rejected as intended (no tone) |
+| `audio-tone` playing 880 Hz (negative control) | `FAIL`: tone at 879.6 Hz |
 
 ## Draft model, measured (version 0.106.0)
 

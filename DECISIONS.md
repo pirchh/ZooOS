@@ -150,6 +150,20 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Sound: virtio-sound playback (2026-11-04)
+
+Version 0.107.0. Design: docs/audio-design.md; the voice proposal is
+docs/voice-plan.md (downloads await the owner).
+
+- **virtio-sound first:** the same transport as the GPU driver, and QEMU
+  records its output to a WAV file for an automatic pitch check. Intel
+  HD Audio (real PCs) comes later.
+- **Writes never wait for the speaker:** samples go into period buffers
+  and the call returns what it took; waiting at playing speed would hold
+  the scheduler lock for the length of the sound.
+- **A permanent negative case** (`audio-silence`) keeps the pitch check
+  honest.
+
 ## Draft model: measured, not used (2026-11-04)
 
 Version 0.106.0. Design: docs/draft-design.md. Speculative decoding with

@@ -293,6 +293,19 @@ pub fn model_read_of(which: u64, block: u64, buf: &mut [u8]) -> Result<(), Error
 }
 
 /// Processors online (docs/smp-design.md).
+/// Plays what fits now of `samples` (16-bit stereo at 48 kHz); the bytes
+/// taken, 0 when the device is busy (docs/audio-design.md).
+pub fn audio_write(samples: &[u8]) -> Result<usize, Error> {
+    let len = samples.len().min(zoo_abi::AUDIO_WRITE_MAX);
+    result(syscall(
+        sys::AUDIO_WRITE,
+        samples.as_ptr() as u64,
+        len as u64,
+        0,
+    ))
+    .map(|n| n as usize)
+}
+
 pub fn cpu_count() -> usize {
     result(syscall(sys::CPU_COUNT, 0, 0, 0)).map_or(1, |n| n.max(1) as usize)
 }
