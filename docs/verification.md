@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-actions section (version 0.105.0), the monitors section (0.104.0), the
+draft-model section (version 0.106.0), the actions section (0.105.0),
+the monitors section (0.104.0), the
 multi-step section (0.103.0),
 the tiling section (0.102.0),
 the USB-models section (0.101.0),
@@ -47,6 +48,13 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Draft model, measured (version 0.106.0)
+
+`cargo xtask draft-check` (docs/draft-design.md): `PASS` (same tokens),
+but 0.42x at k=2 and slower above; 27–33% of guesses kept. Not used by
+Bella. `assist-check` 36 of 38, 0 of 8; `bella-convo` and
+`bella-summary-answer` `OK` after the shared batch change.
 
 ## Application actions (version 0.105.0)
 

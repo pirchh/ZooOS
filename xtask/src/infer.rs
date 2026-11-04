@@ -11,14 +11,20 @@ use zoo_infer::{Gguf, Model, Tokenizer, chat};
 /// The models Bella can use: (`--bella` name, file in tools/models/), each
 /// pinned by its `.sha256` file (tools/models/README.md). The first is the
 /// default; the test suite uses it.
-pub const MODELS: [(&str, &str); 4] = [
+pub const MODELS: [(&str, &str); 6] = [
     ("0.5b", "qwen2.5-0.5b-instruct-q4_0.gguf"),
     ("1.5b", "qwen2.5-1.5b-instruct-q4_0.gguf"),
     // Under evaluation (docs/qwen3-design.md).
     ("qwen3-1.7b", "qwen3-1.7b-q8_0.gguf"),
     // Made by `cargo xtask requant --bella qwen3-1.7b`.
     ("qwen3-1.7b-q4", "qwen3-1.7b-q4_0.gguf"),
+    // The draft model (docs/draft-design.md), and its 4-bit copy.
+    ("qwen3-0.6b", "qwen3-0.6b-q8_0.gguf"),
+    ("qwen3-0.6b-q4", "qwen3-0.6b-q4_0.gguf"),
 ];
+
+/// The draft model for speculative decoding (docs/draft-design.md).
+pub const DRAFT: &str = "qwen3-0.6b-q4_0.gguf";
 
 static SELECTED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
@@ -77,6 +83,100 @@ pub const EMBEDDER: &str = "qwen3-embedding-0.6b-q8_0.gguf";
 
 pub fn embedder_path(root: &Path) -> PathBuf {
     root.join("tools").join("models").join(EMBEDDER)
+}
+
+/// Speculative decoding on the host (docs/draft-design.md): a reply of
+/// `TOKENS` greedy tokens by the chosen model alone, then with the draft
+/// guessing `k` at a time; the tokens must match and the times are shown.
+pub fn draft_check(root: &Path) -> Result<bool, String> {
+    const TOKENS: usize = 64;
+    let big_data = load_model(root)?;
+    let draft_data = load_pinned(&root.join("tools").join("models").join(DRAFT))?;
+    let bg = Gguf::parse(&big_data).map_err(|e| format!("GGUF: {e:?}"))?;
+    let dg = Gguf::parse(&draft_data).map_err(|e| format!("draft GGUF: {e:?}"))?;
+    let tok = Tokenizer::from_gguf(&bg).map_err(|e| format!("tokenizer: {e:?}"))?;
+    let dtok = Tokenizer::from_gguf(&dg).map_err(|e| format!("draft tokenizer: {e:?}"))?;
+    let big = Model::from_gguf(&bg).map_err(|e| format!("model: {e:?}"))?;
+    let draft = Model::from_gguf(&dg).map_err(|e| format!("draft model: {e:?}"))?;
+    println!("engine: {}", zoo_infer::cpu::backend());
+    // The same tokenizer: the same ids for the same text.
+    for t in [
+        "Find my pancake recipe",
+        "<|im_start|>user\nZebras, 3.14 and caf\u{e9}?<|im_end|>",
+    ] {
+        if tok.encode(t) != dtok.encode(t) {
+            return Err(format!("the draft tokenizes `{t}` differently"));
+        }
+    }
+    if big.cfg.vocab != draft.cfg.vocab {
+        return Err("the draft's vocabulary differs".into());
+    }
+    let prompt = tok.encode(&chat::prompt_for(
+        &big,
+        zoo_infer::talk::SYSTEM,
+        "Tell me three short facts about zebras.",
+    ));
+    let ctx = prompt.len() + TOKENS + 16;
+    let stop = |t: u32| t == tok.eos || tok.is_control(t);
+    // The large model alone.
+    let mut st = big.new_state(ctx);
+    big.read_prompt(&mut st, &prompt, true, |_| true)
+        .map_err(|e| format!("{e:?}"))?;
+    let t0 = Instant::now();
+    let mut plain = Vec::new();
+    while plain.len() < TOKENS {
+        let next = zoo_infer::argmax(&st.logits) as u32;
+        if stop(next) {
+            break;
+        }
+        plain.push(next);
+        big.forward(&mut st, next).map_err(|e| format!("{e:?}"))?;
+    }
+    let plain_s = t0.elapsed().as_secs_f64();
+    println!(
+        "alone: {} tokens in {:.2} s ({:.1} tokens/s): {:?}",
+        plain.len(),
+        plain_s,
+        plain.len() as f64 / plain_s,
+        tok.decode(&plain)
+    );
+    let mut ok = true;
+    for k in [2, 4, 6] {
+        let mut bst = big.new_state(ctx + k + 1);
+        let mut dst = draft.new_state(ctx + k + 1);
+        big.read_prompt(&mut bst, &prompt, true, |_| true)
+            .map_err(|e| format!("{e:?}"))?;
+        draft
+            .read_prompt(&mut dst, &prompt, false, |_| true)
+            .map_err(|e| format!("{e:?}"))?;
+        let next = zoo_infer::argmax(&bst.logits) as u32;
+        let t = Instant::now();
+        let (out, stats) =
+            zoo_infer::draft::speculate(&big, &mut bst, &draft, &mut dst, next, k, TOKENS, stop)
+                .map_err(|e| format!("{e:?}"))?;
+        let s = t.elapsed().as_secs_f64();
+        let same = out == plain;
+        ok &= same;
+        println!(
+            "k={k}: {} tokens in {:.2} s ({:.1} tokens/s, {:.2}x); {} checks, kept {} of {} guesses; {}",
+            out.len(),
+            s,
+            out.len() as f64 / s,
+            plain_s / s,
+            stats.checks,
+            stats.kept,
+            stats.guessed,
+            if same {
+                "same tokens"
+            } else {
+                "DIFFERENT tokens"
+            }
+        );
+        if !same {
+            println!("  got: {:?}", tok.decode(&out));
+        }
+    }
+    Ok(ok)
 }
 
 /// Reads the model and checks it against the pinned SHA-256.
