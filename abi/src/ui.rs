@@ -124,11 +124,11 @@ pub fn zoomed(w: usize, h: usize) -> (usize, usize, usize, usize) {
 /// Gap between two windows side by side.
 pub const SPLIT_GAP: usize = 12;
 
-/// Column `k` of `n` (1 to 3) side by side across the zoomed space, with
+/// Column `k` of `n` (1 to 4) side by side across the zoomed space, with
 /// `SPLIT_GAP` between them (docs/tiling-design.md).
 pub fn column(w: usize, h: usize, k: usize, n: usize) -> (usize, usize, usize, usize) {
     let (x, y, zw, zh) = zoomed(w, h);
-    let n = n.clamp(1, 3);
+    let n = n.clamp(1, 4);
     let k = k.min(n - 1);
     let each = (zw - SPLIT_GAP * (n - 1)) / n;
     let cx = x + k * (each + SPLIT_GAP);
@@ -143,9 +143,9 @@ mod column_tests {
 
     #[test]
     fn columns_tile_the_zoomed_space() {
-        for n in 1..=3 {
+        for n in 1..=4 {
             let z = zoomed(1920, 1080);
-            let cols: [_; 3] = core::array::from_fn(|k| column(1920, 1080, k, n));
+            let cols: [_; 4] = core::array::from_fn(|k| column(1920, 1080, k, n));
             assert_eq!(cols[0].0, z.0);
             assert_eq!(cols[n - 1].0 + cols[n - 1].2, z.0 + z.2);
             for k in 1..n {

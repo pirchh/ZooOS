@@ -63,9 +63,9 @@ fn take_monitor(args: &str) -> (String, Option<String>) {
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 15] = [
+const RECALLABLE: [&str; 16] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
-    "maximize", "minimize", "close", "split", "show",
+    "maximize", "minimize", "close", "split", "show", "layout",
 ];
 
 /// A spoken answer: yes (`Some(true)`), no (`Some(false)`), or neither.
@@ -182,6 +182,14 @@ struct App {
     /// The command being run corrects an earlier wrong answer (typed by
     /// the user): it may be learned.
     correction: bool,
+    /// A layout sent: the request it was read from (when read from words)
+    /// and its tree (docs/layouts-design.md).
+    pending_layout: Option<(Option<String>, String)>,
+    /// The request whose layout is being asked about.
+    layout_request: Option<String>,
+    /// A request whose layout was not what was meant: the next confirmed
+    /// layout answers it too.
+    relayout_of: Option<String>,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -276,6 +284,9 @@ fn main(chan: u64, home: u64) -> u8 {
         magpie_ready: false,
         bat: None,
         correction: false,
+        pending_layout: None,
+        layout_request: None,
+        relayout_of: None,
         registry: {
             let (reg, skipped) = zoo_rt::registry::load();
             for s in &skipped {
@@ -433,7 +444,20 @@ impl App {
                 let req = req.clone();
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
-                if let Some(inv) = req.strip_prefix("app ") {
+                if let Some(spec) = req.strip_prefix("layout-ok ") {
+                    // Confirmed: the request means this layout, learned (and
+                    // the one before it, if this corrected it).
+                    let cmd = alloc::format!("layout {}", spec);
+                    for request in [self.layout_request.take(), self.relayout_of.take()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        self.request = Some(request);
+                        self.correction = true;
+                        self.learn(&cmd);
+                    }
+                    self.say("Got it; I'll remember that.");
+                } else if let Some(inv) = req.strip_prefix("app ") {
                     // A registered action, asked about (`app_action`). Not
                     // remembered: its words change with every request.
                     self.request = None;
@@ -445,6 +469,12 @@ impl App {
             (Mode::Confirm(req), Key::Char('n') | Key::Back) => {
                 let what = if req.starts_with("create ") {
                     "Not created."
+                } else if req.starts_with("layout-ok ") {
+                    // Not what was meant: the next request says how, and
+                    // answers this one too.
+                    self.relayout_of = self.layout_request.take();
+                    self.await_answer();
+                    "How should they go? Say rows, columns, quarters, or two on top and one below."
                 } else if req.starts_with("fact-forget ") || req.starts_with("app ") {
                     "Kept."
                 } else {
@@ -562,6 +592,26 @@ impl App {
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
+        } else if let Some(tree) = (self.relayout_of.is_some() || zoo_infer::assist::arranges(text))
+            .then(|| {
+                let named = zoo_infer::assist::split_request(text).unwrap_or_default();
+                let apps: Vec<&str> = named.split(" and ").filter(|a| !a.is_empty()).collect();
+                zoo_infer::layout::from_words(text, &apps)
+            })
+            .flatten()
+        {
+            // A layout in words (docs/layouts-design.md), read here without
+            // the model; asked about once arranged.
+            // A phrasing she learned: from memory, no question.
+            self.request = Some(String::from(text));
+            if self.recall(text) {
+                self.answered("memory");
+            } else {
+                zoo_rt::log!("Bella: read the layout {} from the words", tree.text());
+                self.request = Some(String::from(text));
+                let cmd = alloc::format!("layout {}", tree.text());
+                self.command(&cmd);
+            }
         } else if wants_saved(text) && self.last_summary.is_some() {
             self.request = None;
             self.save_summary();
@@ -706,6 +756,22 @@ impl App {
     fn command(&mut self, text: &str) {
         // Words instead of an action: what she cannot do yet, or what she
         // needs to know (docs/one-bella-design.md).
+        // Windows arranged by a layout tree (docs/layouts-design.md); one
+        // she read from words is checked with the user once it is done.
+        if let Some(spec) = text.strip_prefix("layout ") {
+            let spec = spec.trim();
+            if zoo_infer::layout::parse(spec).is_none() {
+                self.say(&alloc::format!("Error: `{}` is not a layout.", spec));
+                self.request = None;
+                return;
+            }
+            if self.win.layout(spec).is_ok() {
+                zoo_rt::log!("Bella: asked for the layout {}", spec);
+                let interpreted = self.request.take();
+                self.pending_layout = Some((interpreted, String::from(spec)));
+            }
+            return;
+        }
         if let Some(said) = text.strip_prefix("say ") {
             zoo_rt::log!("Bella: says: {}", said);
             self.say(said);
@@ -1110,6 +1176,17 @@ impl App {
     fn window_done(&mut self, said: &str) {
         zoo_rt::log!("Bella: the window server says: {}", said);
         self.say(said);
+        // A layout she read from words: is it what was meant?
+        if let Some((Some(request), spec)) = self.pending_layout.take()
+            && said.starts_with("Arranged ")
+        {
+            zoo_rt::log!("Bella: asks: Is this what you meant?");
+            self.say("Is this what you meant?");
+            self.status = String::from("Say yes or press y to keep it; no or n to say how.");
+            self.layout_request = Some(request);
+            self.mode = Mode::Confirm(alloc::format!("layout-ok {}", spec));
+            self.await_answer();
+        }
         let _ = self.draw();
     }
 

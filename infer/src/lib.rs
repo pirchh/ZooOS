@@ -22,6 +22,7 @@ pub mod draft;
 pub mod embed;
 pub mod gguf;
 pub mod hear;
+pub mod layout;
 pub mod listen;
 pub mod model;
 pub mod notes;

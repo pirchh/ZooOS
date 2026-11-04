@@ -209,6 +209,15 @@ impl Window {
 
     /// Asks for the two front windows side by side; answered with
     /// `window-done:` (docs/tiling-design.md).
+    /// Asks for windows arranged by a layout tree (`h(files,notes)`,
+    /// `v(...)`; docs/layouts-design.md); answered with `window-done:`.
+    pub fn layout(&self, spec: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = l.write_str("layout:");
+        let _ = l.write_str(spec);
+        self.send_line(&l)
+    }
+
     pub fn split_front(&self) -> Result<(), Error> {
         let mut l = Line::new();
         let _ = l.write_str("split-front");

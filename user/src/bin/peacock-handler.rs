@@ -544,6 +544,11 @@ impl App {
         } else if msg == b"events:on" {
             // Events from now on (docs/events-design.md).
             self.subscribed = true;
+        } else if let Some(spec) = msg.strip_prefix(b"layout:") {
+            // A layout tree (docs/layouts-design.md).
+            let mut l = alloc::boxed::Box::new(Line::new());
+            let _ = l.write_str(core::str::from_utf8(spec).unwrap_or(""));
+            self.request = Some(Request::Layout(l));
         } else if msg == b"split-front" {
             self.request = Some(Request::SplitFront);
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
@@ -1130,6 +1135,8 @@ enum Request {
     DoAsked(alloc::boxed::Box<Line>),
     /// An invocation the registry refuses.
     BadDo,
+    /// Windows arranged by a layout tree (docs/layouts-design.md).
+    Layout(alloc::boxed::Box<Line>),
 }
 
 /// What an application may ask done to another's window: Bella's
@@ -1163,7 +1170,7 @@ impl WinAction {
                 let of = s.windows(2).position(|w| w == b"of")?;
                 let k = parse_num(&s[..of])?;
                 let n = parse_num(&s[of + 2..])?;
-                ((1..=3).contains(&n) && k < n).then_some(WinAction::Column(k, n))
+                ((1..=4).contains(&n) && k < n).then_some(WinAction::Column(k, n))
             }
         }
     }
@@ -2953,6 +2960,12 @@ impl Desktop {
                 self.post(i, b"window-done:Error: no app can do that.");
                 zoo_rt::log!("PeacockHandler: an action the registry refuses");
             }
+            Request::Layout(spec) => {
+                let said = self.arrange(i, spec.as_str());
+                let mut l = Line::new();
+                let _ = write!(l, "window-done:{}", said.as_str());
+                self.post(i, l.as_str().as_bytes());
+            }
             Request::SplitFront => {
                 let said = self.split_front(i);
                 let mut l = Line::new();
@@ -3429,6 +3442,111 @@ impl Desktop {
     /// The two front windows other than the asking app's (`asker`), side by
     /// side, the front one on the left; with only one other window, it and
     /// the asker (docs/tiling-design.md).
+    /// `layout:<tree>` (docs/layouts-design.md): named apps take their
+    /// windows first (opened if need be; Bella stays one), `*` and `...`
+    /// the windows in front with the asker's last, and every window goes
+    /// to its rectangle on the first one's monitor. A window named twice,
+    /// or too few windows, is said, not guessed.
+    fn arrange(&mut self, asker: usize, spec: &str) -> Line {
+        use zoo_infer::layout::{self, Leaf};
+        let mut said = Line::new();
+        let Some(tree) = layout::parse(spec) else {
+            let _ = write!(said, "Error: `{}` is not a layout.", spec);
+            return said;
+        };
+        // Named apps first, in leaf order.
+        let mut taken: Vec<usize> = Vec::new();
+        let mut seen = [0usize; PROGRAMS];
+        for leaf in tree.leaves() {
+            if let Leaf::App(name) = leaf {
+                let Some(prog) = program_index(name.as_bytes()) else {
+                    let _ = write!(said, "There is no app called {}.", name);
+                    return said;
+                };
+                let Some(w) = self.nth_window_of(prog, seen[prog]) else {
+                    let _ = write!(said, "{} could not be opened.", CATALOG[prog].0);
+                    return said;
+                };
+                seen[prog] += 1;
+                if taken.contains(&w) {
+                    let _ = write!(
+                        said,
+                        "{} is one window; it can only go in one place.",
+                        self.apps[w].label
+                    );
+                    return said;
+                }
+                taken.push(w);
+            }
+        }
+        // The rest from the windows in front, the asker last.
+        let mut front: Vec<usize> = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&w| {
+                w != asker && self.apps[w].visible() && self.apps[w].running && !taken.contains(&w)
+            })
+            .collect();
+        if self.apps[asker].visible() && !taken.contains(&asker) {
+            front.push(asker);
+        }
+        let nexts = tree.leaves().iter().filter(|l| ***l == Leaf::Next).count();
+        let rest = front.len().saturating_sub(nexts);
+        let tree = tree.expand_rest(rest.max(1));
+        // Windows for the leaves, in order.
+        let mut front = front.into_iter();
+        let mut named = taken.into_iter();
+        let mut wins: Vec<usize> = Vec::new();
+        for leaf in tree.leaves() {
+            let w = match leaf {
+                Leaf::App(_) => named.next(),
+                _ => front.next(),
+            };
+            match w {
+                Some(w) => wins.push(w),
+                None => {
+                    let _ = write!(
+                        said,
+                        "There are not enough windows for that: it needs {}.",
+                        tree.leaves().len()
+                    );
+                    return said;
+                }
+            }
+        }
+        let on = self.monitor_of(wins[0]);
+        let (x, y, w, h) = zoo_abi::ui::zoomed(self.mw, self.lh);
+        let area = (x + on * self.mw, y, w, h);
+        for (k, rect) in layout::rects(&tree, area, zoo_abi::ui::SPLIT_GAP)
+            .into_iter()
+            .enumerate()
+        {
+            self.place(wins[k], rect);
+        }
+        // The first one in front; the keyboard back to the asker (Bella
+        // asks whether this is what was meant).
+        for &w in wins.iter().rev() {
+            self.set_focus(w);
+        }
+        if self.apps[asker].visible() {
+            self.set_focus(asker);
+        }
+        let names: Vec<&str> = wins.iter().map(|&w| self.apps[w].label).collect();
+        let _ = write!(
+            said,
+            "Arranged {} windows: {}.",
+            wins.len(),
+            names.join(", ")
+        );
+        let mut e = Line::new();
+        let _ = write!(e, "arranged {}", names.join(", "));
+        self.happened(e);
+        zoo_rt::log!("PeacockHandler: layout {}: {}", tree.text(), said.as_str());
+        said
+    }
+
     fn split_front(&mut self, asker: usize) -> Line {
         let mut pick: Vec<usize> = self
             .order

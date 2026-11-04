@@ -112,6 +112,9 @@ pub enum Tool {
     Show,
     /// About the computer; no argument.
     Info,
+    /// Windows arranged by a layout tree (docs/layouts-design.md), never
+    /// chosen by the model's scores: read from the request's words.
+    Layout,
     /// Words instead of an action, never chosen by the model's scores:
     /// what cannot be done yet, or a question for what is missing
     /// (docs/one-bella-design.md).
@@ -168,6 +171,7 @@ impl Tool {
             Tool::Show => "show",
             Tool::Info => "info",
             Tool::Say => "say",
+            Tool::Layout => "layout",
             Tool::Nothing => "none",
         }
     }
@@ -513,19 +517,25 @@ impl<'m, 't> Bella<'m, 't> {
         // `split`: the model decides it is a split; which apps, in which
         // order, comes from the request's own words (the model's argument
         // put them in the prompt's order; docs/tiling-design.md).
-        if tool == Tool::Split {
-            // Columns only, so far: say so rather than guess
-            // ("two on top and one on the bottom" maximized Files).
-            if let Some(why) = layout_unsupported(request) {
+        // A layout the words describe (rows, quarters, "two on top and one
+        // below"): the window server's general arrangement
+        // (docs/layouts-design.md), when the model chose a split or the
+        // request asks for an arrangement.
+        if self.windows && (tool == Tool::Split || arranges(request)) {
+            let named = split_request(request).unwrap_or_default();
+            let apps: Vec<&str> = named.split(" and ").filter(|a| !a.is_empty()).collect();
+            if let Some(tree) = crate::layout::from_words(request, &apps) {
                 return Ok(Choice {
                     word: String::new(),
-                    tool: Tool::Say,
-                    arg: String::from(why),
+                    tool: Tool::Layout,
+                    arg: tree.text(),
                     margin,
                     request_tokens: ids.len(),
                     arg_tokens: 0,
                 });
             }
+        }
+        if tool == Tool::Split {
             // "three ways" with fewer apps named: ask which.
             if let Some(n) = split_ways(request) {
                 let named = split_request(request).unwrap_or_default();
@@ -934,30 +944,16 @@ pub fn split_ways(request: &str) -> Option<usize> {
     })
 }
 
-/// Why a split request asks for a layout the window server cannot make
-/// yet (rows, quarters, corners); `None` for columns.
-pub fn layout_unsupported(request: &str) -> Option<&'static str> {
-    const ROWS: [&str; 15] = [
-        "top",
-        "bottom",
-        "above",
-        "below",
-        "quadrant",
-        "quadrants",
-        "quarter",
-        "quarters",
-        "corner",
-        "corners",
-        "grid",
-        "row",
-        "rows",
-        "stacked",
-        "vertically",
+/// Whether a request asks for windows to be arranged ("split", "stack",
+/// "arrange", "tile", "lay out", "organise", "put ... on top").
+pub fn arranges(request: &str) -> bool {
+    const VERBS: [&str; 11] = [
+        "split", "stack", "arrange", "tile", "lay", "layout", "organise", "organize", "divide",
+        "put", "set",
     ];
     request
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|w| ROWS.iter().any(|r| w.eq_ignore_ascii_case(r)))
-        .then_some("I can only put windows side by side so far; rows and quarters come later.")
+        .any(|w| VERBS.iter().any(|v| w.eq_ignore_ascii_case(v)))
 }
 
 /// The ChatML text before the user's request, with `system`.
@@ -1017,11 +1013,11 @@ mod tests {
         );
         assert_eq!(split_ways("split the screen 4 ways"), Some(4));
         assert_eq!(split_ways("split these two windows"), None);
-        assert!(
-            layout_unsupported("split it three ways, two on top and one on the bottom").is_some()
-        );
-        assert!(layout_unsupported("split the screen into quarters").is_some());
-        assert!(layout_unsupported("put notes on the left and files on the right").is_none());
+        assert!(arranges(
+            "split it three ways, two on top and one on the bottom"
+        ));
+        assert!(arranges("stack notes and files"));
+        assert!(!arranges("what is in my notes"));
     }
 
     #[test]

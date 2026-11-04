@@ -1920,3 +1920,18 @@ singleton in service management, not only the window server").
   was learned before is set aside, kept but unread.
 - **Words, not guesses,** for layouts the window server cannot make and
   splits with too few apps named (`say`, never scored by the model).
+
+## Layouts (2026-11-04)
+
+Version 0.117.0. Design: docs/layouts-design.md. The owner moved this up:
+"say i say split these in rows, shouldn't it stack them then say is that
+what you meant and then i confirm and it commits that to memory?"
+
+- **One general ability, a split tree,** rather than a feature per
+  arrangement: learning maps words onto abilities; it cannot create them.
+- **Rules first for layout words,** before the model: exact, quick, and
+  usable without the model.
+- **Learned in general form** (`*`, `...`), so a phrasing works with the
+  windows open now.
+- **A spoken or typed yes is the confirmation** that lets a layout be
+  learned; a no followed by a corrected layout teaches both requests.
