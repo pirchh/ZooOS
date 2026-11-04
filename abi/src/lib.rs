@@ -27,7 +27,7 @@ pub mod ui;
 /// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
 /// and command lines in `spawn`; version 17 (fast files step 1) added
 /// calls 59-61.
-pub const ABI_VERSION: u64 = 18;
+pub const ABI_VERSION: u64 = 19;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -161,7 +161,16 @@ pub mod sys {
     pub const MODEL_READ: u64 = 77;
     /// Processors online (docs/smp-design.md).
     pub const CPU_COUNT: u64 = 78;
+    /// Plays sound (docs/audio-design.md): `a1` = 16-bit stereo samples at
+    /// 48 kHz, `a2` = bytes (at most `AUDIO_WRITE_MAX`). Returns the bytes
+    /// taken now (0: the device is busy, try again later), never waiting
+    /// for the speaker; `NOT_FOUND` without a sound device, `BUSY` if it
+    /// refused to start.
+    pub const AUDIO_WRITE: u64 = 79;
 }
+
+/// The most bytes one `AUDIO_WRITE` looks at.
+pub const AUDIO_WRITE_MAX: usize = 64 * 1024;
 
 /// `MODEL_READ`'s block argument carries which model above this bit.
 pub const MODEL_WHICH_SHIFT: u32 = 56;

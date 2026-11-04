@@ -135,6 +135,14 @@ pub fn set_guestfwd(port: Option<u16>) {
 /// (docs/stage2-design.md §3).
 static MODEL_DISK: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
+/// A sound device for the next machine, its output recorded to this WAV
+/// file (docs/audio-design.md).
+static AUDIO_WAV: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+pub fn set_audio(wav: Option<PathBuf>) {
+    *AUDIO_WAV.lock().unwrap_or_else(|e| e.into_inner()) = wav;
+}
+
 pub fn set_model_disk(disk: Option<PathBuf>) {
     *MODEL_DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;
 }
@@ -252,6 +260,15 @@ fn machine_args(
         "none".into(),
         "-no-reboot".into(),
     ];
+    // A virtio sound device whose output QEMU writes to a WAV file.
+    if let Some(wav) = AUDIO_WAV.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        args.extend([
+            "-audiodev".into(),
+            format!("wav,id=snd0,path={}", opt_path(wav)?),
+            "-device".into(),
+            "virtio-sound-pci,audiodev=snd0".into(),
+        ]);
+    }
     // The model disk: read-only, so a guest bug cannot change it.
     if let Some(disk) = MODEL_DISK
         .lock()

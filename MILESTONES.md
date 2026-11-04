@@ -209,7 +209,8 @@ lands as small, separately verified steps.
 | 6 | SMP | open |
 | 7 | Hardware base and real disks: ECAM, MSI-X, IOMMU, flushes (B11), USB storage | open |
 | 8 | GPU compute: RTX 3050, then RTX 5060 Ti, each milestone a stop point | open |
-| 9 | Voice | open |
+| 9 | Voice: sound playback (virtio-sound, `AUDIO_WRITE`, a 440 Hz test measured from QEMU's recording; docs/audio-design.md) | done 2026-11-04 |
+| 9 | Voice: hearing, wake word, speaking: proposal with downloads for the owner (docs/voice-plan.md) | open |
 | 10 | Model tiers | open |
 
 ## Desktop steps (towards the owner's macOS-like goal)

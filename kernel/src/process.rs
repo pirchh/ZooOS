@@ -7546,6 +7546,24 @@ impl Scheduler {
                 }
             }
             sys::CPU_COUNT => Outcome::Ret(i64::from(crate::smp::online())),
+            sys::AUDIO_WRITE => {
+                // Any program may play sound (docs/audio-design.md).
+                let len = a2 as usize;
+                if len > zoo_abi::AUDIO_WRITE_MAX {
+                    return err(Error::Inval);
+                }
+                if !ok(a1, a2, false) {
+                    return err(Error::Fault);
+                }
+                // SAFETY: a checked, mapped user range of `len` bytes in
+                // the active address space; only read.
+                let samples = unsafe { core::slice::from_raw_parts(a1 as *const u8, len) };
+                match crate::virtio_sound::write(samples) {
+                    Ok(n) => Outcome::Ret(n as i64),
+                    Err("no-sound-device") => err(Error::NotFound),
+                    Err(_) => err(Error::Busy),
+                }
+            }
             sys::SET_BACKGROUND => {
                 // a1 = 1: this program runs only when nothing else is
                 // ready (docs/stage2-design.md); 0: back to normal.
