@@ -35,9 +35,38 @@ pub fn typed_command(text: &str) -> bool {
     // and "and" are part of the command.
     words.all(|w| {
         (first == "move" && w.eq_ignore_ascii_case("to"))
-            || (first == "split" && w.eq_ignore_ascii_case("and"))
+            || (matches!(
+                first,
+                "split" | "launch" | "maximize" | "minimize" | "close"
+            ) && w.eq_ignore_ascii_case("and"))
             || !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w))
     })
+}
+
+/// `text` without a leading "hey Bella", "Bella," or "ok Bella": how a
+/// spoken request starts (docs/multi-step-design.md). "hey Bella" alone
+/// stays as it is (a greeting).
+pub fn strip_address(text: &str) -> &str {
+    let t = text.trim();
+    for lead in [
+        "hey bella",
+        "hi bella",
+        "ok bella",
+        "okay bella",
+        "hello bella",
+        "bella",
+    ] {
+        if t.len() > lead.len()
+            && t[..lead.len()].eq_ignore_ascii_case(lead)
+            && !t.as_bytes()[lead.len()].is_ascii_alphanumeric()
+        {
+            let rest = t[lead.len()..].trim_start_matches([',', ' ', '!', '.', ':']);
+            if !rest.is_empty() {
+                return rest;
+            }
+        }
+    }
+    t
 }
 
 /// Greetings, thanks and questions about Bella herself: answered in words
@@ -91,7 +120,34 @@ pub fn question_about_answer(text: &str) -> bool {
         .split(|c: char| !c.is_ascii_alphabetic())
         .find(|w| !w.is_empty())
         .unwrap_or("");
-    follow_up(text) && ASKING.iter().any(|a| a.eq_ignore_ascii_case(first))
+    follow_up(text) && ASKING.iter().any(|a| a.eq_ignore_ascii_case(first)) && !polite_request(text)
+}
+
+/// "can you split these windows", "could you put them side by side": a
+/// request asked politely, not a question about the last answer
+/// (docs/multi-step-design.md).
+fn polite_request(text: &str) -> bool {
+    const ACTIONS: [&str; 26] = [
+        "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch",
+        "maximize", "maximise", "minimize", "minimise", "close", "split", "tile", "put", "show",
+        "hide", "start", "quit", "make", "find", "delete", "rename", "arrange",
+    ];
+    let mut words = text
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .filter(|w| !w.is_empty());
+    let (Some(a), Some(b), Some(c)) = (words.next(), words.next(), words.next()) else {
+        return false;
+    };
+    let c = if c.eq_ignore_ascii_case("please") {
+        words.next().unwrap_or("")
+    } else {
+        c
+    };
+    ["can", "could", "would", "will"]
+        .iter()
+        .any(|w| w.eq_ignore_ascii_case(a))
+        && b.eq_ignore_ascii_case("you")
+        && ACTIONS.iter().any(|w| w.eq_ignore_ascii_case(c))
 }
 
 /// "remember that X", "remember X", "note that X", "don't forget X": the
@@ -281,6 +337,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn polite_requests_are_requests() {
+        assert!(!question_about_answer("can you split these 2 windows"));
+        assert!(!question_about_answer(
+            "could you please put them side by side"
+        ));
+        assert!(question_about_answer("is that it?"));
+        assert!(question_about_answer("can you tell me more about that?"));
+    }
+
+    #[test]
+    fn address() {
+        assert_eq!(
+            strip_address("hey bella split these 2 windows"),
+            "split these 2 windows"
+        );
+        assert_eq!(strip_address("Bella, open notes"), "open notes");
+        assert_eq!(strip_address("hey bella"), "hey bella");
+        assert_eq!(strip_address("bellamy is here"), "bellamy is here");
+        assert_eq!(strip_address("open notes"), "open notes");
+    }
+
+    #[test]
     fn typed_commands() {
         for t in [
             "search pancake",
@@ -303,6 +381,7 @@ mod tests {
             "split Files",
             "split",
             "split files, notes and network",
+            "launch notes and files",
         ] {
             assert!(typed_command(t), "{t}");
         }

@@ -199,6 +199,7 @@ lands as small, separately verified steps.
 | — | Broad access: read, open, move/undo, trash (asks), launch, info; names resolved against real files (docs/access-design.md) | done 2026-11-03 |
 | — | Bella remembers facts the user tells her (on disk), answers from them, forgets on request with confirmation (docs/facts-design.md) | done 2026-11-03 |
 | 4 | Bella sees the screen: "what am I working on?" answered from the window server's snapshot (docs/context-design.md) | done 2026-11-03 |
+| 4 | Requests of several steps: "open notes and files, then put them side by side" in two choices of about 0.8 s each; "it" names the apps before (docs/multi-step-design.md) | done 2026-11-04 |
 | 4 | Tiling: "put notes on the left and the assistant on the right", "split these 2 windows", three apps, two windows of one app; apps read from the request (docs/tiling-design.md) | done 2026-11-03 |
 | 4 | Window actions: Bella maximizes, minimizes and closes apps; "open notes and maximize it on my screen" in 0.55–0.59 s with 8 processors (docs/window-actions-design.md) | done 2026-11-03 |
 | 4 | The action and event interface: app action manifests, `do:` invocations, event subscribers | open |

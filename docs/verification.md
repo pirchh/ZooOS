@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-tiling section (version 0.102.0), the USB-models section (0.101.0),
+multi-step section (version 0.103.0), the tiling section (0.102.0),
+the USB-models section (0.101.0),
 the window-actions section
 (0.100.0), the keys-under-load section (0.99.0) and the default-model
 section (0.98.0) are the current state. Sections before it
@@ -44,6 +45,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Requests of several steps (version 0.103.0)
+
+docs/multi-step-design.md.
+
+| Case | Result |
+| --- | --- |
+| `bella-steps` (TCG, typed) | `OK`: 2 steps each; "it" → `maximize Notes` |
+| `bella-steps` with `resolve_it` disabled (negative control) | `FAIL`: no `Bella: step: maximize Notes` within 120 s |
+| `bella-steps-model` (`--accel whpx --cpus 8`) | `OK` 3 of 3: ``chose launch `Notes and Files` ``, ``chose split `Notes and Files` ``; 785–861 ms and 770–871 ms per step (1936–2071 ms for step 2 before the note was deferred) |
+| `assist-check` (Qwen3) | `PASS`: 32 of 34, 0 of 8 |
+| `bella-tiling-model` with "hey bella can you split these 2 windows" | `OK`: ``chose split `` ``; before the fixes it was answered as small talk, then as a question about the last answer |
+| `cargo test -p zoo-abi` | 27 passed (new `address`, `polite_requests_are_requests`) |
 
 ## Tiling (version 0.102.0)
 
