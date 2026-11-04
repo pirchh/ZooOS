@@ -935,6 +935,56 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-one",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "Bella is one (docs/one-bella-design.md): `split bella and bella and files` and Ctrl+N on her window never open a second Bella; the owner's demo opened three, each loading a model",
+            interaction: Some(bella_one_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "claim",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run lynx-test",
+                    "ZOO_OS PROC start pid=26 name=lynx-test",
+                    "ZOO_OS PROC start pid=27 name=lynx-test",
+                    "ZOO_OS PROC exit pid=27 name=lynx-test code=0",
+                    "ZOO_OS PROC exit pid=26 name=lynx-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 2,
+            want: "pass",
+            purpose: "the CLAIM system call (docs/one-bella-design.md): LynxTest claims a name, a copy of it is refused the same name while it lives, and the name is released at exit",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run lynx-test")),
+                    // INFO lines are not expectation markers: waited for here.
+                    Action::WaitContains("ZOO_OS INFO claim name=lynx pid=26".into()),
+                    Action::WaitContains(
+                        "ZOO_OS INFO claim refused name=lynx pid=27 holder=26".into(),
+                    ),
+                    Action::WaitContains("LynxTest: a second claim of lynx was refused".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=lynx-test code=0".into()),
+                    // Released as the holder is reaped, after its exit line.
+                    Action::WaitContains("ZOO_OS INFO claim released name=lynx pid=26".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-notes",
             mode: Mode::Normal,
             custom_image: None,
@@ -6208,6 +6258,33 @@ fn bella_events_steps() -> Interaction {
 }
 
 /// `bella-actions`: a line written in Notes for Bella.
+/// `bella-one` (docs/one-bella-design.md): typed, so no model.
+fn bella_one_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // Ctrl+N on Bella (she has the keyboard): her one window, not a new one.
+    steps.push(Action::Keys(vec!["ctrl+n"]));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: Bella is one; showing her window".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // A split naming her twice: one Bella column, then Files.
+    steps.push(Action::Keys(typed("split bella and bella and files")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Bella at 24x38".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Files at".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("new window Bella".into()));
+    steps.push(Action::NeverSeen("another Bella is running".into()));
+    steps.push(Action::Screenshot("one-bella"));
+    Interaction { steps }
+}
+
 /// `bella-notes` (docs/registry-design.md): typed commands, so no model;
 /// Notes comes to the front for each action, so Bella is clicked again
 /// before the next.
@@ -6987,7 +7064,8 @@ fn check_any_case(img: &screen::Image) -> Result<String, String> {
 fn memory_guard_expectation(normal: &Expectation) -> Expectation {
     let mut e = normal.clone();
     e.then(&[
-        "ZOO_OS SHELL line=put .assistant-memory where is my music\\tundo",
+        "ZOO_OS SHELL line=put .bella-memory where is my music\\tlist Music",
+        "ZOO_OS SHELL line=put .bella-learned where is my music\\tundo",
         "ZOO_OS SHELL line=desktop",
         "ZOO_OS PROC start pid=26 name=zookeeper",
         "ZOO_OS PROC start pid=27 name=peacock-handler",
@@ -7013,13 +7091,20 @@ fn memory_guard_expectation(normal: &Expectation) -> Expectation {
 
 fn memory_guard_steps() -> Interaction {
     let mut steps = vec![Action::WaitFor("ZOO_OS SHELL ready".into())];
-    // B4: a line planted in the memory file (any program with home can
-    // write it), pairing a request with `undo`. It goes under the name
-    // used before Bella, so the move to `.bella-memory` is checked too.
+    // What was learned before 0.116.0 had no confirmation: a sound
+    // entry in the old file is set aside, never recalled
+    // (docs/one-bella-design.md).
     steps.push(Action::Keys(typed(
-        "put .assistant-memory where is my music\\tundo",
+        "put .bella-memory where is my music\\tlist Music",
     )));
     steps.push(Action::WaitContains("saved".into()));
+    steps.push(Action::Settle(QUIET));
+    // B4: a line planted in the memory file (any program with home can
+    // write it), pairing a request with `undo`.
+    steps.push(Action::Keys(typed(
+        "put .bella-learned where is my music\\tundo",
+    )));
+    steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("desktop")));
     steps.push(Action::WaitFor(
         "ZOO_OS PROC start pid=30 name=bella".into(),
@@ -7030,11 +7115,12 @@ fn memory_guard_steps() -> Interaction {
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Keys(typed("where is my music")));
     steps.push(Action::WaitContains(
-        "OtterHandler: moved .assistant-memory to .bella-memory".into(),
+        "OtterHandler: set aside .bella-memory as .bella-memory-unconfirmed".into(),
     ));
     steps.push(Action::WaitContains(
         "Bella: ignored remembered `undo`".into(),
     ));
+    steps.push(Action::NeverSeen("recalled `list Music`".into()));
     steps.push(Action::Settle(QUIET));
     // B3: no model in this image, so the request stays unanswered; a
     // search that finds nothing must not answer it.

@@ -251,6 +251,9 @@ const DOCK_FILE: &str = ".dock";
 
 /// Applications, in dock order; Notes is the last.
 const PROGRAMS: usize = 5;
+/// Programs that never get a second window: each window would be another
+/// process (docs/one-bella-design.md).
+const SINGLE: [&str; 1] = ["bella"];
 const NOTES: usize = 3;
 const NETWORK: usize = 4;
 /// Window slots (docs/u3-design.md): the first `PROGRAMS` are each
@@ -3325,6 +3328,22 @@ impl Desktop {
         if !self.program_running(prog) {
             self.dock_click(prog);
             return Some(prog);
+        }
+        // Bella is one (docs/one-bella-design.md): another window of her
+        // would be another Bella, with its own model. Her window instead.
+        if SINGLE.contains(&CATALOG[prog].1) {
+            let w = self.front_window_of(prog, |a| a.running);
+            if let Some(w) = w {
+                if self.apps[w].minimized {
+                    self.restore(w);
+                }
+                self.set_focus(w);
+                zoo_rt::log!(
+                    "PeacockHandler: {} is one; showing her window",
+                    self.apps[w].label
+                );
+            }
+            return w;
         }
         let base = self
             .order

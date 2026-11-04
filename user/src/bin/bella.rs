@@ -179,6 +179,9 @@ struct App {
     bat: Option<Handle>,
     /// What apps can do for her (docs/registry-design.md).
     registry: zoo_infer::registry::Registry,
+    /// The command being run corrects an earlier wrong answer (typed by
+    /// the user): it may be learned.
+    correction: bool,
 }
 
 /// Most bytes of an exchange kept for the conversation (the engine's
@@ -232,6 +235,12 @@ fn backoff(failures: u32) -> u64 {
 }
 
 fn main(chan: u64, home: u64) -> u8 {
+    // Bella is one (docs/one-bella-design.md): a second one would load a
+    // second model and fight for the microphone. It leaves at once.
+    if zoo_rt::claim("bella").is_err() {
+        let _ = zoo_rt::log("Bella: another Bella is running; this one leaves");
+        return 0;
+    }
     let mut p = App {
         win: Window::new(chan),
         status: String::from(HINT),
@@ -266,6 +275,7 @@ fn main(chan: u64, home: u64) -> u8 {
         magpie: None,
         magpie_ready: false,
         bat: None,
+        correction: false,
         registry: {
             let (reg, skipped) = zoo_rt::registry::load();
             for s in &skipped {
@@ -546,6 +556,9 @@ impl App {
         if zoo_abi::bella::typed_command_with(text, |w| self.registry.find_word(w).is_some()) {
             // Typed by the user: it may answer an earlier request.
             self.request = self.unanswered.take();
+            // A typed command after a wrong answer: the user's own
+            // correction, the one thing she learns from for now.
+            self.correction = self.request.is_some();
             self.command(text);
             self.answered("a typed command");
             self.exchanged(text, text);
@@ -691,6 +704,14 @@ impl App {
     /// A command, typed or chosen. `create` asks first; others that work
     /// teach the memory the request they answer.
     fn command(&mut self, text: &str) {
+        // Words instead of an action: what she cannot do yet, or what she
+        // needs to know (docs/one-bella-design.md).
+        if let Some(said) = text.strip_prefix("say ") {
+            zoo_rt::log!("Bella: says: {}", said);
+            self.say(said);
+            self.request = None;
+            return;
+        }
         if let Some(path) = text.strip_prefix("create ") {
             let path = String::from(path.trim());
             let mut plan = String::from("plan ");
@@ -1121,6 +1142,16 @@ impl App {
         let Some(request) = self.request.take() else {
             return;
         };
+        // Only what the user confirmed (docs/one-bella-design.md): her own
+        // choices taught her wrong mappings in the owner's demo.
+        if !core::mem::take(&mut self.correction) {
+            zoo_rt::log!(
+                "Bella: not learned `{}` -> `{}` (not confirmed)",
+                request,
+                command
+            );
+            return;
+        }
         if !recallable(command) {
             return;
         }

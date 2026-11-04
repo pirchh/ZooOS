@@ -26,7 +26,7 @@ pub mod ui;
 /// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
 /// and command lines in `spawn`; version 17 (fast files step 1) added
 /// calls 59-61.
-pub const ABI_VERSION: u64 = 20;
+pub const ABI_VERSION: u64 = 21;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -173,7 +173,16 @@ pub mod sys {
     /// starts the microphone and makes the caller its owner until it
     /// exits; another program gets `BUSY`. `NOT_FOUND` without one.
     pub const AUDIO_READ: u64 = 80;
+    /// Claims a name for this process alone (docs/one-bella-design.md):
+    /// `a1` the name, `a2` its length (at most `MAX_CLAIM`). 0 when this
+    /// process now holds it (or already did), `BUSY` while another live
+    /// process holds it. Released when the holder exits. Bella claims
+    /// "bella", so a second Bella never runs.
+    pub const CLAIM: u64 = 82;
 }
+
+/// The longest name `CLAIM` takes.
+pub const MAX_CLAIM: usize = 32;
 
 /// The most bytes one `AUDIO_READ` copies.
 pub const AUDIO_READ_MAX: usize = 64 * 1024;

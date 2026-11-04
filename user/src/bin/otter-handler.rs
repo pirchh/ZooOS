@@ -35,7 +35,11 @@ const TRASH: &str = ".Trash";
 
 /// The assistant's memory of requests and the commands that answered them
 /// (docs/a2-design.md): `request<TAB>command` lines, newest last.
-const MEMORY: &str = ".bella-memory";
+const MEMORY: &str = ".bella-learned";
+/// What she learned before 0.116.0, without confirmation: set aside at
+/// start, never read (docs/one-bella-design.md).
+const UNCONFIRMED: &str = ".bella-memory";
+const SET_ASIDE: &str = ".bella-memory-unconfirmed";
 /// What the user told Bella to remember, one fact per line
 /// (docs/facts-design.md).
 const FACTS: &str = ".bella-facts";
@@ -167,11 +171,18 @@ fn main(chan: u64, home: u64) -> u8 {
         journal: Vec::new(),
         moved: None,
     };
-    // Keep what the Assistant learned before it was renamed Bella.
-    if dir_stat(home, MEMORY) == Err(Error::NotFound)
-        && zoo_rt::rename(home, OLD_MEMORY, MEMORY).is_ok()
-    {
-        let _ = zoo_rt::log("OtterHandler: moved .assistant-memory to .bella-memory");
+    // What she learned before 0.116.0 was not confirmed by the user (it
+    // held wrong mappings): set aside, kept but never read.
+    for old in [UNCONFIRMED, OLD_MEMORY] {
+        if dir_stat(home, SET_ASIDE) == Err(Error::NotFound)
+            && zoo_rt::rename(home, old, SET_ASIDE).is_ok()
+        {
+            zoo_rt::log!(
+                "OtterHandler: set aside {} as {} (learned without confirmation)",
+                old,
+                SET_ASIDE
+            );
+        }
     }
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     // The heap's peak is logged each time it passes another 64 KiB

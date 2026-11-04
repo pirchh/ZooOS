@@ -112,6 +112,10 @@ pub enum Tool {
     Show,
     /// About the computer; no argument.
     Info,
+    /// Words instead of an action, never chosen by the model's scores:
+    /// what cannot be done yet, or a question for what is missing
+    /// (docs/one-bella-design.md).
+    Say,
     /// No command fits the request (docs/stage1-design.md, B9).
     Nothing,
 }
@@ -163,6 +167,7 @@ impl Tool {
             Tool::App(_) => "app",
             Tool::Show => "show",
             Tool::Info => "info",
+            Tool::Say => "say",
             Tool::Nothing => "none",
         }
     }
@@ -509,6 +514,42 @@ impl<'m, 't> Bella<'m, 't> {
         // order, comes from the request's own words (the model's argument
         // put them in the prompt's order; docs/tiling-design.md).
         if tool == Tool::Split {
+            // Columns only, so far: say so rather than guess
+            // ("two on top and one on the bottom" maximized Files).
+            if let Some(why) = layout_unsupported(request) {
+                return Ok(Choice {
+                    word: String::new(),
+                    tool: Tool::Say,
+                    arg: String::from(why),
+                    margin,
+                    request_tokens: ids.len(),
+                    arg_tokens: 0,
+                });
+            }
+            // "three ways" with fewer apps named: ask which.
+            if let Some(n) = split_ways(request) {
+                let named = split_request(request).unwrap_or_default();
+                let count = if named.is_empty() {
+                    0
+                } else {
+                    named.split(" and ").count()
+                };
+                if count < n && !(count == 0 && n == 2) {
+                    let heard = if named.is_empty() {
+                        String::new()
+                    } else {
+                        alloc::format!(" I heard {named}.")
+                    };
+                    return Ok(Choice {
+                        word: String::new(),
+                        tool: Tool::Say,
+                        arg: alloc::format!("Which {n} apps should I put side by side?{heard}"),
+                        margin,
+                        request_tokens: ids.len(),
+                        arg_tokens: 0,
+                    });
+                }
+            }
             return Ok(match split_request(request) {
                 Some(arg) => Choice {
                     word: String::new(),
@@ -646,9 +687,13 @@ pub fn split_apps(arg: &str) -> Option<String> {
         } else {
             continue;
         };
+        // Bella is one (docs/one-bella-design.md).
+        if app == "Bella" && apps.contains(&"Bella") {
+            continue;
+        }
         apps.push(app);
     }
-    (apps.len() <= 3).then(|| apps.join(" and "))
+    (apps.len() <= 4).then(|| apps.join(" and "))
 }
 
 /// The apps `text` names, in order: Files (or "Finder"), Notes, Network,
@@ -809,10 +854,18 @@ pub fn split_request(request: &str) -> Option<String> {
             2
         } else if is("three") || is("3") {
             3
+        } else if is("four") || is("4") {
+            4
         } else {
             0
         };
-        if count > 0 {
+        // "three ways" counts columns (`split_ways`), not copies of the
+        // next app named: "split it three ways with Bella" made three
+        // Bellas (docs/one-bella-design.md).
+        let ways = words
+            .get(k + 1)
+            .is_some_and(|n| WAYS.iter().any(|w| n.eq_ignore_ascii_case(w)));
+        if count > 0 && !ways {
             times = count;
             continue;
         }
@@ -824,7 +877,8 @@ pub fn split_request(request: &str) -> Option<String> {
             LAUNCHABLE.iter().copied().find(|a| is(a))
         };
         if let Some(a) = app {
-            if times > 1 {
+            // Bella is one: never two columns of her.
+            if times > 1 && a != "Bella" {
                 for _ in 0..times {
                     apps.push((a, 3));
                 }
@@ -848,7 +902,7 @@ pub fn split_request(request: &str) -> Option<String> {
             };
         }
     }
-    if apps.len() > 3 {
+    if apps.len() > 4 {
         return None;
     }
     // Every app given a side: by side; else as spoken.
@@ -857,6 +911,53 @@ pub fn split_request(request: &str) -> Option<String> {
     }
     let names: Vec<&str> = apps.iter().map(|a| a.0).collect();
     Some(names.join(" and "))
+}
+
+/// Words after a number that make it a count of columns ("three ways").
+const WAYS: [&str; 5] = ["ways", "way", "columns", "parts", "pieces"];
+
+/// The columns a split request asks for ("three ways", "4 columns").
+pub fn split_ways(request: &str) -> Option<usize> {
+    let words: Vec<&str> = request
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.windows(2).find_map(|p| {
+        if !WAYS.iter().any(|w| p[1].eq_ignore_ascii_case(w)) {
+            return None;
+        }
+        ["two", "three", "four"]
+            .iter()
+            .position(|n| p[0].eq_ignore_ascii_case(n))
+            .map(|k| k + 2)
+            .or_else(|| p[0].parse().ok().filter(|n| (2..=4).contains(n)))
+    })
+}
+
+/// Why a split request asks for a layout the window server cannot make
+/// yet (rows, quarters, corners); `None` for columns.
+pub fn layout_unsupported(request: &str) -> Option<&'static str> {
+    const ROWS: [&str; 15] = [
+        "top",
+        "bottom",
+        "above",
+        "below",
+        "quadrant",
+        "quadrants",
+        "quarter",
+        "quarters",
+        "corner",
+        "corners",
+        "grid",
+        "row",
+        "rows",
+        "stacked",
+        "vertically",
+    ];
+    request
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|w| ROWS.iter().any(|r| w.eq_ignore_ascii_case(r)))
+        .then_some("I can only put windows side by side so far; rows and quarters come later.")
 }
 
 /// The ChatML text before the user's request, with `system`.
@@ -892,6 +993,35 @@ mod tests {
             Some("http://example.org/news")
         );
         assert_eq!(address_in("open my notes"), None);
+    }
+
+    #[test]
+    fn splits_from_the_owner_demo() {
+        // "three ways" is columns, and Bella is one (docs/one-bella-design.md).
+        assert_eq!(
+            split_request("split it three ways with Bella's the third window").unwrap(),
+            "Bella"
+        );
+        assert_eq!(
+            split_ways("split it three ways with Bella's the third window"),
+            Some(3)
+        );
+        assert_eq!(split_request("split two bella windows").unwrap(), "Bella");
+        assert_eq!(
+            split_request("put two finder windows side by side").unwrap(),
+            "Files and Files"
+        );
+        assert_eq!(
+            split_request("split two files windows, notes and network").unwrap(),
+            "Files and Files and Notes and Network"
+        );
+        assert_eq!(split_ways("split the screen 4 ways"), Some(4));
+        assert_eq!(split_ways("split these two windows"), None);
+        assert!(
+            layout_unsupported("split it three ways, two on top and one on the bottom").is_some()
+        );
+        assert!(layout_unsupported("split the screen into quarters").is_some());
+        assert!(layout_unsupported("put notes on the left and files on the right").is_none());
     }
 
     #[test]
@@ -940,7 +1070,12 @@ mod tests {
             Some("Files and Notes and Network")
         );
         assert_eq!(s("Bella, tile my windows").as_deref(), Some(""));
-        assert_eq!(s("files notes network and the assistant"), None);
+        // Four columns since docs/one-bella-design.md; five are too many.
+        assert_eq!(
+            s("files notes network and the assistant").as_deref(),
+            Some("Files and Notes and Network and Bella")
+        );
+        assert_eq!(s("two files two notes and network"), None);
         assert_eq!(
             s("put two Files windows side by side").as_deref(),
             Some("Files and Files")
@@ -973,7 +1108,16 @@ mod tests {
             split_apps("Files, Notes and Network").as_deref(),
             Some("Files and Notes and Network")
         );
-        assert_eq!(split_apps("Notes Files Network Bella"), None);
+        // Four columns since docs/one-bella-design.md; Bella once.
+        assert_eq!(
+            split_apps("Notes Files Network Bella").as_deref(),
+            Some("Notes and Files and Network and Bella")
+        );
+        assert_eq!(
+            split_apps("bella and bella and files").as_deref(),
+            Some("Bella and Files")
+        );
+        assert_eq!(split_apps("Notes Files Network Files Notes"), None);
     }
 
     #[test]
