@@ -30,3 +30,6 @@
 /tools/alpine/*.tar.gz*
 /tools/wine/*.tar.xz*
 /tools/wine/*/
+# Downloaded voice models (see tools/models/README.md, "Voice")
+/tools/models/voice/**
+!/tools/models/voice/*.sha256

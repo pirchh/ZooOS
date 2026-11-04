@@ -1,6 +1,8 @@
 # Voice plan: proposal for the owner (2026-11-04)
 
-Status: **a proposal; nothing here is downloaded or decided.** The owner's
+Status: **approved by the owner on 2026-11-04** as recommended: Moonshine
+Tiny, Kokoro-82M (CC BY attribution accepted), Silero VAD; no espeak-ng,
+no openWakeWord (DECISIONS.md, "Voice models"). Written as a proposal; the owner's
 end goal is "Hey Bella, open Notes and maximize it on my screen", spoken,
 with Bella answering aloud (docs/bella-roadmap.md, Stage 9). Window
 actions, tiling, several steps, monitors and app actions are done; playback

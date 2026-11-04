@@ -97,3 +97,33 @@ To fetch the default model on a new machine (about 430 MB):
 
 Builds and verify cases that need the model say so and fail with a clear
 message if the file is missing or its hash does not match.
+
+## Voice
+
+The owner approved the voice plan on 2026-11-04 (docs/voice-plan.md,
+DECISIONS.md "Voice models"): Moonshine Tiny for speech to text, Kokoro-82M
+for speech, Silero VAD (fetched when voice detection is built). Not
+committed; `tools/models/voice/*.sha256` pin every file
+(`sha256sum -c` inside `tools/models/voice`).
+
+| Field | Moonshine Tiny | Kokoro-82M |
+| --- | --- | --- |
+| Use | speech to text | text to speech (voice `af_bella`) |
+| Source | https://huggingface.co/moonshine-ai/moonshine-tiny (was `UsefulSensors/`) | https://huggingface.co/hexgrad/Kokoro-82M |
+| Pinned commit | `390624ed33d594443aa4aa221f5b9f283b545b5a` | `f3ff3571791e39611d31c381e3a41a3af07b4987` |
+| Weights | `model.safetensors`, 108,389,192 bytes, F32 | `kokoro-v1_0.pth`, 327,212,226 bytes; `voices/af_bella.pt`, 523,425 bytes |
+| SHA-256 | `867cd221…48c736` (matches the LFS id) | `496dba11…18ad1e4`, `8cb64e02…8e48d6` (match the LFS ids) |
+| Licence | MIT (model card) | Apache-2.0 (model card); training data includes CC BY sources, credited as the model card asks |
+
+    M=https://huggingface.co/moonshine-ai/moonshine-tiny/resolve/390624ed33d594443aa4aa221f5b9f283b545b5a
+    for f in model.safetensors config.json tokenizer.json preprocessor_config.json generation_config.json; do
+      curl -fL -o tools/models/voice/moonshine-tiny/$f $M/$f; done
+    K=https://huggingface.co/hexgrad/Kokoro-82M/resolve/f3ff3571791e39611d31c381e3a41a3af07b4987
+    for f in kokoro-v1_0.pth config.json voices/af_bella.pt; do
+      curl -fL -o tools/models/voice/kokoro-82m/$f $K/$f; done
+
+The safetensors Moonshine replaces the plan's ONNX files: the same model
+and licence, but a plain format (a JSON header and raw tensors) that the
+NumPy reference and the Rust engine read without an ONNX runtime.
+`kokoro-v1_0.pth` is a PyTorch zip; it is read as data (its tensors), never
+unpickled with code execution.
