@@ -408,6 +408,37 @@ pub const SENTENCES: [(&str, &str); 4] = [
 /// The host voices (Windows' System.Speech), each saying every sentence.
 pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Desktop"];
 
+/// What the microphone cases play: this voice's `open-notes` recording
+/// (docs/microphone-design.md).
+pub const MIC_SENTENCE: &str = "Hey Bella, open notes and maximize it.";
+const MIC_VOICE: usize = 1;
+
+/// The raw microphone input (16-bit mono at 16 kHz) for a `mic-` case:
+/// one second of silence, the recording, two seconds of silence; or, with
+/// `silent`, the same length of silence (the negative case).
+pub fn mic_input(root: &Path, silent: bool) -> Result<PathBuf, String> {
+    make_recordings(root)?;
+    let wav_file = wav_path(root, MIC_VOICE, "open-notes");
+    let wav = read(&wav_file)?;
+    let pcm = zoo_infer::hear::wav_samples(&wav)
+        .ok_or(format!("{}: not 16 kHz mono 16-bit", wav_file.display()))?;
+    let second = 2 * zoo_infer::hear::RATE;
+    let mut raw = vec![0u8; second];
+    if silent {
+        raw.resize(raw.len() + pcm.len(), 0);
+    } else {
+        raw.extend_from_slice(pcm);
+    }
+    raw.resize(raw.len() + 2 * second, 0);
+    let out = wav_dir(root).join(if silent {
+        "mic-silence.raw"
+    } else {
+        "mic-in.raw"
+    });
+    std::fs::write(&out, &raw).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    Ok(out)
+}
+
 /// Where the recordings go (made, not committed: build/ is ignored).
 pub fn wav_dir(root: &Path) -> PathBuf {
     root.join("build/voice")

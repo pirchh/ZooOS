@@ -306,6 +306,20 @@ pub fn audio_write(samples: &[u8]) -> Result<usize, Error> {
     .map(|n| n as usize)
 }
 
+/// What the microphone recorded since the last call (16-bit mono at
+/// 16 kHz), into `buf`; the bytes copied, 0 when nothing new is there
+/// (docs/microphone-design.md). The first call starts recording.
+pub fn audio_read(buf: &mut [u8]) -> Result<usize, Error> {
+    let len = buf.len().min(zoo_abi::AUDIO_READ_MAX);
+    result(syscall(
+        sys::AUDIO_READ,
+        buf.as_mut_ptr() as u64,
+        len as u64,
+        0,
+    ))
+    .map(|n| n as usize)
+}
+
 pub fn cpu_count() -> usize {
     result(syscall(sys::CPU_COUNT, 0, 0, 0)).map_or(1, |n| n.max(1) as usize)
 }

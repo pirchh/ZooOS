@@ -1827,3 +1827,18 @@ Version 0.110.0. Design: docs/hearing-design.md.
   cases are skipped, as the Wine cases are without their export.
 - **The model and recordings in a dedicated boot image** for now; the
   model disk keeps its two models until hearing has a microphone to serve.
+
+## Microphone (2026-11-04)
+
+Version 0.111.0. Design: docs/microphone-design.md.
+
+- **16 kHz mono from the device,** the format speech to text reads, so the
+  guest never resamples.
+- **Reads never wait; a two-second ring** drops the oldest samples when
+  nobody reads, as playback never waits for the speaker.
+- **One owner,** the first reader, until it exits; recording stops with
+  it. The hearing service is meant to claim it at start.
+- **SDL's disk driver as the test microphone,** with QEMU's mixing engine
+  off: the only QEMU input on Windows that reads a file, and with the
+  engine on the samples were changed. The PC's own microphone is never
+  used.

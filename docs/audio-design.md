@@ -51,8 +51,7 @@ buffer is in use (the caller sleeps a tick and tries again),
 
 ## Not done
 
-- Recording (the receive queue): QEMU's WAV backend cannot feed a
-  microphone, so a recording test needs another way in
-  (docs/voice-plan.md §4).
+- Recording: done since 0.111.0 (docs/microphone-design.md), fed by
+  SDL's disk driver.
 - Intel HD Audio for real PCs; volume; mixing several programs' sound
   (one at a time for now); interrupts instead of polling.

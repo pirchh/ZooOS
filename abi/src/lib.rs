@@ -27,7 +27,7 @@ pub mod ui;
 /// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
 /// and command lines in `spawn`; version 17 (fast files step 1) added
 /// calls 59-61.
-pub const ABI_VERSION: u64 = 19;
+pub const ABI_VERSION: u64 = 20;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -167,7 +167,17 @@ pub mod sys {
     /// for the speaker; `NOT_FOUND` without a sound device, `BUSY` if it
     /// refused to start.
     pub const AUDIO_WRITE: u64 = 79;
+    /// Records from the microphone (docs/microphone-design.md): copies
+    /// what was recorded since the last call (16-bit mono at 16 kHz) into
+    /// `a1`, at most `a2` bytes (`AUDIO_READ_MAX`). Returns the bytes
+    /// copied, 0 when nothing new is there, never waiting. The first call
+    /// starts the microphone and makes the caller its owner until it
+    /// exits; another program gets `BUSY`. `NOT_FOUND` without one.
+    pub const AUDIO_READ: u64 = 80;
 }
+
+/// The most bytes one `AUDIO_READ` copies.
+pub const AUDIO_READ_MAX: usize = 64 * 1024;
 
 /// The most bytes one `AUDIO_WRITE` looks at.
 pub const AUDIO_WRITE_MAX: usize = 64 * 1024;

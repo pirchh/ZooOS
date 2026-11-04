@@ -1,5 +1,5 @@
-//! virtio-sound playback over the modern virtio PCI transport
-//! (docs/audio-design.md).
+//! virtio-sound playback and recording over the modern virtio PCI
+//! transport (docs/audio-design.md, docs/microphone-design.md).
 //!
 //! Output stream 0, 16-bit stereo at 48 kHz. The device takes the samples
 //! at playing speed, so a write never waits for it: `write` copies what
@@ -7,6 +7,11 @@
 //! and returns how many bytes it took; buffers the device has played are
 //! taken back on the next call. The control queue's few requests (set up,
 //! prepare, start) are synchronous and bounded.
+//!
+//! Recording: input stream 1, 16-bit mono at 16 kHz (what speech to text
+//! reads). Every receive buffer stays queued; one the device has filled is
+//! copied into a two-second ring and handed straight back, so `read` never
+//! waits either. When the ring is full the oldest samples are dropped.
 
 use crate::kprintln;
 use crate::memory::Memory;
@@ -46,11 +51,26 @@ const R_PCM_INFO: u32 = 0x0100;
 const R_PCM_SET_PARAMS: u32 = 0x0101;
 const R_PCM_PREPARE: u32 = 0x0102;
 const R_PCM_START: u32 = 0x0104;
+const R_PCM_STOP: u32 = 0x0105;
+const R_PCM_RELEASE: u32 = 0x0103;
 const S_OK: u32 = 0x8000;
 /// `VIRTIO_SND_PCM_FMT_S16` and `VIRTIO_SND_PCM_RATE_48000`.
 const FMT_S16: u8 = 5;
 const RATE_48000: u8 = 7;
+/// `VIRTIO_SND_PCM_RATE_16000`.
+const RATE_16000: u8 = 3;
 const DIRECTION_OUTPUT: u8 = 0;
+const DIRECTION_INPUT: u8 = 1;
+/// The input stream QEMU's device has after its output stream.
+const INPUT_STREAM: u32 = 1;
+/// One receive period: 40 ms of 16-bit mono at 16 kHz.
+const RPERIOD: usize = 1280;
+/// Receive periods queued: 400 ms.
+const RBUFS: usize = 10;
+/// The recording ring: two seconds.
+const RING: usize = 64_000;
+/// Receive headers start here in the header page (transmit ones below).
+const RHDR: usize = 1024;
 
 /// One period: 25 ms of 16-bit stereo at 48 kHz.
 const PERIOD: usize = 4800;
@@ -60,6 +80,7 @@ const BUFS: usize = 8;
 /// Queues: control 0, event 1, tx 2, rx 3.
 const CONTROLQ: u16 = 0;
 const TXQ: u16 = 2;
+const RXQ: u16 = 3;
 const QUEUE_ENTRIES: u16 = 32;
 const SPINS: u64 = 200_000_000;
 
@@ -198,6 +219,11 @@ impl Queue {
     /// The head descriptor of the next used entry, if the device has
     /// returned one since the last.
     fn take_used(&mut self) -> Option<u32> {
+        self.take_used_len().map(|(id, _)| id)
+    }
+
+    /// As `take_used`, with the bytes the device wrote into the chain.
+    fn take_used_len(&mut self) -> Option<(u32, u32)> {
         if self.last_used == self.used_idx() {
             return None;
         }
@@ -205,9 +231,12 @@ impl Queue {
         let slot = usize::from(self.last_used % self.size);
         // SAFETY: used ring entry `slot` (id u32, len u32) after the
         // 4-byte header, inside this queue's ring page.
-        let id = unsafe { (self.ring.add(USED + 4 + 8 * slot) as *const u32).read_volatile() };
+        let (id, len) = unsafe {
+            let e = self.ring.add(USED + 4 + 8 * slot) as *const u32;
+            (e.read_volatile(), e.add(1).read_volatile())
+        };
         self.last_used = self.last_used.wrapping_add(1);
-        Some(id)
+        Some((id, len))
     }
 }
 
@@ -226,6 +255,22 @@ struct Sound {
     data: *mut u8,
     busy: [bool; BUFS],
     started: bool,
+    /// The input stream, when the device has one at 16 kHz mono.
+    input: Option<Input>,
+}
+
+/// Recording state (docs/microphone-design.md).
+struct Input {
+    rx: Queue,
+    /// `RBUFS` receive periods, contiguous.
+    data_phys: u64,
+    data: *mut u8,
+    /// Buffers the device holds.
+    queued: [bool; RBUFS],
+    recording: bool,
+    ring: alloc::collections::VecDeque<u8>,
+    /// Bytes dropped because nobody read them in time.
+    dropped: u64,
 }
 
 // SAFETY: the raw pointers point at this driver's own frames and mapped
@@ -252,8 +297,12 @@ pub fn init(mem: &mut Memory) -> bool {
     };
     match bring_up(mem, dev, func) {
         Ok(s) => {
+            let has_input = s.input.is_some();
             *SOUND.lock() = Some(s);
             kprintln!("ZOO_OS INFO sound virtio output 48000 Hz stereo s16");
+            if has_input {
+                kprintln!("ZOO_OS INFO sound virtio input 16000 Hz mono s16");
+            }
             true
         }
         Err(why) => {
@@ -324,9 +373,9 @@ fn bring_up(mem: &mut Memory, dev: u8, func: u8) -> Result<Sound, &'static str> 
         return Err("features-refused");
     }
     common.w16(MSIX_CONFIG, NO_VECTOR);
-    // The control and transmit queues; the event and receive queues are
-    // left disabled (nothing is captured yet).
-    let mut queues = [CONTROLQ, TXQ].map(|index| -> Result<Queue, &'static str> {
+    // The control, transmit and receive queues; the event queue is left
+    // disabled.
+    let mut queues = [CONTROLQ, TXQ, RXQ].map(|index| -> Result<Queue, &'static str> {
         let (ring_phys, ring) = page(mem, 1)?;
         Ok(Queue {
             index,
@@ -342,7 +391,7 @@ fn bring_up(mem: &mut Memory, dev: u8, func: u8) -> Result<Sound, &'static str> 
         let q = q.as_mut().map_err(|e| *e)?;
         common.w16(QUEUE_SELECT, q.index);
         let max = common.r16(QUEUE_SIZE);
-        if max < (3 * BUFS) as u16 {
+        if max < (3 * BUFS.max(RBUFS)) as u16 {
             return Err("queue-too-small");
         }
         q.size = max.min(QUEUE_ENTRIES);
@@ -355,7 +404,7 @@ fn bring_up(mem: &mut Memory, dev: u8, func: u8) -> Result<Sound, &'static str> 
         common.w16(QUEUE_ENABLE, 1);
     }
     common.w8(DEVICE_STATUS, s | STATUS_DRIVER_OK);
-    let [ctl, tx] = queues;
+    let [ctl, tx, rx] = queues;
     let (ctl_phys, ctl_page) = page(mem, 1)?;
     let (hdr_phys, hdr) = page(mem, 1)?;
     let (data_phys, data) = page(mem, (BUFS * PERIOD).div_ceil(4096))?;
@@ -370,6 +419,7 @@ fn bring_up(mem: &mut Memory, dev: u8, func: u8) -> Result<Sound, &'static str> 
         data,
         busy: [false; BUFS],
         started: false,
+        input: None,
     };
     // Stream 0 must be an output taking 16-bit samples at 48 kHz.
     let info = snd.control(&[R_PCM_INFO, 0, 1, 32], 4 + 32)?;
@@ -385,6 +435,29 @@ fn bring_up(mem: &mut Memory, dev: u8, func: u8) -> Result<Sound, &'static str> 
         || channels_max < 2
     {
         return Err("stream-0-not-48k-stereo-output");
+    }
+    // Stream 1, if it is an input taking 16-bit mono at 16 kHz.
+    if let Ok(info) = snd.control(&[R_PCM_INFO, INPUT_STREAM, 1, 32], 4 + 32) {
+        let formats = u64::from(info[2]) | u64::from(info[3]) << 32;
+        let rates = u64::from(info[4]) | u64::from(info[5]) << 32;
+        let direction = info[6] as u8;
+        let channels_min = (info[6] >> 8) as u8;
+        if direction == DIRECTION_INPUT
+            && formats & (1 << FMT_S16) != 0
+            && rates & (1 << RATE_16000) != 0
+            && channels_min <= 1
+        {
+            let (data_phys, data) = page(mem, (RBUFS * RPERIOD).div_ceil(4096))?;
+            snd.input = Some(Input {
+                rx: rx?,
+                data_phys,
+                data,
+                queued: [false; RBUFS],
+                recording: false,
+                ring: alloc::collections::VecDeque::with_capacity(RING),
+                dropped: 0,
+            });
+        }
     }
     Ok(snd)
 }
@@ -518,4 +591,145 @@ pub fn write(samples: &[u8]) -> Result<usize, &'static str> {
         kprintln!("ZOO_OS INFO sound stream started");
     }
     Ok(snd.write(samples))
+}
+
+impl Sound {
+    /// Sets the input stream up, hands the device every receive buffer and
+    /// starts it.
+    fn start_recording(&mut self) -> Result<(), &'static str> {
+        let fmt = 1 | u32::from(FMT_S16) << 8 | u32::from(RATE_16000) << 16;
+        self.control(
+            &[
+                R_PCM_SET_PARAMS,
+                INPUT_STREAM,
+                (RBUFS * RPERIOD) as u32,
+                RPERIOD as u32,
+                0,
+                fmt,
+            ],
+            4,
+        )?;
+        self.control(&[R_PCM_PREPARE, INPUT_STREAM], 4)?;
+        let (hdr, hdr_phys) = (self.hdr, self.hdr_phys);
+        let input = self.input.as_mut().ok_or("no-microphone")?;
+        for i in 0..RBUFS {
+            if !input.queued[i] {
+                input.queue(i, hdr, hdr_phys);
+            }
+        }
+        self.control(&[R_PCM_START, INPUT_STREAM], 4)?;
+        if let Some(input) = self.input.as_mut() {
+            input.recording = true;
+        }
+        Ok(())
+    }
+
+    /// Stops and releases the input stream and forgets what was recorded.
+    fn stop_recording(&mut self) {
+        let _ = self.control(&[R_PCM_STOP, INPUT_STREAM], 4);
+        let _ = self.control(&[R_PCM_RELEASE, INPUT_STREAM], 4);
+        if let Some(input) = self.input.as_mut() {
+            input.recording = false;
+            // Released buffers come back; take what has (bounded).
+            for _ in 0..SPINS / 1000 {
+                while let Some((head, _)) = input.rx.take_used_len() {
+                    if let Some(q) = input.queued.get_mut(head as usize / 3) {
+                        *q = false;
+                    }
+                }
+                if !input.queued.iter().any(|q| *q) {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            input.ring.clear();
+        }
+    }
+}
+
+impl Input {
+    /// Hands receive buffer `i` to the device: its header (stream id),
+    /// samples, then status.
+    fn queue(&mut self, i: usize, hdr: *mut u8, hdr_phys: u64) {
+        let at = RHDR + 16 * i;
+        // SAFETY: header slot `i` of the receive headers, inside this
+        // driver's header page (RHDR + 16 * RBUFS < 4096); the device does
+        // not hold buffer `i` (not queued).
+        unsafe { (hdr.add(at) as *mut u32).write_volatile(INPUT_STREAM) };
+        let d = 3 * i;
+        let h = hdr_phys + at as u64;
+        self.rx.desc(d, h, 4, false, Some(d + 1));
+        self.rx.desc(
+            d + 1,
+            self.data_phys + (i * RPERIOD) as u64,
+            RPERIOD,
+            true,
+            Some(d + 2),
+        );
+        self.rx.desc(d + 2, h + 8, 8, true, None);
+        self.queued[i] = true;
+        self.rx.push(d);
+    }
+
+    /// Moves every buffer the device has filled into the ring (dropping the
+    /// oldest samples when full) and queues it again.
+    fn drain(&mut self, hdr: *mut u8, hdr_phys: u64) {
+        while let Some((head, len)) = self.rx.take_used_len() {
+            let i = head as usize / 3;
+            if i >= RBUFS {
+                continue;
+            }
+            self.queued[i] = false;
+            // The device wrote the samples and the 8-byte status.
+            let n = (len as usize).saturating_sub(8).min(RPERIOD) & !1;
+            for k in 0..n {
+                if self.ring.len() == RING {
+                    self.ring.pop_front();
+                    self.dropped += 1;
+                }
+                // SAFETY: byte `k` < RPERIOD of receive period `i`, which
+                // the device has returned (used), so it no longer writes it.
+                self.ring
+                    .push_back(unsafe { self.data.add(i * RPERIOD + k).read_volatile() });
+            }
+            if self.recording {
+                self.queue(i, hdr, hdr_phys);
+            }
+        }
+    }
+}
+
+/// Copies what has been recorded since the last call (16-bit mono at
+/// 16 kHz, little-endian) into `out`, starting the microphone on the first
+/// call; the bytes copied, 0 when nothing new is there yet. Never waits.
+pub fn read(out: &mut [u8]) -> Result<usize, &'static str> {
+    let mut g = SOUND.lock();
+    let snd = g.as_mut().ok_or("no-sound-device")?;
+    if snd.input.is_none() {
+        return Err("no-microphone");
+    }
+    if !snd.input.as_ref().is_some_and(|i| i.recording) {
+        snd.start_recording()?;
+        kprintln!("ZOO_OS INFO microphone started");
+    }
+    let (hdr, hdr_phys) = (snd.hdr, snd.hdr_phys);
+    let input = snd.input.as_mut().ok_or("no-microphone")?;
+    input.drain(hdr, hdr_phys);
+    let n = input.ring.len().min(out.len()) & !1;
+    for (o, b) in out[..n].iter_mut().zip(input.ring.drain(..n)) {
+        *o = b;
+    }
+    Ok(n)
+}
+
+/// Stops the microphone (its owner exited).
+pub fn stop_recording() {
+    let mut g = SOUND.lock();
+    if let Some(snd) = g.as_mut()
+        && snd.input.as_ref().is_some_and(|i| i.recording)
+    {
+        let dropped = snd.input.as_ref().map_or(0, |i| i.dropped);
+        snd.stop_recording();
+        kprintln!("ZOO_OS INFO microphone stopped dropped={}", dropped);
+    }
 }

@@ -1915,6 +1915,70 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "mic-hear",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run puffin-test",
+                    "ZOO_OS PROC start pid=26 name=puffin-test",
+                    "ZOO_OS PROC exit pid=26 name=puffin-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 3,
+            want: "pass",
+            purpose: "the microphone (docs/microphone-design.md): QEMU's virtio-sound input plays the host voice saying \"Hey Bella, open notes and maximize it.\" (SDL's disk audio driver); PuffinTest records 6 s through AUDIO_READ and Moonshine must hear that sentence",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run puffin-test")),
+                    // The shell's prompt may share these lines.
+                    Action::WaitContains("ZOO_OS INFO microphone started".into()),
+                    Action::WaitContains("ZOO_OS INFO microphone attached pid=26".into()),
+                    Action::WaitContains("PuffinTest: recorded".into()),
+                    Action::WaitContains("equals the source".into()),
+                    Action::WaitContains("PuffinTest: heard".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=puffin-test code=0".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "mic-silence",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: {
+                let mut e = normal.clone();
+                e.then(&[
+                    "ZOO_OS SHELL line=run puffin-test",
+                    "ZOO_OS PROC start pid=26 name=puffin-test",
+                    "ZOO_OS PROC exit pid=26 name=puffin-test code=0",
+                ]);
+                e
+            },
+            timeout: s.timeout * 3,
+            want: "unexpected-marker",
+            purpose: "negative: the same machine with a silent microphone; PuffinTest must not hear the sentence and exit 1, so a pass of `mic-hear` means the words came through the microphone",
+            interaction: Some(Interaction {
+                steps: vec![
+                    Action::WaitFor("ZOO_OS SHELL ready".into()),
+                    Action::Keys(typed("run puffin-test")),
+                    // The shell's prompt may share these lines.
+                    Action::WaitContains("ZOO_OS INFO microphone started".into()),
+                    Action::WaitContains("ZOO_OS INFO microphone attached pid=26".into()),
+                    Action::WaitContains("PuffinTest: recorded".into()),
+                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=puffin-test".into()),
+                ],
+            }),
+            screen_checks: vec![],
+        },
+        Case {
             name: "net-bella-browse",
             mode: Mode::Normal,
             custom_image: None,
@@ -3012,7 +3076,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             report.push_str(&line);
             continue;
         }
-        if c.name.starts_with("hear-") && c.custom_image.is_none() {
+        if (c.name.starts_with("hear-") || c.name.starts_with("mic-")) && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: no hearing model or host voice (tools/models/README.md, \"Voice\")
 ",
@@ -3217,6 +3281,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             qemu::set_audio(Some(wav.clone()));
         } else {
             qemu::set_audio(None);
+        }
+        // `mic-` cases: a microphone that plays a known recording
+        // (docs/microphone-design.md).
+        if c.name.starts_with("mic-") {
+            qemu::set_mic(Some(crate::hear::mic_input(root, c.name == "mic-silence")?));
+        } else {
+            qemu::set_mic(None);
         }
         let r = qemu::run_case(
             root,

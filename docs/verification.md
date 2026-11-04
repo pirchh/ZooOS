@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-hearing section (version 0.110.0), the
+microphone section (version 0.111.0), the
+hearing section (0.110.0), the
 full-accelerator section (0.109.0), the events section (0.108.0),
 the sound section (0.107.0), the
 draft-model section (0.106.0), the
@@ -52,6 +53,17 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Microphone (version 0.111.0)
+
+docs/microphone-design.md: virtio-sound recording; QEMU's SDL disk driver
+plays a known recording as the microphone.
+
+| Case | Result |
+| --- | --- |
+| `mic-hear` (TCG; WHPX, 8 processors) | `OK`: one second equals the source sample for sample; heard "Hey Bella, open notes and maximize it." in 19.3 s and 217 ms |
+| `mic-silence` (negative case) | rejected as intended: `code=1` (heard "You") |
+| `mic-hear`, QEMU mixing engine on (negative control) | `FAIL`: 15178 of 16000 samples differ, `code=4` |
 
 ## Hearing (version 0.110.0)
 

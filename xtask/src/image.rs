@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 28] = [
+pub const USER_PROGRAMS: [&str; 29] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -40,6 +40,7 @@ pub const USER_PROGRAMS: [&str; 28] = [
     "network",
     "orca-test",
     "ermine-test",
+    "puffin-test",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
@@ -548,9 +549,15 @@ pub fn build_hear_image(
             )
         })
         .collect();
+    let mic_path = crate::hear::mic_input(root, false)?;
+    let mic_raw =
+        std::fs::read(&mic_path).map_err(|e| format!("cannot read {}: {e}", mic_path.display()))?;
     let mut entries: Vec<(&str, &[u8])> = vec![
         ("models/hear.gguf", &model),
         ("test/hear.txt", list.as_bytes()),
+        // What the microphone cases play (docs/microphone-design.md).
+        ("test/mic.txt", crate::hear::MIC_SENTENCE.as_bytes()),
+        ("test/mic.raw", &mic_raw),
     ];
     for (n, d) in &wavs {
         entries.push((n, d));
