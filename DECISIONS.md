@@ -150,6 +150,21 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Tiling (2026-11-03)
+
+Version 0.102.0. Design: docs/tiling-design.md. The owner's request, with
+free wording and several windows of one app.
+
+- **The model chooses `split`; the apps come from the request's words.**
+  When the model wrote them, it used its prompt's order and invented apps
+  for "these 2 windows". Reading them from the request keeps the user's
+  order and sides, and the model writes nothing after `split`.
+- **No app named: the two front windows** other than Bella's.
+- **The same app twice: two of its windows,** opening one if needed.
+- **`info` is described as "this computer's storage and memory":** the
+  new command line had tipped "What time is it?" to `info` (1 of 8 acted
+  on); now 0 of 8 again.
+
 ## Bella's models on the USB stick (2026-11-03)
 
 Version 0.101.0. Design: docs/usb-model-design.md. Hardening before the

@@ -39,9 +39,9 @@ use zoo_abi::bella::{
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 13] = [
+const RECALLABLE: [&str; 14] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
-    "maximize", "minimize", "close",
+    "maximize", "minimize", "close", "split",
 ];
 
 fn recallable(command: &str) -> bool {
@@ -533,6 +533,11 @@ impl App {
             self.open(path.trim());
         } else if let Some(app) = text.strip_prefix("launch ") {
             self.launch(app.trim());
+        } else if let Some(apps) = text
+            .strip_prefix("split ")
+            .or((text == "split").then_some(""))
+        {
+            self.split(apps.trim());
         } else if let Some((action, app)) = ["maximize", "minimize", "close"]
             .iter()
             .find_map(|a| Some((*a, text.strip_prefix(a)?.strip_prefix(' ')?)))
@@ -788,6 +793,55 @@ impl App {
                 return None;
             }
         })
+    }
+
+    /// `split <apps>`: up to three apps side by side, left to right; no app
+    /// named: the two front windows (docs/tiling-design.md). Bella may be
+    /// named here ("Bella", "the assistant", "you"), unlike in the other
+    /// window commands.
+    fn split(&mut self, apps: &str) {
+        let Some(names) = zoo_infer::assist::split_apps(apps) else {
+            self.say("Error: split takes up to three apps, e.g. split Notes and Bella");
+            return;
+        };
+        if names.is_empty() {
+            // "split these two windows": the window server picks them.
+            if self.win.split_front().is_ok() {
+                zoo_rt::log!("Bella: asked to split the front windows");
+                self.learn("split");
+            }
+            return;
+        }
+        let names: Vec<&str> = names.split(" and ").collect();
+        let n = names.len();
+        for (k, name) in names.iter().enumerate() {
+            let program = match *name {
+                "Bella" => "bella",
+                "Files" => "files",
+                "Notes" => "notes",
+                _ => "network",
+            };
+            let action = alloc::format!("col{k}of{n}");
+            // The same app again: its next window (docs/tiling-design.md).
+            let m = names[..k].iter().filter(|x| *x == name).count();
+            let target = if m == 0 {
+                String::from(program)
+            } else {
+                alloc::format!("{program}#{m}")
+            };
+            if self.win.window(&action, &target).is_err() {
+                return;
+            }
+            zoo_rt::log!(
+                "Bella: asked to put {} in column {} of {}",
+                program,
+                k + 1,
+                n
+            );
+        }
+        let mut cmd = String::from("split ");
+        cmd.push_str(&names.join(" and "));
+        self.learn(&cmd);
     }
 
     /// `maximize`, `minimize` or `close <app>`: asks the window server,

@@ -46,7 +46,8 @@ launch <app>: start an app (Files, Notes, Network)\n\
 maximize <app>: open an app and make it fill the screen\n\
 minimize <app>: hide an app's window in the dock\n\
 close <app>: quit an app\n\
-info: about this computer\n\
+split <apps>: tile windows side by side\n\
+info: this computer's storage and memory\n\
 Paths are relative to the home folder. Reply with the command only.\n\
 Examples:\n\
 Where did I put my budget? -> search budget\n\
@@ -86,13 +87,15 @@ pub enum Tool {
     Maximize,
     Minimize,
     Close,
+    /// Two apps side by side (docs/tiling-design.md).
+    Split,
     /// About the computer; no argument.
     Info,
     /// No command fits the request (docs/stage1-design.md, B9).
     Nothing,
 }
 
-pub const TOOLS: [Tool; 14] = [
+pub const TOOLS: [Tool; 15] = [
     Tool::Search,
     Tool::List,
     Tool::Inspect,
@@ -105,6 +108,7 @@ pub const TOOLS: [Tool; 14] = [
     Tool::Maximize,
     Tool::Minimize,
     Tool::Close,
+    Tool::Split,
     Tool::Info,
     Tool::Nothing,
 ];
@@ -112,7 +116,10 @@ pub const TOOLS: [Tool; 14] = [
 impl Tool {
     /// `maximize`, `minimize` or `close`.
     pub const fn is_window(self) -> bool {
-        matches!(self, Tool::Maximize | Tool::Minimize | Tool::Close)
+        matches!(
+            self,
+            Tool::Maximize | Tool::Minimize | Tool::Close | Tool::Split
+        )
     }
 
     pub const fn word(self) -> &'static str {
@@ -129,6 +136,7 @@ impl Tool {
             Tool::Maximize => "maximize",
             Tool::Minimize => "minimize",
             Tool::Close => "close",
+            Tool::Split => "split",
             Tool::Info => "info",
             Tool::Nothing => "none",
         }
@@ -336,6 +344,27 @@ impl<'m, 't> Bella<'m, 't> {
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
         let tool = TOOLS[best];
+        // `split`: the model decides it is a split; which apps, in which
+        // order, comes from the request's own words (the model's argument
+        // put them in the prompt's order; docs/tiling-design.md).
+        if tool == Tool::Split {
+            return Ok(match split_request(request) {
+                Some(arg) => Choice {
+                    tool,
+                    arg,
+                    margin,
+                    request_tokens: ids.len(),
+                    arg_tokens: 0,
+                },
+                None => Choice {
+                    tool: Tool::Nothing,
+                    arg: String::new(),
+                    margin,
+                    request_tokens: ids.len(),
+                    arg_tokens: 0,
+                },
+            });
+        }
         if tool == Tool::Nothing || tool == Tool::Info {
             return Ok(Choice {
                 tool,
@@ -392,6 +421,10 @@ impl<'m, 't> Bella<'m, 't> {
         let (tool, arg) = match (names_app, app) {
             (true, Some(a)) => (tool, String::from(*a)),
             (true, None) => (Tool::Nothing, String::new()),
+            _ if tool == Tool::Split => match split_apps(&arg) {
+                Some(a) => (tool, a),
+                None => (Tool::Nothing, String::new()),
+            },
             _ => (tool, arg),
         };
         Ok(Choice {
@@ -402,6 +435,102 @@ impl<'m, 't> Bella<'m, 't> {
             arg_tokens: arg_ids.len(),
         })
     }
+}
+
+/// `split`'s argument with its app names checked: "Notes and Bella",
+/// "Files and Files" (two of its windows), one name, or "" (no app named:
+/// the two front windows). The names are taken in order from the words;
+/// more than three is no command (docs/tiling-design.md).
+pub fn split_apps(arg: &str) -> Option<String> {
+    let mut apps: Vec<&str> = Vec::new();
+    for word in arg.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let app = if ["bella", "assistant", "you", "yourself"]
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(word))
+        {
+            "Bella"
+        } else if word.eq_ignore_ascii_case("finder") {
+            "Files"
+        } else if let Some(a) = LAUNCHABLE.iter().find(|a| a.eq_ignore_ascii_case(word)) {
+            a
+        } else {
+            continue;
+        };
+        apps.push(app);
+    }
+    (apps.len() <= 3).then(|| apps.join(" and "))
+}
+
+/// The apps a split request names, left to right, as `split`'s argument
+/// ("Notes and Bella"; "" for none: the two front windows). Words after
+/// an app up to the next one may give its side ("Files on the right and
+/// Notes on the left"); otherwise the order spoken is kept. Bella counts
+/// as "assistant", "yourself", or "Bella" after the first two words (not
+/// "hey Bella, ..."); "you" does not ("can you split ..."). More than
+/// three apps: `None` (docs/tiling-design.md).
+pub fn split_request(request: &str) -> Option<String> {
+    let words: Vec<&str> = request
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    // (app, side: 0 left, 1 middle, 2 right, 3 unsaid)
+    let mut apps: Vec<(&str, u8)> = Vec::new();
+    // "two Files windows": the next app, this many times.
+    let mut times = 1;
+    for (k, w) in words.iter().enumerate() {
+        let is = |s: &str| w.eq_ignore_ascii_case(s);
+        let count = if is("two") || is("2") || is("both") {
+            2
+        } else if is("three") || is("3") {
+            3
+        } else {
+            0
+        };
+        if count > 0 {
+            times = count;
+            continue;
+        }
+        let app = if is("assistant") || is("yourself") || (is("bella") && k >= 2) {
+            Some("Bella")
+        } else if is("finder") {
+            Some("Files")
+        } else {
+            LAUNCHABLE.iter().copied().find(|a| is(a))
+        };
+        if let Some(a) = app {
+            if times > 1 {
+                for _ in 0..times {
+                    apps.push((a, 3));
+                }
+            } else if !apps.iter().any(|x| x.0 == a) {
+                apps.push((a, 3));
+            }
+            times = 1;
+            continue;
+        }
+        if let Some(last) = apps.last_mut()
+            && last.1 == 3
+        {
+            last.1 = if is("left") {
+                0
+            } else if is("middle") || is("centre") || is("center") {
+                1
+            } else if is("right") {
+                2
+            } else {
+                3
+            };
+        }
+    }
+    if apps.len() > 3 {
+        return None;
+    }
+    // Every app given a side: by side; else as spoken.
+    if apps.len() > 1 && apps.iter().all(|a| a.1 != 3) {
+        apps.sort_by_key(|a| a.1);
+    }
+    let names: Vec<&str> = apps.iter().map(|a| a.0).collect();
+    Some(names.join(" and "))
 }
 
 /// The ChatML text before the user's request, with `system`.
@@ -424,6 +553,63 @@ pub fn prefix_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_reads_the_request() {
+        let s = |r: &str| split_request(r);
+        assert_eq!(
+            s("Put notes on the left and the assistant on the right").as_deref(),
+            Some("Notes and Bella")
+        );
+        assert_eq!(
+            s("put Files on the right and Notes on the left").as_deref(),
+            Some("Notes and Files")
+        );
+        assert_eq!(
+            s("I want Notes and Files next to each other").as_deref(),
+            Some("Notes and Files")
+        );
+        assert_eq!(s("hey bella split these 2 windows").as_deref(), Some(""));
+        assert_eq!(
+            s("can you split the screen with the files, notes and network apps").as_deref(),
+            Some("Files and Notes and Network")
+        );
+        assert_eq!(s("Bella, tile my windows").as_deref(), Some(""));
+        assert_eq!(s("files notes network and the assistant"), None);
+        assert_eq!(
+            s("put two Files windows side by side").as_deref(),
+            Some("Files and Files")
+        );
+        assert_eq!(
+            s("split 2 finder windows and notes").as_deref(),
+            Some("Files and Files and Notes")
+        );
+    }
+
+    #[test]
+    fn split_names_apps() {
+        assert_eq!(
+            split_apps("Notes and Bella").as_deref(),
+            Some("Notes and Bella")
+        );
+        assert_eq!(
+            split_apps("the notes app and the assistant").as_deref(),
+            Some("Notes and Bella")
+        );
+        assert_eq!(split_apps("Files").as_deref(), Some("Files"));
+        assert_eq!(
+            split_apps("Files and Notes side by side").as_deref(),
+            Some("Files and Notes")
+        );
+        assert_eq!(split_apps("Notes and Pizza").as_deref(), Some("Notes"));
+        assert_eq!(split_apps("Pizza").as_deref(), Some(""));
+        assert_eq!(split_apps("these two windows").as_deref(), Some(""));
+        assert_eq!(
+            split_apps("Files, Notes and Network").as_deref(),
+            Some("Files and Notes and Network")
+        );
+        assert_eq!(split_apps("Notes Files Network Bella"), None);
+    }
 
     #[test]
     fn prefix_stops_where_the_request_goes() {
