@@ -943,6 +943,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-events",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "the window server's events (docs/events-design.md): the user opens Notes from Files' Applications; Bella, subscribed, takes `maximize it` to mean Notes",
+            interaction: Some(bella_events_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-facts",
             mode: Mode::Normal,
             custom_image: None,
@@ -5846,6 +5859,36 @@ fn check_tone(wav: &Path, hz: f64) -> Result<String, String> {
     Ok(format!(
         "{measured:.1} Hz for {secs:.2} s ({rate} Hz, {channels} channels recorded)"
     ))
+}
+
+/// `bella-events`: "it" from what the user did.
+fn bella_events_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files has the focus: Applications (last in Home), then Notes (the
+    // fourth application), opened with Enter.
+    steps.push(Action::Keys(vec!["down"; 16]));
+    steps.push(Action::Keys(vec!["ret"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(vec!["down"; 3]));
+    steps.push(Action::Keys(vec!["ret"]));
+    steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
+    steps.push(Action::Settle(QUIET));
+    // Notes has the keyboard: a click on Bella's title bar, as a user
+    // would (Tab would pass through Files and focus it on the way).
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(ASSISTANT_WIN)));
+    steps.push(Action::Button(true));
+    steps.push(Action::Button(false));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("maximize it")));
+    steps.push(Action::WaitContains(
+        "Bella: \"it\" is Notes (from the desktop's events)".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 24x38 1872x948".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
 }
 
 /// `bella-actions`: a line written in Notes for Bella.

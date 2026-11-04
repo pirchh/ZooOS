@@ -59,7 +59,9 @@ full while Bella is busy at start, and PeacockHandler
 dropped a key it could not send. Now each app has up to 256 held keys
 (`HELD_KEYS`), delivered in order before any new one; the main loop polls
 every tick while keys are held instead of waiting for input. A burst logs
-`PeacockHandler: Bella was busy; held up to N keys, all delivered`. With
+`PeacockHandler: Bella was busy; held up to N keys, all delivered` ("N
+messages" since 0.108.0, when replies began to use the same queue,
+docs/events-design.md). With
 8 MiB steps it held up to 25 keys and delivered them all; with 1 MiB steps
 no run needed it, and it stays as a guard for a busy app.
 

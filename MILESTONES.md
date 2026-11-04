@@ -204,7 +204,8 @@ lands as small, separately verified steps.
 | 4 | Tiling: "put notes on the left and the assistant on the right", "split these 2 windows", three apps, two windows of one app; apps read from the request (docs/tiling-design.md) | done 2026-11-03 |
 | 4 | Window actions: Bella maximizes, minimizes and closes apps; "open notes and maximize it on my screen" in 0.55–0.59 s with 8 processors (docs/window-actions-design.md) | done 2026-11-03 |
 | 4 | App actions: a manifest in `zoo_abi`, `do:`/`did:` through the window server; Notes `write` ("take a note that ..." in 0.53 s), Network `fetch` (docs/actions-design.md) | done 2026-11-04 |
-| 4 | Event subscribers; lifting the fixed app arrays | open |
+| 4 | Window server events: subscribers, focus changes; Bella reads "maximize it" from what the user just did (docs/events-design.md) | done 2026-11-04 |
+| 4 | Lifting the fixed app arrays | open |
 | 5 | Bella v1: workflow templates, safe summarising, "none of these", model bake-off, memory provenance | open |
 | 6 | SMP | open |
 | 7 | Hardware base and real disks: ECAM, MSI-X, IOMMU, flushes (B11), USB storage | open |
