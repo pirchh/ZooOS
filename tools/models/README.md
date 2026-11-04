@@ -72,6 +72,23 @@ disk carries it as model 1:
 
     curl -fL -o tools/models/qwen3-embedding-0.6b-q8_0.gguf       https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/370f27d7550e0def9b39c1f16d3fbaa13aa67728/Qwen3-Embedding-0.6B-Q8_0.gguf
 
+The draft model for speculative decoding (docs/draft-design.md: measured
+slower on the CPU, so Bella does not use it; kept for `cargo xtask
+draft-check`). Approved with the "do everything" decision of 2026-11-03:
+
+| Field | Value |
+| --- | --- |
+| Model | Qwen3-0.6B, GGUF, `Q8_0` |
+| File | `qwen3-0.6b-q8_0.gguf`, 639,446,688 bytes |
+| Source | https://huggingface.co/Qwen/Qwen3-0.6B-GGUF |
+| Pinned commit | `23749fefcc72300e3a2ad315e1317431b06b590a` |
+| SHA-256 | `9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031` (matches the Hugging Face LFS object id) |
+| Licence | Apache-2.0 (model card) |
+
+    curl -fL -o tools/models/qwen3-0.6b-q8_0.gguf       https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf
+    cargo xtask requant --bella qwen3-0.6b   # qwen3-0.6b-q4_0.gguf, 419,245,728 bytes,
+                                             # SHA-256 2a989299c3cf92df644cd7875dfee3c576b2429d0b66972a47a63233149e9c3d
+
 To fetch the default model on a new machine (about 430 MB):
 
     curl -fL -o tools/models/qwen2.5-0.5b-instruct-q4_0.gguf \

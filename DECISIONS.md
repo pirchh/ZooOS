@@ -150,6 +150,14 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Draft model: measured, not used (2026-11-04)
+
+Version 0.106.0. Design: docs/draft-design.md. Speculative decoding with
+Qwen3-0.6B was slower on the CPU (0.42x at best): the draft's guesses were
+kept 27–33% of the time, and a batched check costs about a step per token
+on the CPU. The engine method, the loop and `draft-check` stay to rerun
+at the GPU stage; Bella does not use them.
+
 ## Application actions (2026-11-04)
 
 Version 0.105.0. Design: docs/actions-design.md. Bella roadmap Stage 4,

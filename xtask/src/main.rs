@@ -48,6 +48,8 @@ commands:
                             prompt/output token ids, top logits and timing
   infer-check [--tokens N]  compare the engine with the NumPy reference
   assist-check [--prompt S]  guided tool choice on fixed requests (host)
+  draft-check               speculative decoding with the draft model against
+                            the model alone (host; docs/draft-design.md)
   (run, infer, infer-check, assist-check, verify: --bella 0.5b|1.5b picks
    Bella's model in tools/models/; 0.5b is the default. infer, infer-check,
    assist-check: --portable runs the host engine without AVX2)
@@ -296,6 +298,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             )?;
             println!("expected output ids: {}", infer::ids(&r.output_ids));
             Ok(ExitCode::SUCCESS)
+        }
+        "draft-check" => {
+            let ok = infer::draft_check(&root)?;
+            println!("draft-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         "assist-check" => {
             let ok = infer::assist_check(&root, opts.prompt.as_deref())?;

@@ -363,7 +363,7 @@ impl<'a> Model<'a> {
     /// by one would.
     pub fn feed_many(&self, st: &mut State, ids: &[u32]) -> Result<(), ModelError> {
         for chunk in ids.chunks(BATCH) {
-            self.batch(st, chunk)?;
+            self.batch(st, chunk, None)?;
         }
         Ok(())
     }
@@ -388,7 +388,7 @@ impl<'a> Model<'a> {
             if !go(done) {
                 return Ok(false);
             }
-            self.batch(st, chunk)?;
+            self.batch(st, chunk, None)?;
             done += chunk.len();
         }
         if logits && let Some(&last) = ids.last() {
@@ -400,7 +400,28 @@ impl<'a> Model<'a> {
         Ok(true)
     }
 
-    fn batch(&self, st: &mut State, ids: &[u32]) -> Result<(), ModelError> {
+    /// Feeds `ids` (at most `BATCH`) together, and checks a draft's guesses
+    /// (docs/draft-design.md): with `best`, the most likely next token after
+    /// each of them, in order (`ids.len()` of them).
+    pub fn feed_checking(
+        &self,
+        st: &mut State,
+        ids: &[u32],
+        best: &mut Vec<u32>,
+    ) -> Result<(), ModelError> {
+        best.clear();
+        for chunk in ids.chunks(BATCH) {
+            self.batch(st, chunk, Some(best))?;
+        }
+        Ok(())
+    }
+
+    fn batch(
+        &self,
+        st: &mut State,
+        ids: &[u32],
+        best: Option<&mut Vec<u32>>,
+    ) -> Result<(), ModelError> {
         let c = &self.cfg;
         let n = ids.len();
         if n == 0 {
@@ -519,6 +540,22 @@ impl<'a> Model<'a> {
             for (a, d) in x.iter_mut().zip(&xb) {
                 *a += d;
             }
+        }
+        // Each position's most likely next token, for a draft's check.
+        if let Some(best) = best {
+            for t in 0..n {
+                rmsnorm(
+                    &mut xb[t * e..(t + 1) * e],
+                    &x[t * e..(t + 1) * e],
+                    &self.out_norm,
+                    c.eps,
+                );
+            }
+            let mut logits = vec![0.0f32; n * c.vocab];
+            matmul(&self.output, &xb, &mut logits, n);
+            best.extend(logits.chunks(c.vocab).map(|l| crate::argmax(l) as u32));
+            // The last position's scores, as `forward` leaves them.
+            st.logits.copy_from_slice(&logits[(n - 1) * c.vocab..]);
         }
         // The state as after the last token, ready for the next.
         st.x.copy_from_slice(&x[(n - 1) * e..n * e]);
