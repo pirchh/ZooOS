@@ -16,8 +16,8 @@ voice detection and the "hey Bella" gate are not done.
   40 ms, 1280 bytes each), `PCM_PREPARE`, every receive buffer queued (a
   chain of header with the stream id, samples, status), `PCM_START`.
 - **Reads never wait.** A read moves every buffer the device has filled
-  into a two-second ring, queues it again, and copies out what the ring
-  holds. When nobody reads for two seconds the oldest samples are dropped
+  into an eight-second ring, queues it again, and copies out what the ring
+  holds. When nobody reads for eight seconds the oldest samples are dropped
   and counted (`dropped=` when recording stops).
 - **Stopping:** `PCM_STOP`, `PCM_RELEASE`, a bounded wait for the
   released buffers, and the ring is emptied.
@@ -73,6 +73,6 @@ needed before Bella listens all the time.
 ## Not done
 
 - Intel HD Audio for real PCs; this driver is QEMU's virtio-sound only.
-- Voice detection and the "hey Bella" gate; a hearing service that owns
-  the microphone; Bella acting on speech.
+- Voice detection, the gate and BatHandler: done since 0.112.0
+  (docs/listening-design.md).
 - Interrupts instead of polling; choosing among several input streams.

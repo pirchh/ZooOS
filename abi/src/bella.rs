@@ -52,30 +52,32 @@ pub fn typed_command(text: &str) -> bool {
     })
 }
 
-/// `text` without a leading "hey Bella", "Bella," or "ok Bella": how a
-/// spoken request starts (docs/multi-step-design.md). "hey Bella" alone
-/// stays as it is (a greeting).
-pub fn strip_address(text: &str) -> &str {
-    let t = text.trim();
-    for lead in [
-        "hey bella",
-        "hi bella",
-        "ok bella",
-        "okay bella",
-        "hello bella",
-        "bella",
-    ] {
-        if t.len() > lead.len()
-            && t[..lead.len()].eq_ignore_ascii_case(lead)
-            && !t.as_bytes()[lead.len()].is_ascii_alphanumeric()
-        {
-            let rest = t[lead.len()..].trim_start_matches([',', ' ', '!', '.', ':']);
-            if !rest.is_empty() {
-                return rest;
-            }
-        }
+/// The request after Bella's name when `text` speaks to her: an optional
+/// greeting ("hey", "hi", "ok", "okay", "hello"), then "Bella", then the
+/// request, with any punctuation between them ("Hey, Bella. Open notes",
+/// "OK Bella: split"). `None` when it does not start that way or nothing
+/// follows the name (docs/listening-design.md).
+pub fn addressed(text: &str) -> Option<&str> {
+    const GREETINGS: [&str; 5] = ["hey", "hi", "ok", "okay", "hello"];
+    let not_word = |c: char| !c.is_ascii_alphanumeric() && c != '\'';
+    let mut rest = text.trim_start_matches(not_word);
+    let word = |t: &str| -> usize { t.find(not_word).unwrap_or(t.len()) };
+    let w = word(rest);
+    if GREETINGS.iter().any(|g| rest[..w].eq_ignore_ascii_case(g)) {
+        rest = rest[w..].trim_start_matches(not_word);
     }
-    t
+    let w = word(rest);
+    if !rest[..w].eq_ignore_ascii_case("bella") {
+        return None;
+    }
+    let req = rest[w..].trim_start_matches(not_word).trim_end();
+    (!req.is_empty()).then_some(req)
+}
+
+/// `text` without a leading "hey Bella" or "Bella" (`addressed`), so a
+/// spoken request reads as typed; unchanged otherwise.
+pub fn strip_address(text: &str) -> &str {
+    addressed(text).unwrap_or(text.trim())
 }
 
 /// Greetings, thanks and questions about Bella herself: answered in words
@@ -365,6 +367,12 @@ mod tests {
         assert_eq!(strip_address("hey bella"), "hey bella");
         assert_eq!(strip_address("bellamy is here"), "bellamy is here");
         assert_eq!(strip_address("open notes"), "open notes");
+        assert_eq!(addressed("Hey, Bella. Open notes."), Some("Open notes."));
+        assert_eq!(addressed("OK Bella: split"), Some("split"));
+        assert_eq!(addressed("hey bella"), None);
+        assert_eq!(addressed("Hey Bellamy, open notes"), None);
+        assert_eq!(addressed("Put notes on the left"), None);
+        assert_eq!(addressed("hey there bella open notes"), None);
     }
 
     #[test]

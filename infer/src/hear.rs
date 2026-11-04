@@ -530,8 +530,14 @@ pub fn wav_samples(wav: &[u8]) -> Option<&[u8]> {
 }
 
 /// Whether `a` and `b` are the same words, ignoring case and punctuation
-/// ("Hey Bella, open notes." and "hey bella open notes").
+/// ("Hey Bella, open notes." and "hey bella open notes"), with the numbers
+/// zero to twelve the same as words or digits ("monitor 3", "monitor
+/// three": Moonshine writes either).
 pub fn same_words(a: &str, b: &str) -> bool {
+    const NUMBERS: [&str; 13] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve",
+    ];
     let words = |s: &str| {
         let mut out = String::new();
         for w in s
@@ -541,7 +547,11 @@ pub fn same_words(a: &str, b: &str) -> bool {
             if !out.is_empty() {
                 out.push(' ');
             }
-            out.push_str(&w.to_lowercase());
+            let w = w.to_lowercase();
+            match NUMBERS.iter().position(|n| *n == w) {
+                Some(k) => out.push_str(&alloc::format!("{k}")),
+                None => out.push_str(&w),
+            }
         }
         out
     };
@@ -555,7 +565,8 @@ mod tests {
     #[test]
     fn words_compare() {
         assert!(same_words("Hey Bella, open notes.", "hey bella open notes"));
-        assert!(!same_words("monitor 3", "monitor three"));
+        assert!(same_words("monitor 3", "Monitor three,"));
+        assert!(!same_words("monitor 3", "monitor 4"));
     }
 
     #[test]

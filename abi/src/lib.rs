@@ -189,12 +189,16 @@ pub const MAX_MODELS: usize = 4;
 /// Which model: Bella's chat model, and the embedding model.
 pub const MODEL_CHAT: u64 = 0;
 pub const MODEL_EMBED: u64 = 1;
+/// Moonshine, for hearing (docs/listening-design.md).
+pub const MODEL_HEAR: u64 = 2;
 
 /// Bella's chat model in the initial filesystem, when the boot image has
 /// it (a USB stick has no model disk; docs/usb-model-design.md).
 pub const CHAT_MODEL_FILE: &str = "models/chat.gguf";
 /// The embedding model in the initial filesystem, likewise.
 pub const EMBED_MODEL_FILE: &str = "models/embed.gguf";
+/// The hearing model in the initial filesystem (the hearing test image).
+pub const HEAR_MODEL_FILE: &str = "models/hear.gguf";
 
 /// Handle-message tag: the resident supervisor's channel for one desktop
 /// session (docs/s0-design.md, B5). The supervisor sends it to the kernel
