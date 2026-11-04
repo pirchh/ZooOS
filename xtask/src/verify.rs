@@ -935,6 +935,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-layout",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "layouts with try-and-confirm (docs/layouts-design.md): \"put these in rows\" stacks the three windows and asks; yes learns it; \"two on top and one on the bottom\" is arranged and asked, no, \"stack them\" corrects it and yes learns both; the learned phrasing is then recalled without a question",
+            interaction: Some(bella_layout_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-one",
             mode: Mode::Normal,
             custom_image: None,
@@ -6258,6 +6271,71 @@ fn bella_events_steps() -> Interaction {
 }
 
 /// `bella-actions`: a line written in Notes for Bella.
+/// `bella-layout` (docs/layouts-design.md): typed, no model. Three
+/// windows (Files, Crash Test, Bella) in the 1872x948 space from 24x38.
+fn bella_layout_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // Rows: three stacked, 308 px each with 12 px between.
+    steps.push(Action::Keys(typed("put these in rows")));
+    steps.push(Action::WaitContains(
+        "Bella: read the layout v(...) from the words".into(),
+    ));
+    steps.push(Action::WaitContains("at 24x358 1872x308".into()));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Is this what you meant?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "Bella: learned `put these in rows` -> `layout v(...)`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // Two on top, one below: arranged, asked, and not what was meant.
+    steps.push(Action::Keys(typed(
+        "split it three ways, two on top and one on the bottom",
+    )));
+    steps.push(Action::WaitContains(
+        // "it" is the app the desktop's events name: Files.
+        "Bella: read the layout v(h(files,*),*) from the words".into(),
+    ));
+    steps.push(Action::WaitContains("at 966x38 930x468".into()));
+    steps.push(Action::WaitContains("at 24x518 1872x468".into()));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Is this what you meant?".into(),
+    ));
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::WaitContains(
+        "Bella: answered no: How should they go?".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // The correction: confirmed, it answers both.
+    steps.push(Action::Keys(typed("stack them")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Is this what you meant?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "Bella: learned `stack them` -> `layout v(...)`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: learned `split Files three ways, two on top and one on the bottom` -> `layout v(...)`"
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // Learned: from memory, without a question.
+    steps.push(Action::Keys(typed("put these in rows please")));
+    steps.push(Action::WaitContains(
+        "Bella: recalled `layout v(...)`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // The layout answered "no" was never learned.
+    steps.push(Action::NeverSeen("-> `layout v(h(files".into()));
+    steps.push(Action::Screenshot("rows"));
+    Interaction { steps }
+}
+
 /// `bella-one` (docs/one-bella-design.md): typed, so no model.
 fn bella_one_steps() -> Interaction {
     let mut steps = start_desktop();

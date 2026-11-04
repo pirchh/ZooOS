@@ -1170,7 +1170,7 @@ impl WinAction {
                 let of = s.windows(2).position(|w| w == b"of")?;
                 let k = parse_num(&s[..of])?;
                 let n = parse_num(&s[of + 2..])?;
-                ((1..=3).contains(&n) && k < n).then_some(WinAction::Column(k, n))
+                ((1..=4).contains(&n) && k < n).then_some(WinAction::Column(k, n))
             }
         }
     }
@@ -3525,9 +3525,13 @@ impl Desktop {
         {
             self.place(wins[k], rect);
         }
-        // The first one in front, with the keyboard.
+        // The first one in front; the keyboard back to the asker (Bella
+        // asks whether this is what was meant).
         for &w in wins.iter().rev() {
             self.set_focus(w);
+        }
+        if self.apps[asker].visible() {
+            self.set_focus(asker);
         }
         let names: Vec<&str> = wins.iter().map(|&w| self.apps[w].label).collect();
         let _ = write!(

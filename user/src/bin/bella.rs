@@ -602,10 +602,16 @@ impl App {
         {
             // A layout in words (docs/layouts-design.md), read here without
             // the model; asked about once arranged.
-            zoo_rt::log!("Bella: read the layout {} from the words", tree.text());
+            // A phrasing she learned: from memory, no question.
             self.request = Some(String::from(text));
-            let cmd = alloc::format!("layout {}", tree.text());
-            self.command(&cmd);
+            if self.recall(text) {
+                self.answered("memory");
+            } else {
+                zoo_rt::log!("Bella: read the layout {} from the words", tree.text());
+                self.request = Some(String::from(text));
+                let cmd = alloc::format!("layout {}", tree.text());
+                self.command(&cmd);
+            }
         } else if wants_saved(text) && self.last_summary.is_some() {
             self.request = None;
             self.save_summary();

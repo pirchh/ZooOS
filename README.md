@@ -2,7 +2,7 @@
 
 An independent x86-64 operating system written in Rust (minimal assembly),
 with a macOS-style desktop and **Bella**, a local assistant that runs open
-models on the CPU. You can type to her or talk to her. Version 0.115.0.
+models on the CPU. You can type to her or talk to her. Version 0.117.0.
 
 **Where it runs today: QEMU.** A USB stick image exists for real PCs, but
 it has not been booted on real hardware yet. Real-hardware tests happen
@@ -42,9 +42,11 @@ step with its design document.
   - **Models:** Qwen3-1.7B (4-bit) by default, and Qwen3-Embedding-0.6B
     for searching your files by meaning. Weights are open (Apache-2.0 or
     MIT), downloaded rather than committed.
-  - **Commands:** opens, maximizes, minimizes, closes and tiles windows,
-    across monitors; runs requests of several steps ("open notes and
-    files, then put them side by side").
+  - **Commands:** opens, maximizes, minimizes, closes and arranges
+    windows across monitors: columns, rows, quarters, "two on top and one
+    below". She asks "is this what you meant?" and learns what you
+    confirm. Requests of several steps ("open notes and files, then put
+    them side by side") work too.
   - **Inside apps:** adds, changes and removes lines in Notes (asking
     before removing) and fetches pages. What each app can do is declared
     in a data file (`seed/etc/actions/`), so a new app action reaches

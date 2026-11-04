@@ -645,6 +645,13 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["change"],
         &["milk\u{1f}oat milk"],
     ),
+    // Layouts (docs/layouts-design.md): read from the words.
+    ("put these windows in rows", &["layout"], &["v(...)"]),
+    (
+        "split the screen into quarters",
+        &["layout"],
+        &["v(h(*,*),h(*,*))"],
+    ),
     ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),

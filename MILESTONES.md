@@ -217,7 +217,8 @@ lands as small, separately verified steps.
 | 9 | Voice: listening for "hey Bella": voice detection, the gate, BatHandler; `run --mic` (docs/listening-design.md) | done 2026-11-04 |
 | — | The action registry: apps declare their actions in `etc/actions/*.actions`; Bella's commands, prompt, slots, asking and the window server's checks come from it; Notes remove and change; spoken yes/no (docs/registry-design.md) | done 2026-11-04 |
 | — | One Bella: a kernel name claim (ABI 21), single-window Bella, "three ways" as columns, plain answers for layouts not yet possible, learning only from corrections (docs/one-bella-design.md) | done 2026-11-04 |
-| — | Layouts as a split tree with try-and-confirm; typed action results and targets; pattern learning; routines | open |
+| — | Layouts as a split tree: rows, quarters, "two on top and one below", weights; Bella arranges, asks "is this what you meant?", and learns what is confirmed (docs/layouts-design.md) | done 2026-11-04 |
+| — | Typed action results and targets; pattern learning; routines | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |
 

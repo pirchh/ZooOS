@@ -58,6 +58,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Layouts with try-and-confirm (version 0.117.0)
+
+docs/layouts-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-layout`: rows asked and learned; a "no" corrected and both learned; recalled without asking | `OK` |
+| `bella-layout`, window server refusing layouts (negative control) | `FAIL` |
+| `assist-check` | 43 of 45, both layout requests right |
+
 ## One Bella (version 0.116.0)
 
 docs/one-bella-design.md.
