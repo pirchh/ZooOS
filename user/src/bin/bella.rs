@@ -36,12 +36,33 @@ use zoo_abi::bella::{
     fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
     summary_stem, typed_command, wants_saved,
 };
+/// `args` without a trailing " on monitor N" or " on the next monitor",
+/// and the monitor ("2", "next"; docs/monitors-design.md).
+fn take_monitor(args: &str) -> (String, Option<String>) {
+    let lower = args.to_ascii_lowercase();
+    for (phrase, which) in [
+        (" on the next monitor", Some("next")),
+        (" on monitor ", None),
+    ] {
+        if let Some(at) = lower.find(phrase) {
+            let m = match which {
+                Some(w) => String::from(w),
+                None => String::from(args[at + phrase.len()..].trim()),
+            };
+            if m == "next" || m.parse::<u8>().is_ok_and(|n| (1..=4).contains(&n)) {
+                return (String::from(args[..at].trim()), Some(m));
+            }
+        }
+    }
+    (String::from(args.trim()), None)
+}
+
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 14] = [
+const RECALLABLE: [&str; 15] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
-    "maximize", "minimize", "close", "split",
+    "maximize", "minimize", "close", "split", "show",
 ];
 
 fn recallable(command: &str) -> bool {
@@ -599,13 +620,22 @@ impl App {
             .strip_prefix("split ")
             .or((text == "split").then_some(""))
         {
-            self.split(apps.trim());
-        } else if let Some((action, app)) = ["maximize", "minimize", "close"]
+            let (apps, monitor) = take_monitor(apps);
+            self.split(apps.trim(), monitor.as_deref());
+        } else if let Some((action, app)) = ["maximize", "minimize", "close", "show"]
             .iter()
             .find_map(|a| Some((*a, text.strip_prefix(a)?.strip_prefix(' ')?)))
         {
-            for app in String::from(app).split(" and ") {
-                self.window_action(action, app.trim());
+            // "... on monitor 2" (docs/monitors-design.md).
+            let (apps, monitor) = take_monitor(app);
+            // `show`: the window moves to that monitor.
+            let action = if action == "show" { "move" } else { action };
+            let action = match &monitor {
+                Some(m) => alloc::format!("{action}@{m}"),
+                None => String::from(action),
+            };
+            for app in apps.split(" and ") {
+                self.window_action(&action, app.trim());
             }
         } else if self.broker(text) {
             self.learn(text);
@@ -863,7 +893,7 @@ impl App {
     /// named: the two front windows (docs/tiling-design.md). Bella may be
     /// named here ("Bella", "the assistant", "you"), unlike in the other
     /// window commands.
-    fn split(&mut self, apps: &str) {
+    fn split(&mut self, apps: &str, monitor: Option<&str>) {
         let Some(names) = zoo_infer::assist::split_apps(apps) else {
             self.say("Error: split takes up to three apps, e.g. split Notes and Bella");
             return;
@@ -885,7 +915,10 @@ impl App {
                 "Notes" => "notes",
                 _ => "network",
             };
-            let action = alloc::format!("col{k}of{n}");
+            let action = match monitor {
+                Some(m) => alloc::format!("col{k}of{n}@{m}"),
+                None => alloc::format!("col{k}of{n}"),
+            };
             // The same app again: its next window (docs/tiling-design.md).
             let m = names[..k].iter().filter(|x| *x == name).count();
             let target = if m == 0 {
@@ -912,8 +945,19 @@ impl App {
     /// which answers with what it did (`window_done`;
     /// docs/window-actions-design.md).
     fn window_action(&mut self, action: &str, app: &str) {
-        let Some(program) = self.program_of(app) else {
-            return;
+        // Bella's own window may be placed, never closed or hidden this
+        // way (docs/monitors-design.md).
+        let me = matches!(
+            app.to_ascii_lowercase().as_str(),
+            "bella" | "assistant" | "the assistant" | "you" | "yourself"
+        );
+        let program = if me && !action.starts_with("close") && !action.starts_with("minimize") {
+            "bella"
+        } else {
+            match self.program_of(app) {
+                Some(p) => p,
+                None => return,
+            }
         };
         if self.win.window(action, program).is_ok() {
             zoo_rt::log!("Bella: asked to {} {}", action, program);

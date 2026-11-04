@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## More than one monitor (2026-11-04)
+
+Version 0.104.0. Design: docs/monitors-design.md.
+
+- **One wide screen, a scanout per monitor:** the window server keeps one
+  desktop; the kernel shows a part of it on each monitor. No per-monitor
+  surfaces to keep in step.
+- **Built on virtio-gpu now, real monitors later:** UEFI gives one
+  framebuffer, so real hardware has one monitor until a GPU driver
+  reports more through the same `DisplayInfo::monitors`.
+- **The menu bar and dock stay on monitor 1.**
+- **The monitor is read from the request, not added to the model's
+  prompt:** no change to its choices (`assist-check` 32 of 34, 0 of 8).
+  A request naming a monitor and an app is always a window placement, so
+  "move files to the second screen" cannot move a file.
+
 ## Requests of several steps (2026-11-04)
 
 Version 0.103.0. Design: docs/multi-step-design.md.

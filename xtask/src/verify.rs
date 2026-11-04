@@ -1358,6 +1358,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             ],
         },
         Case {
+            name: "gpu-monitors",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "two monitors (docs/monitors-design.md): virtio-gpu with two scanouts showing one 3840x1080 desktop; the menu bar and dock on monitor 1; Bella maximizes Notes on monitor 2 and moves Files there",
+            interaction: Some(gpu_monitors_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "gpu-monitors-model",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "the owner's example on three monitors (docs/monitors-design.md): \"hey bella put notes maximized on monitor 3 please\" fills monitor 3 with Notes; \"can you move files to the second screen\" moves Files there (needs --accel)",
+            interaction: Some(gpu_monitors_model_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "gpu-frames",
             mode: Mode::Normal,
             custom_image: None,
@@ -2795,6 +2821,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-windows-model"
                 | "bella-tiling-model"
                 | "bella-steps-model"
+                | "gpu-monitors-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2856,6 +2883,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-windows-model"
                 | "bella-tiling-model"
                 | "bella-steps-model"
+                | "gpu-monitors-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2962,6 +2990,14 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             qemu::Display::VirtioVga
         } else {
             qemu::Display::Vga
+        });
+        // `gpu-monitors` cases: two monitors (docs/monitors-design.md).
+        qemu::set_monitors(if c.name == "gpu-monitors-model" {
+            3
+        } else if c.name.starts_with("gpu-monitors") {
+            2
+        } else {
+            1
         });
         // `gpu-hidpi` cases: a 4K screen, drawn at 2x (docs/u2b-design.md).
         qemu::set_display_size(if c.name.starts_with("gpu-hidpi") {
@@ -5624,6 +5660,89 @@ fn bella_windows_steps() -> Interaction {
     steps.push(Action::Keys(typed("close notes")));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes is not open.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+/// `gpu-monitors-model`: the owner's example, three monitors.
+fn gpu_monitors_model_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen(
+        "ZOO_OS INFO gpu scanout 5760x1080 hardware-cursor monitors=3".into(),
+    ));
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed(
+        "hey bella put notes maximized on monitor 3 please",
+    )));
+    // Monitor 3's zoomed space: x 3840 + 24.
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 3864x38 1872x948".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen of monitor 3.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("notes-on-3"));
+    // Notes has the keyboard: Tab past Files and Crash Test to Bella.
+    steps.push(Action::Keys(vec!["tab", "tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed(
+        "can you move files to the second screen",
+    )));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Files is on monitor 2.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("files-on-2"));
+    Interaction { steps }
+}
+
+/// `gpu-monitors`: two monitors.
+fn gpu_monitors_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Both said before Bella starts (`start_desktop` waits for that).
+    steps.push(Action::WaitSeen(
+        "ZOO_OS INFO gpu scanout 3840x1080 hardware-cursor monitors=2".into(),
+    ));
+    steps.push(Action::WaitSeen(
+        "PeacockHandler: display 3840x1080 acquired".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("desktop"));
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // Monitor 2's zoomed space: x 1920 + 24, 1872 wide.
+    steps.push(Action::Keys(typed("maximize notes on monitor 2")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 1944x38 1872x948".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen of monitor 2.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("notes-on-2"));
+    // Notes has the keyboard: Tab past Files and Crash Test to Bella.
+    steps.push(Action::Keys(vec!["tab", "tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("split notes and files on monitor 2")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Files at 2886x38 930x948".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("split-on-2"));
+    // Files has the keyboard: Tab past Crash Test to Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("show files on monitor 3")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: There is no monitor 3; this screen has 2.".into(),
     ));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }

@@ -521,23 +521,37 @@ impl App {
         } else if msg == b"split-front" {
             self.request = Some(Request::SplitFront);
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
-            // window:<action>:<program>[#<m>]
-            if let Some(colon) = rest.iter().position(|&b| b == b':')
-                && let Some(action) = WinAction::parse(&rest[..colon])
-            {
+            // window:<action>[@<monitor>]:<program>[#<m>]
+            if let Some(colon) = rest.iter().position(|&b| b == b':') {
+                let act = &rest[..colon];
+                let (act, monitor) = match act.iter().position(|&b| b == b'@') {
+                    // `@next`: the monitor after the window's own.
+                    Some(at) if &act[at + 1..] == b"next" => (&act[..at], Some(NEXT_MONITOR)),
+                    Some(at) => (
+                        &act[..at],
+                        parse_num(&act[at + 1..]).and_then(|n| n.checked_sub(1)),
+                    ),
+                    None => (act, None),
+                };
+                let Some(action) = WinAction::parse(act) else {
+                    return false;
+                };
                 let name = &rest[colon + 1..];
                 let (name, m) = match name.iter().position(|&b| b == b'#') {
                     Some(h) => (&name[..h], parse_num(&name[h + 1..]).unwrap_or(0)),
                     None => (name, 0),
                 };
                 if let Some(prog) = program_index(name) {
-                    self.request = Some(Request::Window(action, prog, m.min(2)));
+                    self.request = Some(Request::Window(action, prog, m.min(2), monitor));
                 }
             }
         }
         false
     }
 }
+
+/// `Request::Window`'s monitor for "the next one".
+const NEXT_MONITOR: usize = usize::MAX;
 
 /// What Bella says, and the event, for column k of n.
 fn side_name(k: usize, n: usize) -> (&'static str, &'static str) {
@@ -1074,8 +1088,9 @@ enum Request {
     Context,
     /// Do this to a window of this application (docs/window-actions-design.md):
     /// its `m`th window from the front (0: the front one), opened if there
-    /// are fewer (docs/tiling-design.md).
-    Window(WinAction, usize, usize),
+    /// are fewer (docs/tiling-design.md); on this monitor, when given
+    /// (0-based; docs/monitors-design.md).
+    Window(WinAction, usize, usize, Option<usize>),
     /// The two front windows side by side ("split these two windows";
     /// docs/tiling-design.md).
     SplitFront,
@@ -1092,6 +1107,9 @@ enum WinAction {
     /// Like `Maximize`, but column k of n side by side
     /// (docs/tiling-design.md).
     Column(usize, usize),
+    /// To another monitor, at the same place on it
+    /// (docs/monitors-design.md).
+    Move,
 }
 
 impl WinAction {
@@ -1100,6 +1118,7 @@ impl WinAction {
             b"maximize" => Some(WinAction::Maximize),
             b"minimize" => Some(WinAction::Minimize),
             b"close" => Some(WinAction::Close),
+            b"move" => Some(WinAction::Move),
             b"left" => Some(WinAction::Column(0, 2)),
             b"right" => Some(WinAction::Column(1, 2)),
             // col<k>of<n>
@@ -1806,6 +1825,10 @@ struct Desktop {
     /// Logical screen size: layout and the pointer use it.
     lw: usize,
     lh: usize,
+    /// Monitors side by side across `lw`, each `mw` wide; the menu bar,
+    /// the dock and banners are on the first (docs/monitors-design.md).
+    monitors: usize,
+    mw: usize,
     atlas: Atlas<'static>,
     dark: bool,
     /// Wallpaper colour per row, for the current appearance.
@@ -2020,12 +2043,12 @@ impl Desktop {
     }
 
     fn damage_menu_bar(&mut self) {
-        self.damage(0, 0, self.lw, MENU_H);
+        self.damage(0, 0, self.mw, MENU_H);
     }
 
     fn dock_rect(&self) -> (usize, usize, usize, usize) {
         zoo_abi::ui::dock_rect_with(
-            self.lw,
+            self.mw,
             self.lh,
             self.dock_entries().1.max(1),
             self.minis.len(),
@@ -2052,7 +2075,7 @@ impl Desktop {
         let (e, n) = self.dock_entries();
         let slot = e[..n].iter().position(|&p| p == k)?;
         Some(zoo_abi::ui::dock_icon_with(
-            self.lw,
+            self.mw,
             self.lh,
             n,
             self.minis.len(),
@@ -2065,7 +2088,7 @@ impl Desktop {
         let j = self.minis.iter().position(|&w| w == i)?;
         let n = self.dock_entries().1.max(1);
         Some(zoo_abi::ui::dock_mini(
-            self.lw,
+            self.mw,
             self.lh,
             n,
             self.minis.len(),
@@ -2270,7 +2293,7 @@ impl Desktop {
     }
 
     fn banner_rect(&self) -> (usize, usize, usize, usize) {
-        (self.lw - 16 - BANNER_W, MENU_H + 10, BANNER_W, BANNER_H)
+        (self.mw - 16 - BANNER_W, MENU_H + 10, BANNER_W, BANNER_H)
     }
 
     fn damage_banner(&mut self) {
@@ -2318,6 +2341,54 @@ impl Desktop {
         })
     }
 
+    /// Window `i`'s rectangle on monitor `to`: filled if it fills its own,
+    /// else at the same place on the other monitor.
+    fn moved_to(&self, i: usize, to: usize) -> (usize, usize, usize, usize) {
+        let from = self.monitor_of(i);
+        if self.wins[i] == self.zoomed_on(from) {
+            return self.zoomed_on(to);
+        }
+        let (x, y, w, h) = self.wins[i];
+        let x = x - from * self.mw + to * self.mw;
+        (x.min((to + 1) * self.mw - w.min(self.mw)), y, w, h)
+    }
+
+    /// Window `i` to `rect` keeping its size and place from before (a
+    /// move, not a resize).
+    fn move_to(&mut self, i: usize, rect: (usize, usize, usize, usize)) {
+        self.damage_window(i);
+        self.drag = None;
+        self.wins[i] = rect;
+        zoo_rt::log!(
+            "PeacockHandler: placed {} at {}x{} {}x{}",
+            self.apps[i].label,
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3
+        );
+        self.damage_window(i);
+    }
+
+    /// The monitor (0-based) window `i`'s centre is on.
+    fn monitor_of(&self, i: usize) -> usize {
+        let (x, _, w, _) = self.wins[i];
+        ((x + w / 2) / self.mw.max(1)).min(self.monitors - 1)
+    }
+
+    /// The zoomed space (between the menu bar's height and the dock's) of
+    /// monitor `m` (docs/monitors-design.md).
+    fn zoomed_on(&self, m: usize) -> (usize, usize, usize, usize) {
+        let (x, y, w, h) = zoo_abi::ui::zoomed(self.mw, self.lh);
+        (x + m * self.mw, y, w, h)
+    }
+
+    /// Column `k` of `n` on monitor `m`.
+    fn column_on(&self, m: usize, k: usize, n: usize) -> (usize, usize, usize, usize) {
+        let (x, y, w, h) = zoo_abi::ui::column(self.mw, self.lh, k, n);
+        (x + m * self.mw, y, w, h)
+    }
+
     /// Window `i` to `rect` (filled or half the screen). The size and place
     /// from before are kept, once, so the green light gives them back
     /// (docs/tiling-design.md).
@@ -2355,7 +2426,7 @@ impl Desktop {
             }
             None => {
                 self.unzoomed[i] = Some(self.wins[i]);
-                self.wins[i] = zoo_abi::ui::zoomed(self.lw, self.lh);
+                self.wins[i] = self.zoomed_on(self.monitor_of(i));
                 zoo_rt::log!("PeacockHandler: zoomed {}", self.apps[i].label);
             }
         }
@@ -2755,8 +2826,8 @@ impl Desktop {
                 let _ = write!(l, "window-done:{}", said.as_str());
                 let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
             }
-            Request::Window(action, prog, m) => {
-                let said = self.window_action(action, prog, m);
+            Request::Window(action, prog, m, monitor) => {
+                let said = self.window_action(action, prog, m, monitor);
                 let mut l = Line::new();
                 let _ = write!(l, "window-done:{}", said.as_str());
                 let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
@@ -3226,9 +3297,10 @@ impl Desktop {
             let _ = said.write_str("There are not two windows to split.");
             return said;
         }
-        let (lw, lh) = (self.lw, self.lh);
+        let on = self.monitor_of(pick[0]);
         for (k, &w) in pick.iter().enumerate() {
-            self.place(w, zoo_abi::ui::column(lw, lh, k, 2));
+            let rect = self.column_on(on, k, 2);
+            self.place(w, rect);
         }
         // The left one in front, with the keyboard.
         self.set_focus(pick[1]);
@@ -3292,22 +3364,36 @@ impl Desktop {
     /// Does `action` to application `prog`'s frontmost window, as the
     /// lights and the dock would; returns the sentence the asking
     /// application shows (docs/window-actions-design.md).
-    fn window_action(&mut self, action: WinAction, prog: usize, m: usize) -> Line {
+    fn window_action(
+        &mut self,
+        action: WinAction,
+        prog: usize,
+        m: usize,
+        monitor: Option<usize>,
+    ) -> Line {
         let label = CATALOG[prog].0;
         let mut said = Line::new();
+        if let Some(n) = monitor
+            && n >= self.monitors
+            && n != NEXT_MONITOR
+        {
+            let _ = write!(
+                said,
+                "There is no monitor {}; this screen has {}.",
+                n + 1,
+                self.monitors
+            );
+            zoo_rt::log!(
+                "PeacockHandler: window action for {}: {}",
+                label,
+                said.as_str()
+            );
+            return said;
+        }
         match action {
-            WinAction::Maximize | WinAction::Column(..) => {
+            WinAction::Maximize | WinAction::Column(..) | WinAction::Move => {
                 // Opened, shown or raised, as a dock click does.
                 self.dock_click(prog);
-                let (lw, lh) = (self.lw, self.lh);
-                let (rect, done, event) = match action {
-                    WinAction::Column(k, n) => (
-                        zoo_abi::ui::column(lw, lh, k, n),
-                        side_name(k, n).0,
-                        side_name(k, n).1,
-                    ),
-                    _ => (zoo_abi::ui::zoomed(lw, lh), "fills the screen", "maximized"),
-                };
                 let target = if m == 0 {
                     self.front_window_of(prog, App::visible)
                 } else {
@@ -3315,9 +3401,36 @@ impl Desktop {
                 };
                 match target {
                     Some(w) => {
-                        self.place(w, rect);
+                        // The monitor asked for, else the window's own.
+                        let on = match monitor {
+                            Some(NEXT_MONITOR) => (self.monitor_of(w) + 1) % self.monitors,
+                            Some(n) => n,
+                            None => self.monitor_of(w),
+                        };
+                        let (rect, done, event) = match action {
+                            WinAction::Column(k, n) => (
+                                self.column_on(on, k, n),
+                                side_name(k, n).0,
+                                side_name(k, n).1,
+                            ),
+                            WinAction::Move => {
+                                (self.moved_to(w, on), "is on monitor", "moved to monitor")
+                            }
+                            _ => (self.zoomed_on(on), "fills the screen", "maximized"),
+                        };
+                        if action == WinAction::Move {
+                            self.move_to(w, rect);
+                        } else {
+                            self.place(w, rect);
+                        }
                         self.set_focus(w);
-                        let _ = write!(said, "{} {}.", label, done);
+                        if action == WinAction::Move {
+                            let _ = write!(said, "{} {} {}.", label, done, on + 1);
+                        } else if monitor.is_some() && self.monitors > 1 {
+                            let _ = write!(said, "{} {} of monitor {}.", label, done, on + 1);
+                        } else {
+                            let _ = write!(said, "{} {}.", label, done);
+                        }
                         let mut e = Line::new();
                         let _ = write!(e, "{} {}", event, label);
                         self.happened(e);
@@ -3500,7 +3613,7 @@ impl Desktop {
                 .face(FaceId::Regular13)
                 .width(clock.as_str())
                 .div_ceil(self.screen.s);
-            let (sx, sy) = zoo_abi::ui::appearance_switch(self.lw, cw);
+            let (sx, sy) = zoo_abi::ui::appearance_switch(self.mw, cw);
             if self.px.abs_diff(sx) <= 9 && self.py.abs_diff(sy) <= 9 {
                 self.change_appearance(!self.dark);
             }
@@ -3793,7 +3906,7 @@ impl Desktop {
             let (ix, iy) = self
                 .mini_pos(i)
                 .or_else(|| self.dock_pos(self.apps[i].prog))
-                .unwrap_or(zoo_abi::ui::dock_icon(self.lw, self.lh, 1, 0));
+                .unwrap_or(zoo_abi::ui::dock_icon(self.mw, self.lh, 1, 0));
             let d = DOCK_ICON as f32;
             (ix as f32 + d * 0.1, iy as f32 + d * 0.1, d * 0.8, d * 0.8)
         };
@@ -4028,7 +4141,7 @@ impl Desktop {
 
     fn draw_menu_bar(&mut self) {
         let t = self.theme();
-        let w = self.lw;
+        let w = self.mw;
         if self.screen.clip.1 >= MENU_H * self.screen.s {
             return;
         }
@@ -4424,7 +4537,7 @@ impl Desktop {
 
     fn draw_dock(&mut self) {
         let t = self.theme();
-        let (sw, sh) = (self.lw, self.lh);
+        let (sw, sh) = (self.mw, self.lh);
         let off = self.dock_shift();
         if off as f32 >= DOCK_HIDDEN {
             return;
@@ -4793,15 +4906,19 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         let _ = log("PeacockHandler: the font atlas lacks a face");
         return 4;
     }
+    // Monitors side by side, as wide as each other (docs/monitors-design.md).
+    let monitors = (info.monitors as usize).clamp(1, 4);
+    let mon_w = full_w / monitors;
     // 4K-class screens are drawn at 2x: the same layout with twice the
     // pixels in each direction, like a Retina display (docs/u2b-design.md).
-    let sc = if full_w >= 3200 && full_h >= 1800 {
+    let sc = if mon_w >= 3200 && full_h >= 1800 {
         2
     } else {
         1
     };
-    // The logical size, at most MAX_W x MAX_H, and the device area used.
-    let (w, h) = ((full_w / sc).min(MAX_W), (full_h / sc).min(MAX_H));
+    // The logical size, at most MAX_W x MAX_H a monitor, and the device
+    // area used.
+    let (w, h) = ((mon_w / sc).min(MAX_W) * monitors, (full_h / sc).min(MAX_H));
     let (dw, dh) = (w * sc, h * sc);
     // A screen larger than that: the desktop uses its top-left part and
     // the rest is painted once (docs/usb-boot.md).
@@ -4854,6 +4971,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         pointer: pointer_image(sc),
         lw: w,
         lh: h,
+        monitors,
+        mw: w / monitors,
         screen: Screen {
             w: dw,
             h: dh,
@@ -4880,11 +4999,12 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         focus: 0,
         recent: alloc::collections::VecDeque::new(),
         wins: {
-            let first = zoo_abi::ui::initial_windows(w, h);
+            // On the first monitor (docs/monitors-design.md).
+            let first = zoo_abi::ui::initial_windows(w / monitors, h);
             core::array::from_fn(|i| first[i % PROGRAMS])
         },
         order: [5, 6, 7, 8, 4, 3, 1, 2, 0],
-        px: w / 2,
+        px: w / monitors / 2,
         py: h / 2,
         held: false,
         drag: None,

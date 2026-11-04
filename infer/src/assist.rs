@@ -89,6 +89,9 @@ pub enum Tool {
     Close,
     /// Two apps side by side (docs/tiling-design.md).
     Split,
+    /// An app's window to a monitor; never chosen by the model's scores,
+    /// only when the request names a monitor (docs/monitors-design.md).
+    Show,
     /// About the computer; no argument.
     Info,
     /// No command fits the request (docs/stage1-design.md, B9).
@@ -137,6 +140,7 @@ impl Tool {
             Tool::Minimize => "minimize",
             Tool::Close => "close",
             Tool::Split => "split",
+            Tool::Show => "show",
             Tool::Info => "info",
             Tool::Nothing => "none",
         }
@@ -344,6 +348,47 @@ impl<'m, 't> Bella<'m, 't> {
         let best = order[0];
         let margin = scores[best] - scores[order[1]];
         let tool = TOOLS[best];
+        // A monitor named with an app: the window goes there, filled when
+        // the request says so, split when the model chose a split, else
+        // as it is (docs/monitors-design.md).
+        if self.windows
+            && let Some(m) = monitor_named(request)
+        {
+            let apps = apps_named(request, true);
+            if !apps.is_empty() {
+                let lower = request.to_ascii_lowercase();
+                let fill = [
+                    "maximize",
+                    "maximise",
+                    "maximized",
+                    "maximised",
+                    "full screen",
+                    "fullscreen",
+                    "fill",
+                ]
+                .iter()
+                .any(|w| lower.contains(w));
+                let on = if m == "next" {
+                    String::from(" on the next monitor")
+                } else {
+                    alloc::format!(" on monitor {m}")
+                };
+                let (tool, arg) = if fill {
+                    (Tool::Maximize, alloc::format!("{}{on}", apps[0]))
+                } else if tool == Tool::Split && apps.len() > 1 {
+                    (Tool::Split, alloc::format!("{}{on}", apps.join(" and ")))
+                } else {
+                    (Tool::Show, alloc::format!("{}{on}", apps.join(" and ")))
+                };
+                return Ok(Choice {
+                    tool,
+                    arg,
+                    margin,
+                    request_tokens: ids.len(),
+                    arg_tokens: 0,
+                });
+            }
+        }
         // `split`: the model decides it is a split; which apps, in which
         // order, comes from the request's own words (the model's argument
         // put them in the prompt's order; docs/tiling-design.md).
@@ -512,6 +557,62 @@ pub fn apps_named(text: &str, bella: bool) -> Vec<&'static str> {
     apps
 }
 
+/// The monitor a request names: "monitor 2", "screen three", "the second
+/// display", "3rd monitor" as `"2"`.. ; "the other monitor" or "the next
+/// screen" as `"next"` (docs/monitors-design.md).
+pub fn monitor_named(text: &str) -> Option<&'static str> {
+    const NUMBERS: [(&str, &str); 12] = [
+        ("1", "1"),
+        ("one", "1"),
+        ("2", "2"),
+        ("two", "2"),
+        ("3", "3"),
+        ("three", "3"),
+        ("4", "4"),
+        ("four", "4"),
+        ("first", "1"),
+        ("second", "2"),
+        ("third", "3"),
+        ("fourth", "4"),
+    ];
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    let is_monitor = |w: &str| matches!(w, "monitor" | "screen" | "display");
+    let number = |w: &str| {
+        let w = w
+            .strip_suffix("st")
+            .or_else(|| w.strip_suffix("nd"))
+            .or_else(|| w.strip_suffix("rd"))
+            .or_else(|| w.strip_suffix("th"))
+            .filter(|d| d.chars().all(|c| c.is_ascii_digit()) && !d.is_empty())
+            .unwrap_or(w);
+        NUMBERS.iter().find(|(k, _)| *k == w).map(|(_, v)| *v)
+    };
+    for (k, w) in words.iter().enumerate() {
+        if !is_monitor(w) {
+            continue;
+        }
+        // "monitor 2"
+        if let Some(n) = words.get(k + 1).and_then(|n| number(n)) {
+            return Some(n);
+        }
+        // "the second monitor", "the other screen"
+        if k > 0 {
+            let before = words[k - 1].as_str();
+            if let Some(n) = number(before) {
+                return Some(n);
+            }
+            if matches!(before, "other" | "next") {
+                return Some("next");
+            }
+        }
+    }
+    None
+}
+
 /// A later step with "it", "them" or "that" naming the apps of the step
 /// before ("open Notes" then "maximize it" → "maximize Notes"); unchanged
 /// when the step before named none (docs/multi-step-design.md).
@@ -632,6 +733,20 @@ pub fn prefix_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitors_named() {
+        assert_eq!(
+            monitor_named("put notes maximized on monitor 3 please"),
+            Some("3")
+        );
+        assert_eq!(monitor_named("move files to the second screen"), Some("2"));
+        assert_eq!(monitor_named("notes on display two"), Some("2"));
+        assert_eq!(monitor_named("put it on the other monitor"), Some("next"));
+        assert_eq!(monitor_named("the 2nd monitor"), Some("2"));
+        assert_eq!(monitor_named("take a screenshot"), None);
+        assert_eq!(monitor_named("open notes"), None);
+    }
 
     #[test]
     fn it_names_the_apps_before() {

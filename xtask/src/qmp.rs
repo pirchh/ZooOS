@@ -133,6 +133,26 @@ impl Qmp {
         self.command(&cmd).map(|_| ())
     }
 
+    /// Writes head `head` of display device `device` to `path`
+    /// (docs/monitors-design.md).
+    pub fn screendump_head(
+        &mut self,
+        path: &Path,
+        format: &str,
+        device: &str,
+        head: u32,
+    ) -> Result<(), String> {
+        let p = path
+            .to_str()
+            .ok_or("screenshot path is not UTF-8")?
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let cmd = format!(
+            r#"{{"execute":"screendump","arguments":{{"filename":"{p}","format":"{format}","device":"{device}","head":{head}}}}}"#
+        );
+        self.command(&cmd).map(|_| ())
+    }
+
     /// Writes the current display to `path` (`ppm` or `png`).
     pub fn screendump(&mut self, path: &Path, format: &str) -> Result<(), String> {
         let p = path

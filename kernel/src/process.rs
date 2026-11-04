@@ -7331,7 +7331,7 @@ impl Scheduler {
                 let name = self.task(i).name.clone();
                 kprintln!("ZOO_OS DISPLAY acquired pid={} name={}", me, name);
                 let info = match gpu {
-                    Some((_, _, w, h)) => DisplayInfo {
+                    Some((_, _, w, h, monitors)) => DisplayInfo {
                         base: DISPLAY_BASE,
                         width: u64::from(w),
                         height: u64::from(h),
@@ -7339,6 +7339,7 @@ impl Scheduler {
                         bytes_per_pixel: 4,
                         format: zoo_abi::FORMAT_BGR,
                         flags: zoo_abi::DISPLAY_FLUSH_NEEDED | zoo_abi::DISPLAY_HW_CURSOR,
+                        monitors: u64::from(monitors),
                     },
                     None => DisplayInfo {
                         base: DISPLAY_BASE,
@@ -7348,6 +7349,7 @@ impl Scheduler {
                         bytes_per_pixel: fb.bytes_per_pixel as u64,
                         format,
                         flags: 0,
+                        monitors: 1,
                     },
                 };
                 // SAFETY: checked writable user range of `size` bytes in the

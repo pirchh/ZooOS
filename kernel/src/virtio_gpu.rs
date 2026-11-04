@@ -91,6 +91,18 @@ const DEFAULT_MAX: (u32, u32) = (1920, 1200);
 /// A screen size the host asked for with `-fw_cfg name=opt/zooos/display,
 /// string=WxH` (docs/u2b-design.md): `xtask run` passes the host monitor's
 /// size, so a 4K monitor gets a 4K screen drawn at 2x.
+/// How many monitors the host gives (`opt/zooos/monitors`, 1 to
+/// `MAX_MONITORS`), if it says (docs/monitors-design.md).
+fn host_monitors() -> Option<u32> {
+    let mut buf = [0u8; 8];
+    let n = crate::fw_cfg::read_file("opt/zooos/monitors", &mut buf)?;
+    let m: u32 = core::str::from_utf8(&buf[..n]).ok()?.trim().parse().ok()?;
+    Some(m.clamp(1, MAX_MONITORS))
+}
+
+/// Most monitors side by side.
+const MAX_MONITORS: u32 = 4;
+
 fn host_size() -> Option<(u32, u32)> {
     let mut buf = [0u8; 32];
     let n = crate::fw_cfg::read_file("opt/zooos/display", &mut buf)?;
@@ -246,8 +258,11 @@ struct Gpu {
     notify_base: u64,
     notify_mult: u32,
     queues: [Queue; 2],
+    /// The whole screen: `monitors` monitors side by side, each
+    /// `width / monitors` wide (docs/monitors-design.md).
     width: u32,
     height: u32,
+    monitors: u32,
     /// The screen's memory: contiguous frames (physical start).
     screen_phys: u64,
     cursor_phys: u64,
@@ -334,16 +349,25 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
     let q = &mut queues[0];
     q.slot(0)[0] = CMD_GET_DISPLAY_INFO;
     let (mut w, mut h) = (0, 0);
+    let mut enabled = 0;
     if let Ok(t) = q.run(&[24], 24 + 16 * 24)
         && t[0] == RESP_OK_DISPLAY_INFO
     {
-        // SAFETY: response slot 0: header (24 bytes), then pmodes[0]:
+        // SAFETY: response slot 0: header (24 bytes), then pmodes[0..16]:
         // x, y, width, height, enabled, flags.
         let p = unsafe { core::slice::from_raw_parts(q.resp.add(24) as *const u32, 6) };
         if p[4] != 0 {
             (w, h) = (p[2], p[3]);
         }
+        for k in 0..MAX_MONITORS as usize {
+            // SAFETY: pmodes[k], k < 16, inside the response slot.
+            let m =
+                unsafe { core::slice::from_raw_parts(q.resp.add(24 + 24 * k) as *const u32, 6) };
+            enabled += u32::from(m[4] != 0);
+        }
     }
+    // The host's count, else the scanouts it shows (docs/monitors-design.md).
+    let monitors = host_monitors().unwrap_or(enabled.max(1));
     // The host's size if it gave one. Otherwise the preferred mode, at
     // least the desktop's design size (QEMU's GTK window reports its own
     // size as the preferred mode, 640x480 before any guest mode is set,
@@ -355,6 +379,9 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
         }
         None => (w.clamp(MIN_W, DEFAULT_MAX.0), h.clamp(MIN_H, DEFAULT_MAX.1)),
     };
+    // One screen resource for every monitor, side by side; each scanout
+    // shows its part.
+    let w = w * monitors;
     let bytes = (w as usize) * (h as usize) * 4;
     let screen = mem.frames.allocate_contiguous(bytes.div_ceil(4096))?;
     let cursor = mem
@@ -368,9 +395,10 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
         core::ptr::write_bytes(cursor_virt, 0, CURSOR_SIZE * CURSOR_SIZE * 4);
     }
     kprintln!(
-        "ZOO_OS INFO gpu virtio {}x{} (shown when the display is taken)",
+        "ZOO_OS INFO gpu virtio {}x{} monitors={} (shown when the display is taken)",
         w,
-        h
+        h,
+        monitors
     );
     *GPU.lock() = Some(Gpu {
         common,
@@ -378,6 +406,7 @@ pub fn init(mem: &mut Memory) -> Option<(u32, u32)> {
         notify_mult,
         queues,
         width: w,
+        monitors,
         height: h,
         screen_phys: screen.start_address().as_u64(),
         cursor_phys: cursor.start_address().as_u64(),
@@ -477,7 +506,7 @@ fn start_device(
 /// The screen's memory for the display owner, once the device shows it:
 /// (physical start, bytes, width, height). Creates the screen and cursor
 /// resources and sets the scanout.
-pub fn activate() -> Option<(u64, usize, u32, u32)> {
+pub fn activate() -> Option<(u64, usize, u32, u32, u32)> {
     let mut g = GPU.lock();
     let gpu = g.as_mut()?;
     if !gpu.active {
@@ -487,13 +516,14 @@ pub fn activate() -> Option<(u64, usize, u32, u32)> {
         }
         gpu.active = true;
         kprintln!(
-            "ZOO_OS INFO gpu scanout {}x{} hardware-cursor",
+            "ZOO_OS INFO gpu scanout {}x{} hardware-cursor monitors={}",
             gpu.width,
-            gpu.height
+            gpu.height,
+            gpu.monitors
         );
     }
     let bytes = (gpu.width as usize) * (gpu.height as usize) * 4;
-    Some((gpu.screen_phys, bytes, gpu.width, gpu.height))
+    Some((gpu.screen_phys, bytes, gpu.width, gpu.height, gpu.monitors))
 }
 
 impl Gpu {
@@ -531,13 +561,16 @@ impl Gpu {
         if t.iter().any(|&t| t != RESP_OK_NODATA) {
             return Err("resource-setup-refused");
         }
-        // Scanout 0 shows the screen resource.
-        let r = q.slot(0);
-        r[0] = CMD_SET_SCANOUT;
-        r[6..12].copy_from_slice(&[0, 0, w, h, 0, SCREEN_RESOURCE]);
-        let t = q.run(&[48], 24)?;
-        if t[0] != RESP_OK_NODATA {
-            return Err("set-scanout-refused");
+        // Scanout k shows monitor k's part of the screen resource.
+        let mw = w / self.monitors;
+        for k in 0..self.monitors {
+            let r = q.slot(0);
+            r[0] = CMD_SET_SCANOUT;
+            r[6..12].copy_from_slice(&[k * mw, 0, mw, h, k, SCREEN_RESOURCE]);
+            let t = q.run(&[48], 24)?;
+            if t[0] != RESP_OK_NODATA {
+                return Err("set-scanout-refused");
+            }
         }
         Ok(())
     }
@@ -576,11 +609,15 @@ impl Gpu {
         y: u32,
         hot: (u32, u32),
     ) -> Result<(), &'static str> {
+        // The monitor under (x, y), and the position on it.
+        let mw = (self.width / self.monitors).max(1);
+        let scanout = (x / mw).min(self.monitors - 1);
+        let x = x - scanout * mw;
         let q = &mut self.queues[1];
         let r = q.slot(0);
         r[0] = cmd;
         // pos: scanout, x, y, padding; then resource, hot_x, hot_y.
-        r[6..13].copy_from_slice(&[0, x, y, 0, CURSOR_RESOURCE, hot.0, hot.1]);
+        r[6..13].copy_from_slice(&[scanout, x, y, 0, CURSOR_RESOURCE, hot.0, hot.1]);
         q.run(&[56], 24).map(|_| ())
     }
 }
