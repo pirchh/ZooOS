@@ -1923,26 +1923,26 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run puffin-test",
-                    "ZOO_OS PROC start pid=26 name=puffin-test",
-                    "ZOO_OS PROC exit pid=26 name=puffin-test code=0",
+                    "ZOO_OS SHELL line=run reindeer-test",
+                    "ZOO_OS PROC start pid=26 name=reindeer-test",
+                    "ZOO_OS PROC exit pid=26 name=reindeer-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 3,
             want: "pass",
-            purpose: "the microphone (docs/microphone-design.md): QEMU's virtio-sound input plays the host voice saying \"Hey Bella, open notes and maximize it.\" (SDL's disk audio driver); PuffinTest records 6 s through AUDIO_READ and Moonshine must hear that sentence",
+            purpose: "the microphone (docs/microphone-design.md): QEMU's virtio-sound input plays the host voice saying \"Hey Bella, open notes and maximize it.\" (SDL's disk audio driver); ReindeerTest records 6 s through AUDIO_READ and Moonshine must hear that sentence",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run puffin-test")),
+                    Action::Keys(typed("run reindeer-test")),
                     // The shell's prompt may share these lines.
                     Action::WaitContains("ZOO_OS INFO microphone started".into()),
                     Action::WaitContains("ZOO_OS INFO microphone attached pid=26".into()),
-                    Action::WaitContains("PuffinTest: recorded".into()),
+                    Action::WaitContains("ReindeerTest: recorded".into()),
                     Action::WaitContains("equals the source".into()),
-                    Action::WaitContains("PuffinTest: heard".into()),
-                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=puffin-test code=0".into()),
+                    Action::WaitContains("ReindeerTest: heard".into()),
+                    Action::WaitFor("ZOO_OS PROC exit pid=26 name=reindeer-test code=0".into()),
                 ],
             }),
             screen_checks: vec![],
@@ -1956,24 +1956,24 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: {
                 let mut e = normal.clone();
                 e.then(&[
-                    "ZOO_OS SHELL line=run puffin-test",
-                    "ZOO_OS PROC start pid=26 name=puffin-test",
-                    "ZOO_OS PROC exit pid=26 name=puffin-test code=0",
+                    "ZOO_OS SHELL line=run reindeer-test",
+                    "ZOO_OS PROC start pid=26 name=reindeer-test",
+                    "ZOO_OS PROC exit pid=26 name=reindeer-test code=0",
                 ]);
                 e
             },
             timeout: s.timeout * 3,
             want: "unexpected-marker",
-            purpose: "negative: the same machine with a silent microphone; PuffinTest must not hear the sentence and exit 1, so a pass of `mic-hear` means the words came through the microphone",
+            purpose: "negative: the same machine with a silent microphone; ReindeerTest must not hear the sentence and exit 1, so a pass of `mic-hear` means the words came through the microphone",
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
-                    Action::Keys(typed("run puffin-test")),
+                    Action::Keys(typed("run reindeer-test")),
                     // The shell's prompt may share these lines.
                     Action::WaitContains("ZOO_OS INFO microphone started".into()),
                     Action::WaitContains("ZOO_OS INFO microphone attached pid=26".into()),
-                    Action::WaitContains("PuffinTest: recorded".into()),
-                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=puffin-test".into()),
+                    Action::WaitContains("ReindeerTest: recorded".into()),
+                    Action::WaitContains("ZOO_OS PROC exit pid=26 name=reindeer-test".into()),
                 ],
             }),
             screen_checks: vec![],

@@ -55,7 +55,7 @@ with SDL's **disk** driver reads "microphone" input from a raw file:
   changed on the way. Moonshine still heard the sentence, so a transcript
   alone would not have caught it. With the engine off, the device opens
   SDL in the guest's own format and the samples arrive unchanged.
-- **PuffinTest** (`user/src/bin/puffin-test.rs`) records 6 s, then:
+- **ReindeerTest** (`user/src/bin/reindeer-test.rs`) records 6 s, then:
   1. requires one second from the first sound to equal the same second of
      `test/mic.raw` (the source, in the hearing image), or it exits 4;
   2. transcribes with Moonshine and requires `test/mic.txt`'s sentence.

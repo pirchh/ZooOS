@@ -1,4 +1,4 @@
-//! PuffinTest: the microphone test (docs/microphone-design.md). Records
+//! ReindeerTest: the microphone test (docs/microphone-design.md). Records
 //! from the microphone until it has `SECONDS` of audio, transcribes it
 //! with Moonshine (`models/hear.gguf`, the hearing image) and compares the
 //! text with `test/mic.txt`. When there is sound, one second from its
@@ -36,18 +36,18 @@ fn main(_start: u64) -> u8 {
         zoo_infer::par::set_pool(pool);
     }
     let (Some(model), Some(want)) = (file("models/hear.gguf"), file("test/mic.txt")) else {
-        let _ = zoo_rt::log("PuffinTest: the boot image has no hearing model or test/mic.txt");
+        let _ = zoo_rt::log("ReindeerTest: the boot image has no hearing model or test/mic.txt");
         return 2;
     };
     let want = core::str::from_utf8(want).unwrap_or("").trim();
     let Ok(g) = zoo_infer::Gguf::parse(model) else {
-        let _ = zoo_rt::log("PuffinTest: the hearing model is not a GGUF file");
+        let _ = zoo_rt::log("ReindeerTest: the hearing model is not a GGUF file");
         return 2;
     };
     let h = match Hearing::from_gguf(&g) {
         Ok(h) => h,
         Err(e) => {
-            zoo_rt::log!("PuffinTest: {}", e.name());
+            zoo_rt::log!("ReindeerTest: {}", e.name());
             return 2;
         }
     };
@@ -63,7 +63,7 @@ fn main(_start: u64) -> u8 {
                 ticks += 1;
                 if ticks > PATIENCE {
                     zoo_rt::log!(
-                        "PuffinTest: only {} ms recorded in {} ms",
+                        "ReindeerTest: only {} ms recorded in {} ms",
                         pcm.len() / 32,
                         (zoo_rt::now_us() - t) / 1000
                     );
@@ -73,11 +73,11 @@ fn main(_start: u64) -> u8 {
             }
             Ok(n) => pcm.extend_from_slice(&buf[..n.min(total - pcm.len())]),
             Err(Error::NotFound) => {
-                let _ = zoo_rt::log("PuffinTest: no microphone");
+                let _ = zoo_rt::log("ReindeerTest: no microphone");
                 return 2;
             }
             Err(e) => {
-                zoo_rt::log!("PuffinTest: audio_read failed: {}", e.name());
+                zoo_rt::log!("ReindeerTest: audio_read failed: {}", e.name());
                 return 2;
             }
         }
@@ -85,7 +85,7 @@ fn main(_start: u64) -> u8 {
     let audio = hear::samples_from_i16(&pcm);
     let peak = audio.iter().fold(0f32, |m, a| m.max(a.abs()));
     zoo_rt::log!(
-        "PuffinTest: recorded {} ms in {} ms (peak {}%)",
+        "ReindeerTest: recorded {} ms in {} ms (peak {}%)",
         audio.len() * 1000 / hear::RATE,
         (zoo_rt::now_us() - t) / 1000,
         (peak * 100.0) as u32
@@ -97,13 +97,13 @@ fn main(_start: u64) -> u8 {
     let text = match h.transcribe(&audio) {
         Ok(text) => text,
         Err(e) => {
-            zoo_rt::log!("PuffinTest: {}", e.name());
+            zoo_rt::log!("ReindeerTest: {}", e.name());
             return 1;
         }
     };
     let ok = hear::same_words(&text, want);
     zoo_rt::log!(
-        "PuffinTest: {} in {} ms: \"{}\"",
+        "ReindeerTest: {} in {} ms: \"{}\"",
         if ok { "heard" } else { "MISHEARD" },
         (zoo_rt::now_us() - t) / 1000,
         text
@@ -124,12 +124,12 @@ fn first_sound(pcm: &[u8]) -> Option<usize> {
 fn compare_with_source(pcm: &[u8]) -> Option<u8> {
     let source = file("test/mic.raw")?;
     let (Some(a), Some(b)) = (first_sound(pcm), first_sound(source)) else {
-        let _ = zoo_rt::log("PuffinTest: no sound recorded");
+        let _ = zoo_rt::log("ReindeerTest: no sound recorded");
         return None;
     };
     let n = 2 * hear::RATE;
     let (Some(got), Some(want)) = (pcm.get(2 * a..2 * a + n), source.get(2 * b..2 * b + n)) else {
-        let _ = zoo_rt::log("PuffinTest: less than a second after the first sound");
+        let _ = zoo_rt::log("ReindeerTest: less than a second after the first sound");
         return Some(4);
     };
     let differ = got
@@ -141,13 +141,13 @@ fn compare_with_source(pcm: &[u8]) -> Option<u8> {
         .count();
     if differ == 0 {
         zoo_rt::log!(
-            "PuffinTest: 1 s from the first sound (at {} ms) equals the source",
+            "ReindeerTest: 1 s from the first sound (at {} ms) equals the source",
             a / 16
         );
         None
     } else {
         zoo_rt::log!(
-            "PuffinTest: {} of 16000 samples differ from the source",
+            "ReindeerTest: {} of 16000 samples differ from the source",
             differ
         );
         Some(4)

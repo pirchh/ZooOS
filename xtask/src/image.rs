@@ -40,7 +40,7 @@ pub const USER_PROGRAMS: [&str; 29] = [
     "network",
     "orca-test",
     "ermine-test",
-    "puffin-test",
+    "reindeer-test",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
