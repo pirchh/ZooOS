@@ -890,6 +890,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-windows",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "window actions typed to Bella (docs/window-actions-design.md): `maximize notes` opens Notes and fills the screen; `minimize notes` hides it in the dock; `close notes` quits it; a second `close notes` says it is not open",
+            interaction: Some(bella_windows_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-facts",
             mode: Mode::Normal,
             custom_image: None,
@@ -2510,6 +2523,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-windows-model",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "a window action in words (docs/window-actions-design.md): \"open notes and maximize it on my screen\" makes the model choose `maximize Notes`; Notes opens and fills the screen (needs --accel)",
+            interaction: Some(bella_windows_model_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2679,6 +2705,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-convo"
                 | "bella-facts-answer"
                 | "bella-context-answer"
+                | "bella-windows-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2736,6 +2763,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-convo"
                 | "bella-facts-answer"
                 | "bella-context-answer"
+                | "bella-windows-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -5449,6 +5477,72 @@ fn bella_audit_steps() -> Interaction {
     );
     // The one line kept is the dated fact-add; the list was not a change.
     steps.push(Action::WaitSeen("OtterHandler: shows change: 20".into()));
+    Interaction { steps }
+}
+
+/// `bella-windows`: the typed window actions.
+fn bella_windows_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("maximize notes")));
+    steps.push(Action::WaitContains(
+        "Bella: asked to maximize notes".into(),
+    ));
+    steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
+    steps.push(Action::WaitContains("PeacockHandler: zoomed Notes".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("maximized"));
+    // Notes has the keyboard and covers Bella: Tab past Files and Crash
+    // Test (Network is not open) back to Bella.
+    steps.push(Action::Keys(vec!["tab", "tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("minimize notes")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: minimized Notes".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Minimized Notes; it is in the dock.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("close notes")));
+    steps.push(Action::WaitContains("PeacockHandler: closed Notes".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Closed Notes.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("close notes")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes is not open.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+/// `bella-windows-model`: the owner's example, in words.
+fn bella_windows_model_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed(
+        "open notes and maximize it on my screen",
+    )));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose maximize `Notes`".into(),
+    ));
+    steps.push(Action::WaitContains("PeacockHandler: zoomed Notes".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
 

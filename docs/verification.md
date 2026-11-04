@@ -3,8 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-keys-under-load section (version 0.99.0) and the default-model section
-(0.98.0) before it are the current state. Sections before it
+window-actions section (version 0.100.0), the keys-under-load section
+(0.99.0) and the default-model section (0.98.0) are the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
 OwlHandler).
 
@@ -42,6 +42,18 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Window actions (version 0.100.0)
+
+Bella's `maximize`, `minimize` and `close` (docs/window-actions-design.md).
+
+| Case | Result |
+| --- | --- |
+| `bella-windows` (TCG, typed) | `OK`: `maximize notes` opens Notes and logs `PeacockHandler: zoomed Notes`; the screenshot `maximized.png` shows Notes filling the space under the menu bar; `minimize notes`, `close notes`, and a second `close notes` answers "Notes is not open." |
+| `bella-windows` with the zoom call removed (negative control) | `FAIL`: no `PeacockHandler: zoomed Notes` within 120 s |
+| `bella-windows-model` (`--accel whpx`) | `OK` 3 of 3 with 1 processor (answered in 1.9–3.1 s) and 3 of 3 with `--cpus 8` (553, 565, 591 ms): "open notes and maximize it on my screen" → ``chose maximize `Notes` `` |
+| `assist-check` (Qwen3-1.7B) | `PASS`: 25 of 27 right (all four window requests), 0 of 8 acted on |
+| `assist-check --bella 0.5b` | `PASS`: 18 of 27, 1 of 8 (window words masked for 0.5B) |
 
 ## Keys under load (version 0.99.0)
 

@@ -173,6 +173,15 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Asks for `action` (`maximize`, `minimize` or `close`) on
+    /// application `program`'s window; the window server answers with
+    /// `window-done:<sentence>` (docs/window-actions-design.md).
+    pub fn window(&self, action: &str, program: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "window:{}:{}", action, program);
+        self.send_line(&l)
+    }
+
     /// Asks for application `program` to be opened.
     pub fn launch(&self, program: &str) -> Result<(), Error> {
         let mut l = Line::new();

@@ -464,6 +464,19 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["playlist", "playlist.txt", "Music/playlist.txt"],
     ),
     ("Launch the Notes app", &["launch"], &["Notes", "notes"]),
+    // Window actions (docs/window-actions-design.md).
+    (
+        "Open notes and maximize it on my screen",
+        &["maximize"],
+        &["Notes"],
+    ),
+    (
+        "Make Files fill the whole screen",
+        &["maximize"],
+        &["Files"],
+    ),
+    ("Hide the Network window", &["minimize"], &["Network"]),
+    ("Quit Notes", &["close"], &["Notes"]),
     ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),
