@@ -42,6 +42,9 @@ commands:
                             model (tools/models/); use with --accel
                             --monitors N: N monitors side by side (1 to 4,
                             QEMU shows each in its own tab; docs/monitors-design.md)
+                            --mic: the desktop with the hearing model; QEMU's
+                            microphone is this PC's default recording device,
+                            so \"hey Bella, ...\" works (docs/listening-design.md)
   hear-gguf                 convert Moonshine Tiny to GGUF (docs/hearing-design.md)
   hear-check                speech to text against the NumPy reference
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
@@ -211,6 +214,23 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                         println!("[run] no model ({e}); Bella will answer typed commands only")
                     }
                 }
+            }
+            if opts.mic {
+                if mode != image::Mode::FastBoot {
+                    return Err("--mic runs the everyday desktop (fast-boot) only".into());
+                }
+                let Some(img) = image::build_hear_image(&root, &tools, mode, false, 0)? else {
+                    return Err(
+                        "--mic needs the hearing model (tools/models/README.md, \"Voice\")".into(),
+                    );
+                };
+                qemu::set_live_mic(true);
+                println!(
+                    "[run] Bella listens on this PC's default microphone while QEMU runs: \
+                     say \"Hey Bella, open notes and maximize it\". What she hears is logged \
+                     on this terminal (BatHandler: heard ...)."
+                );
+                return qemu::run_interactive(&root, &tools, mode, &img, opts.timeout);
             }
             let img = image::build(&root, &tools, mode)?;
             qemu::run_interactive(&root, &tools, mode, &img, opts.timeout)
@@ -391,6 +411,9 @@ struct Options {
     /// `--cpus N`: the guest's processors (docs/smp-design.md).
     cpus: Option<u8>,
     monitors: Option<u32>,
+    /// `run --mic`: Bella listens on the host's microphone
+    /// (docs/listening-design.md).
+    mic: bool,
 }
 
 impl Options {
@@ -409,6 +432,7 @@ impl Options {
                 "--skip-model" => o.skip_model = true,
                 "--model" => o.model = true,
                 "--no-model" => o.no_model = true,
+                "--mic" => o.mic = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--bella" => o.bella = Some(value("--bella")?),
                 "--portable" => o.portable = true,
