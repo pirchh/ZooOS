@@ -1904,3 +1904,19 @@ changing her.
   be named as targets.
 - **The system's own commands stay in code** for now: files and windows
   are served by the broker and the window server, not by an app.
+
+## One Bella (2026-11-04)
+
+Version 0.116.0. Design: docs/one-bella-design.md. From the owner's demo
+(three Bellas, out of memory) and the outside review ("enforce the
+singleton in service management, not only the window server").
+
+- **A kernel name claim (`CLAIM`, ABI 21),** held by one live process and
+  released at exit: a primitive like the display's, the network's and
+  the microphone's single owners, usable by any service.
+- **Two guards:** the window server never opens a second Bella window,
+  and a second Bella process leaves before loading anything.
+- **Learning only from corrections** until "ask, then learn" exists; what
+  was learned before is set aside, kept but unread.
+- **Words, not guesses,** for layouts the window server cannot make and
+  splits with too few apps named (`say`, never scored by the model).

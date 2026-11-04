@@ -687,9 +687,13 @@ pub fn split_apps(arg: &str) -> Option<String> {
         } else {
             continue;
         };
+        // Bella is one (docs/one-bella-design.md).
+        if app == "Bella" && apps.contains(&"Bella") {
+            continue;
+        }
         apps.push(app);
     }
-    (apps.len() <= 3).then(|| apps.join(" and "))
+    (apps.len() <= 4).then(|| apps.join(" and "))
 }
 
 /// The apps `text` names, in order: Files (or "Finder"), Notes, Network,
@@ -1104,7 +1108,16 @@ mod tests {
             split_apps("Files, Notes and Network").as_deref(),
             Some("Files and Notes and Network")
         );
-        assert_eq!(split_apps("Notes Files Network Bella"), None);
+        // Four columns since docs/one-bella-design.md; Bella once.
+        assert_eq!(
+            split_apps("Notes Files Network Bella").as_deref(),
+            Some("Notes and Files and Network and Bella")
+        );
+        assert_eq!(
+            split_apps("bella and bella and files").as_deref(),
+            Some("Bella and Files")
+        );
+        assert_eq!(split_apps("Notes Files Network Files Notes"), None);
     }
 
     #[test]

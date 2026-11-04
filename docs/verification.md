@@ -58,6 +58,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## One Bella (version 0.116.0)
+
+docs/one-bella-design.md.
+
+| Check | Result |
+| --- | --- |
+| `claim`; kernel granting every claim (negative control) | `OK`; `FAIL` (the copy got the name) |
+| `bella-one`; without the window server's check (negative control) | `OK`; `FAIL`, and the second Bella was refused its name and left |
+
 ## Task dump, and an intermittent Wine hang (version 0.115.0)
 
 **The task dump:** Scroll Lock on the PS/2 keyboard sets a flag (F12 is the
