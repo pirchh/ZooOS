@@ -480,6 +480,35 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
     ),
     ("Hide the Network window", &["minimize"], &["Network"]),
     ("Quit Notes", &["close"], &["Notes"]),
+    // Tiling (docs/tiling-design.md).
+    (
+        "Put notes on the left and the assistant on the right",
+        &["split"],
+        &["Notes and Bella"],
+    ),
+    (
+        "Show Files and Notes side by side",
+        &["split"],
+        &["Files and Notes"],
+    ),
+    // Worded freely (the owner's examples, 2026-11-03).
+    ("hey bella split these 2 windows", &["split"], &[""]),
+    (
+        "can you split the screen with the files, notes and network apps",
+        &["split"],
+        &["Files and Notes and Network"],
+    ),
+    (
+        "I want Notes and Files next to each other",
+        &["split"],
+        &["Notes and Files"],
+    ),
+    ("Tile my windows", &["split"], &[""]),
+    (
+        "put two finder windows side by side",
+        &["split"],
+        &["Files and Files"],
+    ),
     ("How much space am I using?", &["info"], &[""]),
     // No command fits.
     ("What's the weather today?", &["none"], &[""]),

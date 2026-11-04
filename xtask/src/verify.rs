@@ -904,6 +904,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-tiling",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "tiling typed to Bella (docs/tiling-design.md): `split notes and bella` puts Notes on the left half and Bella on the right; `split files, notes and network` three columns; a bare `split` the two front windows",
+            interaction: Some(bella_tiling_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-facts",
             mode: Mode::Normal,
             custom_image: None,
@@ -2571,6 +2584,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-tiling-model",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "tiling in words (docs/tiling-design.md): \"put notes on the left and the assistant on the right\" makes the model choose `split` and Bella read `Notes and Bella` from the request (needs --accel)",
+            interaction: Some(bella_tiling_model_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2741,6 +2767,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-windows-model"
+                | "bella-tiling-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2800,6 +2827,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-facts-answer"
                 | "bella-context-answer"
                 | "bella-windows-model"
+                | "bella-tiling-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -5539,7 +5567,9 @@ fn bella_windows_steps() -> Interaction {
         "Bella: asked to maximize notes".into(),
     ));
     steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
-    steps.push(Action::WaitContains("PeacockHandler: zoomed Notes".into()));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 24x".into(),
+    ));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes fills the screen.".into(),
     ));
@@ -5571,6 +5601,90 @@ fn bella_windows_steps() -> Interaction {
     Interaction { steps }
 }
 
+/// `bella-tiling`: the typed splits.
+fn bella_tiling_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("split notes and bella")));
+    steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 24x".into(),
+    ));
+    // 1920x1080: halves of the zoomed space, 12 px apart.
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Bella at 966x38 930x948".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Bella is on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("halves"));
+    // Bella, on the right, has the keyboard.
+    steps.push(Action::Keys(typed("split files, notes and network")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Network at 1280x38 616x948".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes is in the middle.".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Network is on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("thirds"));
+    // Network has the keyboard: Tab past Files and Crash Test to Bella.
+    steps.push(Action::Keys(vec!["tab", "tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("split")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Crash Test is on the left and Files on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("front-two"));
+    // Crash Test, on the left, has the keyboard: Tab to Bella. Two
+    // windows of one app: the second is opened.
+    steps.push(Action::Keys(vec!["tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("split files and files")));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: new window Files".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Files at 966x38 930x948".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("two-files"));
+    Interaction { steps }
+}
+
+/// `bella-tiling-model`: the owner's example, in words.
+fn bella_tiling_model_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed(
+        "put notes on the left and the assistant on the right",
+    )));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose split `Notes and Bella`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 24x".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Bella is on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("halves"));
+    Interaction { steps }
+}
+
 /// `bella-windows-model`: the owner's example, in words.
 fn bella_windows_model_steps() -> Interaction {
     let mut steps = start_desktop();
@@ -5586,7 +5700,9 @@ fn bella_windows_model_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "ElephantHandler: chose maximize `Notes`".into(),
     ));
-    steps.push(Action::WaitContains("PeacockHandler: zoomed Notes".into()));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Notes at 24x".into(),
+    ));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes fills the screen.".into(),
     ));

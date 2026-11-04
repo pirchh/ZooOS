@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-USB-models section (version 0.101.0), the window-actions section
+tiling section (version 0.102.0), the USB-models section (0.101.0),
+the window-actions section
 (0.100.0), the keys-under-load section (0.99.0) and the default-model
 section (0.98.0) are the current state. Sections before it
 quote the program names in use at the time (for example LionHandler,
@@ -43,6 +44,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## Tiling (version 0.102.0)
+
+Bella's `split` (docs/tiling-design.md).
+
+| Case | Result |
+| --- | --- |
+| `bella-tiling` (TCG, typed) | `OK`: `split notes and bella` → `placed Bella at 966x38 930x948`; `split files, notes and network` → `placed Network at 1280x38 616x948`; bare `split` → "Crash Test is on the left and Files on the right."; `split files and files` → `new window Files`, `placed Files at 966x38 930x948`; screenshots `halves`, `thirds`, `front-two`, `two-files` |
+| `bella-tiling` with `ui::column` returning the whole zoomed space (negative control) | `FAIL`: no `placed Bella at 966x38 930x948` within 120 s |
+| `bella-tiling-model` (`--accel whpx --cpus 8`) | `OK` 3 of 3: ``chose split `Notes and Bella` ``, answered in 781–837 ms |
+| `bella-windows`, `bella-windows-model` (marker now `placed Notes at 24x`) | `OK` |
+| `assist-check` (Qwen3) | `PASS`: 32 of 34, 0 of 8; all 9 tiling requests right |
+| `assist-check --bella 0.5b` | `PASS`: 18 of 34, 1 of 8 |
 
 ## Bella's models on the USB stick (version 0.101.0)
 

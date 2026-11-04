@@ -518,16 +518,34 @@ impl App {
             self.request = program_index(p).map(Request::DockAdd);
         } else if let Some(p) = msg.strip_prefix(b"launch:") {
             self.request = program_index(p).map(Request::Launch);
+        } else if msg == b"split-front" {
+            self.request = Some(Request::SplitFront);
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
-            // window:<action>:<program>
+            // window:<action>:<program>[#<m>]
             if let Some(colon) = rest.iter().position(|&b| b == b':')
                 && let Some(action) = WinAction::parse(&rest[..colon])
-                && let Some(prog) = program_index(&rest[colon + 1..])
             {
-                self.request = Some(Request::Window(action, prog));
+                let name = &rest[colon + 1..];
+                let (name, m) = match name.iter().position(|&b| b == b'#') {
+                    Some(h) => (&name[..h], parse_num(&name[h + 1..]).unwrap_or(0)),
+                    None => (name, 0),
+                };
+                if let Some(prog) = program_index(name) {
+                    self.request = Some(Request::Window(action, prog, m.min(2)));
+                }
             }
         }
         false
+    }
+}
+
+/// What Bella says, and the event, for column k of n.
+fn side_name(k: usize, n: usize) -> (&'static str, &'static str) {
+    match (k, n) {
+        (0, 1) => ("fills the screen", "maximized"),
+        (0, _) => ("is on the left", "put on the left"),
+        (1, 3) => ("is in the middle", "put in the middle"),
+        _ => ("is on the right", "put on the right"),
     }
 }
 
@@ -1054,8 +1072,13 @@ enum Request {
     /// What is on the screen and what just happened, for Bella
     /// (docs/context-design.md).
     Context,
-    /// Do this to a window of this application (docs/window-actions-design.md).
-    Window(WinAction, usize),
+    /// Do this to a window of this application (docs/window-actions-design.md):
+    /// its `m`th window from the front (0: the front one), opened if there
+    /// are fewer (docs/tiling-design.md).
+    Window(WinAction, usize, usize),
+    /// The two front windows side by side ("split these two windows";
+    /// docs/tiling-design.md).
+    SplitFront,
 }
 
 /// What an application may ask done to another's window: Bella's
@@ -1066,6 +1089,9 @@ enum WinAction {
     Maximize,
     Minimize,
     Close,
+    /// Like `Maximize`, but column k of n side by side
+    /// (docs/tiling-design.md).
+    Column(usize, usize),
 }
 
 impl WinAction {
@@ -1074,7 +1100,16 @@ impl WinAction {
             b"maximize" => Some(WinAction::Maximize),
             b"minimize" => Some(WinAction::Minimize),
             b"close" => Some(WinAction::Close),
-            _ => None,
+            b"left" => Some(WinAction::Column(0, 2)),
+            b"right" => Some(WinAction::Column(1, 2)),
+            // col<k>of<n>
+            _ => {
+                let s = s.strip_prefix(b"col")?;
+                let of = s.windows(2).position(|w| w == b"of")?;
+                let k = parse_num(&s[..of])?;
+                let n = parse_num(&s[of + 2..])?;
+                ((1..=3).contains(&n) && k < n).then_some(WinAction::Column(k, n))
+            }
         }
     }
 }
@@ -2283,6 +2318,30 @@ impl Desktop {
         })
     }
 
+    /// Window `i` to `rect` (filled or half the screen). The size and place
+    /// from before are kept, once, so the green light gives them back
+    /// (docs/tiling-design.md).
+    fn place(&mut self, i: usize, rect: (usize, usize, usize, usize)) {
+        if self.wins[i] == rect {
+            return;
+        }
+        self.damage_window(i);
+        self.drag = None;
+        if self.unzoomed[i].is_none() {
+            self.unzoomed[i] = Some(self.wins[i]);
+        }
+        self.wins[i] = rect;
+        zoo_rt::log!(
+            "PeacockHandler: placed {} at {}x{} {}x{}",
+            self.apps[i].label,
+            rect.0,
+            rect.1,
+            rect.2,
+            rect.3
+        );
+        self.damage_window(i);
+    }
+
     /// The green light or a title-bar double-click: fill the space between
     /// the menu bar and the dock, or go back to the size and place from
     /// before.
@@ -2690,8 +2749,14 @@ impl Desktop {
                 zoo_rt::log!("PeacockHandler: context for {}", self.apps[i].label);
             }
             Request::Launch(prog) => self.dock_click(prog),
-            Request::Window(action, prog) => {
-                let said = self.window_action(action, prog);
+            Request::SplitFront => {
+                let said = self.split_front(i);
+                let mut l = Line::new();
+                let _ = write!(l, "window-done:{}", said.as_str());
+                let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
+            }
+            Request::Window(action, prog, m) => {
+                let said = self.window_action(action, prog, m);
                 let mut l = Line::new();
                 let _ = write!(l, "window-done:{}", said.as_str());
                 let _ = zoo_rt::send(self.apps[i].chan, l.as_str().as_bytes());
@@ -3141,6 +3206,78 @@ impl Desktop {
         self.focus_another(i);
     }
 
+    /// The two front windows other than the asking app's (`asker`), side by
+    /// side, the front one on the left; with only one other window, it and
+    /// the asker (docs/tiling-design.md).
+    fn split_front(&mut self, asker: usize) -> Line {
+        let mut pick: Vec<usize> = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&w| w != asker && self.apps[w].visible() && self.apps[w].running)
+            .take(2)
+            .collect();
+        if pick.len() < 2 && self.apps[asker].visible() {
+            pick.push(asker);
+        }
+        let mut said = Line::new();
+        if pick.len() < 2 {
+            let _ = said.write_str("There are not two windows to split.");
+            return said;
+        }
+        let (lw, lh) = (self.lw, self.lh);
+        for (k, &w) in pick.iter().enumerate() {
+            self.place(w, zoo_abi::ui::column(lw, lh, k, 2));
+        }
+        // The left one in front, with the keyboard.
+        self.set_focus(pick[1]);
+        self.set_focus(pick[0]);
+        let _ = write!(
+            said,
+            "{} is on the left and {} on the right.",
+            self.apps[pick[0]].label, self.apps[pick[1]].label
+        );
+        let mut e = Line::new();
+        let _ = write!(
+            e,
+            "split {} and {}",
+            self.apps[pick[0]].label, self.apps[pick[1]].label
+        );
+        self.happened(e);
+        zoo_rt::log!("PeacockHandler: window action: {}", said.as_str());
+        said
+    }
+
+    /// Application `prog`'s `m`th visible window from the front, a
+    /// minimised one shown, or a new one opened when it has fewer
+    /// ("two Files windows side by side"; docs/tiling-design.md).
+    fn nth_window_of(&mut self, prog: usize, m: usize) -> Option<usize> {
+        let mut shown: Vec<usize> = self
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .filter(|&w| self.apps[w].prog == prog && self.apps[w].visible())
+            .collect();
+        // Earlier columns raised theirs: the front ones are taken already.
+        shown.truncate(shown.len().min(m + 1));
+        if shown.len() > m {
+            // The one not yet placed this time: the last raised are
+            // in front, so the m-th is the oldest of the front m + 1.
+            return shown.last().copied();
+        }
+        if let Some(w) = (0..WINDOWS)
+            .find(|&w| self.apps[w].prog == prog && !self.apps[w].closed && self.apps[w].minimized)
+        {
+            self.restore(w);
+            return Some(w);
+        }
+        let w = self.new_window_of(prog)?;
+        self.set_focus(w);
+        Some(w)
+    }
+
     /// The frontmost window of application `prog` that `want` accepts.
     fn front_window_of(&self, prog: usize, want: impl Fn(&App) -> bool) -> Option<usize> {
         let of = |i: usize| self.apps[i].prog == prog && !self.apps[i].closed;
@@ -3155,22 +3292,34 @@ impl Desktop {
     /// Does `action` to application `prog`'s frontmost window, as the
     /// lights and the dock would; returns the sentence the asking
     /// application shows (docs/window-actions-design.md).
-    fn window_action(&mut self, action: WinAction, prog: usize) -> Line {
+    fn window_action(&mut self, action: WinAction, prog: usize, m: usize) -> Line {
         let label = CATALOG[prog].0;
         let mut said = Line::new();
         match action {
-            WinAction::Maximize => {
+            WinAction::Maximize | WinAction::Column(..) => {
                 // Opened, shown or raised, as a dock click does.
                 self.dock_click(prog);
-                match self.front_window_of(prog, App::visible) {
+                let (lw, lh) = (self.lw, self.lh);
+                let (rect, done, event) = match action {
+                    WinAction::Column(k, n) => (
+                        zoo_abi::ui::column(lw, lh, k, n),
+                        side_name(k, n).0,
+                        side_name(k, n).1,
+                    ),
+                    _ => (zoo_abi::ui::zoomed(lw, lh), "fills the screen", "maximized"),
+                };
+                let target = if m == 0 {
+                    self.front_window_of(prog, App::visible)
+                } else {
+                    self.nth_window_of(prog, m)
+                };
+                match target {
                     Some(w) => {
-                        if self.unzoomed[w].is_none() {
-                            self.toggle_zoom(w);
-                        }
+                        self.place(w, rect);
                         self.set_focus(w);
-                        let _ = write!(said, "{} fills the screen.", label);
+                        let _ = write!(said, "{} {}.", label, done);
                         let mut e = Line::new();
-                        let _ = write!(e, "maximized {}", label);
+                        let _ = write!(e, "{} {}", event, label);
                         self.happened(e);
                     }
                     None => {
