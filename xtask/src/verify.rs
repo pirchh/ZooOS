@@ -1640,7 +1640,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                     Action::WaitSeen("ZOO_OS INFO cpu 1 online apic=".into()),
                     Action::WaitSeen("ZOO_OS INFO cpu 2 online apic=".into()),
                     Action::WaitSeen("ZOO_OS INFO cpu 3 online apic=".into()),
-                    Action::WaitSeen("ZOO_OS INFO smp cpus=4".into()),
+                    // 4, or more with `--cpus` (they run with at least 4).
+                    Action::WaitSeen(format!("ZOO_OS INFO smp cpus={}", s.cpus.max(4))),
                     Action::WaitFor("ZOO_OS SHELL ready".into()),
                     // The boot's programs ran on the other processors too
                     // (step 2).
@@ -2952,6 +2953,18 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         if c.name.starts_with("wine-") && c.custom_image.is_none() {
             let line = format!(
                 "SKIP  {:<22} not run: no Wine export in build/wine (tools/wine/README.md)
+",
+                c.name
+            );
+            print!("{line}");
+            report.push_str(&line);
+            continue;
+        }
+        // Under an accelerator a triple fault stops the guest instead of
+        // resetting it, so QEMU never exits early: the case needs TCG.
+        if c.name == "negative-triple-fault" && qemu::accel() != "tcg" {
+            let line = format!(
+                "SKIP  {:<22} not run: a triple fault ends QEMU early only under TCG
 ",
                 c.name
             );

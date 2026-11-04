@@ -58,10 +58,13 @@ fn main(_start: u64) -> u8 {
         (c2 - c1) / 1000,
         m2 - m1
     );
-    let _ = close(root);
-    let _ = close(control);
+    // Killed before its channels close: closing them first let it end on
+    // its own, sometimes before the kill (seen with 8 processors under
+    // WHPX), and the case expects the kill.
     let _ = kill(process);
     let _ = wait(process);
+    let _ = close(root);
+    let _ = close(control);
     let _ = close(process);
     zoo_rt::log!("BowheadTest: done");
     0
