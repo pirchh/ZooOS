@@ -150,6 +150,22 @@ Design: docs/d10-design.md.
 - Left/Right arrow keys reach apps (`key:left`, `key:right`); Notes edits
   at a cursor. Version 0.38.0.
 
+## Requests of several steps (2026-11-04)
+
+Version 0.103.0. Design: docs/multi-step-design.md.
+
+- **Steps are split by rules, each chosen by the model on its own.** One
+  model call per step, as for a single request; no plan for the model to
+  write and get wrong.
+- **"and" splits only before a step word,** so "split Notes and Files"
+  and "search for flour and sugar" stay one step.
+- **"it" names the apps of the step before;** otherwise the follow-up
+  context does as before.
+- **The model's conversation note waits for the last step:** it cost
+  about 1.2 s between steps.
+- **App names come from the request for every app command,** and an
+  `open` naming two apps launches them.
+
 ## Tiling (2026-11-03)
 
 Version 0.102.0. Design: docs/tiling-design.md. The owner's request, with

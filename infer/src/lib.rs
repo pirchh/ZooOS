@@ -24,6 +24,7 @@ pub mod model;
 #[allow(unsafe_code)]
 pub mod par;
 pub mod quant;
+pub mod steps;
 pub mod talk;
 pub mod tokenizer;
 

@@ -418,6 +418,30 @@ impl<'m, 't> Bella<'m, 't> {
             tool,
             Tool::Launch | Tool::Maximize | Tool::Minimize | Tool::Close
         );
+        // The apps the request itself names win over the model's argument
+        // (it wrote them in its prompt's order for splits;
+        // docs/multi-step-design.md): "open Notes and Files" launches both.
+        let said = apps_named(request, false);
+        // "open Notes and Files": apps, not a file called that.
+        let (tool, names_app) = if tool == Tool::Open && said.len() >= 2 {
+            (Tool::Launch, true)
+        } else {
+            (tool, names_app)
+        };
+        if names_app && !said.is_empty() {
+            let arg = if tool == Tool::Maximize {
+                String::from(said[0])
+            } else {
+                said.join(" and ")
+            };
+            return Ok(Choice {
+                tool,
+                arg,
+                margin,
+                request_tokens: ids.len(),
+                arg_tokens: arg_ids.len(),
+            });
+        }
         let (tool, arg) = match (names_app, app) {
             (true, Some(a)) => (tool, String::from(*a)),
             (true, None) => (Tool::Nothing, String::new()),
@@ -459,6 +483,61 @@ pub fn split_apps(arg: &str) -> Option<String> {
         apps.push(app);
     }
     (apps.len() <= 3).then(|| apps.join(" and "))
+}
+
+/// The apps `text` names, in order: Files (or "Finder"), Notes, Network,
+/// and with `bella` also Bella ("assistant", "yourself", or "Bella" after
+/// the first two words). Each once (docs/multi-step-design.md).
+pub fn apps_named(text: &str, bella: bool) -> Vec<&'static str> {
+    let mut apps: Vec<&'static str> = Vec::new();
+    for (k, w) in text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .enumerate()
+    {
+        let is = |s: &str| w.eq_ignore_ascii_case(s);
+        let app = if bella && (is("assistant") || is("yourself") || (is("bella") && k >= 2)) {
+            Some("Bella")
+        } else if is("finder") {
+            Some("Files")
+        } else {
+            LAUNCHABLE.iter().copied().find(|a| is(a))
+        };
+        if let Some(a) = app
+            && !apps.contains(&a)
+        {
+            apps.push(a);
+        }
+    }
+    apps
+}
+
+/// A later step with "it", "them" or "that" naming the apps of the step
+/// before ("open Notes" then "maximize it" → "maximize Notes"); unchanged
+/// when the step before named none (docs/multi-step-design.md).
+pub fn resolve_it(step: &str, before: &str) -> String {
+    let apps = apps_named(before, false);
+    if apps.is_empty() {
+        return String::from(step);
+    }
+    let names = apps.join(" and ");
+    let mut out = String::new();
+    for (k, w) in step.split(' ').enumerate() {
+        if k > 0 {
+            out.push(' ');
+        }
+        let bare = w.trim_end_matches([',', '.', '?', '!']);
+        if ["it", "them", "that", "both"]
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(bare))
+        {
+            out.push_str(&names);
+            out.push_str(&w[bare.len()..]);
+        } else {
+            out.push_str(w);
+        }
+    }
+    out
 }
 
 /// The apps a split request names, left to right, as `split`'s argument
@@ -553,6 +632,17 @@ pub fn prefix_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn it_names_the_apps_before() {
+        assert_eq!(resolve_it("maximize it", "open Notes"), "maximize Notes");
+        assert_eq!(
+            resolve_it("put them side by side", "open notes and files"),
+            "put Notes and Files side by side"
+        );
+        assert_eq!(resolve_it("open it", "find my pancake recipe"), "open it");
+        assert_eq!(apps_named("hey bella open the finder", true), ["Files"]);
+    }
 
     #[test]
     fn split_reads_the_request() {

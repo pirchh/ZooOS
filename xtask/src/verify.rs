@@ -917,6 +917,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-steps",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "requests of several steps (docs/multi-step-design.md): \"launch notes and files, then minimize files\" runs both in order; \"open notes and maximize it\" opens notes.txt, then \"it\" is Notes",
+            interaction: Some(bella_steps_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-facts",
             mode: Mode::Normal,
             custom_image: None,
@@ -2597,6 +2610,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-steps-model",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "several steps in words (docs/multi-step-design.md): \"hey bella open notes and files, then put them side by side\": the model chooses each step; \"them\" is Notes and Files (needs --accel)",
+            interaction: Some(bella_steps_model_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-context-answer",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -2768,6 +2794,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-context-answer"
                 | "bella-windows-model"
                 | "bella-tiling-model"
+                | "bella-steps-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -2828,6 +2855,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-context-answer"
                 | "bella-windows-model"
                 | "bella-tiling-model"
+                | "bella-steps-model"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -5601,6 +5629,76 @@ fn bella_windows_steps() -> Interaction {
     Interaction { steps }
 }
 
+/// `bella-steps`: requests of several steps, typed commands only.
+fn bella_steps_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed(
+        "launch notes and files, then minimize files",
+    )));
+    steps.push(Action::WaitContains(
+        "Bella: 2 steps: launch notes and files | minimize files".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: step: minimize files".into()));
+    steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: minimized Files".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("launched-minimized"));
+    // The apps took the keyboard: back to Bella.
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(ASSISTANT_WIN)));
+    steps.push(Action::Button(true));
+    steps.push(Action::Button(false));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("open notes and maximize it")));
+    steps.push(Action::WaitContains(
+        "Bella: 2 steps: open notes | maximize it".into(),
+    ));
+    // "it": the app the step before named.
+    steps.push(Action::WaitContains("Bella: step: maximize Notes".into()));
+    steps.push(Action::WaitContains(
+        "Notes: opened Documents/notes.txt".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    Interaction { steps }
+}
+
+/// `bella-steps-model`: several steps in words.
+fn bella_steps_model_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed(
+        "hey bella open notes and files, then put them side by side",
+    )));
+    steps.push(Action::WaitContains(
+        "Bella: 2 steps: open notes and files | put them side by side".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: step: put Notes and Files side by side".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose split `Notes and Files`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: placed Files at 966x38 930x948".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("side-by-side"));
+    Interaction { steps }
+}
+
 /// `bella-tiling`: the typed splits.
 fn bella_tiling_steps() -> Interaction {
     let mut steps = start_desktop();
@@ -5682,6 +5780,18 @@ fn bella_tiling_model_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("halves"));
+    // No app named: the two front windows other than Bella's, Notes first
+    // (an empty argument used to count as "no command fits").
+    steps.push(Action::Keys(typed(
+        "hey bella can you split these 2 windows",
+    )));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose split ``".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes is on the left and".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
 

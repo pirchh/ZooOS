@@ -99,6 +99,10 @@ struct App {
     talking: Option<String>,
     /// The request being chosen for is a follow-up, sent with context.
     following: bool,
+    /// The steps of a request of several still to run, and the last one
+    /// run, for "it" (docs/multi-step-design.md).
+    steps: VecDeque<String>,
+    last_step: String,
     /// A question about the screen, waiting for the window server's
     /// `context:` answer (docs/context-design.md).
     asking_context: Option<String>,
@@ -196,6 +200,8 @@ fn main(chan: u64, home: u64) -> u8 {
         last_exchange: None,
         talking: None,
         following: false,
+        steps: VecDeque::new(),
+        last_step: String::new(),
         asking_context: None,
         capture: None,
         summarising: None,
@@ -274,6 +280,12 @@ fn main(chan: u64, home: u64) -> u8 {
                 }
             }
         }
+        // The next step of a request of several, once the last is done
+        // (docs/multi-step-design.md).
+        if matches!(p.mode, Mode::Typing) && !p.steps.is_empty() {
+            busy = true;
+            p.next_step();
+        }
         if p.model_restart_at.is_some_and(|at| zoo_rt::ticks() >= at) {
             p.model_restart_at = None;
             zoo_rt::log!("Bella: starting the model service again");
@@ -316,6 +328,7 @@ impl App {
     fn key(&mut self, key: Key) {
         match (&self.mode, key) {
             (Mode::Thinking, Key::Back) => {
+                self.drop_steps();
                 if let Some(e) = self.elephant {
                     let _ = send(e, b"cancel");
                     zoo_rt::log!("Bella: cancel sent at tick {}", zoo_rt::ticks());
@@ -339,6 +352,7 @@ impl App {
                 } else {
                     "Left where it is."
                 };
+                self.drop_steps();
                 self.mode = Mode::Typing;
                 self.status = String::from(HINT);
                 self.say(what);
@@ -367,6 +381,36 @@ impl App {
     }
 
     fn submit(&mut self, text: &str) {
+        // "Hey Bella, ..." is how a spoken request starts: the rest is the
+        // request ("hey" alone made it small talk).
+        let text = zoo_abi::bella::strip_address(text);
+        // Several steps: each runs on its own, in order
+        // (docs/multi-step-design.md).
+        // A single typed command never has two steps ("move a to b").
+        let steps = zoo_infer::steps::split_steps(text);
+        if !steps.is_empty() {
+            zoo_rt::log!("Bella: {} steps: {}", steps.len(), steps.join(" | "));
+            self.steps = steps.into();
+            self.last_step.clear();
+            self.next_step();
+            return;
+        }
+        self.last_step.clear();
+        self.submit_one(text);
+    }
+
+    /// Runs the next step, with "it" naming the apps of the one before.
+    fn next_step(&mut self) {
+        let Some(step) = self.steps.pop_front() else {
+            return;
+        };
+        let step = zoo_infer::assist::resolve_it(&step, &self.last_step);
+        zoo_rt::log!("Bella: step: {}", step);
+        self.last_step = step.clone();
+        self.submit_one(&step);
+    }
+
+    fn submit_one(&mut self, text: &str) {
         self.asked_at = zoo_rt::now_us();
         if typed_command(text) {
             // Typed by the user: it may answer an earlier request.
@@ -479,6 +523,12 @@ impl App {
         e.push_str(". Bella: ");
         e.push_str(&said);
         self.last_exchange = Some(shorten(e));
+        // Between the steps of a request of several, the model's next
+        // choice should not wait for it to read a note
+        // (docs/multi-step-design.md).
+        if !self.steps.is_empty() {
+            return;
+        }
         if let Some(el) = self.elephant {
             let mut msg = String::from("note ");
             msg.push_str(asked);
@@ -496,6 +546,15 @@ impl App {
             (zoo_rt::now_us() - self.asked_at) / 1000,
             by
         );
+    }
+
+    /// The rest of a request of several is not run (cancelled, or a
+    /// confirmation refused).
+    fn drop_steps(&mut self) {
+        if !self.steps.is_empty() {
+            zoo_rt::log!("Bella: {} steps not run", self.steps.len());
+            self.steps.clear();
+        }
     }
 
     /// A command, typed or chosen. `create` asks first; others that work
@@ -531,8 +590,11 @@ impl App {
             }
         } else if let Some(path) = text.strip_prefix("open ") {
             self.open(path.trim());
-        } else if let Some(app) = text.strip_prefix("launch ") {
-            self.launch(app.trim());
+        } else if let Some(apps) = text.strip_prefix("launch ") {
+            // "launch Notes and Files": each (docs/multi-step-design.md).
+            for app in String::from(apps).split(" and ") {
+                self.launch(app.trim());
+            }
         } else if let Some(apps) = text
             .strip_prefix("split ")
             .or((text == "split").then_some(""))
@@ -542,7 +604,9 @@ impl App {
             .iter()
             .find_map(|a| Some((*a, text.strip_prefix(a)?.strip_prefix(' ')?)))
         {
-            self.window_action(action, app.trim());
+            for app in String::from(app).split(" and ") {
+                self.window_action(action, app.trim());
+            }
         } else if self.broker(text) {
             self.learn(text);
         } else {
@@ -1349,6 +1413,7 @@ impl App {
             // computer); the other commands need something to act on.
             let empty = arg.is_empty()
                 && word != "info"
+                && word != "split"
                 && (self.following || !matches!(word, "list" | "inspect"));
             if word == "none" || empty {
                 zoo_rt::log!("Bella: no command fits");
