@@ -39,6 +39,8 @@ commands:
                             (Ctrl+C stops QEMU; no timeout unless given).
                             --model: the normal image with the assistant's
                             model (tools/models/); use with --accel
+                            --monitors N: N monitors side by side (1 to 4,
+                            QEMU shows each in its own tab; docs/monitors-design.md)
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
   embed-check              the embedding model against its model card (docs/vectors-design.md)
   infer [--prompt TEXT] [--tokens N]
@@ -156,6 +158,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             // The everyday system uses the processors (docs/smp-design.md):
             // 8 unless `--cpus` says otherwise.
             qemu::set_cpus(opts.cpus.unwrap_or(8));
+            qemu::set_monitors(opts.monitors.unwrap_or(1));
             let tools = config::Tools::resolve_for_qemu()?;
             if opts.model {
                 // The normal image with Bella's model added (as the
@@ -358,6 +361,7 @@ struct Options {
     f32_activations: bool,
     /// `--cpus N`: the guest's processors (docs/smp-design.md).
     cpus: Option<u8>,
+    monitors: Option<u32>,
 }
 
 impl Options {
@@ -387,6 +391,15 @@ impl Options {
                             .ok()
                             .filter(|n| (1..=32).contains(n))
                             .ok_or_else(|| format!("invalid --cpus `{v}` (1 to 32)"))?,
+                    );
+                }
+                "--monitors" => {
+                    let v = value("--monitors")?;
+                    o.monitors = Some(
+                        v.parse()
+                            .ok()
+                            .filter(|n| (1..=4).contains(n))
+                            .ok_or_else(|| format!("invalid --monitors `{v}` (1 to 4)"))?,
                     );
                 }
                 "--system-file" => o.system_file = Some(value("--system-file")?),

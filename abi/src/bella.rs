@@ -5,9 +5,9 @@
 /// The commands the user can type (docs/access-design.md adds `read`,
 /// `open`, `move`, `trash`, `launch` and `info`; docs/window-actions-design.md
 /// `maximize`, `minimize` and `close`).
-pub const COMMANDS: [&str; 15] = [
+pub const COMMANDS: [&str; 16] = [
     "search", "list", "inspect", "create", "undo", "read", "open", "move", "trash", "launch",
-    "info", "maximize", "minimize", "close", "split",
+    "info", "maximize", "minimize", "close", "split", "show",
 ];
 
 /// Words that make a line a sentence rather than a typed command:
@@ -26,6 +26,15 @@ pub fn typed_command(text: &str) -> bool {
         return false;
     };
     if !COMMANDS.contains(&first) {
+        return false;
+    }
+    // `show <app> on monitor N` (docs/monitors-design.md); "show Documents"
+    // stays a request for the model.
+    if first == "show"
+        && !text
+            .split_whitespace()
+            .any(|w| w.eq_ignore_ascii_case("monitor"))
+    {
         return false;
     }
     if first == "undo" || first == "info" || (first == "split" && text.trim() == "split") {
@@ -382,6 +391,8 @@ mod tests {
             "split",
             "split files, notes and network",
             "launch notes and files",
+            "show notes on monitor 2",
+            "maximize notes on monitor 2",
         ] {
             assert!(typed_command(t), "{t}");
         }
@@ -389,6 +400,7 @@ mod tests {
         assert!(!typed_command("maximize my notes please"));
         assert!(!typed_command("close the notes app"));
         assert!(!typed_command("split my screen please"));
+        assert!(!typed_command("show Documents"));
     }
 
     #[test]

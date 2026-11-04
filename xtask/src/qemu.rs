@@ -58,6 +58,20 @@ static VIRTIO_DISPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// none.
 static DISPLAY_SIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Monitors the next virtio GPU machine gets (docs/monitors-design.md).
+static MONITORS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// How many monitors (scanouts) the next virtio GPU machine has, 1 to 4:
+/// `max_outputs` on the device, and `opt/zooos/monitors` so the guest
+/// uses them all (a headless QEMU enables only the first).
+pub fn set_monitors(n: u32) {
+    MONITORS.store(n.clamp(1, 4), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn monitors() -> u32 {
+    MONITORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The screen size the next virtio GPU machine asks for, if any.
 pub fn set_display_size(size: Option<(u32, u32)>) {
     let v = size.map_or(0, |(w, h)| u64::from(w) << 32 | u64::from(h));
@@ -283,6 +297,17 @@ fn machine_args(
         "virtio-vga,xres=1920,yres=1080,edid=on".into()
     } else {
         "VGA,xres=1920,yres=1080,edid=on".into()
+    };
+    // More than one monitor (docs/monitors-design.md): the device's id
+    // names it for per-monitor screenshots.
+    let device = if virtio && monitors() > 1 {
+        args.extend([
+            "-fw_cfg".into(),
+            format!("name=opt/zooos/monitors,string={}", monitors()),
+        ]);
+        format!("{device},max_outputs={},id=vga0", monitors())
+    } else {
+        device
     };
     args.extend(["-vga".into(), "none".into(), "-device".into(), device]);
     // The network: legacy virtio (the kernel's driver), no boot ROM.
@@ -1024,6 +1049,15 @@ fn screenshot(q: &mut Qmp, dir: &Path, name: &str) -> Result<PathBuf, String> {
     }
     if let Err(e) = q.screendump(&dir.join(format!("{name}.png")), "png") {
         eprintln!("[verify] note: PNG screenshot {name} failed: {e}");
+    }
+    // The other monitors: `<name>-m2.png` and on (docs/monitors-design.md).
+    if VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
+        for k in 1..monitors() {
+            let png = dir.join(format!("{name}-m{}.png", k + 1));
+            if let Err(e) = q.screendump_head(&png, "png", "vga0", k) {
+                eprintln!("[verify] note: screenshot of monitor {} failed: {e}", k + 1);
+            }
+        }
     }
     Ok(ppm)
 }

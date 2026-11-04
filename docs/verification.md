@@ -3,7 +3,8 @@
 Status: M0–M5 (M5 as a prototype) and the interim console verified on the
 host below on 2026-10-30. Logs and screenshots are generated under `build/`
 (ignored by Git); rerun the commands to reproduce them. The
-multi-step section (version 0.103.0), the tiling section (0.102.0),
+monitors section (version 0.104.0), the multi-step section (0.103.0),
+the tiling section (0.102.0),
 the USB-models section (0.101.0),
 the window-actions section
 (0.100.0), the keys-under-load section (0.99.0) and the default-model
@@ -45,6 +46,17 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 `cargo xtask run` uses the same machine with `-serial stdio` instead of the
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
+
+## More than one monitor (version 0.104.0)
+
+docs/monitors-design.md (virtio-gpu in QEMU; real hardware has one).
+
+| Case | Result |
+| --- | --- |
+| `gpu-monitors` (TCG, 2 monitors) | `OK`: 3840x1080 over two scanouts; maximize, split and a refused monitor 3 |
+| `gpu-monitors` ignoring `@n` (negative control) | `FAIL`: no `placed Notes at 1944x38 1872x948` within 120 s |
+| `gpu-monitors-model` (3 monitors, `--accel whpx --cpus 8`) | `OK`: "hey bella put notes maximized on monitor 3 please" in 581 ms; "can you move files to the second screen" in 481 ms |
+| `assist-check` (Qwen3) | `PASS`: 32 of 34, 0 of 8 |
 
 ## Requests of several steps (version 0.103.0)
 

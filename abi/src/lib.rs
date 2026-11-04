@@ -26,7 +26,7 @@ pub mod ui;
 /// step 1) added call 56; version 16 (POSIX step 5b-1) added calls 57-58
 /// and command lines in `spawn`; version 17 (fast files step 1) added
 /// calls 59-61.
-pub const ABI_VERSION: u64 = 17;
+pub const ABI_VERSION: u64 = 18;
 
 /// System call numbers (in `rax`). Never reused.
 pub mod sys {
@@ -322,6 +322,9 @@ pub struct DisplayInfo {
     pub format: u64,
     /// `DISPLAY_FLUSH_NEEDED`, `DISPLAY_HW_CURSOR`.
     pub flags: u64,
+    /// Monitors side by side, each `width / monitors` wide (1 for a
+    /// firmware framebuffer; docs/monitors-design.md).
+    pub monitors: u64,
 }
 
 /// Where `mem_alloc` places a process's heap, and its per-process limit.
