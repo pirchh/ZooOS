@@ -1961,3 +1961,17 @@ Version 0.119.0. Design: docs/regression-design.md.
 - **A request in an action's registered words runs without the model**
   (verb at the start, a place of two words or more at the end), as the
   last check before the model.
+
+## Staged wake and the pill (2026-11-04)
+
+Version 0.120.0. Design: docs/wake-design.md.
+
+- **The pill is drawn by the window server and decided by Bella:** she
+  knows when she listens and works; the server only draws, and takes it
+  down after 10 s without word, so it cannot outlive her.
+- **A dark capsule at the top centre with five bars,** not a microphone
+  icon: the owner asked for something Apple-like.
+- **Her bare name followed by "said", "is", "and" and the like is talk
+  about her.** A greeting or a mark keeps it a request.
+- **A step of a multi-step request is never a correction,** so nothing is
+  learned from it.

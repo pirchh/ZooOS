@@ -197,7 +197,17 @@ fn main(chan: u64) -> u8 {
         for u in det.push(&samples) {
             let audio: Vec<f32> = u.iter().map(|&s| f32::from(s) / 32768.0).collect();
             let t = zoo_rt::now_us();
+            // After her name (or her question), what follows is for her:
+            // Bella shows she works on it while it is written down
+            // (docs/wake-design.md). Other speech says nothing.
+            let expected = name_until.is_some_and(|(until, _)| t <= until);
+            if expected {
+                say(chan, "hearing", "");
+            }
             let Ok(text) = h.transcribe(&audio) else {
+                if expected {
+                    say(chan, "lost", "");
+                }
                 continue;
             };
             let ms = (zoo_rt::now_us() - t) / 1000;

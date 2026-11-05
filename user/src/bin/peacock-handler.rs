@@ -551,6 +551,13 @@ impl App {
             self.request = Some(Request::Layout(l));
         } else if msg == b"split-front" {
             self.request = Some(Request::SplitFront);
+        } else if let Some(state) = msg.strip_prefix(b"pill:") {
+            let pill = match state {
+                b"listening" => Pill::Listening,
+                b"working" => Pill::Working,
+                _ => Pill::Off,
+            };
+            self.request = Some(Request::Pill(pill));
         } else if let Some(rest) = msg.strip_prefix(b"window:") {
             // window:<action>[@<monitor>]:<program>[#<m>]
             if let Some(colon) = rest.iter().position(|&b| b == b':') {
@@ -1137,7 +1144,26 @@ enum Request {
     BadDo,
     /// Windows arranged by a layout tree (docs/layouts-design.md).
     Layout(alloc::boxed::Box<Line>),
+    /// Bella's listening pill (docs/wake-design.md): off, listening or
+    /// working.
+    Pill(Pill),
 }
+
+/// What Bella's pill shows (docs/wake-design.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pill {
+    Off,
+    /// She listens for a request or an answer: the bars move like a voice.
+    Listening,
+    /// She works on a spoken request: one light sweeps across the bars.
+    Working,
+}
+
+/// How long the pill stays without word from Bella (ticks): a request
+/// she never finishes does not leave it up.
+const PILL_TICKS: u64 = 1000;
+/// Ticks between the pill's animation steps (30 ms).
+const PILL_STEP: u64 = 3;
 
 /// What an application may ask done to another's window: Bella's
 /// `maximize`, `minimize` and `close` (docs/window-actions-design.md).
@@ -1958,6 +1984,10 @@ struct Desktop {
     bounce: [Option<(u64, u64, u32)>; PROGRAMS],
     dock_hide_at: Option<u64>,
     banner: Option<Banner>,
+    /// Bella's pill (docs/wake-design.md): what it shows, until when, and
+    /// the tick its last animation step was drawn.
+    pill: Option<(Pill, u64)>,
+    pill_step: u64,
 }
 
 impl Desktop {
@@ -2877,6 +2907,18 @@ impl Desktop {
     /// Something an application asked for (docs/u3-design.md).
     fn app_request(&mut self, i: usize, req: Request) {
         match req {
+            Request::Pill(pill) => {
+                // Bella's alone: no other app may show it.
+                if program_index(b"bella") != Some(i) {
+                    return;
+                }
+                let now = self.pill.map(|p| p.0).unwrap_or(Pill::Off);
+                if now != pill {
+                    zoo_rt::log!("PeacockHandler: pill {:?}", pill);
+                }
+                self.damage_pill();
+                self.pill = (pill != Pill::Off).then(|| (pill, zoo_rt::ticks() + PILL_TICKS));
+            }
             Request::DockAdd(prog) => self.keep_in_dock(prog),
             Request::Context => {
                 let mut l = Line::new();
@@ -4094,6 +4136,7 @@ impl Desktop {
             }
         }
         self.draw_menu_bar();
+        self.draw_pill();
         self.draw_banner();
         self.draw_dock();
         self.draw_menu();
@@ -4776,6 +4819,45 @@ impl Desktop {
         }
     }
 
+    fn damage_pill(&mut self) {
+        let (x, y, w, h) = zoo_abi::ui::pill_rect(self.mw);
+        self.damage(x, y, w, h);
+    }
+
+    /// Bella's pill (docs/wake-design.md): a dark capsule at the top
+    /// centre of the menu bar, five bars in her colours.
+    fn draw_pill(&mut self) {
+        use zoo_abi::ui::{PILL_BAR_GAP, PILL_BAR_W, PILL_BARS, PILL_FILL, pill_bar, pill_rect};
+        let Some((pill, _)) = self.pill else { return };
+        let (x, y, w, h) = pill_rect(self.mw);
+        if !self.screen.visible(x, y, w, h) {
+            return;
+        }
+        self.screen
+            .round_rect(x, y, w, h, h / 2, PILL_FILL, 255, [true; 4]);
+        let phase = (zoo_rt::ticks() / PILL_STEP) as usize;
+        let inner = h - 6;
+        let bars = PILL_BARS.len();
+        let span = bars * PILL_BAR_W + (bars - 1) * PILL_BAR_GAP;
+        let mut bx = x + (w - span) / 2;
+        for (k, &c) in PILL_BARS.iter().enumerate() {
+            let (pct, lit) = pill_bar(k, phase, pill == Pill::Listening);
+            let bh = (inner * pct / 100).max(PILL_BAR_W);
+            let by = y + (h - bh) / 2;
+            self.screen.round_rect(
+                bx,
+                by,
+                PILL_BAR_W,
+                bh,
+                PILL_BAR_W / 2,
+                c,
+                if lit { 255 } else { 110 },
+                [true; 4],
+            );
+            bx += PILL_BAR_W + PILL_BAR_GAP;
+        }
+    }
+
     fn draw_banner(&mut self) {
         let Some(b) = &self.banner else { return };
         let (title, body) = (b.title, b.body.as_str());
@@ -5335,6 +5417,8 @@ fn main(_start_handle: u64, home: u64) -> u8 {
         bounce: [None; PROGRAMS],
         dock_hide_at: None,
         banner: None,
+        pill: None,
+        pill_step: 0,
     };
     desk.set_appearance(false);
     if info.flags & zoo_abi::DISPLAY_HW_CURSOR != 0 {
@@ -5529,6 +5613,22 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             }
         }
 
+        // Bella's pill: its next animation step, and gone when its time
+        // is up without word from her (docs/wake-design.md).
+        if let Some((_, until)) = desk.pill {
+            let now = zoo_rt::ticks();
+            if now >= until {
+                zoo_rt::log!("PeacockHandler: pill Off (timed out)");
+                desk.damage_pill();
+                desk.pill = None;
+                dirty = true;
+            } else if now >= desk.pill_step + PILL_STEP {
+                desk.pill_step = now;
+                desk.damage_pill();
+                dirty = true;
+            }
+        }
+
         // Clock, and banners that have had their time.
         let second = zoo_rt::ticks() / 100;
         if second != last_second {
@@ -5567,7 +5667,14 @@ fn main(_start_handle: u64, home: u64) -> u8 {
             // Until input, a message from an application, or the next
             // second (the clock); docs/u1b-design.md.
             let now = zoo_rt::ticks();
-            let _ = zoo_rt::input_wait((now / 100 + 1) * 100 - now);
+            let next_second = (now / 100 + 1) * 100 - now;
+            // The pill moves: wake for its next step.
+            let wait = if desk.pill.is_some() {
+                next_second.min(PILL_STEP)
+            } else {
+                next_second
+            };
+            let _ = zoo_rt::input_wait(wait);
         }
     }
 }

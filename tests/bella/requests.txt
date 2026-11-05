@@ -34,11 +34,13 @@ said: Hey, how are you doing?
 said: Hello, Bellamy, nice to meet you.
 said: Bella said she would call later. => want not for her
 said: I told Bella to open the notes. => want not for her
+said: Bella and I went to the shop. => want not for her
 said: Yes.
 
 # --- Her name, then the request ----------------------------------------
 said: Hey Bella.
 said: Okay, so, Bella, open files.
+said: That's done now. Bella, open notes. => want typed command
 said: Hey Bella, don't delete the milk entry. => want nothing done
 
 # --- From the outside review (docs/targets-design.md) -------------------
@@ -53,6 +55,7 @@ typed: replace milk with oat milk in my notes => want change
 typed: split the screen into quarters => want layout v(h(*,*),h(*,*))
 typed: put these windows in rows => want layout v(...)
 typed: maximize my notes
+typed: Open notes => want typed command
 
 # --- No command fits -----------------------------------------------------
 typed: What time is it? => want no command
