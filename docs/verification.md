@@ -58,6 +58,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Staged wake and the listening pill (version 0.120.0)
+
+docs/wake-design.md.
+
+| Check | Result |
+| --- | --- |
+| `voice-pause`: pill listening, working, off; screenshot checks; nothing learned | `OK` (3 of 3) |
+| `voice-pause` with the pill not drawn (negative control) | `FAIL`: no pill on screen |
+| `voice-not-for-bella`, `bella-notes`: no pill for other speech or typing | `OK` |
+
 ## Bella's regression sentences (version 0.119.0)
 
 docs/regression-design.md. `cargo xtask bella-regress` on the host.

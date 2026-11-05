@@ -213,6 +213,39 @@ pub fn line_top(win: (usize, usize, usize, usize), k: usize) -> usize {
     win.1 + TITLE_H + CONTENT_TOP + k * LINE_H
 }
 
+/// Bella's listening pill (docs/wake-design.md): a dark capsule at the
+/// top centre of the menu bar, shown while she listens for a request and
+/// while she works on a spoken one. (x, y, w, h) on a screen `w` wide.
+pub fn pill_rect(w: usize) -> (usize, usize, usize, usize) {
+    (w / 2 - PILL_W / 2, 3, PILL_W, MENU_H - 6)
+}
+
+pub const PILL_W: usize = 104;
+/// The capsule: near black in either appearance, as Apple's island.
+pub const PILL_FILL: u32 = 0x0B_0B_10;
+/// Bella's bars, left to right: rose to cyan.
+pub const PILL_BARS: [u32; 5] = [0xFF_5E_9C, 0xC8_6B_FA, 0x8B_7C_FF, 0x5A_A9_FF, 0x45_D1_E6];
+/// Bar width and gap.
+pub const PILL_BAR_W: usize = 5;
+pub const PILL_BAR_GAP: usize = 5;
+
+/// Bar `k`'s height in percent of the pill's inner height, and whether it
+/// is lit, at animation step `phase` (one every 30 ms). Listening, the bars
+/// rise and fall out of step like a voice; working, one light sweeps
+/// across them.
+pub fn pill_bar(k: usize, phase: usize, listening: bool) -> (usize, bool) {
+    if listening {
+        // A triangle wave per bar, each with its own period and offset.
+        let period = [14, 11, 16, 12, 15][k % 5];
+        let t = (phase + k * 5) % period;
+        let up = if t * 2 < period { t } else { period - t };
+        (30 + 70 * up * 2 / period, true)
+    } else {
+        let lit = (phase / 4) % 8;
+        (if lit == k { 70 } else { 35 }, lit == k)
+    }
+}
+
 /// The appearance switch in the menu bar: its centre, `clock_w` being the
 /// clock text's width.
 pub fn appearance_switch(w: usize, clock_w: usize) -> (usize, usize) {

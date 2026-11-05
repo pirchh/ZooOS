@@ -40,9 +40,14 @@ pub fn typed_command_with(text: &str, app_word: impl Fn(&str) -> bool) -> bool {
             .next()
             .is_some_and(|w| !SENTENCE_WORDS.iter().any(|s| s.eq_ignore_ascii_case(w)));
     }
-    if !COMMANDS.contains(&first) {
+    // Any case: speech to text writes "Open notes" (docs/wake-design.md).
+    let Some(first) = COMMANDS
+        .iter()
+        .copied()
+        .find(|c| c.eq_ignore_ascii_case(first))
+    else {
         return false;
-    }
+    };
     // `show <app> on monitor N` (docs/monitors-design.md); "show Documents"
     // stays a request for the model.
     if first == "show"
@@ -76,6 +81,16 @@ const GREETINGS: [&str; 9] = [
 const FILLERS: [&str; 12] = [
     "um", "uh", "erm", "er", "so", "and", "well", "alright", "right", "now", "oh", "ah",
 ];
+/// Words after her bare name that make it talk *about* her ("Bella said
+/// she would call", "Bella and I"): with no greeting before it and no
+/// mark after it, that is not a request (docs/wake-design.md). "can",
+/// "could", "will" and "would" are left out: "Bella can you open notes"
+/// is one.
+const ABOUT_HER: [&str; 22] = [
+    "said", "says", "told", "tells", "is", "was", "has", "had", "and", "thinks", "thought",
+    "wants", "wanted", "isn't", "wasn't", "doesn't", "didn't", "won't", "sounds", "seems", "knows",
+    "likes",
+];
 /// Words near "bella" that are words of their own, never her name.
 const NOT_HER_NAME: [&str; 8] = [
     "hello", "below", "bells", "belly", "fella", "fellow", "yellow", "jelly",
@@ -86,6 +101,13 @@ const NOT_HER_NAME: [&str; 8] = [
 /// After a greeting, a word up to two letters from "Bella" counts ("hey
 /// Bela", "they bellow"); without one the name must be exact.
 fn after_name(text: &str) -> Option<&str> {
+    named(text).map(|n| n.0)
+}
+
+/// `after_name`, and whether her name was set off: a greeting before it
+/// or a mark after it ("hey Bella", "Bella, open notes"), as a name said
+/// to someone is (docs/wake-design.md).
+fn named(text: &str) -> Option<(&str, bool)> {
     let not_word = |c: char| !c.is_ascii_alphanumeric() && c != '\'';
     let mut rest = text.trim_start_matches(not_word);
     let word = |t: &str| -> usize { t.find(not_word).unwrap_or(t.len()) };
@@ -125,7 +147,15 @@ fn after_name(text: &str) -> Option<&str> {
     if !(name.eq_ignore_ascii_case("bella") || near) {
         return None;
     }
-    Some(rest[w..].trim_start_matches(not_word).trim_end())
+    let after = &rest[w..];
+    let marked = after.starts_with([',', '.', '!', '?', ':', ';']);
+    let request = after.trim_start_matches(not_word).trim_end();
+    let next = &request[..word(request)];
+    if !greeted && !marked && ABOUT_HER.iter().any(|a| next.eq_ignore_ascii_case(a)) {
+        // "Bella said she would call later": about her, not to her.
+        return None;
+    }
+    Some((request, greeted || marked))
 }
 
 /// The request after Bella's name when `text` speaks to her: an optional
@@ -135,7 +165,28 @@ fn after_name(text: &str) -> Option<&str> {
 /// `None` when it does not start that way or nothing follows the name
 /// (docs/listening-design.md).
 pub fn addressed(text: &str) -> Option<&str> {
-    after_name(text).filter(|r| !r.is_empty())
+    if let Some(r) = after_name(text).filter(|r| !r.is_empty()) {
+        return Some(r);
+    }
+    // Her name later in what was heard, at the start of a clause and set
+    // off ("That's done. Bella, open notes", "okay, so, hey Bella, split
+    // the screen"): speech to text joins what came before into one
+    // utterance (docs/wake-design.md).
+    for (i, c) in text.char_indices() {
+        if !matches!(c, '.' | ',' | '!' | '?' | ';') {
+            continue;
+        }
+        let tail = &text[i + 1..];
+        if !tail.starts_with(' ') {
+            continue;
+        }
+        if let Some((r, true)) = named(tail)
+            && !r.is_empty()
+        {
+            return Some(r);
+        }
+    }
+    None
 }
 
 /// Whether `text` is her name and nothing else ("Hey Bella.", "They
@@ -597,6 +648,30 @@ mod tests {
         assert_eq!(addressed("Pay billah, remove milk."), Some("remove milk."));
         assert_eq!(addressed("Say hello to everyone"), None);
         assert_eq!(addressed("Pay the bill"), None);
+        assert!(typed_command("Open notes"));
+        assert!(typed_command("MAXIMIZE Notes"));
+        assert!(!typed_command("Open the notes"));
+        // About her, not to her (docs/wake-design.md).
+        assert_eq!(addressed("Bella said she would call later."), None);
+        assert_eq!(addressed("Bella and I went to the shop"), None);
+        assert_eq!(addressed("Bella, is it raining?"), Some("is it raining?"));
+        assert_eq!(
+            addressed("Bella can you open notes"),
+            Some("can you open notes")
+        );
+        assert_eq!(addressed("Bella open notes"), Some("open notes"));
+        // Her name set off at a clause boundary later on.
+        assert_eq!(
+            addressed("That's done now. Bella, open notes."),
+            Some("open notes.")
+        );
+        assert_eq!(
+            addressed("Okay, so the thing is, hey Bella, split the screen"),
+            Some("split the screen")
+        );
+        assert_eq!(addressed("I told her, Bella would open it"), None);
+        assert_eq!(addressed("I told Bella to open the notes."), None);
+        assert_eq!(addressed("Thanks, Bella."), None);
         // Negation and choices (docs/targets-design.md).
         assert!(negated("Don't delete the milk entry"));
         assert!(negated("do not close notes"));

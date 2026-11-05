@@ -218,6 +218,14 @@ impl Window {
         self.send_line(&l)
     }
 
+    /// Bella's pill in the menu bar (docs/wake-design.md): `listening`,
+    /// `working` or `off`. The window server takes it from Bella only.
+    pub fn pill(&self, state: &str) -> Result<(), Error> {
+        let mut l = Line::new();
+        let _ = write!(l, "pill:{}", state);
+        self.send_line(&l)
+    }
+
     pub fn split_front(&self) -> Result<(), Error> {
         let mut l = Line::new();
         let _ = l.write_str("split-front");

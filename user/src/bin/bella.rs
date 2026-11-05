@@ -109,6 +109,17 @@ enum Mode {
 /// How long a question waits for its answer (docs/targets-design.md): a
 /// yes later does not confirm a question asked long ago.
 const QUESTION_US: u64 = 60_000_000;
+/// After her name alone, how long the pill shows she listens: as long as
+/// BatHandler waits for the request (docs/wake-design.md).
+const NAME_LISTEN_US: u64 = 5_000_000;
+/// The pill shows her working on a spoken request for at least this long,
+/// so a quick one is still seen.
+const WORKING_MIN_US: u64 = 1_000_000;
+/// How often the pill's state is sent again while it is shown: well within
+/// the window server's 10 s.
+const PILL_AGAIN_US: u64 = 4_000_000;
+/// The longest BatHandler takes to write down a request, for the pill.
+const HEARING_MAX_US: u64 = 30_000_000;
 
 struct App {
     win: Window,
@@ -196,6 +207,14 @@ struct App {
     next_action: u32,
     /// When the open question was asked (`QUESTION_US`).
     asked_question_at: u64,
+    /// The pill (docs/wake-design.md): whether the request in hand was
+    /// spoken, until when she listens after her name, the least time it
+    /// shows her working, and what it shows now.
+    spoken: bool,
+    name_until: u64,
+    working_until: u64,
+    pill_shown: &'static str,
+    pill_sent_at: u64,
     /// A request whose layout was not what was meant: the next confirmed
     /// layout answers it too.
     relayout_of: Option<String>,
@@ -298,6 +317,11 @@ fn main(chan: u64, home: u64) -> u8 {
         pending_action: None,
         next_action: 0,
         asked_question_at: 0,
+        spoken: false,
+        name_until: 0,
+        working_until: 0,
+        pill_shown: "off",
+        pill_sent_at: 0,
         relayout_of: None,
         registry: {
             let (reg, skipped) = zoo_rt::registry::load();
@@ -402,6 +426,7 @@ fn main(chan: u64, home: u64) -> u8 {
             busy = true;
             p.next_step();
         }
+        p.update_pill();
         if p.model_restart_at.is_some_and(|at| zoo_rt::ticks() >= at) {
             p.model_restart_at = None;
             zoo_rt::log!("Bella: starting the model service again");
@@ -529,6 +554,8 @@ impl App {
                 self.input.pop();
             }
             (Mode::Typing, Key::Enter) => {
+                // Typed: the pill is for spoken requests.
+                self.spoken = false;
                 let text = core::mem::take(&mut self.input);
                 let text = text.trim();
                 if !text.is_empty() {
@@ -628,14 +655,28 @@ impl App {
         let route = zoo_infer::route::route(text, &self.registry, known);
         match route {
             Route::Typed => {
-                // Typed by the user: it may answer an earlier request.
-                self.request = self.unanswered.take();
+                // Typed by the user: it may answer an earlier request. A
+                // step of a request of several is not one: "maximize Notes"
+                // after "Open notes" corrects nothing (docs/wake-design.md).
+                if self.last_step.is_empty() {
+                    self.request = self.unanswered.take();
+                } else {
+                    self.request = None;
+                }
                 // A typed command after a wrong answer: the user's own
                 // correction, the one thing she learns from for now.
                 self.correction = self.request.is_some();
-                self.command(text);
+                // The command word as the commands spell it ("Open notes",
+                // as speech to text writes it, is `open notes`).
+                let (word, rest) = text.split_once(' ').unwrap_or((text, ""));
+                let mut cmd = word.to_ascii_lowercase();
+                if !rest.is_empty() {
+                    cmd.push(' ');
+                    cmd.push_str(rest);
+                }
+                self.command(&cmd);
                 self.answered("a typed command");
-                self.exchanged(text, text);
+                self.exchanged(text, &cmd);
             }
             Route::Layout(tree) => {
                 // A layout in words (docs/layouts-design.md), read here
@@ -1247,6 +1288,11 @@ impl App {
             (Some(id), Some((p, _))) => id == p,
             _ => false,
         };
+        // Answered, or refused by the window server (a sentence with no
+        // id): nothing of hers waits on an app now.
+        if (ours && outcome.status != zoo_infer::registry::Status::Choose) || outcome.id.is_none() {
+            self.pending_action = None;
+        }
         if ours
             && outcome.status == zoo_infer::registry::Status::Choose
             && let Some((_, inv)) = self.pending_action.take()
@@ -1560,6 +1606,17 @@ impl App {
         } else if msg == "name" {
             // Her name alone: the request follows.
             zoo_rt::log!("Bella: heard her name; listening for the request");
+            self.spoken = true;
+            self.name_until = zoo_rt::now_us() + NAME_LISTEN_US;
+        } else if msg == "hearing" {
+            // BatHandler is writing down what followed her name: she works
+            // on it (the pill), until it says what it heard.
+            self.spoken = true;
+            self.name_until = 0;
+            self.working_until = zoo_rt::now_us() + HEARING_MAX_US;
+        } else if msg == "lost" {
+            // Nothing could be made of it.
+            self.working_until = 0;
         } else if let Some(why) = msg.strip_prefix("none:") {
             zoo_rt::log!("Bella: not listening: {}", why);
             if let Some(b) = self.bat.take() {
@@ -1569,6 +1626,9 @@ impl App {
             // Spoken sentences end in a mark the typed ones lack (".", ",").
             let text = text.trim().trim_end_matches(['.', '!', ',', ';']);
             zoo_rt::log!("Bella: heard \"{}\"", text);
+            self.spoken = true;
+            self.name_until = 0;
+            self.working_until = zoo_rt::now_us() + WORKING_MIN_US;
             let mut echo = String::from("You said: ");
             echo.push_str(text);
             self.say(&echo);
@@ -1674,6 +1734,37 @@ impl App {
 
     /// Asks BatHandler to pass on the next thing said, without "hey Bella"
     /// (the answer to her question).
+    /// What the pill should show (docs/wake-design.md), sent to the
+    /// window server when it changes. Only for spoken requests, and only
+    /// while she can hear.
+    fn update_pill(&mut self) {
+        let now = zoo_rt::now_us();
+        let busy = !self.steps.is_empty() || self.pending_action.is_some();
+        let want = if !self.spoken || self.bat.is_none() {
+            "off"
+        } else {
+            match self.mode {
+                Mode::Confirm(_) | Mode::Choose(..) => "listening",
+                Mode::Thinking => "working",
+                Mode::Typing if busy || now < self.working_until => "working",
+                Mode::Typing if now < self.name_until => "listening",
+                Mode::Typing => "off",
+            }
+        };
+        if want == "off" {
+            self.spoken = false;
+        }
+        // Sent on a change, and again every few seconds while shown: the
+        // window server takes the pill down when it hears nothing for
+        // longer (Bella gone), not while a slow request runs.
+        let again = want != "off" && now.saturating_sub(self.pill_sent_at) >= PILL_AGAIN_US;
+        if want != self.pill_shown || again {
+            self.pill_shown = want;
+            self.pill_sent_at = now;
+            let _ = self.win.pill(want);
+        }
+    }
+
     fn await_answer(&mut self) {
         if let Some(b) = self.bat {
             let _ = send(b, b"await");

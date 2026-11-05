@@ -2076,9 +2076,9 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: desktop_then_rest(&normal),
             timeout: s.timeout * 4,
             want: "pass",
-            purpose: "a pause after her name (docs/listening-design.md §7): the microphone plays \"Hey Bella.\", a second of room noise, then \"Open notes and maximize it.\"; BatHandler takes the second utterance as the request and Bella carries it out",
+            purpose: "a pause after her name (docs/listening-design.md §7): the microphone plays \"Hey Bella.\", a second of room noise, then \"Open notes and maximize it.\"; BatHandler takes the second utterance as the request and Bella carries it out; her pill shows listening, then working, then goes",
             interaction: Some(voice_pause_steps()),
-            screen_checks: vec![],
+            screen_checks: vec![("1-listening", check_pill), ("2-done", check_no_pill)],
         },
         Case {
             name: "voice-confirm",
@@ -4469,6 +4469,14 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "Bella: heard her name; listening for the request".into(),
     ));
+    // Her pill (docs/wake-design.md): listening after her name, working
+    // on the request, gone once it is done.
+    steps.push(Action::WaitContains(
+        "PeacockHandler: pill Listening".into(),
+    ));
+    steps.push(Action::Screenshot("1-listening"));
+    // While BatHandler writes the request down: working, not gone.
+    steps.push(Action::WaitContains("PeacockHandler: pill Working".into()));
     steps.push(Action::WaitContains(
         "Open notes and maximize it.\" after her name".into(),
     ));
@@ -4478,7 +4486,12 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes fills the screen.".into(),
     ));
+    steps.push(Action::WaitContains("PeacockHandler: pill Off".into()));
+    steps.push(Action::NeverSeen("pill Off (timed out)".into()));
+    // A step is not a correction: nothing learned from this request.
+    steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Settle(QUIET));
+    steps.push(Action::Screenshot("2-done"));
     Interaction { steps }
 }
 
@@ -4530,6 +4543,8 @@ fn voice_steps(for_bella: bool) -> Interaction {
         steps.push(Action::Settle(QUIET));
         steps.push(Action::NeverSeen("Bella: heard".into()));
         steps.push(Action::NeverSeen("PeacockHandler: placed Notes".into()));
+        // Nor is her pill shown (docs/wake-design.md).
+        steps.push(Action::NeverSeen("PeacockHandler: pill".into()));
     }
     Interaction { steps }
 }
@@ -6443,6 +6458,8 @@ fn bella_notes_steps() -> Interaction {
         "Bella: the window server says: Wrote \"bread\" in Documents/notes.txt.".into(),
     ));
     steps.push(Action::Settle(QUIET));
+    // Typed, never spoken: no pill (docs/wake-design.md).
+    steps.push(Action::NeverSeen("PeacockHandler: pill".into()));
     steps.push(Action::Screenshot("edited"));
     Interaction { steps }
 }
@@ -8438,6 +8455,52 @@ fn dock_autohide_steps() -> Interaction {
         Action::WaitFor("ZOO_OS DISPLAY released pid=27".into()),
     ]);
     Interaction { steps }
+}
+
+/// Bella's pill (docs/wake-design.md): the dark capsule at the top centre
+/// of the menu bar, with her first (rose) and last (cyan) bars.
+fn check_pill(img: &screen::Image) -> Result<String, String> {
+    use zoo_abi::ui::{PILL_BAR_GAP, PILL_BAR_W, PILL_BARS, pill_rect};
+    let (x, y, w, h) = pill_rect(SCREEN.0);
+    let capsule = img.pixel(x + h / 2 + 2, y + h / 2);
+    let dark = capsule.is_some_and(|p| p.iter().all(|&v| v <= 30));
+    let span = PILL_BARS.len() * PILL_BAR_W + (PILL_BARS.len() - 1) * PILL_BAR_GAP;
+    let bar = |k: usize| {
+        img.pixel(
+            x + (w - span) / 2 + k * (PILL_BAR_W + PILL_BAR_GAP) + 2,
+            y + h / 2,
+        )
+    };
+    let (first, last) = (bar(0), bar(PILL_BARS.len() - 1));
+    // By hue, not brightness: listening lights every bar, working one at
+    // a time (the others dimmed), and the screenshot may catch either.
+    let wide = |p: [u8; 3]| p.map(u16::from);
+    let rose = first
+        .map(wide)
+        .is_some_and(|[r, g, b]| r >= 90 && r >= 2 * g && b > g);
+    let cyan = last
+        .map(wide)
+        .is_some_and(|[r, g, b]| g >= 70 && g >= 2 * r && b >= 2 * r);
+    if !(dark && rose && cyan) {
+        return Err(format!(
+            "no pill at {:?}: capsule {capsule:?}, first bar {first:?}, last bar {last:?}",
+            (x, y, w, h)
+        ));
+    }
+    Ok(format!(
+        "pill at {:?}: capsule {capsule:?}, first bar {first:?}, last bar {last:?}",
+        (x, y, w, h)
+    ))
+}
+
+/// No pill: the capsule's place is menu bar again.
+fn check_no_pill(img: &screen::Image) -> Result<String, String> {
+    let (x, y, _, h) = zoo_abi::ui::pill_rect(SCREEN.0);
+    let p = img.pixel(x + h / 2 + 2, y + h / 2);
+    if p.is_some_and(|p| p.iter().all(|&v| v <= 30)) {
+        return Err(format!("the pill is still shown: {p:?}"));
+    }
+    Ok(format!("no pill: the menu bar at its place is {p:?}"))
 }
 
 fn check_pointer(img: &screen::Image) -> Result<String, String> {
