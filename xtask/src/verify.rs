@@ -6399,12 +6399,29 @@ fn bella_notes_steps() -> Interaction {
         "Bella: asks: Remove \"milk\" from your notes?".into(),
     ));
     steps.push(Action::Keys(vec!["y"]));
+    // Two lines hold "milk" (the seeded shopping line and the one written
+    // above): Notes changes nothing and Bella asks which
+    // (docs/targets-design.md).
+    steps.push(Action::WaitContains(
+        "Bella: asks: Which one: 1. Shopping: flour, eggs, milk. | 2. flowers, bread and milk"
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    steps.push(Action::Keys(vec!["2"]));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Took \"milk\" off \"flowers, bread and milk\" in Documents/notes.txt."
             .into(),
     ));
     steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("Took \"milk\" off \"Shopping".into()));
     back_to_bella(&mut steps);
+    // A request not to: nothing done.
+    steps.push(Action::Keys(typed("don't remove flowers")));
+    steps.push(Action::WaitContains(
+        "Bella: a request not to: nothing done".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     // n keeps it.
     steps.push(Action::Keys(typed("remove flowers")));
     steps.push(Action::WaitContains(
@@ -8746,6 +8763,7 @@ fn typed(text: &str) -> Vec<&'static str> {
             ',' => "comma",
             '?' => "shift+slash",
             '\\' => "backslash",
+            '\'' => "apostrophe",
             other => panic!("typed: no key for {other:?}"),
         })
         .chain(["ret"])

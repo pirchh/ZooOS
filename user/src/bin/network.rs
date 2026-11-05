@@ -67,17 +67,34 @@ fn main(channel: u64) -> u8 {
             Err(_) => return 4,
         };
         // Bella's `browse` (docs/actions-design.md): as if typed and Enter.
-        if let Some(Event::Do(action, target)) = Event::parse(&buf[..n]) {
-            let said = if action == "fetch" && !target.trim().is_empty() {
-                app.input = String::from(target.trim());
+        if let Some(Event::Do(action, arg)) = Event::parse(&buf[..n]) {
+            // The address slot, and the request id answered with
+            // (docs/targets-design.md).
+            use zoo_infer::registry::{Outcome, Status, split_arg};
+            let (slots, id, _) = split_arg(arg);
+            let target = slots.first().copied().unwrap_or("").trim();
+            let (status, said) = if action == "fetch" && !target.is_empty() {
+                app.input = String::from(target);
                 let target = app.input.clone();
                 app.fetch(&target);
                 let first = app.result.first().map_or("", |l| l.as_str());
-                alloc::format!("Fetched {}: {}", target, first.trim())
+                (
+                    Status::Ok,
+                    alloc::format!("Fetched {}: {}", target, first.trim()),
+                )
             } else {
-                alloc::format!("Error: Network cannot {}.", action)
+                (
+                    Status::Err,
+                    alloc::format!("Error: Network cannot {}.", action),
+                )
             };
-            let _ = app.win.did(&said);
+            let outcome = Outcome {
+                status,
+                id: id.map(String::from),
+                said,
+                choices: alloc::vec::Vec::new(),
+            };
+            let _ = app.win.did(&outcome.text());
             continue;
         }
         match Key::parse(&buf[..n]) {

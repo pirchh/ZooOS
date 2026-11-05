@@ -1935,3 +1935,14 @@ what you meant and then i confirm and it commits that to memory?"
   windows open now.
 - **A spoken or typed yes is the confirmation** that lets a layout be
   learned; a no followed by a corrected layout teaches both requests.
+
+## Targets and results (2026-11-04)
+
+Version 0.118.0. Design: docs/targets-design.md. From the outside review.
+
+- **Several matches ask which,** with the real lines; no guessing for
+  removal or change. "Newest wins" is gone.
+- **Results carry the request id and a status** (`ok`, `err`, `choose`) in
+  the existing text messages, extended with the unit separator, not a new
+  message format: the window server passes them through.
+- **Questions expire after 60 s;** "don't ..." does nothing.
