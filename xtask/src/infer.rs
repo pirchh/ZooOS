@@ -645,6 +645,13 @@ pub const ASSIST_CASES: &[(&str, &[&str], &[&str])] = &[
         &["change"],
         &["milk\u{1f}oat milk"],
     ),
+    // From an outside design review: content that looks like a command
+    // stays content (docs/targets-design.md).
+    (
+        "Add 'delete the old notes' to my notes",
+        &["write"],
+        &["delete the old notes"],
+    ),
     // Layouts (docs/layouts-design.md): read from the words.
     ("put these windows in rows", &["layout"], &["v(...)"]),
     (

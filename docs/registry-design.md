@@ -88,11 +88,8 @@ skipped too, because the model chooses commands by their first token.
   "flowers and egg". A line with no items left goes.
 - **`change`:** changes whole words only ("egg" is not changed inside
   "eggplant").
-- **The newest match wins.** The seeded note's "Shopping: flour, eggs,
-  milk." and a just-written "flowers, bread and milk" both hold "milk",
-  and the line just written is the likelier one. The first version took
-  the oldest; `bella-notes` caught it. Notes' answer names the line it
-  changed.
+- **Several matching lines are asked about** (since 0.118.0,
+  docs/targets-design.md); before that, the newest match won.
 - A line's closing mark is kept: "Shopping: flour and eggs.".
 
 **Asking before a delete:**

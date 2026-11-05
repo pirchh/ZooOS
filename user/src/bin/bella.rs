@@ -105,7 +105,14 @@ enum Mode {
     /// A command that changes things is shown (`create`'s plan, or what
     /// `trash` would throw away); `y` runs it (docs/access-design.md).
     Confirm(String),
+    /// An app found several targets (docs/targets-design.md): the
+    /// invocation without its target, and the lines to choose from.
+    Choose(String, Vec<String>),
 }
+
+/// How long a question waits for its answer (docs/targets-design.md): a
+/// yes later does not confirm a question asked long ago.
+const QUESTION_US: u64 = 60_000_000;
 
 struct App {
     win: Window,
@@ -187,6 +194,12 @@ struct App {
     pending_layout: Option<(Option<String>, String)>,
     /// The request whose layout is being asked about.
     layout_request: Option<String>,
+    /// The last app action sent: its id and invocation, until answered
+    /// (docs/targets-design.md).
+    pending_action: Option<(String, String)>,
+    next_action: u32,
+    /// When the open question was asked (`QUESTION_US`).
+    asked_question_at: u64,
     /// A request whose layout was not what was meant: the next confirmed
     /// layout answers it too.
     relayout_of: Option<String>,
@@ -286,6 +299,9 @@ fn main(chan: u64, home: u64) -> u8 {
         correction: false,
         pending_layout: None,
         layout_request: None,
+        pending_action: None,
+        next_action: 0,
+        asked_question_at: 0,
         relayout_of: None,
         registry: {
             let (reg, skipped) = zoo_rt::registry::load();
@@ -440,6 +456,27 @@ impl App {
                 self.status = String::from("Cancelling...");
             }
             (Mode::Thinking, _) => {}
+            (Mode::Confirm(_) | Mode::Choose(..), _) if self.question_expired() => {
+                // Too late: the question is gone, not answered.
+                zoo_rt::log!("Bella: the question expired");
+                self.mode = Mode::Typing;
+                self.status = String::from(HINT);
+                self.say("That question has expired; please ask again.");
+            }
+            (Mode::Choose(inv, choices), Key::Char(c)) if c.is_ascii_digit() => {
+                let k = (c as usize).wrapping_sub('1' as usize);
+                if let Some(choice) = choices.get(k).cloned() {
+                    let inv = inv.clone();
+                    self.choose(&inv, &choice);
+                }
+            }
+            (Mode::Choose(..), Key::Char('n') | Key::Back) => {
+                self.mode = Mode::Typing;
+                self.status = String::from(HINT);
+                zoo_rt::log!("Bella: answered no: Left as it is.");
+                self.say("Left as it is.");
+            }
+            (Mode::Choose(..), _) => {}
             (Mode::Confirm(req), Key::Char('y')) => {
                 let req = req.clone();
                 self.mode = Mode::Typing;
@@ -510,6 +547,13 @@ impl App {
     }
 
     fn submit(&mut self, text: &str) {
+        // "Don't delete the milk entry": nothing to do
+        // (docs/targets-design.md).
+        if zoo_abi::bella::negated(zoo_abi::bella::strip_address(text)) {
+            zoo_rt::log!("Bella: a request not to: nothing done");
+            self.say("Okay, I won't.");
+            return;
+        }
         // "Hey Bella, ..." is how a spoken request starts: the rest is the
         // request ("hey" alone made it small talk).
         let text = zoo_abi::bella::strip_address(text);
@@ -659,6 +703,7 @@ impl App {
             q.push('?');
             self.say(&q);
             self.status = String::from("Press y to forget it, n to keep it.");
+            self.asked_question_at = zoo_rt::now_us();
             self.mode = Mode::Confirm(alloc::format!("fact-forget {}", about));
             self.request = None;
         } else if question_about_answer(text) && self.last_exchange.is_some() {
@@ -784,6 +829,7 @@ impl App {
             plan.push_str(&path);
             if self.broker(&plan) {
                 self.status = String::from("Press y to create, n to leave it.");
+                self.asked_question_at = zoo_rt::now_us();
                 self.mode = Mode::Confirm(alloc::format!("create {}", path));
             }
         } else if let Some(path) = text.strip_prefix("trash ") {
@@ -804,6 +850,7 @@ impl App {
                 q.push_str(" to the Trash?");
                 self.say(&q);
                 self.status = String::from("Press y to move it to the Trash, n to leave it.");
+                self.asked_question_at = zoo_rt::now_us();
                 self.mode = Mode::Confirm(alloc::format!("trash {}", real));
             }
         } else if let Some(path) = text.strip_prefix("open ") {
@@ -1174,8 +1221,37 @@ impl App {
 
     /// The window server's sentence for a window action.
     fn window_done(&mut self, said: &str) {
+        // An app's structured answer (docs/targets-design.md), or a plain
+        // sentence from the window server.
+        let outcome = zoo_infer::registry::Outcome::parse(said);
+        let said = outcome.said.as_str();
         zoo_rt::log!("Bella: the window server says: {}", said);
         self.say(said);
+        let ours = match (&outcome.id, &self.pending_action) {
+            (Some(id), Some((p, _))) => id == p,
+            _ => false,
+        };
+        if ours
+            && outcome.status == zoo_infer::registry::Status::Choose
+            && let Some((_, inv)) = self.pending_action.take()
+        {
+            let list: Vec<String> = outcome
+                .choices
+                .iter()
+                .enumerate()
+                .map(|(k, c)| alloc::format!("{}. {}", k + 1, c))
+                .collect();
+            zoo_rt::log!("Bella: asks: Which one: {}", list.join(" | "));
+            for l in &list {
+                self.say(l);
+            }
+            self.status = String::from("Press a number, or say which; n leaves it.");
+            self.asked_question_at = zoo_rt::now_us();
+            self.mode = Mode::Choose(inv, outcome.choices.clone());
+            self.await_answer();
+            let _ = self.draw();
+            return;
+        }
         // A layout she read from words: is it what was meant?
         if let Some((Some(request), spec)) = self.pending_layout.take()
             && said.starts_with("Arranged ")
@@ -1184,6 +1260,7 @@ impl App {
             self.say("Is this what you meant?");
             self.status = String::from("Say yes or press y to keep it; no or n to say how.");
             self.layout_request = Some(request);
+            self.asked_question_at = zoo_rt::now_us();
             self.mode = Mode::Confirm(alloc::format!("layout-ok {}", spec));
             self.await_answer();
         }
@@ -1479,7 +1556,23 @@ impl App {
             let mut echo = String::from("You said: ");
             echo.push_str(text);
             self.say(&echo);
-            if matches!(self.mode, Mode::Confirm(_)) {
+            if let Mode::Choose(inv, choices) = &self.mode {
+                // Which one, spoken: "the first", "two", or words of a line.
+                let (inv, choices) = (inv.clone(), choices.clone());
+                if self.question_expired() {
+                    self.key(Key::Back);
+                } else if let Some(k) = zoo_abi::bella::spoken_choice(
+                    text,
+                    &choices.iter().map(String::as_str).collect::<Vec<_>>(),
+                ) {
+                    self.choose(&inv, &choices[k]);
+                } else if spoken_answer(text) == Some(false) {
+                    self.key(Key::Back);
+                } else {
+                    self.say("Which one? Say the first, the second, or words from the line.");
+                    self.await_answer();
+                }
+            } else if matches!(self.mode, Mode::Confirm(_)) {
                 // The answer to her question, spoken.
                 match spoken_answer(text) {
                     Some(true) => self.key(Key::Char('y')),
@@ -1517,10 +1610,12 @@ impl App {
         }
         let inv = alloc::format!("{}:{}:{}", action.program, action.name, filled);
         if action.effect == Effect::Delete {
+            self.asked_question_at = zoo_rt::now_us();
             let q = action.question(&filled);
             zoo_rt::log!("Bella: asks: {}", q);
             self.say(&q);
             self.status = String::from("Say yes or press y to go ahead; no or n leaves it.");
+            self.asked_question_at = zoo_rt::now_us();
             self.mode = Mode::Confirm(alloc::format!("app {}", inv));
             self.await_answer();
         } else {
@@ -1528,8 +1623,27 @@ impl App {
         }
     }
 
-    /// Sends `<program>:<action>:<slots>` through the window server.
+    /// `inv` again with the chosen target (docs/targets-design.md).
+    fn choose(&mut self, inv: &str, choice: &str) {
+        zoo_rt::log!("Bella: chose \"{}\"", choice);
+        self.mode = Mode::Typing;
+        self.status = String::from(HINT);
+        let with = alloc::format!("{}{}@{}", inv, zoo_infer::registry::SLOT_SEP, choice);
+        self.invoke(&with);
+    }
+
+    /// Whether the question asked is too old to answer.
+    fn question_expired(&self) -> bool {
+        zoo_rt::now_us().saturating_sub(self.asked_question_at) > QUESTION_US
+    }
+
+    /// Sends `<program>:<action>:<slots>` through the window server, with
+    /// a request id its answer carries back (docs/targets-design.md).
     fn invoke(&mut self, inv: &str) {
+        self.next_action += 1;
+        let id = self.next_action;
+        self.pending_action = Some((alloc::format!("{id}"), String::from(inv)));
+        let inv = alloc::format!("{}{}#{}", inv, zoo_infer::registry::SLOT_SEP, id);
         let mut parts = inv.splitn(3, ':');
         let (Some(program), Some(name), Some(arg)) = (parts.next(), parts.next(), parts.next())
         else {

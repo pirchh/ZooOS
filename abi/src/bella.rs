@@ -174,6 +174,105 @@ fn distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Whether `text` asks *not* to do something ("don't delete the milk
+/// entry", "do not close notes", "never mind"): Bella does nothing
+/// (docs/targets-design.md).
+pub fn negated(text: &str) -> bool {
+    let t = text
+        .trim_start()
+        .trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    let starts = |p: &str| t.len() >= p.len() && t[..p.len()].eq_ignore_ascii_case(p);
+    [
+        "don't ",
+        "dont ",
+        "do not ",
+        "never ",
+        "please don't ",
+        "please do not ",
+    ]
+    .iter()
+    .any(|p| starts(p))
+        || t.eq_ignore_ascii_case("never mind")
+        || t.eq_ignore_ascii_case("nevermind")
+}
+
+/// Which of `choices` a spoken answer picks: "the first", "two", "the
+/// last", or the one line sharing a word of three letters or more with the
+/// answer that no other line has.
+pub fn spoken_choice(answer: &str, choices: &[&str]) -> Option<usize> {
+    // "first", "second", "third", "last" anywhere; a bare number ("two",
+    // "2") only as the whole answer ("the one with flowers" is not 1).
+    const ORDINALS: [(&str, usize); 3] = [("first", 0), ("second", 1), ("third", 2)];
+    const NUMBERS: [(&str, usize); 6] = [
+        ("one", 0),
+        ("1", 0),
+        ("two", 1),
+        ("2", 1),
+        ("three", 2),
+        ("3", 2),
+    ];
+    let mut count = 0;
+    let mut only = "";
+    for w in answer
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        count += 1;
+        only = w;
+        if let Some((_, k)) = ORDINALS.iter().find(|(o, _)| w.eq_ignore_ascii_case(o)) {
+            return (*k < choices.len()).then_some(*k);
+        }
+        if w.eq_ignore_ascii_case("last") && !choices.is_empty() {
+            return Some(choices.len() - 1);
+        }
+    }
+    if count == 1
+        && let Some((_, k)) = NUMBERS.iter().find(|(n, _)| only.eq_ignore_ascii_case(n))
+    {
+        return (*k < choices.len()).then_some(*k);
+    }
+    // A distinctive word.
+    let has = |line: &str, w: &str| {
+        line.split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|x| x.eq_ignore_ascii_case(w))
+    };
+    let mut pick = None;
+    for w in answer
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 3)
+    {
+        let hits: alloc_free::Hits = alloc_free::hits(choices, |c| has(c, w));
+        if hits.count == 1 {
+            match pick {
+                None => pick = Some(hits.first),
+                Some(p) if p != hits.first => return None,
+                _ => {}
+            }
+        }
+    }
+    pick
+}
+
+/// Counting without an allocator (`zoo_abi` has none).
+mod alloc_free {
+    pub struct Hits {
+        pub count: usize,
+        pub first: usize,
+    }
+    pub fn hits(choices: &[&str], f: impl Fn(&str) -> bool) -> Hits {
+        let mut h = Hits { count: 0, first: 0 };
+        for (k, c) in choices.iter().enumerate() {
+            if f(c) {
+                if h.count == 0 {
+                    h.first = k;
+                }
+                h.count += 1;
+            }
+        }
+        h
+    }
+}
+
 /// `text` without a leading "hey Bella" or "Bella" (`addressed`), so a
 /// spoken request reads as typed; unchanged otherwise.
 pub fn strip_address(text: &str) -> &str {
@@ -498,6 +597,20 @@ mod tests {
         assert_eq!(addressed("Pay billah, remove milk."), Some("remove milk."));
         assert_eq!(addressed("Say hello to everyone"), None);
         assert_eq!(addressed("Pay the bill"), None);
+        // Negation and choices (docs/targets-design.md).
+        assert!(negated("Don't delete the milk entry"));
+        assert!(negated("do not close notes"));
+        assert!(negated("never mind"));
+        assert!(!negated("delete the milk entry"));
+        assert!(!negated("donut shop list"));
+        let lines = ["Shopping: flour, eggs, milk.", "flowers, bread and milk"];
+        assert_eq!(spoken_choice("the first one", &lines), Some(0));
+        assert_eq!(spoken_choice("two", &lines), Some(1));
+        assert_eq!(spoken_choice("the last", &lines), Some(1));
+        assert_eq!(spoken_choice("the shopping one", &lines), Some(0));
+        assert_eq!(spoken_choice("the one with flowers", &lines), Some(1));
+        assert_eq!(spoken_choice("milk", &lines), None, "in both");
+        assert_eq!(spoken_choice("third", &lines), None);
         // Filler before her name (the owner's demo, docs/listening-design.md §8).
         assert_eq!(
             addressed("Um, so, hey Bella, open notes."),
@@ -558,6 +671,10 @@ mod tests {
         ] {
             assert!(typed_command_with(t, app), "{t}");
         }
+        // A typed or spoken command, not one for the model (the review's
+        // "Write 'bread and butter'", which the model alone left as none).
+        assert!(typed_command_with("Write 'bread and butter'", |w| w
+            .eq_ignore_ascii_case("write")));
         for t in [
             "write me a poem",
             "remove my old notes please",

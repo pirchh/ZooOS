@@ -191,11 +191,109 @@ impl Registry {
         let (name, arg) = rest.split_once(':').unwrap_or((rest, ""));
         let a = self.find(program, name)?;
         let arg = arg.trim();
-        let parts = arg.split(SLOT_SEP).count();
+        // A request id (`#7`) and a chosen target (`@<line>`) ride along
+        // after the slots (docs/targets-design.md).
+        let slots = arg.split(SLOT_SEP).filter(|p| !is_extra(p));
         (arg.len() <= MAX_ARG
-            && parts == a.slots.len()
-            && arg.split(SLOT_SEP).all(|p| !p.trim().is_empty()))
+            && slots.clone().count() == a.slots.len()
+            && slots.into_iter().all(|p| !p.trim().is_empty()))
         .then_some((a, arg))
+    }
+}
+
+/// A part of an invocation's argument that is not a slot: the request id
+/// (`#<n>`) or a chosen target (`@<text>`).
+pub fn is_extra(part: &str) -> bool {
+    part.starts_with('#') || part.starts_with('@')
+}
+
+/// An invocation's argument split: the slots, the request id, the target.
+pub fn split_arg(arg: &str) -> (Vec<&str>, Option<&str>, Option<&str>) {
+    let mut slots = Vec::new();
+    let (mut id, mut target) = (None, None);
+    for p in arg.split(SLOT_SEP) {
+        if let Some(i) = p.strip_prefix('#') {
+            id = Some(i);
+        } else if let Some(t) = p.strip_prefix('@') {
+            target = Some(t);
+        } else {
+            slots.push(p);
+        }
+    }
+    (slots, id, target)
+}
+
+/// What an app answers (`did:`), structured (docs/targets-design.md):
+/// the status, the request id, a sentence, and for `Choose` the
+/// candidates. A plain sentence (older apps) is `Ok` with no id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub status: Status,
+    pub id: Option<String>,
+    pub said: String,
+    pub choices: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ok,
+    Err,
+    /// Several targets: which one?
+    Choose,
+}
+
+impl Outcome {
+    /// The text an app sends after `did:`.
+    pub fn text(&self) -> String {
+        let status = match self.status {
+            Status::Ok => "ok",
+            Status::Err => "err",
+            Status::Choose => "choose",
+        };
+        let mut t = format!(
+            "{status}{SLOT_SEP}#{}{SLOT_SEP}{}",
+            self.id.as_deref().unwrap_or(""),
+            self.said
+        );
+        for c in &self.choices {
+            t.push(SLOT_SEP);
+            t.push_str(c);
+        }
+        t
+    }
+
+    pub fn parse(text: &str) -> Outcome {
+        let mut parts = text.split(SLOT_SEP);
+        let status = match parts.next() {
+            Some("ok") => Status::Ok,
+            Some("err") => Status::Err,
+            Some("choose") => Status::Choose,
+            _ => {
+                let st = if text.starts_with("Error") {
+                    Status::Err
+                } else {
+                    Status::Ok
+                };
+                return Outcome {
+                    status: st,
+                    id: None,
+                    said: String::from(text),
+                    choices: Vec::new(),
+                };
+            }
+        };
+        let id = parts
+            .next()
+            .and_then(|p| p.strip_prefix('#'))
+            .filter(|i| !i.is_empty())
+            .map(String::from);
+        let said = String::from(parts.next().unwrap_or(""));
+        Outcome {
+            status,
+            id,
+            said,
+            choices: parts.map(String::from).collect(),
+        }
     }
 }
 
@@ -394,6 +492,26 @@ mod tests {
         );
         assert!(r.check("notes:change:egg").is_none(), "one slot of two");
         assert!(r.check("notes:write:").is_none());
+        // The id and a target are not slots.
+        assert!(r.check("notes:remove:milk\u{1f}#7").is_some());
+        assert!(
+            r.check("notes:remove:milk\u{1f}#7\u{1f}@flowers, bread and milk")
+                .is_some()
+        );
+        assert!(r.check("notes:remove:\u{1f}#7").is_none());
+        assert_eq!(
+            split_arg("egg\u{1f}bread\u{1f}#3\u{1f}@egg two"),
+            (alloc::vec!["egg", "bread"], Some("3"), Some("egg two"))
+        );
+        let o = Outcome {
+            status: Status::Choose,
+            id: Some(String::from("3")),
+            said: String::from("Which one?"),
+            choices: alloc::vec![String::from("a"), String::from("b")],
+        };
+        assert_eq!(Outcome::parse(&o.text()), o);
+        assert_eq!(Outcome::parse("Wrote \"x\" in notes.").status, Status::Ok);
+        assert_eq!(Outcome::parse("Error: no").status, Status::Err);
         assert!(r.check("notes:delete:x").is_none());
         assert!(r.check("files:write:x").is_none());
         assert_eq!(

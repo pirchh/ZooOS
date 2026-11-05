@@ -115,6 +115,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn content_and_a_second_action() {
+        // From the outside design review (docs/targets-design.md).
+        assert_eq!(
+            split_steps("Add milk to Notes and open Files"),
+            alloc::vec![
+                String::from("Add milk to Notes"),
+                String::from("open Files")
+            ]
+        );
+    }
+
+    #[test]
     fn steps() {
         let s = |t: &str| split_steps(t);
         assert_eq!(

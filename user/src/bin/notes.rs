@@ -201,15 +201,40 @@ fn main(channel: u64, home: u64) -> u8 {
             match try_recv(channel, &mut msg) {
                 Ok(n) => {
                     if let Some(Event::Do(action, text)) = Event::parse(&msg[..n]) {
-                        // Bella's `write` (docs/actions-design.md).
-                        let said = if action == "write" {
-                            ed.append_line(text)
+                        // Bella's actions (docs/registry-design.md), answered
+                        // with a status, her request id, and for several
+                        // matching lines the lines to choose from
+                        // (docs/targets-design.md).
+                        use zoo_infer::registry::{Outcome, Status, split_arg};
+                        let (slots, id, target) = split_arg(text);
+                        let outcome = if action == "write" {
+                            let said = ed.append_line(slots.first().copied().unwrap_or(""));
+                            let status = if said.starts_with("Error") {
+                                Status::Err
+                            } else {
+                                Status::Ok
+                            };
+                            Outcome {
+                                status,
+                                id: None,
+                                said,
+                                choices: alloc::vec::Vec::new(),
+                            }
                         } else if action == "remove" || action == "change" {
-                            ed.edit(action, text)
+                            ed.edit(action, &slots, target)
                         } else {
-                            alloc::format!("Error: Notes cannot {}.", action)
+                            Outcome {
+                                status: Status::Err,
+                                id: None,
+                                said: alloc::format!("Error: Notes cannot {}.", action),
+                                choices: alloc::vec::Vec::new(),
+                            }
                         };
-                        let _ = win.did(&said);
+                        let outcome = Outcome {
+                            id: id.map(alloc::string::String::from),
+                            ..outcome
+                        };
+                        let _ = win.did(&outcome.text());
                     } else if let Some(Event::Open(path)) = Event::parse(&msg[..n]) {
                         if ed.editing {
                             ed.save();
@@ -363,28 +388,62 @@ impl Editor {
 
     /// Bella's `remove` and `change` (docs/registry-design.md §4): the
     /// edit made on the whole text, saved at once; what it did, for her.
-    fn edit(&mut self, action: &str, arg: &str) -> alloc::string::String {
+    fn edit(
+        &mut self,
+        action: &str,
+        slots: &[&str],
+        target: Option<&str>,
+    ) -> zoo_infer::registry::Outcome {
+        use zoo_infer::notes::{Edit, change, remove};
+        use zoo_infer::registry::{Outcome, Status};
+        let out = |status, said: alloc::string::String, choices| Outcome {
+            status,
+            id: None,
+            said,
+            choices,
+        };
         if let Some(why) = self.read_only {
-            return alloc::format!("Error: {} cannot be changed ({}).", self.path(), why);
+            return out(
+                Status::Err,
+                alloc::format!("Error: {} cannot be changed ({}).", self.path(), why),
+                alloc::vec::Vec::new(),
+            );
         }
         let text = alloc::string::String::from_utf8_lossy(&self.text[..self.len]).into_owned();
-        let done = if action == "remove" {
-            zoo_infer::notes::remove(&text, arg)
-        } else {
-            arg.split_once(zoo_infer::registry::SLOT_SEP)
-                .and_then(|(old, new)| zoo_infer::notes::change(&text, old, new))
+        let what = slots.first().copied().unwrap_or("");
+        let done = match (action, slots) {
+            ("remove", _) => remove(&text, what, target),
+            ("change", [old, new]) => change(&text, old, new, target),
+            _ => Edit::NotFound,
         };
-        let Some((new_text, said)) = done else {
-            return alloc::format!(
-                "Error: \"{}\" is not in {}.",
-                arg.split(zoo_infer::registry::SLOT_SEP)
-                    .next()
-                    .unwrap_or(arg),
-                self.path()
-            );
+        let (new_text, said) = match done {
+            Edit::Done { text, said } => (text, said),
+            Edit::Choose(lines) => {
+                zoo_rt::log!(
+                    "Notes: \"{}\" is in {} lines; asking which",
+                    what,
+                    lines.len()
+                );
+                return out(
+                    Status::Choose,
+                    alloc::format!("\"{}\" is in {} lines. Which one?", what, lines.len()),
+                    lines,
+                );
+            }
+            Edit::NotFound => {
+                return out(
+                    Status::Err,
+                    alloc::format!("Error: \"{}\" is not in {}.", what, self.path()),
+                    alloc::vec::Vec::new(),
+                );
+            }
         };
         if new_text.len() > CAPACITY {
-            return alloc::format!("Error: {} is full.", self.path());
+            return out(
+                Status::Err,
+                alloc::format!("Error: {} is full.", self.path()),
+                alloc::vec::Vec::new(),
+            );
         }
         self.text.clear();
         self.text.extend_from_slice(new_text.as_bytes());
@@ -395,9 +454,17 @@ impl Editor {
         self.editing = !self.save();
         zoo_rt::log!("Notes: {} in {}", action, self.path());
         if self.editing {
-            alloc::format!("{} {}, but saving failed.", said, self.path())
+            out(
+                Status::Err,
+                alloc::format!("{} {}, but saving failed.", said, self.path()),
+                alloc::vec::Vec::new(),
+            )
         } else {
-            alloc::format!("{} {}.", said, self.path())
+            out(
+                Status::Ok,
+                alloc::format!("{} {}.", said, self.path()),
+                alloc::vec::Vec::new(),
+            )
         }
     }
 

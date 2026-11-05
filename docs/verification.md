@@ -58,6 +58,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Targets, results and bound questions (version 0.118.0)
+
+docs/targets-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-notes`: "which one?" by number; "don't remove flowers" does nothing | `OK` |
+| `bella-notes` with "newest wins" put back (negative control) | `FAIL` |
+| `assist-check` with the review's sentences | 44 of 46 |
+
 ## Layouts with try-and-confirm (version 0.117.0)
 
 docs/layouts-design.md.
