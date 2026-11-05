@@ -58,6 +58,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Asking when unsure (version 0.121.0)
+
+docs/unsure-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-unsure` (WHPX): low-margin `close Network` asked, n closes nothing | `OK` |
+| The same with the guard off (negative control) | `FAIL` |
+
 ## Staged wake and the listening pill (version 0.120.0)
 
 docs/wake-design.md.

@@ -38,6 +38,6 @@ typed split the screen into quarters => layout v(h(*,*),h(*,*))
 typed put these windows in rows => layout v(...)
 typed maximize my notes => model: maximize "Notes"
 typed Open notes => typed command
-typed What time is it? => model: close "Network"
+typed What time is it? => model: close "Network", asked first (unsure)
 typed Tell me a joke => model: no command (answered in words)
 typed Shut down the computer => model: no command (answered in words)

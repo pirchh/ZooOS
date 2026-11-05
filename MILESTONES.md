@@ -221,6 +221,7 @@ lands as small, separately verified steps.
 | — | Action results with request ids and a status; "which one?" with the real lines (newest-wins gone); questions that expire; "don't ..." does nothing (docs/targets-design.md) | done 2026-11-04 |
 | — | Regression sentences with baselines (`bella-regress`); requests in the registry's words without the model (docs/regression-design.md) | done 2026-11-04 |
 | — | Staged wake: about-her guard, her name later in an utterance, the listening pill (docs/wake-design.md) | done 2026-11-04 |
+| — | Asking when unsure: low-margin choices that change things ask first (docs/unsure-design.md) | done 2026-11-04 |
 | — | Routines; learning templates; titled notes; endpointing and follow-ups | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |

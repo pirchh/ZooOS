@@ -1975,3 +1975,10 @@ Version 0.120.0. Design: docs/wake-design.md.
   about her.** A greeting or a mark keeps it a request.
 - **A step of a multi-step request is never a correction,** so nothing is
   learned from it.
+
+## Asking when unsure (2026-11-04)
+
+Version 0.121.0. Design: docs/unsure-design.md. Bella asks before a
+model choice that closes, moves or changes something when its margin is
+under 5.00, a threshold measured on `assist-check`. Undoable choices never
+ask, so most requests stay one step.

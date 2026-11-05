@@ -58,6 +58,6 @@ typed: maximize my notes
 typed: Open notes => want typed command
 
 # --- No command fits -----------------------------------------------------
-typed: What time is it? => want no command
+typed: What time is it? => want asked first
 typed: Tell me a joke
 typed: Shut down the computer => want no command
