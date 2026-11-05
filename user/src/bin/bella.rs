@@ -31,11 +31,7 @@ zoo_rt::entry2!(main);
 const ROWS: usize = 15;
 const TRANSCRIPT: usize = ROWS - 2;
 const MAX_INPUT: usize = 120;
-use zoo_abi::bella::{
-    asks_about_activity, asks_my_files, asks_what_bella_did, asks_what_remembered, fact_to_forget,
-    fact_to_remember, file_to_summarise, follow_up, question_about_answer, small_talk,
-    summary_stem, wants_saved,
-};
+use zoo_abi::bella::{follow_up, summary_stem};
 /// Window server events Bella keeps (docs/events-design.md).
 const EVENTS_KEPT: usize = 5;
 
@@ -547,33 +543,29 @@ impl App {
     }
 
     fn submit(&mut self, text: &str) {
-        // "Don't delete the milk entry": nothing to do
-        // (docs/targets-design.md).
-        if zoo_abi::bella::negated(zoo_abi::bella::strip_address(text)) {
-            zoo_rt::log!("Bella: a request not to: nothing done");
-            self.say("Okay, I won't.");
-            return;
+        use zoo_infer::route::Plan;
+        // The address ("hey Bella") off, "maximize it" after the user
+        // opened Notes resolved from the desktop's events
+        // (docs/events-design.md), then the steps (docs/regression-design.md:
+        // the host's `bella-regress` takes the same path).
+        match zoo_infer::route::plan(text, |t| self.it_from_events(t)) {
+            Plan::Negated => {
+                // "Don't delete the milk entry" (docs/targets-design.md).
+                zoo_rt::log!("Bella: a request not to: nothing done");
+                self.say("Okay, I won't.");
+            }
+            Plan::Steps(steps) => {
+                // Each runs on its own, in order (docs/multi-step-design.md).
+                zoo_rt::log!("Bella: {} steps: {}", steps.len(), steps.join(" | "));
+                self.steps = steps.into();
+                self.last_step.clear();
+                self.next_step();
+            }
+            Plan::One(text) => {
+                self.last_step.clear();
+                self.submit_one(&text);
+            }
         }
-        // "Hey Bella, ..." is how a spoken request starts: the rest is the
-        // request ("hey" alone made it small talk).
-        let text = zoo_abi::bella::strip_address(text);
-        // "maximize it" after the user opened Notes: the app the last
-        // events name (docs/events-design.md).
-        let resolved = self.it_from_events(text);
-        let text = resolved.as_str();
-        // Several steps: each runs on its own, in order
-        // (docs/multi-step-design.md).
-        // A single typed command never has two steps ("move a to b").
-        let steps = zoo_infer::steps::split_steps(text);
-        if !steps.is_empty() {
-            zoo_rt::log!("Bella: {} steps: {}", steps.len(), steps.join(" | "));
-            self.steps = steps.into();
-            self.last_step.clear();
-            self.next_step();
-            return;
-        }
-        self.last_step.clear();
-        self.submit_one(text);
     }
 
     /// One of the window server's events: kept, the last few.
@@ -626,106 +618,130 @@ impl App {
     }
 
     fn submit_one(&mut self, text: &str) {
+        use zoo_infer::route::{Known, Route};
         self.asked_at = zoo_rt::now_us();
-        if zoo_abi::bella::typed_command_with(text, |w| self.registry.find_word(w).is_some()) {
-            // Typed by the user: it may answer an earlier request.
-            self.request = self.unanswered.take();
-            // A typed command after a wrong answer: the user's own
-            // correction, the one thing she learns from for now.
-            self.correction = self.request.is_some();
-            self.command(text);
-            self.answered("a typed command");
-            self.exchanged(text, text);
-        } else if let Some(tree) = (self.relayout_of.is_some() || zoo_infer::assist::arranges(text))
-            .then(|| {
-                let named = zoo_infer::assist::split_request(text).unwrap_or_default();
-                let apps: Vec<&str> = named.split(" and ").filter(|a| !a.is_empty()).collect();
-                zoo_infer::layout::from_words(text, &apps)
-            })
-            .flatten()
-        {
-            // A layout in words (docs/layouts-design.md), read here without
-            // the model; asked about once arranged.
-            // A phrasing she learned: from memory, no question.
-            self.request = Some(String::from(text));
-            if self.recall(text) {
-                self.answered("memory");
-            } else {
-                zoo_rt::log!("Bella: read the layout {} from the words", tree.text());
+        let known = Known {
+            relayout: self.relayout_of.is_some(),
+            summary: self.last_summary.is_some(),
+            exchange: self.last_exchange.is_some(),
+        };
+        let route = zoo_infer::route::route(text, &self.registry, known);
+        match route {
+            Route::Typed => {
+                // Typed by the user: it may answer an earlier request.
+                self.request = self.unanswered.take();
+                // A typed command after a wrong answer: the user's own
+                // correction, the one thing she learns from for now.
+                self.correction = self.request.is_some();
+                self.command(text);
+                self.answered("a typed command");
+                self.exchanged(text, text);
+            }
+            Route::Layout(tree) => {
+                // A layout in words (docs/layouts-design.md), read here
+                // without the model; asked about once arranged. A phrasing
+                // she learned: from memory, no question.
                 self.request = Some(String::from(text));
-                let cmd = alloc::format!("layout {}", tree.text());
+                if self.recall(text) {
+                    self.answered("memory");
+                } else {
+                    zoo_rt::log!("Bella: read the layout {} from the words", tree.text());
+                    let cmd = alloc::format!("layout {}", tree.text());
+                    self.command(&cmd);
+                }
+            }
+            Route::Phrased(cmd) => {
+                // In the app's own registered words: as if the model had
+                // chosen it (docs/regression-design.md).
+                zoo_rt::log!("Bella: in the registry's words: {}", cmd);
+                self.request = Some(String::from(text));
+                self.say(&alloc::format!("Bella: {}", cmd));
                 self.command(&cmd);
+                self.answered("the registry's words");
+                self.exchanged(text, &cmd);
             }
-        } else if wants_saved(text) && self.last_summary.is_some() {
-            self.request = None;
-            self.save_summary();
-        } else if asks_my_files(text) {
-            self.request = None;
-            self.answer_from_files(text);
-        } else if let Some(path) = file_to_summarise(text) {
-            self.request = None;
-            self.summarise(text, path);
-        } else if asks_about_activity(text) {
-            // What is on the screen: asked of the window server, answered
-            // in words (docs/context-design.md).
-            self.request = None;
-            self.ack(&LOOKING);
-            if self.win.context().is_ok() {
-                self.asking_context = Some(String::from(text));
-                self.mode = Mode::Thinking;
-                self.status = String::from("Looking at the screen...");
+            Route::SaveSummary => {
+                self.request = None;
+                self.save_summary();
             }
-        } else if let Some(fact) = fact_to_remember(text) {
-            // Facts the user tells Bella (docs/facts-design.md).
-            let mut req = String::from("fact-add ");
-            req.push_str(fact);
-            if self.broker(&req) {
-                self.say("Bella: I'll remember that.");
-                zoo_rt::log!("Bella: remembered a fact");
+            Route::MyFiles => {
+                self.request = None;
+                self.answer_from_files(text);
             }
-            self.request = None;
-        } else if asks_what_bella_did(text) {
-            self.say("Bella: What I changed, newest last:");
-            if !self.broker("audit-list") {
-                self.say("  nothing yet.");
+            Route::Summarise(path) => {
+                self.request = None;
+                self.summarise(text, path);
             }
-            self.request = None;
-        } else if asks_what_remembered(text) {
-            self.say("Bella: You told me:");
-            if !self.broker("fact-list") {
-                self.say("  nothing yet.");
+            Route::Activity => {
+                // What is on the screen: asked of the window server,
+                // answered in words (docs/context-design.md).
+                self.request = None;
+                self.ack(&LOOKING);
+                if self.win.context().is_ok() {
+                    self.asking_context = Some(String::from(text));
+                    self.mode = Mode::Thinking;
+                    self.status = String::from("Looking at the screen...");
+                }
             }
-            self.request = None;
-        } else if let Some(about) = fact_to_forget(text) {
-            // Forgetting is deleting: ask first (docs/access-design.md).
-            let mut q = String::from("Forget what you told me about ");
-            q.push_str(about);
-            q.push('?');
-            self.say(&q);
-            self.status = String::from("Press y to forget it, n to keep it.");
-            self.asked_question_at = zoo_rt::now_us();
-            self.mode = Mode::Confirm(alloc::format!("fact-forget {}", about));
-            self.request = None;
-        } else if question_about_answer(text) && self.last_exchange.is_some() {
-            // "is that it?": answered in words from the conversation
-            // (docs/talk-design.md §6).
-            zoo_rt::log!("Bella: a question about the last answer");
-            self.request = None;
-            self.ask_talk(text);
-        } else if small_talk(text) {
-            self.request = None;
-            self.ask_talk(text);
-        } else if !self.facts_about(text, 2).is_empty() {
-            // Something the user told Bella answers it ("when is my
-            // dentist?"): a reply in words with those facts.
-            self.request = None;
-            self.ask_talk(text);
-        } else {
-            self.request = Some(String::from(text));
-            if self.recall(text) {
-                self.answered("memory");
-            } else {
-                self.ask_model(text);
+            Route::Remember(fact) => {
+                // Facts the user tells Bella (docs/facts-design.md).
+                let mut req = String::from("fact-add ");
+                req.push_str(fact);
+                if self.broker(&req) {
+                    self.say("Bella: I'll remember that.");
+                    zoo_rt::log!("Bella: remembered a fact");
+                }
+                self.request = None;
+            }
+            Route::WhatDid => {
+                self.say("Bella: What I changed, newest last:");
+                if !self.broker("audit-list") {
+                    self.say("  nothing yet.");
+                }
+                self.request = None;
+            }
+            Route::WhatRemembered => {
+                self.say("Bella: You told me:");
+                if !self.broker("fact-list") {
+                    self.say("  nothing yet.");
+                }
+                self.request = None;
+            }
+            Route::Forget(about) => {
+                // Forgetting is deleting: ask first (docs/access-design.md).
+                let mut q = String::from("Forget what you told me about ");
+                q.push_str(about);
+                q.push('?');
+                self.say(&q);
+                self.status = String::from("Press y to forget it, n to keep it.");
+                self.asked_question_at = zoo_rt::now_us();
+                self.mode = Mode::Confirm(alloc::format!("fact-forget {}", about));
+                self.request = None;
+            }
+            Route::AboutAnswer => {
+                // "is that it?": answered in words from the conversation
+                // (docs/talk-design.md §6).
+                zoo_rt::log!("Bella: a question about the last answer");
+                self.request = None;
+                self.ask_talk(text);
+            }
+            Route::SmallTalk => {
+                self.request = None;
+                self.ask_talk(text);
+            }
+            Route::Model if !self.facts_about(text, 2).is_empty() => {
+                // Something the user told Bella answers it ("when is my
+                // dentist?"): a reply in words with those facts.
+                self.request = None;
+                self.ask_talk(text);
+            }
+            Route::Model => {
+                self.request = Some(String::from(text));
+                if self.recall(text) {
+                    self.answered("memory");
+                } else {
+                    self.ask_model(text);
+                }
             }
         }
     }

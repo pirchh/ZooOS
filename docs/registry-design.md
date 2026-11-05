@@ -135,3 +135,9 @@ that close is what "ask when unsure" is for.
   ("add {text} to my notes" → `notes write`), and asking when unsure.
 - The built-in system commands (files, windows) still live in code. They
   are the system's own, served by the broker and the window server.
+
+## Requests in the registry's words (0.119.0)
+
+A request that starts with one of an action's verbs and ends with one of
+its places of two words or more ("add milk to my notes") runs that
+action without the model: `Registry::phrased`, docs/regression-design.md.

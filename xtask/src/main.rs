@@ -12,6 +12,7 @@ mod musl;
 mod process;
 mod qemu;
 mod qmp;
+mod regress;
 mod requant;
 mod screen;
 mod uefi_image;
@@ -56,6 +57,8 @@ commands:
                             prompt/output token ids, top logits and timing
   infer-check [--tokens N]  compare the engine with the NumPy reference
   assist-check [--prompt S]  guided tool choice on fixed requests (host)
+  bella-regress [--accept]   Bella's path for tests/bella/requests.txt,
+                             against the recorded baseline (host)
   draft-check               speculative decoding with the draft model against
                             the model alone (host; docs/draft-design.md)
   (run, infer, infer-check, assist-check, verify: --bella 0.5b|1.5b picks
@@ -350,6 +353,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 ExitCode::FAILURE
             })
         }
+        "bella-regress" => {
+            let ok = regress::bella_regress(&root, opts.accept)?;
+            println!("bella-regress: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
         "assist-check" => {
             let ok = infer::assist_check(&root, opts.prompt.as_deref())?;
             println!("assist-check: {}", if ok { "PASS" } else { "FAIL" });
@@ -420,6 +432,8 @@ struct Options {
     mic: bool,
     /// `run --mic --show-heard`: every transcript logged, for tuning.
     show_heard: bool,
+    /// `bella-regress --accept`: record the results as the baseline.
+    accept: bool,
 }
 
 impl Options {
@@ -440,6 +454,7 @@ impl Options {
                 "--no-model" => o.no_model = true,
                 "--mic" => o.mic = true,
                 "--show-heard" => o.show_heard = true,
+                "--accept" => o.accept = true,
                 "--case" => o.case = Some(value("--case")?),
                 "--bella" => o.bella = Some(value("--bella")?),
                 "--portable" => o.portable = true,

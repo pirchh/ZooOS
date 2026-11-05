@@ -1946,3 +1946,18 @@ Version 0.118.0. Design: docs/targets-design.md. From the outside review.
   the existing text messages, extended with the unit separator, not a new
   message format: the window server passes them through.
 - **Questions expire after 60 s;** "don't ..." does nothing.
+
+## Regression sentences and registry phrasing (2026-11-04)
+
+Version 0.119.0. Design: docs/regression-design.md.
+
+- **Bella's routing moved into `zoo_infer::route`, unchanged,** so the
+  host check runs her code and not a copy. zoo-infer now depends on
+  zoo-abi (both in this repository).
+- **Baselines are per model and any change fails** until accepted; the
+  baseline file's diff shows what changed.
+- **Only sentences said to Bella come from the demos;** overheard speech
+  is never copied into the repository.
+- **A request in an action's registered words runs without the model**
+  (verb at the start, a place of two words or more at the end), as the
+  last check before the model.
