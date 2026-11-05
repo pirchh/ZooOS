@@ -2992,6 +2992,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-unsure",
+            mode: Mode::Normal,
+            custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 10,
+            want: "pass",
+            purpose: "unsure and changing things (docs/unsure-design.md): \"what time is it\" makes the model choose `close` with a low margin; Bella asks first, n answers in words and closes nothing (needs --accel)",
+            interaction: Some(bella_unsure_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-actions-model",
             mode: Mode::Normal,
             custom_image: model_image.as_ref().and_then(|m| m.0.clone()),
@@ -3179,6 +3192,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-steps-model"
                 | "gpu-monitors-model"
                 | "bella-actions-model"
+                | "bella-unsure"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -3268,6 +3282,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-steps-model"
                 | "gpu-monitors-model"
                 | "bella-actions-model"
+                | "bella-unsure"
                 | "bella-summary-answer"
                 | "bella-lookup-answer"
                 | "bella-vectors"
@@ -6505,6 +6520,34 @@ fn bella_actions_model_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("noted"));
+    Interaction { steps }
+}
+
+/// `bella-unsure` (docs/unsure-design.md): a question no command answers,
+/// which the model maps to `close` with a low margin.
+fn bella_unsure_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: warmed up: system prompt".into(),
+    ));
+    steps.push(Action::Keys(typed("what time is it")));
+    steps.push(Action::WaitContains("Bella: unsure (".into()));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Do you want me to close".into(),
+    ));
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::WaitContains(
+        "Bella: answered no: Okay, I won't.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen(
+        "PeacockHandler: window action for".into(),
+    ));
+    steps.push(Action::NeverSeen("Bella: learned".into()));
+    steps.push(Action::Screenshot("asked"));
     Interaction { steps }
 }
 

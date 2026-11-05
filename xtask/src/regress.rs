@@ -205,6 +205,11 @@ fn result(
                 } else {
                     let arg = ch.arg.replace(zoo_infer::registry::SLOT_SEP, " / ");
                     let _ = write!(out, "model: {} {arg:?}", ch.word.as_str());
+                    // As Bella (docs/unsure-design.md): margins in hundredths.
+                    let margin = (ch.margin * 100.0) as i32;
+                    if zoo_infer::route::ask_first(ch.word.as_str(), margin, reg) {
+                        out.push_str(", asked first (unsure)");
+                    }
                 }
             }
             Route::Typed => {

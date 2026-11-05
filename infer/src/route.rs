@@ -96,6 +96,27 @@ pub fn route<'a>(text: &'a str, reg: &Registry, known: Known) -> Route<'a> {
     }
 }
 
+/// The model's margin (in hundredths) below which Bella asks before a
+/// choice that changes things (docs/unsure-design.md). Measured on
+/// `assist-check` (Qwen3 1.7B, 2026-11-04): right choices that close,
+/// move, remove or change were 12.97 and up; "What time is it?" ->
+/// `close Network` was 0.67.
+pub const UNSURE_MARGIN: i32 = 500;
+
+/// Whether the model's choice of `word` at `margin` (hundredths) is
+/// asked about first ("Do you want me to close Network?"): it closes or
+/// moves something, or is an app action that changes things, and the
+/// model was unsure. Deletes, `trash` and `create` ask anyway; reading,
+/// opening and arranging are easily undone and never ask.
+pub fn ask_first(word: &str, margin: i32, reg: &Registry) -> bool {
+    use crate::registry::Effect;
+    let changes = matches!(word, "close" | "move")
+        || reg
+            .find_word(word)
+            .is_some_and(|a| a.effect == Effect::Change);
+    changes && margin < UNSURE_MARGIN
+}
+
 /// How a whole request starts (docs/regression-design.md): not to be done,
 /// several steps, or one request; its address ("hey Bella") taken off.
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +172,27 @@ mod tests {
             Route::Layout(_)
         ));
         assert_eq!(route("maximize my notes", &r, k), Route::Model);
+    }
+
+    #[test]
+    fn unsure() {
+        let mut r = reg();
+        let mut skipped = Vec::new();
+        r.add_file(
+            "app notes\n\naction remove\n  word remove\n  about take a line out\n  effect delete\n  slots text\n",
+            &mut skipped,
+        );
+        assert!(
+            ask_first("close", 67, &r),
+            "What time is it? -> close Network"
+        );
+        assert!(!ask_first("close", 2827, &r), "Quit Notes -> close Notes");
+        assert!(ask_first("write", 120, &r));
+        assert!(!ask_first("write", 805, &r));
+        // Deletes ask anyway; undoable ones never.
+        assert!(!ask_first("remove", 10, &r));
+        assert!(!ask_first("minimize", 359, &r));
+        assert!(!ask_first("open", 0, &r));
     }
 
     #[test]

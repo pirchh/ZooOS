@@ -515,6 +515,14 @@ impl App {
                         self.learn(&cmd);
                     }
                     self.say("Got it; I'll remember that.");
+                } else if let Some(cmd) = req.strip_prefix("unsure ") {
+                    // Confirmed: run it, and the request means it.
+                    self.correction = self.request.is_some();
+                    let asked = self.request.clone();
+                    self.command(cmd);
+                    if let Some(a) = asked {
+                        self.exchanged(&a, cmd);
+                    }
                 } else if let Some(inv) = req.strip_prefix("app ") {
                     // A registered action, asked about (`app_action`). Not
                     // remembered: its words change with every request.
@@ -522,6 +530,19 @@ impl App {
                     self.invoke(inv);
                 } else if self.broker(&req) {
                     self.learn(&req);
+                }
+            }
+            (Mode::Confirm(req), Key::Char('n') | Key::Back) if req.starts_with("unsure ") => {
+                // Not what was meant: answered in words instead, and a
+                // command typed next can still answer the request.
+                self.drop_steps();
+                self.mode = Mode::Typing;
+                self.status = String::from(HINT);
+                zoo_rt::log!("Bella: answered no: Okay, I won't.");
+                self.say("Okay, I won't.");
+                if let Some(r) = self.request.take() {
+                    self.ask_talk(&r);
+                    self.unanswered = Some(r);
                 }
             }
             (Mode::Confirm(req), Key::Char('n') | Key::Back) => {
@@ -2004,7 +2025,10 @@ impl App {
             // `tool <word> <margin> <argument>`
             let mut parts = rest.splitn(3, ' ');
             let word = parts.next().unwrap_or("");
-            let _margin = parts.next();
+            let margin = parts
+                .next()
+                .and_then(|m| m.parse::<i32>().ok())
+                .unwrap_or(0);
             let arg = parts.next().unwrap_or("").trim();
             // No command fits (docs/stage1-design.md, B9), or the model chose
             // one with nothing to act on: Bella answers in words instead
@@ -2034,6 +2058,25 @@ impl App {
             if !arg.is_empty() {
                 cmd.push(' ');
                 cmd.push_str(arg);
+            }
+            if zoo_infer::route::ask_first(word, margin, &self.registry) {
+                // Unsure, and it changes things: asked, not done
+                // (docs/unsure-design.md). Yes runs it and teaches her the
+                // phrasing; no answers in words.
+                zoo_rt::log!(
+                    "Bella: unsure ({}.{:02}): asks before `{}`",
+                    margin / 100,
+                    margin % 100,
+                    cmd
+                );
+                let q = alloc::format!("Do you want me to {}?", cmd);
+                zoo_rt::log!("Bella: asks: {}", q);
+                self.say(&q);
+                self.status = String::from("Say yes or press y to go ahead; no or n leaves it.");
+                self.asked_question_at = zoo_rt::now_us();
+                self.mode = Mode::Confirm(alloc::format!("unsure {}", cmd));
+                self.await_answer();
+                return;
             }
             let mut l = String::from("Bella: ");
             l.push_str(&cmd);
