@@ -1006,7 +1006,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: desktop_then_rest(&normal),
             timeout: s.timeout * 4,
             want: "pass",
-            purpose: "the action registry (docs/registry-design.md): Notes' write, change and remove, all from etc/actions/notes.actions; `remove` asks first, y removes and n keeps",
+            purpose: "the action registry (docs/registry-design.md): Notes' write, change and remove, all from etc/actions/notes.actions; `remove` asks first, y removes and n keeps; \"add bread to my notes\" in the registry's own words, without the model",
             interaction: Some(bella_notes_steps()),
             screen_checks: vec![],
         },
@@ -6431,6 +6431,18 @@ fn bella_notes_steps() -> Interaction {
     steps.push(Action::WaitContains("Bella: answered no: Kept.".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::NeverSeen("Took \"flowers\"".into()));
+    // In Notes' registered words, with no model in this image: "add" is a
+    // verb of `write` and "to my notes" one of its places
+    // (docs/regression-design.md).
+    back_to_bella(&mut steps);
+    steps.push(Action::Keys(typed("add bread to my notes")));
+    steps.push(Action::WaitContains(
+        "Bella: in the registry's words: write bread".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"bread\" in Documents/notes.txt.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("edited"));
     Interaction { steps }
 }

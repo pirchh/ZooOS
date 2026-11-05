@@ -219,6 +219,7 @@ lands as small, separately verified steps.
 | — | One Bella: a kernel name claim (ABI 21), single-window Bella, "three ways" as columns, plain answers for layouts not yet possible, learning only from corrections (docs/one-bella-design.md) | done 2026-11-04 |
 | — | Layouts as a split tree: rows, quarters, "two on top and one below", weights; Bella arranges, asks "is this what you meant?", and learns what is confirmed (docs/layouts-design.md) | done 2026-11-04 |
 | — | Action results with request ids and a status; "which one?" with the real lines (newest-wins gone); questions that expire; "don't ..." does nothing (docs/targets-design.md) | done 2026-11-04 |
+| — | Regression sentences with baselines (`bella-regress`); requests in the registry's words without the model (docs/regression-design.md) | done 2026-11-04 |
 | — | Staged wake and listening pill; routines; titled notes | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |

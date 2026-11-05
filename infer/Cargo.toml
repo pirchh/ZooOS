@@ -12,3 +12,5 @@ publish.workspace = true
 
 [dependencies]
 libm = "=0.2.16"
+# Bella's word checks, for `route` (docs/regression-design.md).
+zoo-abi = { path = "../abi" }

@@ -58,6 +58,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Bella's regression sentences (version 0.119.0)
+
+docs/regression-design.md. `cargo xtask bella-regress` on the host.
+
+| Check | Result |
+| --- | --- |
+| 37 sentences against `tests/bella/baseline-qwen3-1.7b-q4_0.txt` | `PASS`, 4 known gaps |
+| A baseline line edited; `phrased` turned off (negative controls) | `FAIL`, `FAIL` |
+| `bella-notes`: "add bread to my notes" without the model | `OK`; with `phrased` off `FAIL` |
+
 ## Targets, results and bound questions (version 0.118.0)
 
 docs/targets-design.md.

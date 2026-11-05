@@ -297,6 +297,46 @@ impl Outcome {
     }
 }
 
+impl Registry {
+    /// The command a request names in an action's own words
+    /// (docs/regression-design.md): it starts with one of the action's
+    /// verbs and ends with one of its places of two words or more ("add
+    /// milk to my notes", "delete eggs from my list"), and its slots fill.
+    /// `None` when no action, or more than one, reads it that way: the
+    /// model chooses then. One-word places ("down", "off") are left out,
+    /// so "put it down" stays the model's.
+    pub fn phrased(&self, request: &str) -> Option<String> {
+        let t = request.trim().trim_end_matches(['.', '!', '?', ',']);
+        let lower = t.to_ascii_lowercase();
+        let mut found = None;
+        for a in &self.actions {
+            if a.slots.iter().any(|s| s == "address") {
+                continue;
+            }
+            let verb = a.verbs.iter().any(|v| {
+                let v = v.to_ascii_lowercase();
+                lower.len() > v.len() && lower.starts_with(&v) && lower[v.len()..].starts_with(' ')
+            });
+            let place = a.places.iter().any(|p| {
+                p.contains(' ') && lower.ends_with(&format!(" {}", p.to_ascii_lowercase()))
+            });
+            if !(verb && place) {
+                continue;
+            }
+            let slots = a.fill(t);
+            if slots.is_empty() {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            // As the model's choice: the word, then the slots (joined).
+            found = Some(format!("{} {slots}", a.word));
+        }
+        found
+    }
+}
+
 impl Action {
     /// The model's prompt line: "change <old> to <new>: change words in
     /// Notes".
@@ -414,6 +454,43 @@ fn clean(s: &str) -> String {
 mod tests {
     use super::*;
     extern crate std;
+
+    #[test]
+    fn phrased_in_its_words() {
+        let r = shipped();
+        assert_eq!(
+            r.phrased("Add milk to Notes").as_deref(),
+            Some("write milk")
+        );
+        assert_eq!(
+            r.phrased("add milk to my notes.").as_deref(),
+            Some("write milk")
+        );
+        assert_eq!(
+            r.phrased("Add 'delete the old notes' to my notes")
+                .as_deref(),
+            Some("write delete the old notes")
+        );
+        assert_eq!(
+            r.phrased("delete flowers, egg and milk for my notes")
+                .as_deref(),
+            Some("remove flowers, egg and milk")
+        );
+        assert_eq!(
+            r.phrased("replace milk with oat milk in my notes")
+                .as_deref(),
+            Some("change milk\u{1f}oat milk")
+        );
+        // No place, a one-word place, or no verb: the model's.
+        assert_eq!(r.phrased("add milk"), None);
+        assert_eq!(r.phrased("put it down"), None);
+        assert_eq!(r.phrased("take me out"), None);
+        assert_eq!(
+            r.phrased("put notes on the left and files on the right"),
+            None
+        );
+        assert_eq!(r.phrased("milk to my notes"), None);
+    }
 
     /// The files shipped in the boot image.
     fn shipped() -> Registry {
