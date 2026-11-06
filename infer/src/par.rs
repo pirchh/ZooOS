@@ -111,16 +111,13 @@ pub fn fill(
     });
 }
 
+/// A `fill_rows` job: its rows `start..end` and `put(r, t, v)`.
+pub type RowsJob<'a> = dyn Fn(usize, usize, &dyn Fn(usize, usize, f32)) + Sync + 'a;
+
 /// Like `fill`, but each job gets a range of rows to compute as it likes:
 /// `job(start, end, put)` calls `put(r, t, v)` to store
 /// `out[t * rows + r] = v` for its own rows `start..end` only (checked).
-pub fn fill_rows(
-    out: &mut [f32],
-    rows: usize,
-    n: usize,
-    bytes: usize,
-    job: &(dyn Fn(usize, usize, &dyn Fn(usize, usize, f32)) + Sync),
-) {
+pub fn fill_rows(out: &mut [f32], rows: usize, n: usize, bytes: usize, job: &RowsJob) {
     assert!(out.len() >= rows * n, "output too small");
     let o = Out(out.as_mut_ptr());
     for_rows(rows, bytes, &|a, b| {

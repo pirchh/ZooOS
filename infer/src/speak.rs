@@ -134,8 +134,8 @@ fn matmul(w: &TensorInfo, bias: Option<&[f32]>, xs: &[f32], n: usize) -> Vec<f32
                             t += 2;
                         }
                         if t < n {
-                            for i in 0..4 {
-                                put(r + i, t, quant::dot(w.ty, ws[i], x(t)) + b0(r + i));
+                            for (i, row) in ws.iter().enumerate() {
+                                put(r + i, t, quant::dot(w.ty, row, x(t)) + b0(r + i));
                             }
                         }
                         r += 4;
