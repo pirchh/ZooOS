@@ -1011,6 +1011,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-pattern",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "templates and forgetting (docs/templates-design.md): \"put files away\" taught as `minimize files`; \"put network away\" is answered by its pattern as `minimize Network`; \"forget put files away\" asks, y forgets, and it is not recalled again",
+            interaction: Some(bella_pattern_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-routine",
             mode: Mode::Normal,
             custom_image: None,
@@ -6533,6 +6546,56 @@ fn bella_actions_model_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("noted"));
+    Interaction { steps }
+}
+
+/// `bella-pattern` (docs/templates-design.md): typed, so no model.
+fn bella_pattern_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    // Not answered (no model in this image), so the command typed next
+    // is the user's own answer: learned.
+    steps.push(Action::Keys(typed("put files away")));
+    steps.push(Action::WaitFor(
+        "ZOO_OS PROC start pid=32 name=elephant-handler".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("minimize files")));
+    steps.push(Action::WaitContains(
+        "Bella: learned `put files away` -> `minimize files`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // The same words about another app: by the pattern.
+    steps.push(Action::Keys(typed("put network away")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: `put network away` by the pattern of `put files away`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: recalled `minimize Network` (99% alike)".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // Forgotten when asked, after a yes.
+    steps.push(Action::Keys(typed("forget put files away")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Forget that \"put files away\" means `minimize files`?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "OtterHandler: forgot `put files away` (1 remembered)".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: forgot the phrasing `put files away`".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("put files away")));
+    steps.push(Action::WaitContains(
+        "OtterHandler: audit: recall put files away".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("Bella: recalled `minimize files`".into()));
+    steps.push(Action::Screenshot("forgotten"));
     Interaction { steps }
 }
 
