@@ -21,3 +21,11 @@ text (docs/hearing-design.md), with the voice model in
 tools/models/voice/:
 
     cargo xtask hear-check
+
+`kokoro_ref.py` is the same kind of reference for Kokoro-82M text to
+speech (docs/speech-design.md). `kokoro_pth.py` first reads Kokoro's
+PyTorch files with an unpickler that builds nothing but tensors (no code
+from the file runs) and writes them as safetensors; `speak-check` runs it
+when the safetensors copies are missing:
+
+    cargo xtask speak-check

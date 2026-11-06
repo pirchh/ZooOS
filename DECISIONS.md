@@ -2014,6 +2014,17 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 
 Two prompt variants that lost right answers were dropped.
 
+## Bella's voice: the Kokoro engine (2026-11-06)
+
+Version 0.129.0. Design: docs/speech-design.md. Kokoro-82M runs in
+`zoo-infer` from a GGUF that xtask makes from the PyTorch files without
+unpickling them (a data-only reader). Checked against an independent
+NumPy reference, and by Moonshine hearing it back, since no PyTorch is
+installed. Too slow for conversation on one thread (21× real time on
+the host): speed comes before Bella speaks for real. Text to phonemes
+follows misaki's rules with its Apache-2.0 word lists and no tagger or
+espeak-ng; words in no list are split or spelt out.
+
 ## Commands that name nothing (2026-11-06)
 
 Version 0.128.0. Design: docs/vague-design.md. When the model's move,

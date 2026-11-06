@@ -25,6 +25,44 @@ pub unsafe fn dot(ty: u32, row: &[u8], x: &[f32]) -> f32 {
     }
 }
 
+/// Four F32 weight rows against two vectors at once (docs/speech-design.md
+/// §4): `out[2 * i + j] = w[i] · x[j]`. Each weight load serves two
+/// vectors and each vector load four rows; the eight sums and the loads
+/// fit the sixteen YMM registers.
+///
+/// # Safety
+/// As `dot`. Every row holds at least `x[0].len()` floats and both
+/// vectors are that long (checked by the slices' bounds).
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn dot_f32_4x2(w: [&[u8]; 4], x: [&[f32]; 2]) -> [f32; 8] {
+    let n = x[0].len().min(x[1].len());
+    let mut acc = [_mm256_setzero_ps(); 8];
+    let mut k = 0;
+    while k + 8 <= n {
+        let x0 = load8(x[0], k);
+        let x1 = load8(x[1], k);
+        for i in 0..4 {
+            let wv = load8b(w[i], k);
+            acc[2 * i] = _mm256_fmadd_ps(wv, x0, acc[2 * i]);
+            acc[2 * i + 1] = _mm256_fmadd_ps(wv, x1, acc[2 * i + 1]);
+        }
+        k += 8;
+    }
+    let mut out = [0f32; 8];
+    for (o, a) in out.iter_mut().zip(acc) {
+        *o = hsum(a);
+    }
+    while k < n {
+        for i in 0..4 {
+            let wv = f32::from_le_bytes(w[i][k * 4..k * 4 + 4].try_into().unwrap_or([0; 4]));
+            out[2 * i] += wv * x[0][k];
+            out[2 * i + 1] += wv * x[1][k];
+        }
+        k += 1;
+    }
+    out
+}
+
 /// `quant::dot_q8x` with AVX2 (docs/int8-design.md): 32 products per block
 /// in one `maddubs` (unsigned by signed bytes, so the weights' signs move
 /// onto the activations first), summed to 32-bit integers, scaled once.
@@ -90,6 +128,16 @@ fn load8(x: &[f32], at: usize) -> __m256 {
     unsafe { _mm256_loadu_ps(s.as_ptr()) }
 }
 
+/// Eight F32 weights from a row of little-endian bytes, `row[at * 4..]`
+/// (bounds-checked), loaded as they are: on x86 the bytes are the floats.
+#[target_feature(enable = "avx2,fma")]
+fn load8b(row: &[u8], at: usize) -> __m256 {
+    let s = &row[at * 4..at * 4 + 32];
+    // SAFETY: `s` has exactly 32 readable bytes, eight little-endian f32s
+    // as x86 stores them; the load is unaligned, so any address is valid.
+    unsafe { _mm256_loadu_ps(s.as_ptr().cast::<f32>()) }
+}
+
 #[target_feature(enable = "avx2,fma")]
 fn hsum(v: __m256) -> f32 {
     let lo = _mm256_castps256_ps128(v);
@@ -112,12 +160,8 @@ fn dot_f32(row: &[u8], x: &[f32]) -> f32 {
     let n = w.len().min(x.len());
     let mut acc = _mm256_setzero_ps();
     let mut k = 0;
-    let mut buf = [0f32; 8];
     while k + 8 <= n {
-        for (j, b) in buf.iter_mut().enumerate() {
-            *b = f32::from_le_bytes(w[k + j]);
-        }
-        acc = _mm256_fmadd_ps(load8(&buf, 0), load8(x, k), acc);
+        acc = _mm256_fmadd_ps(load8b(row, k), load8(x, k), acc);
         k += 8;
     }
     let mut total = hsum(acc);

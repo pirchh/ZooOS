@@ -58,6 +58,29 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Bella's voice: the Kokoro engine (version 0.129.0)
+
+docs/speech-design.md. A library checked on the host; nothing in the boot
+image changes.
+
+| Check | Result |
+| --- | --- |
+| `sha256sum -c kokoro-82m.sha256` (in tools/models/voice) | all 3 `OK` |
+| `cargo xtask speak-gguf` | 332,026,496 bytes with the word lists (183,593 lines), 448 tensors, 178 phoneme tokens |
+| `cargo xtask speak-check` | `PASS`: 3 of 3 with the reference's frames, 0.07–0.15% apart, heard as said |
+| `speak-check` with the DC/Nyquist fix undone (negative control) | `FAIL`: 4.8–5.5% apart |
+| `speak-check`, text through `g2p`: 4 of Bella's sentences heard back | `PASS`, 4 of 4 |
+| The same before the end-of-sentence forms (negative control) | `FAIL`: "Okay, I won't." heard as "Okay, I want." |
+| `speak-check` timing, "Hello, I am Bella." on one host thread | 40.95–43.68 s before, 4.02–4.73 s after the F32 kernel changes; same audio |
+| `cargo xtask hear-check` after the F32 dot product change | `PASS`, 8 of 8 with the reference's tokens; 0.28–0.46 s (was 1.10–1.26 s) |
+| `cargo test -p zoo-infer g2p`; `cargo test -p xtask kokoro` (the pickle reader refuses `os.system`, `builtins.eval`) | pass |
+| The reference heard back by Moonshine (`moonshine_ref.py`) | "Hello, I am Bella." |
+| `cargo test -p xtask --locked` | 30 passed |
+| `cargo xtask verify --skip-model` | `PASS`: 125 OK, 25 skipped |
+| `cargo xtask verify --accel whpx` | 146 OK, 3 skipped, 1 `FAIL`: `bella-live` answered in 3222 ms, past its 3000 ms bound |
+| `bella-live` alone, 4 more times on this branch | 3142, 3160, 2928 (`OK`), 3590 ms |
+| `bella-live` alone on `main` (1022d53), 3 times, same hour | 3034, 3128, 4110 ms: all `FAIL`. The host's processor was 94% busy with other programs; not this change |
+
 ## Commands that name nothing (version 0.128.0)
 
 docs/vague-design.md.
