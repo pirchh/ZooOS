@@ -58,6 +58,17 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Commands that name nothing (version 0.128.0)
+
+docs/vague-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-unsure` (WHPX), now also "put that somewhere else" | `OK`: model chose `move Downloads to somewhere else`; Bella: `` `move` names nothing to act on ``, no command fits |
+| The same with the check off (negative control) | `FAIL`; OtterHandler: `audit: move Downloads to somewhere else: not found` |
+| `cargo xtask bella-regress` | 43 as recorded, 0 changed, 5 new (accepted) |
+| Unit test `route::vague_arguments` | pass |
+
 ## Ending at a pause (version 0.127.0)
 
 docs/endpoint-design.md.

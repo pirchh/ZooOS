@@ -2014,6 +2014,13 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 
 Two prompt variants that lost right answers were dropped.
 
+## Commands that name nothing (2026-11-06)
+
+Version 0.128.0. Design: docs/vague-design.md. When the model's move,
+close or remove has only a pronoun, or "somewhere else", for its argument,
+Bella answers in words and neither acts nor asks. Typed commands are
+unchanged.
+
 ## Ending at a pause (2026-11-06)
 
 Version 0.127.0. Design: docs/endpoint-design.md. At 300 ms of quiet

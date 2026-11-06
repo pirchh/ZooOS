@@ -121,6 +121,40 @@ pub fn ask_first(word: &str, margin: i32, reg: &Registry) -> bool {
     changes && margin < UNSURE_MARGIN
 }
 
+/// Words that name no thing and no place.
+const VAGUE: [&str; 6] = [
+    "somewhere",
+    "elsewhere",
+    "anywhere",
+    "someplace",
+    "something",
+    "current",
+];
+/// What a pronoun alone names when nothing came before it.
+const PRONOUNS: [&str; 5] = ["that", "it", "this", "them", "those"];
+
+/// Whether the model's `word` with `arg` names nothing to act on
+/// (docs/vague-design.md): a command that moves, closes or removes
+/// something, whose argument is only a pronoun ("that") or says
+/// "somewhere else" or "the current file". It can't be done as said, so
+/// Bella answers in words instead ("put that somewhere else" chose `move
+/// "current file to somewhere else"`, margin 16.41).
+pub fn vague(word: &str, arg: &str) -> bool {
+    if !matches!(
+        word,
+        "move" | "close" | "trash" | "delete" | "remove" | "rename" | "copy"
+    ) {
+        return false;
+    }
+    let words: Vec<String> = arg
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    let pronoun_only = !words.is_empty() && words.iter().all(|w| PRONOUNS.contains(&w.as_str()));
+    pronoun_only || words.iter().any(|w| VAGUE.contains(&w.as_str()))
+}
+
 /// Whether `text` is something Bella does without the model: every step
 /// a typed command, an action in the registry's words, or a layout. A
 /// follow-up said without her name must be one (docs/follow-design.md).
@@ -348,5 +382,18 @@ mod tests {
             plan("Hey Bella, maximize my notes", id),
             Plan::One(String::from("maximize my notes"))
         );
+    }
+
+    #[test]
+    fn vague_arguments() {
+        assert!(vague("move", "current file to somewhere else"));
+        assert!(vague("move", "that"));
+        assert!(vague("close", "it"));
+        assert!(vague("trash", "something"));
+        assert!(!vague("move", "Notes to monitor 2"));
+        assert!(!vague("move", "report.txt to Documents"));
+        assert!(!vague("close", "Network"));
+        assert!(!vague("open", "it"));
+        assert!(!vague("search", "somewhere warm"));
     }
 }

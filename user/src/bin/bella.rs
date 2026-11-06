@@ -2192,7 +2192,13 @@ impl App {
                 && word != "info"
                 && word != "split"
                 && (self.following || !matches!(word, "list" | "inspect"));
-            if word == "none" || empty {
+            // A move or close of "that" or to "somewhere else" names
+            // nothing to act on (docs/vague-design.md): answered in words.
+            let vague = zoo_infer::route::vague(word, arg);
+            if vague {
+                zoo_rt::log!("Bella: `{}` names nothing to act on", word);
+            }
+            if word == "none" || empty || vague {
                 zoo_rt::log!("Bella: no command fits");
                 let request = self.request.take();
                 if let Some(r) = &request {

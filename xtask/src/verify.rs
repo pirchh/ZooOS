@@ -3067,7 +3067,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: desktop_then_rest(&normal),
             timeout: s.timeout * 10,
             want: "pass",
-            purpose: "unsure and changing things (docs/unsure-design.md): \"lose the network window\" makes the model choose `close Network` with a low margin; Bella asks first, n answers in words and closes nothing (needs --accel)",
+            purpose: "unsure and changing things (docs/unsure-design.md): \"lose the network window\" makes the model choose `close Network` with a low margin; Bella asks first, n answers in words and closes nothing; then \"put that somewhere else\" (`move` of nothing, docs/vague-design.md) is answered in words, not done or asked (needs --accel)",
             interaction: Some(bella_unsure_steps()),
             screen_checks: vec![],
         },
@@ -6786,6 +6786,19 @@ fn bella_unsure_steps() -> Interaction {
     ));
     steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Screenshot("asked"));
+    // A move of "that" to "somewhere else" names nothing to act on
+    // (docs/vague-design.md): answered in words, nothing moved or asked.
+    // Typed once her answer to "no" is done.
+    steps.push(Action::WaitContains("by the model, in words".into()));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("put that somewhere else")));
+    steps.push(Action::WaitContains(
+        "Bella: `move` names nothing to act on".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: no command fits".into()));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("Bella: move ".into()));
+    steps.push(Action::NeverSeen("Do you want me to move".into()));
     Interaction { steps }
 }
 

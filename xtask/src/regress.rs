@@ -215,7 +215,9 @@ fn result(
                     let _ = write!(out, "model: {} {arg:?}", ch.word.as_str());
                     // As Bella (docs/unsure-design.md): margins in hundredths.
                     let margin = (ch.margin * 100.0) as i32;
-                    if zoo_infer::route::ask_first(ch.word.as_str(), margin, reg) {
+                    if zoo_infer::route::vague(ch.word.as_str(), &ch.arg) {
+                        out.push_str(", names nothing (answered in words)");
+                    } else if zoo_infer::route::ask_first(ch.word.as_str(), margin, reg) {
                         out.push_str(", asked first (unsure)");
                     }
                 }
