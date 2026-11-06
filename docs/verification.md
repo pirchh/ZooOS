@@ -58,6 +58,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Bella speaks (version 0.130.0)
+
+docs/speaking-design.md. `cargo xtask verify --accel whpx --case voice-speak`.
+
+| Check | Result |
+| --- | --- |
+| `voice-speak` | `OK`: the host heard 1 utterance in 16.0 s of the guest's sound, "Notes fills the screen." |
+| `voice-speak` with MynahHandler playing silence (negative control) | `FAIL` `audio-mismatch`: "Notes fills the screen." not heard; heard `[]` |
+| Guest timing, one processor, WHPX (3 runs) | 2.1 s of speech made in 2.5–3.0 s; finished playing 4.6–5.0 s after Bella asked |
+| `cargo test -p xtask --locked` | 30 passed |
+| `cargo xtask verify --skip-model` | `PASS`: 125 OK, 26 skipped (`voice-speak` needs an accelerator) |
+| `cargo xtask verify --accel whpx` | `PASS`: 148 OK, 3 skipped (`bella-live` passed this time) |
+
 ## Bella's voice: the Kokoro engine (version 0.129.0)
 
 docs/speech-design.md. A library checked on the host; nothing in the boot
