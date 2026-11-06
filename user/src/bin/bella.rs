@@ -196,6 +196,9 @@ struct App {
     /// BatHandler, her hearing (docs/listening-design.md), while it
     /// listens.
     bat: Option<Handle>,
+    /// MynahHandler, her voice (docs/speaking-design.md), once ready.
+    mynah: Option<Handle>,
+    mynah_ready: bool,
     /// What apps can do for her (docs/registry-design.md).
     registry: zoo_infer::registry::Registry,
     /// The command being run corrects an earlier wrong answer (typed by
@@ -324,6 +327,8 @@ fn main(chan: u64, home: u64) -> u8 {
         magpie: None,
         magpie_ready: false,
         bat: None,
+        mynah: None,
+        mynah_ready: false,
         correction: false,
         pending_layout: None,
         layout_request: None,
@@ -355,6 +360,7 @@ fn main(chan: u64, home: u64) -> u8 {
     p.warm();
     // Listening for "hey Bella" (docs/listening-design.md).
     p.start_hearing();
+    p.start_voice();
     let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
     loop {
         let mut busy = false;
@@ -417,6 +423,28 @@ fn main(chan: u64, home: u64) -> u8 {
                 Err(_) => {
                     let _ = close(m);
                     p.magpie = None;
+                }
+            }
+        }
+        // MynahHandler, her voice (docs/speaking-design.md).
+        if let Some(m) = p.mynah {
+            match try_recv(m, &mut buf) {
+                Ok(n) => {
+                    let msg = core::str::from_utf8(&buf[..n]).unwrap_or("");
+                    if msg == "ready" {
+                        p.mynah_ready = true;
+                        zoo_rt::log!("Bella: her voice is ready");
+                    } else if let Some(why) = msg.strip_prefix("none:") {
+                        zoo_rt::log!("Bella: no voice: {}", why);
+                        let _ = close(m);
+                        p.mynah = None;
+                    }
+                }
+                Err(Error::Again) => {}
+                Err(_) => {
+                    let _ = close(m);
+                    p.mynah = None;
+                    zoo_rt::log!("Bella: her voice ended");
                 }
             }
         }
@@ -572,6 +600,7 @@ impl App {
                 self.status = String::from(HINT);
                 zoo_rt::log!("Bella: answered no: Okay, I won't.");
                 self.say("Okay, I won't.");
+                self.speak("Okay, I won't.");
                 if let Some(r) = self.request.take() {
                     self.ask_talk(&r);
                     self.unanswered = Some(r);
@@ -839,6 +868,7 @@ impl App {
                 let q = alloc::format!("Forget that \"{}\" means `{}`?", about, cmd);
                 zoo_rt::log!("Bella: asks: {}", q);
                 self.say(&q);
+                self.speak(&q);
                 self.status = String::from("Press y to forget it, n to keep it.");
                 self.asked_question_at = zoo_rt::now_us();
                 self.mode = Mode::Confirm(alloc::format!("phrase-forget {}", about));
@@ -1394,6 +1424,7 @@ impl App {
         let said = outcome.said.as_str();
         zoo_rt::log!("Bella: the window server says: {}", said);
         self.say(said);
+        self.speak(said);
         let ours = match (&outcome.id, &self.pending_action) {
             (Some(id), Some((p, _))) => id == p,
             _ => false,
@@ -1688,6 +1719,43 @@ impl App {
         }
     }
 
+    /// Starts MynahHandler, her voice, when a voice model is installed
+    /// (the boot image or the model disk).
+    fn start_voice(&mut self) {
+        let installed = zoo_rt::fs_find(zoo_abi::SPEAK_MODEL_FILE).is_some()
+            || zoo_rt::model_size_of(zoo_abi::MODEL_SPEAK).is_ok();
+        if !installed {
+            return;
+        }
+        let Ok((mine, theirs)) = channel_create() else {
+            return;
+        };
+        match spawn("mynah-handler", Some(theirs)) {
+            Ok(process) => {
+                let _ = close(process);
+                self.mynah = Some(mine);
+            }
+            Err(_) => {
+                let _ = close(mine);
+            }
+        }
+    }
+
+    /// Says `text` aloud, when the request was spoken and her voice is
+    /// ready (docs/speaking-design.md). Typed requests stay silent.
+    fn speak(&mut self, text: &str) {
+        if !self.spoken || !self.mynah_ready {
+            return;
+        }
+        if let Some(m) = self.mynah {
+            let mut msg = String::from("say:");
+            msg.push_str(text);
+            if zoo_rt::send(m, msg.as_bytes()).is_ok() {
+                zoo_rt::log!("Bella: says aloud: {}", text);
+            }
+        }
+    }
+
     /// Starts BatHandler, her hearing, when a hearing model is installed
     /// (the boot image or the model disk); it says `none:` and ends when
     /// there is no microphone.
@@ -1831,6 +1899,7 @@ impl App {
             let q = action.question(&filled);
             zoo_rt::log!("Bella: asks: {}", q);
             self.say(&q);
+            self.speak(&q);
             self.status = String::from("Say yes or press y to go ahead; no or n leaves it.");
             self.asked_question_at = zoo_rt::now_us();
             self.mode = Mode::Confirm(alloc::format!("app {}", inv));
@@ -1885,6 +1954,7 @@ impl App {
         let q = alloc::format!("Save \"{}\" as: {}?", name, steps.join(" | "));
         zoo_rt::log!("Bella: asks: {}", q);
         self.say(&q);
+        self.speak(&q);
         self.status = String::from("Say yes or press y to save it; no or n doesn't.");
         self.asked_question_at = zoo_rt::now_us();
         self.mode = Mode::Confirm(alloc::format!("routine {}\t{}", name, cmd));
@@ -2143,6 +2213,7 @@ impl App {
                 Some(last) if streamed => *last = l,
                 _ => self.say(&l),
             }
+            self.speak(text);
             self.answered("the model, in words");
             // The model keeps its own reply in its conversation; here it is
             // only remembered for a follow-up's command choice.
@@ -2228,6 +2299,7 @@ impl App {
                 let q = alloc::format!("Do you want me to {}?", cmd);
                 zoo_rt::log!("Bella: asks: {}", q);
                 self.say(&q);
+                self.speak(&q);
                 self.status = String::from("Say yes or press y to go ahead; no or n leaves it.");
                 self.asked_question_at = zoo_rt::now_us();
                 self.mode = Mode::Confirm(alloc::format!("unsure {}", cmd));
