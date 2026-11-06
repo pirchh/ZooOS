@@ -70,6 +70,7 @@ Show the Videos folder -> list Videos\n\
 Open my holiday letter -> open holiday letter\n\
 How big is Downloads? -> inspect Downloads\n\
 Write me a poem -> none\n\
+Set an alarm for seven -> none\n\
 Reply none only when the request is not about the user's files, folders, apps or this computer.";
 
 /// The apps `launch`, `maximize`, `minimize` and `close` can name (the

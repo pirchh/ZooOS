@@ -23,7 +23,7 @@ said: Hey, Bella, let's slip the screen with files and Bella. => want split
 said: Hey, Bella, split my scream with both files, windows. => want split "Files and Files"
 said: Hey, Bella. Split it three ways, but two on top, evenly split and one on the bottom. => want layout v(h(*,*),*)
 said: Oh, Bella, like, switch instead of doing it, split two ways, split it three ways with Bella's the third window.
-said: Hey, Bella, can we stop, move Bella to the left and files on the right, please? => want split "Bella and Files"
+said: Hey, Bella, can we stop, move Bella to the left and files on the right, please? => want split Bella and Files
 typed: Put notes on the left and files on the right
 typed: open a new files window and navigate into the documents folder
 
@@ -58,7 +58,7 @@ typed: maximize my notes
 typed: Open notes => want typed command
 
 # --- No command fits -----------------------------------------------------
-typed: What time is it? => want asked first
+typed: What time is it? => want no command
 typed: Tell me a joke
 typed: Shut down the computer => want no command
 

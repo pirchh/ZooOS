@@ -45,6 +45,10 @@ Q4_0, 2026-11-04), right choices that change things had these margins:
 | `bella-unsure` (WHPX, the model in the image): "what time is it" → `ElephantHandler: chose close Network` → "unsure (1.31)" → asked → n → "Okay, I won't."; no window action, nothing learned | `OK` |
 | The same with `ask_first` always false (**negative control**) | `FAIL`: no "unsure" within 300 s |
 
+Since docs/refine-design.md (0.125.0), "What time is it?" is no command,
+and `bella-unsure` uses "lose the network window" (`close Network`,
+margin 3.83).
+
 ## Not done
 
 - One threshold for all models. A model change re-measures it with
