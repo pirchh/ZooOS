@@ -66,3 +66,10 @@ typed: Shut down the computer => want no command
 said: Hey Bella, when I say set up my workspace, open notes and open files and split them. => want routine "set up my workspace" asked
 typed: save that as notes mode => want saved as "notes mode"
 typed: set up my workspace
+
+# --- Names nothing (docs/vague-design.md) ----------------------------------
+typed: put that somewhere else
+typed: move it somewhere
+typed: get rid of that
+typed: close it
+typed: move report.txt to Documents

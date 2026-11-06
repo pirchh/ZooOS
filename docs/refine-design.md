@@ -66,7 +66,7 @@ window" (`close Network`, margin 3.83 on the host).
 
 Also found: "put that somewhere else" → `move "current file to somewhere
 else"` with margin 16.41, sure of itself and wrong. OtterHandler finds no
-"current file", so nothing moves, but it is noted for the next refinement.
+"current file", so nothing moves. Fixed in docs/vague-design.md (0.128.0).
 
 ## Verified
 
