@@ -58,6 +58,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Templates and forgetting (version 0.123.0)
+
+docs/templates-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-pattern`: learned, used as a pattern for another app, forgotten on y | `OK` |
+| Pattern off; forget that keeps (negative controls) | `FAIL`, `FAIL` |
+
 ## Routines (version 0.122.0)
 
 docs/routines-design.md.

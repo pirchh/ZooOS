@@ -24,6 +24,7 @@ pub mod gguf;
 pub mod hear;
 pub mod layout;
 pub mod listen;
+pub mod memory;
 pub mod model;
 pub mod notes;
 #[allow(unsafe_code)]

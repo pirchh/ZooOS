@@ -1989,3 +1989,10 @@ Version 0.122.0. Design: docs/routines-design.md. A routine is a
 confirmed phrasing in Bella's existing memory, with the command `steps a
 | b`. There is no new store and no new file: forgetting, limits and
 matching stay the same. Saving is always asked.
+
+## Templates and forgetting (2026-11-05)
+
+Version 0.123.0. Design: docs/templates-design.md. Templates generalise
+over one thing only, the app named, with every other word the same, so a
+pattern can't run something the user didn't mean. Forgetting a phrasing is
+asked first, like any delete.

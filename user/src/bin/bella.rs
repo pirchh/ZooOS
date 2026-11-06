@@ -534,6 +534,12 @@ impl App {
                         zoo_rt::log!("Bella: saved the routine `{}` -> `{}`", name, cmd);
                         self.say(&alloc::format!("Saved. Say \"{}\" to run it.", name));
                     }
+                } else if let Some(about) = req.strip_prefix("phrase-forget ") {
+                    let msg = alloc::format!("forget-phrase {}", about);
+                    if self.broker(&msg) {
+                        zoo_rt::log!("Bella: forgot the phrasing `{}`", about);
+                        self.say("Forgotten.");
+                    }
                 } else if let Some(cmd) = req.strip_prefix("unsure ") {
                     // Confirmed: run it, and the request means it.
                     self.correction = self.request.is_some();
@@ -573,7 +579,10 @@ impl App {
                     self.relayout_of = self.layout_request.take();
                     self.await_answer();
                     "How should they go? Say rows, columns, quarters, or two on top and one below."
-                } else if req.starts_with("fact-forget ") || req.starts_with("app ") {
+                } else if req.starts_with("fact-forget ")
+                    || req.starts_with("app ")
+                    || req.starts_with("phrase-forget ")
+                {
                     "Kept."
                 } else if req.starts_with("routine ") {
                     "Not saved."
@@ -805,6 +814,19 @@ impl App {
                 if !self.broker("fact-list") {
                     self.say("  nothing yet.");
                 }
+                self.request = None;
+            }
+            Route::Forget(about) if self.remembered(about).is_some_and(|(s, _)| s == 100) => {
+                // A phrasing or routine she remembers, these very words
+                // (docs/templates-design.md): asked first, like any delete.
+                let cmd = self.remembered(about).map(|r| r.1).unwrap_or_default();
+                let q = alloc::format!("Forget that \"{}\" means `{}`?", about, cmd);
+                zoo_rt::log!("Bella: asks: {}", q);
+                self.say(&q);
+                self.status = String::from("Press y to forget it, n to keep it.");
+                self.asked_question_at = zoo_rt::now_us();
+                self.mode = Mode::Confirm(alloc::format!("phrase-forget {}", about));
+                self.await_answer();
                 self.request = None;
             }
             Route::Forget(about) => {
@@ -1454,20 +1476,18 @@ impl App {
 
     /// Answers `text` from memory if a remembered request is alike enough;
     /// returns whether it did.
-    fn recall(&mut self, text: &str) -> bool {
-        let Some(o) = self.otter() else {
-            return false;
-        };
+    /// What memory holds for `text`: the likeness (percent) and command
+    /// of the most alike remembered request, if any.
+    fn remembered(&mut self, text: &str) -> Option<(usize, String)> {
+        let o = self.otter()?;
         let msg = alloc::format!("recall {}", text);
-        if send_wait(o, msg.as_bytes()).is_err() {
-            return false;
-        }
+        send_wait(o, msg.as_bytes()).ok()?;
         let mut best: Option<(usize, String)> = None;
         let mut buf = [0u8; zoo_abi::MAX_MESSAGE];
         loop {
             let Ok(n) = recv(o, &mut buf) else {
                 self.otter = None;
-                return false;
+                return None;
             };
             let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
             if let Some(rest) = line.strip_prefix("| ") {
@@ -1477,7 +1497,11 @@ impl App {
                 break;
             }
         }
-        let Some((score, cmd)) = best.filter(|(s, _)| *s >= RECALL_AT) else {
+        best
+    }
+
+    fn recall(&mut self, text: &str) -> bool {
+        let Some((score, cmd)) = self.remembered(text).filter(|(s, _)| *s >= RECALL_AT) else {
             return false;
         };
         // The memory file is in home, which other programs can write:

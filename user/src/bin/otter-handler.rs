@@ -140,6 +140,10 @@ fn names_agree(remembered: &str, command: &str, request: &str) -> bool {
         .all(|n| !old.contains(n) || new.contains(n))
 }
 
+/// A remembered pair used as a pattern (another app, the same words)
+/// scores just below an exact match.
+const PATTERN_SCORE: usize = 99;
+
 /// How alike two requests are: shared words over all words, in percent.
 fn likeness(a: &[String], b: &[String]) -> usize {
     let shared = a.iter().filter(|w| b.contains(w)).count();
@@ -311,6 +315,9 @@ impl Otter {
             "audit-list" if arg.is_empty() => self.audit_list(),
             "remember" => self.remember(arg),
             "recall" => self.recall(arg),
+            // A phrasing the user asked her to forget
+            // (docs/templates-design.md).
+            "forget-phrase" => self.forget_phrase(arg.trim()),
             _ => Err("unknown tool"),
         }
     }
@@ -543,27 +550,70 @@ impl Otter {
         Ok(())
     }
 
+    /// `forget-phrase <request>`: the remembered pairs for these words
+    /// taken out (docs/templates-design.md).
+    fn forget_phrase(&mut self, request: &str) -> Result<(), &'static str> {
+        let key = words(request);
+        if key.is_empty() {
+            return Err("nothing to forget");
+        }
+        let old = self.memory()?;
+        let mut text = String::new();
+        let mut gone = 0;
+        for line in core::str::from_utf8(&old).unwrap_or("").lines() {
+            if line.split_once('\t').is_some_and(|(r, _)| words(r) == key) {
+                gone += 1;
+            } else if !line.is_empty() {
+                text.push_str(line);
+                text.push('\n');
+            }
+        }
+        if gone == 0 {
+            return Err("not remembered");
+        }
+        file_truncate(self.home, MEMORY, 0)
+            .and_then(|()| file_write(self.home, MEMORY, 0, text.as_bytes()).map(|_| ()))
+            .map_err(reason)?;
+        zoo_rt::log!("OtterHandler: forgot `{}` ({} remembered)", request, gone);
+        Ok(())
+    }
+
     /// `recall <request>`: the remembered command for the most alike
     /// request, as `| <likeness> <command>`, if any is alike at all.
     fn recall(&mut self, request: &str) -> Result<(), &'static str> {
         let key = words(request);
         let text = self.memory()?;
-        let mut best: Option<(usize, &str)> = None;
+        let mut best: Option<(usize, String)> = None;
         for line in core::str::from_utf8(&text).unwrap_or("").lines() {
             let Some((r, c)) = line.split_once('\t') else {
                 continue;
             };
-            let score = likeness(&key, &words(r));
-            if score > 0 && !names_agree(r, c, request) {
-                zoo_rt::log!(
-                    "OtterHandler: `{}` names other things than `{}`",
-                    c,
-                    request
-                );
-                continue;
+            let mut score = likeness(&key, &words(r));
+            let mut c = String::from(c);
+            if score > 0 && !names_agree(r, &c, request) {
+                // The same words about another app: the remembered pair as
+                // a pattern (docs/templates-design.md), just below an
+                // exact match.
+                if let Some(swapped) = zoo_infer::memory::by_pattern(r, &c, request) {
+                    zoo_rt::log!(
+                        "OtterHandler: `{}` by the pattern of `{}` -> `{}`",
+                        request,
+                        r,
+                        c
+                    );
+                    c = swapped;
+                    score = PATTERN_SCORE;
+                } else {
+                    zoo_rt::log!(
+                        "OtterHandler: `{}` names other things than `{}`",
+                        c,
+                        request
+                    );
+                    continue;
+                }
             }
             // Ties go to the newer pair.
-            if score > 0 && best.is_none_or(|(b, _)| score >= b) {
+            if score > 0 && best.as_ref().is_none_or(|(b, _)| score >= *b) {
                 best = Some((score, c));
             }
         }

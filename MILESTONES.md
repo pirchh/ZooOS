@@ -223,7 +223,8 @@ lands as small, separately verified steps.
 | — | Staged wake: about-her guard, her name later in an utterance, the listening pill (docs/wake-design.md) | done 2026-11-04 |
 | — | Asking when unsure: low-margin choices that change things ask first (docs/unsure-design.md) | done 2026-11-04 |
 | — | Routines: "when I say …", "save that as …", run from memory (docs/routines-design.md) | done 2026-11-05 |
-| — | Learning templates and forgetting; titled notes; endpointing and follow-ups | open |
+| — | Templates (a confirmed phrasing for another app) and forgetting a phrasing (docs/templates-design.md) | done 2026-11-05 |
+| — | Titled notes; endpointing and follow-ups; Kokoro voice (download needs approval) | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |
 
