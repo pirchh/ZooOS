@@ -51,4 +51,4 @@ a layout (`zoo_infer::route::needs_no_model`).
 - Follow-ups that need the model ("and what about Photos?"). They would
   need the model to judge whether the words are for her before they are
   logged.
-- Endpointing: the end of speech is still 700 ms of quiet.
+- Endpointing is in docs/endpoint-design.md (0.127.0).

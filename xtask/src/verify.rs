@@ -2107,6 +2107,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-listening", check_pill), ("2-done", check_no_pill)],
         },
         Case {
+            name: "voice-quick",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a request taken at a pause (docs/endpoint-design.md): the `voice-pause` recording; her name is heard at the end of the utterance, which shows how fast hearing is, so the request after it is written down at its first 300 ms pause, sounds finished and is taken without waiting 700 ms (needs --accel)",
+            interaction: Some(voice_quick_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "voice-follow",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
@@ -3345,6 +3358,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "bella-save"
                 | "wine-home-1"
                 | "wine-home-2"
+                | "voice-quick"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -3486,7 +3500,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         // `mic-` cases: a microphone that plays a known recording
         // (docs/microphone-design.md).
         if c.name.starts_with("mic-") || c.name.starts_with("voice-") {
-            let sentence = if c.name == "voice-pause" {
+            let sentence = if c.name == "voice-pause" || c.name == "voice-quick" {
                 "pause"
             } else if c.name == "voice-confirm" {
                 "confirm"
@@ -4565,6 +4579,25 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("2-done"));
+    Interaction { steps }
+}
+
+/// `voice-quick` (docs/endpoint-design.md).
+fn voice_quick_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains("BatHandler: heard her name".into()));
+    steps.push(Action::WaitContains(
+        "BatHandler: over at a 300 ms pause, not 700".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Open notes and maximize it.\" after her name".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    // Her name alone is never taken at a pause: the request follows it.
+    steps.push(Action::NeverSeen("not over at a pause".into()));
     Interaction { steps }
 }
 

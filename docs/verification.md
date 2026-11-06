@@ -58,6 +58,18 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Ending at a pause (version 0.127.0)
+
+docs/endpoint-design.md.
+
+| Check | Result |
+| --- | --- |
+| `voice-quick` (WHPX), three runs | `OK` 3 of 3: taken at the 300 ms pause, 187 / 226 / 232 ms to hear |
+| `voice-quick` with `TRY_AT_PAUSE_US` 0 (negative control) | `FAIL`: no `over at a 300 ms pause` |
+| `voice-pause`, `voice-confirm`, `voice-follow`, `voice-follow-chat`, `voice-bella`, `voice-not-for-bella` (WHPX) | `OK` |
+| `cargo xtask hear-check`: no recording sounds finished at a pause unless whole | `OK`, 8 of 8 (6 taken whole, 2 wait) |
+| Unit tests: `listen` (a pause offered, `cut`), `sounds_finished` | pass |
+
 ## Answers said quickly (version 0.126.0)
 
 docs/late-design.md.

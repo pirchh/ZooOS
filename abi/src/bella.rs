@@ -195,6 +195,34 @@ pub fn name_only(text: &str) -> bool {
     after_name(text).is_some_and(|r| r.is_empty())
 }
 
+/// Words a sentence doesn't end on: heard at a pause, the speaker is
+/// mid-sentence ("open notes and", "put it on the").
+const UNFINISHED: [&str; 32] = [
+    "and", "or", "but", "then", "so", "to", "the", "a", "an", "on", "in", "at", "of", "for",
+    "with", "my", "your", "from", "into", "onto", "by", "as", "than", "that", "this", "is", "are",
+    "was", "um", "uh", "er", "like",
+];
+
+/// Whether `text`, heard at a pause, sounds like a whole sentence
+/// (docs/endpoint-design.md): it ends with `.`, `!` or `?`, not on a word
+/// like "and" or "the", and isn't her name alone (the request follows
+/// that).
+pub fn sounds_finished(text: &str) -> bool {
+    let t = text.trim();
+    let Some(body) = t.strip_suffix(['.', '!', '?']) else {
+        return false;
+    };
+    let body = body.trim_end();
+    if body.is_empty() || body.ends_with([',', ';', ':', '-']) || name_only(t) {
+        return false;
+    }
+    let last = body
+        .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+        .next()
+        .unwrap_or("");
+    !last.is_empty() && !UNFINISHED.iter().any(|u| last.eq_ignore_ascii_case(u))
+}
+
 /// Whether `w` is close to "bella": at most two letters changed, added or
 /// removed for a word of 4 to 6 letters ("bellow", "billah"), one for 7
 /// ("Bellamy" is someone else).
@@ -1009,6 +1037,31 @@ mod tests {
             "hiking photos",
         ] {
             assert!(!small_talk(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn sounds_finished_at_a_pause() {
+        for t in [
+            "Hey Bella, open notes.",
+            "Open notes and maximize it.",
+            "Yes.",
+            "Hey, Bella, what time is it?",
+            "Maximize notes!",
+        ] {
+            assert!(sounds_finished(t), "{t}");
+        }
+        for t in [
+            "Hey Bella.",
+            "They bellow,",
+            "Hey Bella, open notes and.",
+            "Put notes on the.",
+            "Hey Bella, open notes",
+            "Hey Bella, open notes,.",
+            "",
+            ".",
+        ] {
+            assert!(!sounds_finished(t), "{t}");
         }
     }
 }

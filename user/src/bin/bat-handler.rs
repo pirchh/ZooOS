@@ -16,7 +16,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use zoo_infer::hear::{self, Hearing};
-use zoo_infer::listen::Detector;
+use zoo_infer::listen::{Detector, Heard};
 use zoo_rt::{Error, Handle, close, try_recv};
 
 zoo_rt::entry!(main);
@@ -35,6 +35,12 @@ const FOLLOW_US: u64 = 8_000_000;
 /// processor her question comes while an answer said quickly is still
 /// being written down.
 const LATE_US: u64 = 3_000_000;
+/// At a pause (docs/endpoint-design.md), the speech so far is written
+/// down only when that is expected to take at most this long (400 ms),
+/// judged by the last utterance: the 400 ms more an end waits. Audio keeps
+/// arriving meanwhile, so a try that is not taken costs next to nothing.
+/// Under QEMU's emulated processor (seconds to hear) it is never tried.
+const TRY_AT_PAUSE_US: u64 = 400_000;
 /// `name_until`'s reason for a follow-up: sent to Bella to decide.
 const AS_FOLLOW_UP: &str = "as a follow-up";
 /// The room's level is logged when it moves this far (dB) from the last
@@ -186,6 +192,9 @@ fn main(chan: u64) -> u8 {
     // case her window opens just after it: its text, when it was written
     // down, its length and level.
     let mut held: Option<(String, u64, usize, i32)> = None;
+    // How long writing down takes, in µs per second of speech, from the
+    // last utterance: whether trying at a pause pays.
+    let mut hear_rate: Option<u64> = None;
     loop {
         // Bella gone: stop listening (the microphone is released at exit).
         match try_recv(chan, &mut msg) {
@@ -254,7 +263,17 @@ fn main(chan: u64) -> u8 {
             room_logged = Some((bg as i32, now));
             zoo_rt::log!("BatHandler: room level {} dB", bg as i32);
         }
-        for u in det.push(&samples) {
+        for ev in det.push_heard(&samples) {
+            let (u, at_pause) = match ev {
+                Heard::End(u) => (u, false),
+                Heard::Pause(u) => {
+                    let speech_ms = (u.len() * 1000 / hear::RATE) as u64;
+                    if !hear_rate.is_some_and(|r| r * speech_ms / 1000 <= TRY_AT_PAUSE_US) {
+                        continue;
+                    }
+                    (u, true)
+                }
+            };
             let audio: Vec<f32> = u.iter().map(|&s| f32::from(s) / 32768.0).collect();
             let t = zoo_rt::now_us();
             // After her name (or her question), what follows is for her:
@@ -265,13 +284,31 @@ fn main(chan: u64) -> u8 {
                 say(chan, "hearing", "");
             }
             let Ok(text) = h.transcribe(&audio) else {
-                if expected {
+                if expected && !at_pause {
                     say(chan, "lost", "");
                 }
                 continue;
             };
-            let ms = (zoo_rt::now_us() - t) / 1000;
+            let us = zoo_rt::now_us() - t;
+            let ms = us / 1000;
             let speech_ms = audio.len() * 1000 / hear::RATE;
+            hear_rate = Some(us * 1000 / (speech_ms as u64).max(1));
+            if at_pause {
+                // Taken now only if it is for her and sounds whole; else
+                // the end decides, as before (no words logged either way).
+                let for_her = expected || zoo_abi::bella::addressed(&text).is_some();
+                if !(for_her && zoo_abi::bella::sounds_finished(&text)) {
+                    zoo_rt::log!("BatHandler: not over at a pause ({} ms to hear)", ms);
+                    continue;
+                }
+                det.cut();
+                zoo_rt::log!(
+                    "BatHandler: over at a {} ms pause, not {} ({} ms to hear)",
+                    zoo_infer::listen::PAUSE_FRAMES * 20,
+                    zoo_infer::listen::END_FRAMES * 20,
+                    ms
+                );
+            }
             let level = zoo_infer::listen::level_db(&u) as i32;
             let after_name = name_until
                 .take()

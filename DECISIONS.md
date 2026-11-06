@@ -2014,6 +2014,14 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 
 Two prompt variants that lost right answers were dropped.
 
+## Ending at a pause (2026-11-06)
+
+Version 0.127.0. Design: docs/endpoint-design.md. At 300 ms of quiet
+BatHandler writes down the speech so far, if the last utterance shows
+that takes at most 400 ms, and takes it when it is for her and sounds
+finished. Otherwise the 700 ms end decides as before. Under TCG it is
+never tried.
+
 ## Answers said quickly (2026-11-06)
 
 Version 0.126.0. Design: docs/late-design.md. BatHandler keeps the last
