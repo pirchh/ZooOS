@@ -126,4 +126,5 @@ The safetensors Moonshine replaces the plan's ONNX files: the same model
 and licence, but a plain format (a JSON header and raw tensors) that the
 NumPy reference and the Rust engine read without an ONNX runtime.
 `kokoro-v1_0.pth` is a PyTorch zip; it is read as data (its tensors), never
-unpickled with code execution.
+unpickled with code execution. `cargo xtask speak-gguf` turns it and
+`af_bella.pt` into `voice/kokoro-82m-f32.gguf` (docs/speech-design.md §2).

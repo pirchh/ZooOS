@@ -58,6 +58,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Bella's voice: the Kokoro engine (version 0.129.0)
+
+docs/speech-design.md. A library checked on the host; nothing in the boot
+image changes.
+
+| Check | Result |
+| --- | --- |
+| `sha256sum -c kokoro-82m.sha256` (in tools/models/voice) | all 3 `OK` |
+| `cargo xtask speak-gguf` | 327,433,728 bytes, 448 tensors, 178 phoneme tokens |
+| `cargo xtask speak-check` | `PASS`: 3 of 3 with the reference's frames, 0.07–0.15% apart, heard as said |
+| `speak-check` with the DC/Nyquist fix undone (negative control) | `FAIL` |
+| The reference heard back by Moonshine (`moonshine_ref.py`) | "Hello, I am Bella." |
+
 ## Commands that name nothing (version 0.128.0)
 
 docs/vague-design.md.

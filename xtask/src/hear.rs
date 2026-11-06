@@ -555,7 +555,7 @@ pub fn make_recordings(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn python(root: &Path) -> Result<PathBuf, String> {
+pub fn python(root: &Path) -> Result<PathBuf, String> {
     let p = root.join("tools/reference/.venv/Scripts/python.exe");
     let p = if p.is_file() {
         p

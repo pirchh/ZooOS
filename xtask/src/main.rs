@@ -7,6 +7,7 @@ mod font;
 mod hear;
 mod image;
 mod infer;
+mod kokoro;
 mod markers;
 mod musl;
 mod process;
@@ -266,6 +267,23 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 println!("embed-check: FAIL");
                 Ok(ExitCode::from(1))
             }
+        }
+        "speak-gguf" => {
+            // Kokoro-82M and the af_bella voice as one GGUF file
+            // (docs/speech-design.md).
+            kokoro::convert(&root)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        "speak-check" => {
+            // The engine against the NumPy reference, heard back by
+            // Moonshine (docs/speech-design.md).
+            let ok = kokoro::check(&root)?;
+            println!("speak-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
         }
         "hear-gguf" => {
             // Moonshine Tiny as one GGUF file (docs/hearing-design.md).

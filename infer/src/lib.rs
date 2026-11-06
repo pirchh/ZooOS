@@ -32,6 +32,7 @@ pub mod par;
 pub mod quant;
 pub mod registry;
 pub mod route;
+pub mod speak;
 pub mod steps;
 pub mod talk;
 pub mod tokenizer;
