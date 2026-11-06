@@ -2081,3 +2081,19 @@ decide whether speech after her answer is said to her was measured on
   meant for her into the logs. The code and `cargo xtask
   bella-addressee` stay for the model bake-off, where the number to
   beat is how much said to her is taken with no talk taken.
+
+## One codegen unit for release builds (2026-11-06)
+
+Version 0.132.0. Adding `zoo_infer::addressee`, a module the guest never
+calls, made BatHandler hear twice as slowly under TCG: "Hey Bella, open
+notes" took 10.2–11.3 s to hear in 5 runs, against 4.9 s on `main`, and
+`voice-follow`, `voice-follow-chat` and `voice-confirm` timed out. With
+the module left out of the guest's build it took 4.7 s. Release builds
+had Cargo's default of 16 codegen units, so the module changed how
+zoo-infer was split, and with it what was inlined into the hearing
+code.
+
+- **`codegen-units = 1` in `[profile.release]`** (the kernel and the
+  guest's programs): with the module back in, 5.1 s, and the case
+  passes. Speed no longer depends on how the crate happens to be split.
+- Host tools are unaffected: they build zoo-infer in the dev profile.

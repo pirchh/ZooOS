@@ -71,6 +71,16 @@ strict enough to take no talk (above 4.77): 5 of 18 said to her taken by the jud
 bella-addressee: FAIL
 ```
 
+Hearing under TCG, `cargo xtask verify --skip-model --case voice-follow`
+("Hey Bella, open notes", BatHandler's `ms to hear`):
+
+| Build | Time to hear | Case |
+| --- | --- | --- |
+| `main` (0.131.0) | 4864 ms | `OK` |
+| this branch, 16 codegen units (default) | 9920–11327 ms, 5 runs | `FAIL`: timeout, the follow-up never heard |
+| this branch, `zoo_infer::addressee` left out of the guest | 4665 ms | `OK` |
+| this branch, `codegen-units = 1` | 5064 ms | `OK` |
+
 The `FAIL` is the result: the judge is not used by Bella. The other
 three methods each took 16 of 16 (docs/addressee-design.md §2). The
 guest is unchanged apart from the version.
