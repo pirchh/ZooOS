@@ -2014,6 +2014,15 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 
 Two prompt variants that lost right answers were dropped.
 
+## Conversation, step 1: half-duplex and barge-in (2026-11-06)
+
+Version 0.131.0. Design: docs/conversation-design.md. While she speaks,
+BatHandler takes what it hears as her own voice, except speech that
+starts with her name or tells her to stop, which cuts her off. There is
+no echo cancellation: it needs a reference signal and tuning on real
+hardware, and her name is a strong enough signal for now. The follow-up
+window opens when she finishes speaking.
+
 ## Bella speaks (2026-11-06)
 
 Version 0.130.0. Design: docs/speaking-design.md. A new service,

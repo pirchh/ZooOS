@@ -73,9 +73,7 @@ Bella asked for it. Details in docs/verification.md.
   the whole answer is made.
 - **The model disk** does not carry the voice yet. `run` without `--mic`
   has no voice.
-- **She hears herself.** On a real machine her voice reaches the
-  microphone. It is not addressed to her, so it is not taken as a
-  request, but BatHandler writes it down. Next: BatHandler stops
-  listening while she speaks, and she stops when interrupted (barge-in,
-  the conversation step).
+- **She hears herself:** handled in 0.131.0. While she speaks, only
+  speech to her or "stop" gets through, and that cuts her off
+  (docs/conversation-design.md).
 - One voice (`af_bella`), American English.

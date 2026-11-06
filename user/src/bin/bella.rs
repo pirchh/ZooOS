@@ -199,6 +199,10 @@ struct App {
     /// MynahHandler, her voice (docs/speaking-design.md), once ready.
     mynah: Option<Handle>,
     mynah_ready: bool,
+    /// From her first `say:` until MynahHandler says `quiet`: BatHandler
+    /// is told, so her own voice isn't taken as speech
+    /// (docs/conversation-design.md).
+    speaking: bool,
     /// What apps can do for her (docs/registry-design.md).
     registry: zoo_infer::registry::Registry,
     /// The command being run corrects an earlier wrong answer (typed by
@@ -329,6 +333,7 @@ fn main(chan: u64, home: u64) -> u8 {
         bat: None,
         mynah: None,
         mynah_ready: false,
+        speaking: false,
         correction: false,
         pending_layout: None,
         layout_request: None,
@@ -434,6 +439,8 @@ fn main(chan: u64, home: u64) -> u8 {
                     if msg == "ready" {
                         p.mynah_ready = true;
                         zoo_rt::log!("Bella: her voice is ready");
+                    } else if msg == "quiet" {
+                        p.done_speaking();
                     } else if let Some(why) = msg.strip_prefix("none:") {
                         zoo_rt::log!("Bella: no voice: {}", why);
                         let _ = close(m);
@@ -445,6 +452,7 @@ fn main(chan: u64, home: u64) -> u8 {
                     let _ = close(m);
                     p.mynah = None;
                     zoo_rt::log!("Bella: her voice ended");
+                    p.done_speaking();
                 }
             }
         }
@@ -1752,7 +1760,26 @@ impl App {
             msg.push_str(text);
             if zoo_rt::send(m, msg.as_bytes()).is_ok() {
                 zoo_rt::log!("Bella: says aloud: {}", text);
+                if !self.speaking {
+                    self.speaking = true;
+                    if let Some(b) = self.bat {
+                        let _ = send(b, b"mute");
+                    }
+                }
             }
+        }
+    }
+
+    /// MynahHandler has nothing left to say: BatHandler listens to
+    /// everything again, and a follow-up window opens from now.
+    fn done_speaking(&mut self) {
+        if !self.speaking {
+            return;
+        }
+        self.speaking = false;
+        zoo_rt::log!("Bella: done speaking");
+        if let Some(b) = self.bat {
+            let _ = send(b, b"unmute");
         }
     }
 
@@ -1822,6 +1849,27 @@ impl App {
                 self.working_until = 0;
                 // The window is used: the pill goes, none reopens.
                 self.follow_until = 1;
+            }
+        } else if let Some(text) = msg.strip_prefix("barge:") {
+            // Said to her while she spoke (docs/conversation-design.md):
+            // she stops, then takes it as she would have.
+            if self.speaking
+                && let Some(m) = self.mynah
+            {
+                let _ = send(m, b"stop");
+                zoo_rt::log!("Bella: interrupted");
+            }
+            self.spoken = true;
+            if zoo_abi::bella::stop_talking(text) {
+                zoo_rt::log!("Bella: stops talking, as asked");
+                self.working_until = 0;
+            } else if zoo_abi::bella::name_only(text) {
+                zoo_rt::log!("Bella: heard her name; listening for the request");
+                self.name_until = zoo_rt::now_us() + NAME_LISTEN_US;
+            } else {
+                let mut heard = String::from("heard:");
+                heard.push_str(text);
+                self.hearing_said(&heard);
             }
         } else if msg == "lost" {
             // Nothing could be made of it.
@@ -1973,7 +2021,7 @@ impl App {
             match self.mode {
                 Mode::Confirm(_) | Mode::Choose(..) => "listening",
                 Mode::Thinking => "working",
-                Mode::Typing if busy || now < self.working_until => "working",
+                Mode::Typing if busy || self.speaking || now < self.working_until => "working",
                 Mode::Typing if now < self.name_until => "listening",
                 Mode::Typing => "off",
             }

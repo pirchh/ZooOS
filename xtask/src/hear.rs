@@ -408,7 +408,7 @@ pub const SENTENCES: [(&str, &str); 4] = [
 /// Phrases recorded in the microphone voice only: `voice-pause` (her
 /// name, then the request after a pause) and `voice-confirm` (a delete,
 /// then "yes" to her question).
-pub const PAUSE_PARTS: [(&str, &str); 7] = [
+pub const PAUSE_PARTS: [(&str, &str); 9] = [
     ("hey-bella", "Hey Bella."),
     ("request", "Open notes and maximize it."),
     ("remove-milk", "Hey Bella, remove milk."),
@@ -417,7 +417,17 @@ pub const PAUSE_PARTS: [(&str, &str); 7] = [
     ("open-notes-only", "Hey Bella, open notes."),
     ("maximize-notes", "Maximize notes."),
     ("chat", "I think it is raining again."),
+    // `voice-barge` and `voice-echo` (docs/conversation-design.md).
+    ("bella-stop", "Bella, stop."),
+    ("split-quarters", "Split the screen into quarters."),
 ];
+/// `voice-barge`: her answer to the request starts about 1 s after it
+/// ends and lasts 4.5-5 s on one processor under WHPX (made, then
+/// played), so "Bella, stop." 1.5 s after it lands while she speaks.
+/// `voice-echo`: talk 1 s after the request, while she speaks (her own
+/// voice on a real machine), then a follow-up once she has finished.
+const BARGE: [(&str, usize); 2] = [("open-notes", 0), ("bella-stop", 1500)];
+const ECHO: [(&str, usize); 3] = [("open-notes", 0), ("chat", 1000), ("split-quarters", 4000)];
 /// Quiet before "yes" in `voice-confirm` and before the follow-up in
 /// `voice-follow` (3 s). Under TCG her question comes only once the
 /// request is written down, seconds later: BatHandler keeps a sentence
@@ -451,7 +461,19 @@ pub fn mic_input(root: &Path, sentence: &str, silent: bool, room: bool) -> Resul
     // `confirm`: a delete, quiet while she asks, then "yes".
     // `follow`: a request, quiet while she does it, then a follow-up
     // without her name; `follow-chat`: talk instead.
-    let pcm = if matches!(sentence, "pause" | "confirm" | "follow" | "follow-chat") {
+    let pcm = if let Some(parts) = match sentence {
+        "barge" => Some(&BARGE[..]),
+        "echo" => Some(&ECHO[..]),
+        _ => None,
+    } {
+        // Each part after this much quiet (ms).
+        let mut p = Vec::new();
+        for &(name, gap_ms) in parts {
+            p.resize(p.len() + gap_ms * 2 * zoo_infer::hear::RATE / 1000, 0);
+            p.extend(samples_of(name)?);
+        }
+        p
+    } else if matches!(sentence, "pause" | "confirm" | "follow" | "follow-chat") {
         let (first, second, gap) = match sentence {
             "pause" => (PAUSE_PARTS[0].0, PAUSE_PARTS[1].0, 1),
             "confirm" => (PAUSE_PARTS[2].0, PAUSE_PARTS[3].0, ANSWER_GAP_SECONDS),

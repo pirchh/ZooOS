@@ -667,9 +667,77 @@ fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
     n.is_empty() || h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
 }
 
+/// Whether `text` only tells her to stop talking ("stop", "Bella, be
+/// quiet", "okay, that's enough"), with or without her name
+/// (docs/conversation-design.md). Heard while she speaks, it cuts her
+/// off and nothing more is done.
+pub fn stop_talking(text: &str) -> bool {
+    const STOP: [&str; 14] = [
+        "stop",
+        "stop it",
+        "stop talking",
+        "stop there",
+        "be quiet",
+        "quiet",
+        "hush",
+        "shush",
+        "shh",
+        "enough",
+        "that's enough",
+        "thats enough",
+        "never mind",
+        "nevermind",
+    ];
+    let rest = strip_address(text);
+    // Words only, in lower case, with "okay" or "please" around them
+    // dropped: "Okay, stop, please." is "stop".
+    let mut words: [&str; 6] = [""; 6];
+    let mut n = 0;
+    for w in rest.split(|c: char| !(c.is_ascii_alphabetic() || c == '\'')) {
+        if w.is_empty()
+            || ["ok", "okay", "please", "now", "bella", "hey"]
+                .iter()
+                .any(|f| w.eq_ignore_ascii_case(f))
+        {
+            continue;
+        }
+        if n == words.len() {
+            return false;
+        }
+        words[n] = w;
+        n += 1;
+    }
+    if n == 0 {
+        return false;
+    }
+    STOP.iter().any(|s| {
+        let mut parts = s.split(' ');
+        let same = words[..n]
+            .iter()
+            .all(|w| parts.next().is_some_and(|p| w.eq_ignore_ascii_case(p)));
+        same && parts.next().is_none()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_talking_phrases() {
+        assert!(stop_talking("Bella, stop."));
+        assert!(stop_talking("stop"));
+        assert!(stop_talking("Okay, stop, please."));
+        assert!(stop_talking("Hey Bella, be quiet."));
+        assert!(stop_talking("That's enough."));
+        assert!(stop_talking("never mind"));
+        // A request, or talk that only starts with the word: not a stop.
+        assert!(!stop_talking("Bella, stop the music and open notes."));
+        assert!(!stop_talking("Stop by the shop on the way home."));
+        assert!(!stop_talking("Notes fills the screen."));
+        assert!(!stop_talking("Bella."));
+        assert!(!stop_talking(""));
+    }
 
     #[test]
     fn polite_requests_are_requests() {

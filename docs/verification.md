@@ -58,6 +58,31 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Conversation, step 1 (version 0.131.0)
+
+docs/conversation-design.md. Cases run with `cargo xtask verify --accel whpx --case NAME`.
+
+| Check | Result |
+| --- | --- |
+| `voice-barge` | `OK`: "Bella, stop." heard while she spoke (1540 ms, 116 ms to hear); `MynahHandler: stopped, 1000 of 2125 ms said`; no `said it` |
+| `voice-barge`, Bella not sending `stop` (negative control) | `FAIL`: no `MynahHandler: stopped` within 180 s |
+| `voice-echo` | `OK`: `speech while she spoke (1720 ms at -19 dB), taken as her voice`; "Split the screen into quarters" taken as a follow-up 5.5 s after she finished; 4 windows arranged |
+| `voice-echo`, Bella not sending `mute` (negative control) | `FAIL`: the talk passed on as a follow-up (`just before`) and rejected, `not a request (6 words)` |
+| `cargo test -p zoo-abi stop_talking` | pass |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`); `cargo fmt --check` | clean |
+| `cargo test -p xtask --locked` | 30 passed |
+| `cargo xtask verify --skip-model` (TCG) | `PASS`: 125 OK, 28 SKIP |
+| `cargo xtask verify --accel whpx` | 149 OK, 3 SKIP, 1 FAIL: `bella-live` `answered in 3019 ms` against its 3000 ms bound |
+| `bella-live` rerun 3 times | `FAIL` each: 4367, 4414, 3862 ms |
+
+The `bella-live` failure is the host, not this change. The case's log
+has no MynahHandler or BatHandler line, so nothing from this step runs
+in it; the time is the model's answer alone. While the suite ran the
+host was also running World of Warcraft, Opera and Battle.net (CPU load
+43–49% before QEMU started). The same bound failed on `main` under load
+on 11-06 (3034, 3128, 4110 ms) and passed in the 0.130.0 suite. The
+bound was not relaxed.
+
 ## Bella speaks (version 0.130.0)
 
 docs/speaking-design.md. `cargo xtask verify --accel whpx --case voice-speak`.
