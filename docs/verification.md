@@ -83,7 +83,23 @@ Hearing under TCG, `cargo xtask verify --skip-model --case voice-follow`
 
 The `FAIL` is the result: the judge is not used by Bella. The other
 three methods each took 16 of 16 (docs/addressee-design.md §2). The
-guest is unchanged apart from the version.
+guest is unchanged apart from the version and the one codegen unit.
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p zoo-infer` | 59 passed |
+| `cargo test -p xtask --locked` | 30 passed |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`, `zoo-infer`); `cargo fmt --check` | clean |
+| `cargo xtask verify --skip-model` (TCG), 16 codegen units | 3 `FAIL`: `voice-follow`, `voice-follow-chat`, `voice-confirm` time out (the table above) |
+| `cargo xtask verify --skip-model` (TCG), `codegen-units = 1` | `PASS`: 125 OK, 28 SKIP |
+| `cargo xtask verify --accel whpx`, 16 codegen units | `PASS`: 150 OK, 3 SKIP |
+| `cargo xtask verify --accel whpx`, `codegen-units = 1` | 149 OK, 3 SKIP, 1 `FAIL`: `bella-live` `answered in 3449 ms` against its 3000 ms bound (the model's own part 1681 ms) |
+| `bella-live` rerun 3 times, `codegen-units = 1` | 1811 (`OK`), 3323 (`FAIL`), 1892 ms (`OK`) |
+
+`bella-live` is the bound that failed on 0.129.0, 0.131.0 and on
+`main` under load (sections below). Two of three reruns answered in
+under 1.9 s, so there is no sign the one unit makes it slower; the host was
+running Opera and NZXT CAM. The bound was not relaxed.
 
 ## Conversation, step 1 (version 0.131.0)
 
