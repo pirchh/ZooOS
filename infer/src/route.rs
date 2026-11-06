@@ -127,6 +127,22 @@ pub enum Plan {
     Steps(Vec<String>),
     /// One request.
     One(String),
+    /// A routine to save, asked about first (docs/routines-design.md):
+    /// its name and steps.
+    Routine(String, Vec<String>),
+    /// Save the request just done as a routine of this name.
+    SaveAs(String),
+}
+
+/// A routine's steps as remembered: `steps <a> | <b>`. `None` when a step
+/// holds the separator.
+pub fn routine_command(steps: &[String]) -> Option<String> {
+    if steps.is_empty() || steps.iter().any(|s| s.contains('|') || s.trim().is_empty()) {
+        return None;
+    }
+    let mut c = String::from("steps ");
+    c.push_str(&steps.join(" | "));
+    Some(c)
 }
 
 /// The plan for `text`, said or typed. Bella resolves "it" from the
@@ -136,6 +152,17 @@ pub fn plan(text: &str, resolve: impl FnOnce(&str) -> String) -> Plan {
     let stripped = bella::strip_address(text);
     if bella::negated(stripped) {
         return Plan::Negated;
+    }
+    // Before the steps: a routine's body has steps of its own.
+    if let Some((name, body)) = bella::routine_def(stripped) {
+        let mut steps = crate::steps::split_steps(body);
+        if steps.is_empty() {
+            steps.push(String::from(body));
+        }
+        return Plan::Routine(String::from(name), steps);
+    }
+    if let Some(name) = bella::save_last_as(stripped) {
+        return Plan::SaveAs(String::from(name));
     }
     let resolved = resolve(stripped);
     let steps = crate::steps::split_steps(&resolved);
@@ -199,6 +226,25 @@ mod tests {
     fn plans() {
         let id = |s: &str| String::from(s);
         assert_eq!(plan("Don't delete the milk entry", id), Plan::Negated);
+        assert_eq!(
+            plan(
+                "Hey Bella, when I say notes mode, open notes and maximize it",
+                id
+            ),
+            Plan::Routine(
+                String::from("notes mode"),
+                alloc::vec![String::from("open notes"), String::from("maximize it")]
+            )
+        );
+        assert_eq!(
+            plan("save that as notes mode", id),
+            Plan::SaveAs(String::from("notes mode"))
+        );
+        assert_eq!(
+            routine_command(&[String::from("open notes"), String::from("maximize it")]).as_deref(),
+            Some("steps open notes | maximize it")
+        );
+        assert_eq!(routine_command(&[String::from("a | b")]), None);
         assert_eq!(plan("Hey Bella, never mind", id), Plan::Negated);
         assert!(matches!(
             plan("Hey Bella, open notes and maximize it", id),

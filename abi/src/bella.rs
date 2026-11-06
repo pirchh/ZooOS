@@ -225,6 +225,52 @@ fn distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// A routine defined in words (docs/routines-design.md): "when I say set
+/// up my workspace, open notes and open files" gives its name and what it
+/// does. The name ends at the first comma.
+pub fn routine_def(text: &str) -> Option<(&str, &str)> {
+    let t = text.trim();
+    for p in ["when i say ", "whenever i say ", "if i say "] {
+        if t.len() > p.len() && t[..p.len()].eq_ignore_ascii_case(p) {
+            let (name, body) = t[p.len()..].split_once(',')?;
+            let name = name.trim().trim_matches(['"', '\'', ' ']);
+            let body = body.trim().trim_end_matches(['.', '!']);
+            let body = ["then ", "do ", "please "]
+                .iter()
+                .find_map(|w| {
+                    (body.len() > w.len() && body[..w.len()].eq_ignore_ascii_case(w))
+                        .then(|| &body[w.len()..])
+                })
+                .unwrap_or(body)
+                .trim();
+            return (!name.is_empty() && !body.is_empty()).then_some((name, body));
+        }
+    }
+    None
+}
+
+/// The name in "save that as set up my workspace", "call that notes
+/// mode": the request just done, kept as a routine
+/// (docs/routines-design.md).
+pub fn save_last_as(text: &str) -> Option<&str> {
+    let t = text.trim().trim_end_matches(['.', '!', '?']);
+    for p in [
+        "save that as ",
+        "save this as ",
+        "save it as ",
+        "remember that as ",
+        "remember this as ",
+        "call that ",
+        "call this ",
+    ] {
+        if t.len() > p.len() && t[..p.len()].eq_ignore_ascii_case(p) {
+            let name = t[p.len()..].trim().trim_matches(['"', '\'', ' ']);
+            return (!name.is_empty()).then_some(name);
+        }
+    }
+    None
+}
+
 /// Whether `text` asks *not* to do something ("don't delete the milk
 /// entry", "do not close notes", "never mind"): Bella does nothing
 /// (docs/targets-design.md).
@@ -648,6 +694,19 @@ mod tests {
         assert_eq!(addressed("Pay billah, remove milk."), Some("remove milk."));
         assert_eq!(addressed("Say hello to everyone"), None);
         assert_eq!(addressed("Pay the bill"), None);
+        // Routines (docs/routines-design.md).
+        assert_eq!(
+            routine_def("When I say set up my workspace, open notes and open files."),
+            Some(("set up my workspace", "open notes and open files"))
+        );
+        assert_eq!(
+            routine_def("when i say 'notes mode', then open notes"),
+            Some(("notes mode", "open notes"))
+        );
+        assert_eq!(routine_def("when I say hello"), None);
+        assert_eq!(save_last_as("Save that as notes mode."), Some("notes mode"));
+        assert_eq!(save_last_as("call that big notes"), Some("big notes"));
+        assert_eq!(save_last_as("save that"), None);
         assert!(typed_command("Open notes"));
         assert!(typed_command("MAXIMIZE Notes"));
         assert!(!typed_command("Open the notes"));

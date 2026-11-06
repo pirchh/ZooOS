@@ -1982,3 +1982,10 @@ Version 0.121.0. Design: docs/unsure-design.md. Bella asks before a
 model choice that closes, moves or changes something when its margin is
 under 5.00, a threshold measured on `assist-check`. Undoable choices never
 ask, so most requests stay one step.
+
+## Routines (2026-11-05)
+
+Version 0.122.0. Design: docs/routines-design.md. A routine is a
+confirmed phrasing in Bella's existing memory, with the command `steps a
+| b`. There is no new store and no new file: forgetting, limits and
+matching stay the same. Saving is always asked.

@@ -61,3 +61,8 @@ typed: Open notes => want typed command
 typed: What time is it? => want asked first
 typed: Tell me a joke
 typed: Shut down the computer => want no command
+
+# --- Routines (docs/routines-design.md) ------------------------------------
+said: Hey Bella, when I say set up my workspace, open notes and open files and split them. => want routine "set up my workspace" asked
+typed: save that as notes mode => want saved as "notes mode"
+typed: set up my workspace

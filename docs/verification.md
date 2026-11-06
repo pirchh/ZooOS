@@ -58,6 +58,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Routines (version 0.122.0)
+
+docs/routines-design.md.
+
+| Check | Result |
+| --- | --- |
+| `bella-routine`: define, confirm, run from memory; "save that as" refused | `OK` |
+| The same with `steps` not replayable (negative control) | `FAIL` |
+
 ## Asking when unsure (version 0.121.0)
 
 docs/unsure-design.md.
