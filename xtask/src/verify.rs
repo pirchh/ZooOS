@@ -2916,11 +2916,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
-                    Action::WaitContains(
+                    // The file index and the model service start together:
+                    // their lines come in either order.
+                    Action::WaitSeen(
                         "MagpieHandler: the embedding model is in the boot image".into(),
                     ),
-                    Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
-                    Action::WaitContains("ElephantHandler: warmed up: system prompt".into()),
+                    Action::WaitSeen("ElephantHandler: service ready (model mapped".into()),
+                    Action::WaitSeen("ElephantHandler: warmed up: system prompt".into()),
                     Action::Settle(QUIET),
                     // Files -> Crash Test -> Bella.
                     Action::Keys(vec!["tab", "tab"]),
