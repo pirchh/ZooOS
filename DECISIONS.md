@@ -2063,3 +2063,21 @@ never tried.
 Version 0.126.0. Design: docs/late-design.md. BatHandler keeps the last
 sentence not for her for 3 s, in memory only, so an answer said before
 her question reaches it isn't lost on a slow processor.
+
+## Conversation, step 2: judged by meaning, not used yet (2026-11-06)
+
+Version 0.132.0. Design: docs/addressee-design.md. Letting the model
+decide whether speech after her answer is said to her was measured on
+34 labelled sentences with Qwen3-1.7B Q4_0, using four methods.
+
+- **Asking the model (yes/no, or computer/person with examples) gives
+  the same answer to every sentence:** 16 of 16 sentences of talk taken.
+- **Reading the sentence as said to her and as said to someone else,
+  and comparing the likelihoods,** is the only method with a signal. It
+  still takes 8 of 16 at a margin of 0, and only 5 of 18 said to her
+  when strict enough to take no talk. It takes 7–10 s per sentence on the
+  host.
+- **Not wired into Bella:** a judge that takes talk would put words not
+  meant for her into the logs. The code and `cargo xtask
+  bella-addressee` stay for the model bake-off, where the number to
+  beat is how much said to her is taken with no talk taken.

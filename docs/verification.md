@@ -58,6 +58,23 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Conversation, step 2 (version 0.132.0)
+
+docs/addressee-design.md. `cargo xtask bella-addressee` (release build,
+Qwen3-1.7B Q4_0, host engine `avx2`), the method kept:
+
+```
+said to her: 1 of 18 taken by today's gate, 13 of 18 with the judge
+not said to her: 8 of 16 taken (must be 0)
+margins: lowest for her -2.05, highest not for her 4.77; judging took 7047-9648 ms (median 8336 ms)
+strict enough to take no talk (above 4.77): 5 of 18 said to her taken by the judge
+bella-addressee: FAIL
+```
+
+The `FAIL` is the result: the judge is not used by Bella. The other
+three methods each took 16 of 16 (docs/addressee-design.md §2). The
+guest is unchanged apart from the version.
+
 ## Conversation, step 1 (version 0.131.0)
 
 docs/conversation-design.md. Cases run with `cargo xtask verify --accel whpx --case NAME`.

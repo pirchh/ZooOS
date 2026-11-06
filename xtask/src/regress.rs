@@ -259,12 +259,13 @@ pub const ADDRESSEE: &str = "tests/bella/addressee.txt";
 
 /// `cargo xtask bella-addressee`: the judge on each sentence, beside
 /// today's gate (`needs_no_model`). Fails when talk not said to her is
-/// taken at `zoo_infer::addressee::THRESHOLD`.
+/// taken at `zoo_infer::addressee::THRESHOLD`. A measurement for choosing
+/// a model: the judge is not used by Bella yet (docs/addressee-design.md).
 pub fn bella_addressee(root: &Path) -> Result<bool, String> {
     use zoo_infer::addressee::{Judge, THRESHOLD};
     let path = root.join(ADDRESSEE);
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut cases = Vec::new();
     for (n, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -273,7 +274,10 @@ pub fn bella_addressee(root: &Path) -> Result<bool, String> {
         }
         let parts: Vec<&str> = line.split('|').map(str::trim).collect();
         let [label, answer, heard] = parts[..] else {
-            return Err(format!("{ADDRESSEE}:{}: want `label | answer | heard`", n + 1));
+            return Err(format!(
+                "{ADDRESSEE}:{}: want `label | answer | heard`",
+                n + 1
+            ));
         };
         let for_her = match label {
             "for" => true,
@@ -290,7 +294,7 @@ pub fn bella_addressee(root: &Path) -> Result<bool, String> {
     let t = Instant::now();
     let mut judge = Judge::new(&model, &tok).map_err(|e| format!("{e:?}"))?;
     println!(
-        "model {}, engine {}, {} sentences, threshold {THRESHOLD}; system prompt in {:.2}s",
+        "model {}, engine {}, {} sentences, threshold {THRESHOLD}; set up in {:.2}s",
         model_file(),
         zoo_infer::cpu::backend(),
         cases.len(),
@@ -347,6 +351,12 @@ pub fn bella_addressee(root: &Path) -> Result<bool, String> {
         times[0] * 1000.0,
         times[times.len() - 1] * 1000.0,
         times[times.len() / 2] * 1000.0
+    );
+    // The number to compare models by: how much said to her is taken at
+    // the strictest setting that takes no talk.
+    let strict = margins.iter().filter(|m| m.0 && m.1 > highest_not).count();
+    println!(
+        "strict enough to take no talk (above {highest_not:.2}): {strict} of {fors} said to her taken by the judge"
     );
     Ok(judge_not == 0)
 }

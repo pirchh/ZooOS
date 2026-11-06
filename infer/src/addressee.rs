@@ -1,35 +1,46 @@
 //! Whether something heard is said to Bella, from what it means
 //! (docs/addressee-design.md). Used for speech that follows her answer
 //! without her name and that she can't act on without the model ("and
-//! what about Photos?", "what time is it?"): the model reads her last
-//! answer and the sentence, and the scores of "yes" and "no" decide. No
-//! text is generated, so it costs one pass over the sentence.
+//! what about Photos?", "what time is it?").
 //!
-//! The system prompt is fed once (`Judge::new`) and its key/value cache is
-//! reused for every sentence by rewinding the position.
+//! The model is not asked a question: a 1.7B model told to answer
+//! "yes"/"no" (or "computer"/"person") gave the same answer to every
+//! sentence (docs/addressee-design.md §2). Instead it reads the sentence
+//! twice, once as said to Bella and once as said to someone else in the
+//! room, and the difference in how likely it finds the words decides.
+//! That uses what a language model does best, predicting text. Her answer
+//! is read once and both readings continue from it.
+//!
+//! Not used by Bella: with Qwen3-1.7B it takes 8 of 16 sentences of talk
+//! and needs about 8 s per sentence on the host. `cargo xtask
+//! bella-addressee` measures it, for the model bake-off.
 
 use crate::assist::AssistError;
-use crate::chat;
 use crate::model::{Model, State};
 use crate::tokenizer::Tokenizer;
 use alloc::string::String;
-use alloc::vec::Vec;
 
-/// What the judge is told.
-pub const SYSTEM: &str = "You are listening in a room with a computer assistant called Bella.\n\
-Bella has just answered the user. Then someone in the room says a sentence.\n\
-Decide whether that sentence is said to Bella: a request, a question or a reply meant for the assistant.\n\
-Talk to another person, thinking aloud, or talk about Bella is not said to Bella.\n\
-Answer with one word: yes or no.";
-
-/// Said to her when "yes" leads "no" by at least this much (set from
-/// `cargo xtask bella-addressee`; docs/addressee-design.md).
+/// Said to her when the words are at least this much more likely (in
+/// nats, summed over the sentence) as said to her than to someone else
+/// (set from `cargo xtask bella-addressee`; docs/addressee-design.md).
 pub const THRESHOLD: f32 = 0.0;
 
 /// Most bytes of her answer and of the sentence.
 pub const MAX_TEXT: usize = 200;
 
-/// How sure the judge is: the score of "yes" minus that of "no".
+/// The text both readings share, before her answer.
+const OPEN: &str = "At home, a person is using a computer with a voice assistant called Bella. \
+Bella opens, closes and arranges apps and windows, finds and opens files, reads and writes notes and lists, and tells the time and date. \
+Bella has just said aloud: \"";
+
+/// Read as said to her.
+const TO_HER: &str = "\"\nThe person then says to Bella: \"";
+
+/// Read as said to someone else.
+const TO_OTHER: &str = "\"\nThe person then turns to someone else in the room and says: \"";
+
+/// How sure the judge is: how much more likely the words are as said to
+/// her, in nats.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Verdict {
     pub margin: f32,
@@ -37,7 +48,7 @@ pub struct Verdict {
 }
 
 impl Verdict {
-    /// Said to her when "yes" leads by at least `threshold`.
+    /// Said to her when the margin is at least `threshold`.
     pub fn for_her(&self, threshold: f32) -> bool {
         self.margin >= threshold
     }
@@ -47,45 +58,18 @@ pub struct Judge<'m, 't> {
     model: &'m Model<'m>,
     tok: &'t Tokenizer<'t>,
     st: State,
-    prefix_len: usize,
-    yes: Vec<u32>,
-    no: Vec<u32>,
 }
 
-/// The first token of each spelling of `word`, without repeats.
-fn first_tokens(tok: &Tokenizer, spellings: &[&str]) -> Vec<u32> {
-    let mut ids = Vec::new();
-    for s in spellings {
-        if let Some(&id) = tok.encode(s).first()
-            && !ids.contains(&id)
-        {
-            ids.push(id);
-        }
-    }
-    ids
+fn capacity(tok_open: usize) -> usize {
+    // The opening, her answer, the longer framing, the sentence; text is
+    // never fewer bytes than tokens.
+    tok_open + MAX_TEXT + 32 + MAX_TEXT + 8
 }
 
 impl<'m, 't> Judge<'m, 't> {
-    /// Feeds the system prompt.
     pub fn new(model: &'m Model<'m>, tok: &'t Tokenizer<'t>) -> Result<Self, AssistError> {
-        let full = chat::prompt(SYSTEM, "");
-        let cut = full
-            .rfind("<|im_start|>user\n")
-            .map(|i| i + "<|im_start|>user\n".len())
-            .unwrap_or(full.len());
-        let prefix_ids = tok.encode(&full[..cut]);
-        // Prefix, two texts of at most MAX_TEXT bytes, the framing.
-        let ctx = prefix_ids.len() + 2 * MAX_TEXT + 64;
-        let mut st = model.new_state(ctx);
-        model.read_prompt(&mut st, &prefix_ids, false, |_| true)?;
-        Ok(Judge {
-            model,
-            tok,
-            st,
-            prefix_len: prefix_ids.len(),
-            yes: first_tokens(tok, &["yes", "Yes", "YES"]),
-            no: first_tokens(tok, &["no", "No", "NO"]),
-        })
+        let st = model.new_state(capacity(OPEN.len()));
+        Ok(Judge { model, tok, st })
     }
 
     /// How sure it is that `heard`, said after Bella answered `answer`
@@ -98,39 +82,42 @@ impl<'m, 't> Judge<'m, 't> {
         if answer.len() > MAX_TEXT || heard.len() > MAX_TEXT {
             return Err(AssistError::TooLong);
         }
-        let mut text = String::new();
-        if !answer.is_empty() {
-            text.push_str("Bella said: \"");
-            text.push_str(answer);
-            text.push_str("\"\n");
-        }
-        text.push_str("Then someone said: \"");
-        text.push_str(heard);
-        text.push_str("\"\nIs that said to Bella?");
-        text.push_str(chat::reply_open(self.model));
-        let ids = self.tok.encode(&text);
-        if self.prefix_len + ids.len() > self.st_capacity() {
-            return Err(AssistError::TooLong);
-        }
-        self.st.pos = self.prefix_len;
-        self.model.read_prompt(&mut self.st, &ids, true, |_| true)?;
-        let best = |set: &[u32]| {
-            set.iter()
-                .map(|&id| self.st.logits[id as usize])
-                .fold(f32::NEG_INFINITY, f32::max)
-        };
+        let mut shared = String::from(OPEN);
+        shared.push_str(if answer.is_empty() { "…" } else { answer });
+        let shared = self.tok.encode(&shared);
+        self.st.pos = 0;
+        self.model
+            .read_prompt(&mut self.st, &shared, false, |_| true)?;
+        let words = self.tok.encode(heard);
+        let to_her = self.likelihood(shared.len(), TO_HER, &words)?;
+        let to_other = self.likelihood(shared.len(), TO_OTHER, &words)?;
         Ok(Verdict {
-            margin: best(&self.yes) - best(&self.no),
-            tokens: ids.len(),
+            margin: to_her - to_other,
+            tokens: shared.len() + words.len(),
         })
     }
 
-    fn st_capacity(&self) -> usize {
-        self.prefix_len + 2 * MAX_TEXT + 64
+    /// The log-likelihood of `words` after the shared text (`at` tokens
+    /// in) and `framing`.
+    fn likelihood(&mut self, at: usize, framing: &str, words: &[u32]) -> Result<f32, AssistError> {
+        let framing = self.tok.encode(framing);
+        self.st.pos = at;
+        self.model
+            .read_prompt(&mut self.st, &framing, true, |_| true)?;
+        let mut sum = 0.0;
+        for (i, &id) in words.iter().enumerate() {
+            sum += log_softmax_at(&self.st.logits, id as usize);
+            if i + 1 < words.len() {
+                self.model.forward(&mut self.st, id)?;
+            }
+        }
+        Ok(sum)
     }
+}
 
-    /// Tokens in the system prompt.
-    pub fn prefix_tokens(&self) -> usize {
-        self.prefix_len
-    }
+/// `ln p(id)` from logits.
+fn log_softmax_at(logits: &[f32], id: usize) -> f32 {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let sum: f32 = logits.iter().map(|&l| libm::expf(l - max)).sum();
+    logits[id] - max - libm::logf(sum)
 }

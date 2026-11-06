@@ -120,8 +120,6 @@ const WORKING_MIN_US: u64 = 1_000_000;
 /// After a spoken request, how long she listens for a follow-up without
 /// her name: as long as BatHandler (docs/follow-design.md).
 const FOLLOW_US: u64 = 8_000_000;
-/// Longest the model may take to judge speech after her answer (10 s).
-const JUDGE_MAX_US: u64 = 10_000_000;
 /// How often the pill's state is sent again while it is shown: well within
 /// the window server's 10 s.
 const PILL_AGAIN_US: u64 = 4_000_000;
@@ -205,14 +203,6 @@ struct App {
     /// is told, so her own voice isn't taken as speech
     /// (docs/conversation-design.md).
     speaking: bool,
-    /// What she last said aloud (or would have, without a voice): the
-    /// judge reads it with speech heard after it.
-    last_aloud: String,
-    /// Speech after her answer that the model is judging
-    /// (docs/addressee-design.md): kept here, not logged, until it is
-    /// known to be said to her.
-    judging: Option<String>,
-    judging_at: u64,
     /// What apps can do for her (docs/registry-design.md).
     registry: zoo_infer::registry::Registry,
     /// The command being run corrects an earlier wrong answer (typed by
@@ -344,9 +334,6 @@ fn main(chan: u64, home: u64) -> u8 {
         mynah: None,
         mynah_ready: false,
         speaking: false,
-        last_aloud: String::new(),
-        judging: None,
-        judging_at: 0,
         correction: false,
         pending_layout: None,
         layout_request: None,
@@ -409,16 +396,6 @@ fn main(chan: u64, home: u64) -> u8 {
             // closing (the service ended) is looked for.
             let thinking = matches!(p.mode, Mode::Thinking);
             match try_recv(e, &mut buf) {
-                // The judge's answer (docs/addressee-design.md).
-                Ok(n)
-                    if p.judging.is_some()
-                        && (buf[..n].starts_with(b"addressed ")
-                            || (!thinking && buf[..n].starts_with(b"err"))) =>
-                {
-                    busy = true;
-                    let msg = String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
-                    p.judged(&msg);
-                }
                 Ok(n) if thinking => {
                     busy = true;
                     let msg = String::from(core::str::from_utf8(&buf[..n]).unwrap_or(""));
@@ -1775,7 +1752,6 @@ impl App {
     /// Says `text` aloud, when the request was spoken and her voice is
     /// ready (docs/speaking-design.md). Typed requests stay silent.
     fn speak(&mut self, text: &str) {
-        self.last_aloud = String::from(text);
         if !self.spoken || !self.mynah_ready {
             return;
         }
@@ -1853,34 +1829,9 @@ impl App {
             let text = text.trim().trim_end_matches(['.', '!', ',', ';']);
             // Decided here alone: asking memory would put the words in
             // OtterHandler's audit log before they are known to be hers.
-            let free = matches!(self.mode, Mode::Typing)
+            let ok = matches!(self.mode, Mode::Typing)
                 && self.steps.is_empty()
-                && self.judging.is_none();
-            let ok = free && zoo_infer::route::needs_no_model(text, &self.registry);
-            // Something only the model can do: the model judges from what
-            // it means whether it is said to her (docs/addressee-design.md).
-            // Until then its words stay out of every log.
-            if free
-                && !ok
-                && !text.is_empty()
-                && let Some(e) = self.elephant
-            {
-                let mut m = String::from("addressed ");
-                m.push_str(&self.last_aloud);
-                m.push('	');
-                m.push_str(text);
-                m.truncate(zoo_abi::MAX_MESSAGE);
-                if send(e, m.as_bytes()).is_ok() {
-                    zoo_rt::log!(
-                        "Bella: speech after her answer: asking the model whether it is for her ({} words)",
-                        text.split_whitespace().count()
-                    );
-                    self.judging = Some(String::from(text));
-                    self.judging_at = zoo_rt::now_us();
-                    self.follow_until = 1;
-                    return;
-                }
-            }
+                && zoo_infer::route::needs_no_model(text, &self.registry);
             if ok {
                 zoo_rt::log!("Bella: heard \"{}\" as a follow-up", text);
                 let mut echo = String::from("You said: ");
@@ -2063,13 +2014,7 @@ impl App {
     /// while she can hear.
     fn update_pill(&mut self) {
         let now = zoo_rt::now_us();
-        // A judge that never answers (the model busy or gone): dropped.
-        if self.judging.is_some() && now.saturating_sub(self.judging_at) > JUDGE_MAX_US {
-            self.judging = None;
-            zoo_rt::log!("Bella: speech after her answer, not judged in time");
-        }
-        let busy =
-            !self.steps.is_empty() || self.pending_action.is_some() || self.judging.is_some();
+        let busy = !self.steps.is_empty() || self.pending_action.is_some();
         let mut want = if !self.spoken || self.bat.is_none() {
             "off"
         } else {
@@ -2274,50 +2219,6 @@ impl App {
         }
         self.mode = Mode::Thinking;
         self.status = String::from("Thinking... (Backspace cancels)");
-    }
-
-    /// The judge's answer for speech after her answer
-    /// (docs/addressee-design.md): `addressed <margin x 100>`, or `err`.
-    fn judged(&mut self, msg: &str) {
-        let Some(text) = self.judging.take() else {
-            return;
-        };
-        let margin = msg
-            .strip_prefix("addressed ")
-            .and_then(|m| m.trim().parse::<i32>().ok());
-        let threshold = (zoo_infer::addressee::THRESHOLD * 100.0) as i32;
-        let free = matches!(self.mode, Mode::Typing) && self.steps.is_empty();
-        match margin {
-            Some(m) if m >= threshold && free => {
-                zoo_rt::log!(
-                    "Bella: heard \"{}\" as a follow-up (the model: said to her, margin {})",
-                    text,
-                    m
-                );
-                let mut echo = String::from("You said: ");
-                echo.push_str(&text);
-                self.say(&echo);
-                self.spoken = true;
-                self.follow_until = 0;
-                self.working_until = zoo_rt::now_us() + WORKING_MIN_US;
-                self.submit(&text);
-            }
-            Some(m) => {
-                zoo_rt::log!(
-                    "Bella: speech after her answer, not for her ({} words; the model: margin {})",
-                    text.split_whitespace().count(),
-                    m
-                );
-                self.working_until = 0;
-            }
-            None => {
-                zoo_rt::log!(
-                    "Bella: speech after her answer, not judged ({} words)",
-                    text.split_whitespace().count()
-                );
-                self.working_until = 0;
-            }
-        }
     }
 
     fn model_reply(&mut self, msg: &str) {
