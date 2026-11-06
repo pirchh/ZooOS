@@ -1996,3 +1996,10 @@ Version 0.123.0. Design: docs/templates-design.md. Templates generalise
 over one thing only, the app named, with every other word the same, so a
 pattern can't run something the user didn't mean. Forgetting a phrasing is
 asked first, like any delete.
+
+## Follow-ups (2026-11-05)
+
+Version 0.124.0. Design: docs/follow-design.md. For 8 s after a spoken
+request she takes a follow-up without her name, but only a command she
+does without the model. Its words are logged only once it is taken, and
+memory isn't asked about it, because the lookup is audited with the words.

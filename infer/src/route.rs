@@ -117,6 +117,28 @@ pub fn ask_first(word: &str, margin: i32, reg: &Registry) -> bool {
     changes && margin < UNSURE_MARGIN
 }
 
+/// Whether `text` is something Bella does without the model: every step
+/// a typed command, an action in the registry's words, or a layout. A
+/// follow-up said without her name must be one (docs/follow-design.md).
+pub fn needs_no_model(text: &str, reg: &Registry) -> bool {
+    let ok = |t: &str| {
+        matches!(
+            route(t, reg, Known::default()),
+            Route::Typed | Route::Phrased(_) | Route::Layout(_)
+        )
+    };
+    match plan(text, |t: &str| String::from(t)) {
+        Plan::One(t) => ok(&t),
+        Plan::Steps(steps) => steps.iter().enumerate().all(|(k, s)| {
+            ok(&crate::assist::resolve_it(
+                s,
+                if k > 0 { &steps[k - 1] } else { "" },
+            ))
+        }),
+        _ => false,
+    }
+}
+
 /// How a whole request starts (docs/regression-design.md): not to be done,
 /// several steps, or one request; its address ("hey Bella") taken off.
 #[derive(Debug, Clone, PartialEq)]
@@ -199,6 +221,20 @@ mod tests {
             Route::Layout(_)
         ));
         assert_eq!(route("maximize my notes", &r, k), Route::Model);
+    }
+
+    #[test]
+    fn follow_ups() {
+        let r = reg();
+        assert!(needs_no_model("Maximize notes", &r));
+        assert!(needs_no_model("write bread", &r));
+        assert!(needs_no_model("split the screen into quarters", &r));
+        assert!(needs_no_model("open notes and maximize it", &r));
+        // Talk, questions and the model's work: not a follow-up.
+        assert!(!needs_no_model("I think it is raining again", &r));
+        assert!(!needs_no_model("what time is it", &r));
+        assert!(!needs_no_model("thank you", &r));
+        assert!(!needs_no_model("don't do that", &r));
     }
 
     #[test]

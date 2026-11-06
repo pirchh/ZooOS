@@ -92,8 +92,7 @@ taken as the user's correction, and she *learned* `Open notes` →
 ## Not done
 
 - **Endpointing:** the end of speech is still 700 ms of quiet.
-- **Follow-ups without her name** after an answer, as a conversation
-  state.
+- Follow-ups without her name are in docs/follow-design.md (0.124.0).
 - **Barge-in:** stopping her mid-answer by voice.
 - The pill doesn't show her hearing level, and doesn't appear on other
   monitors.

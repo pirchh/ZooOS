@@ -2107,6 +2107,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![("1-listening", check_pill), ("2-done", check_no_pill)],
         },
         Case {
+            name: "voice-follow",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "a follow-up (docs/follow-design.md): the microphone plays \"Hey Bella, open notes.\", then, after she has, \"Maximize notes.\" without her name; she takes it, as a command she does without the model",
+            interaction: Some(voice_follow_steps(true)),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "voice-follow-chat",
+            mode: Mode::Normal,
+            custom_image: hear_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "talk after her answer (docs/follow-design.md): \"Hey Bella, open notes.\", then \"I think it is raining again.\"; not a command, so not for her, and its words are not logged",
+            interaction: Some(voice_follow_steps(false)),
+            screen_checks: vec![],
+        },
+        Case {
             name: "voice-confirm",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
@@ -3464,6 +3490,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 "confirm"
             } else if c.name == "voice-not-for-bella" {
                 "split"
+            } else if c.name == "voice-follow" {
+                "follow"
+            } else if c.name == "voice-follow-chat" {
+                "follow-chat"
             } else {
                 "open-notes"
             };
@@ -4533,6 +4563,38 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("2-done"));
+    Interaction { steps }
+}
+
+/// `voice-follow` and `voice-follow-chat` (docs/follow-design.md).
+fn voice_follow_steps(command: bool) -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains("Bella: heard \"Hey".into()));
+    steps.push(Action::WaitContains("PeacockHandler: opened Notes".into()));
+    steps.push(Action::WaitContains(
+        "Bella: listening for a follow-up".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "BatHandler: heard speech after her answer".into(),
+    ));
+    if command {
+        steps.push(Action::WaitContains(
+            "Bella: heard \"Maximize notes\" as a follow-up".into(),
+        ));
+        steps.push(Action::WaitContains(
+            "PeacockHandler: window action for Notes: Notes fills the screen.".into(),
+        ));
+        steps.push(Action::Settle(QUIET));
+    } else {
+        steps.push(Action::WaitContains(
+            "Bella: speech after her answer, not a request (6 words)".into(),
+        ));
+        steps.push(Action::Settle(QUIET));
+        // Not acted on, and its words in no log line.
+        steps.push(Action::NeverSeen("raining".into()));
+        steps.push(Action::NeverSeen("window action for Notes".into()));
+    }
     Interaction { steps }
 }
 

@@ -26,6 +26,11 @@ const IDLE_TICKS: u64 = 2;
 const AFTER_NAME_US: u64 = 5_000_000;
 /// After Bella asks a question, how long the answer may take (10 s).
 const ANSWER_US: u64 = 10_000_000;
+/// After she finishes a spoken request, how long a follow-up may take to
+/// start, without her name (docs/follow-design.md).
+const FOLLOW_US: u64 = 8_000_000;
+/// `name_until`'s reason for a follow-up: sent to Bella to decide.
+const AS_FOLLOW_UP: &str = "as a follow-up";
 /// The room's level is logged when it moves this far (dB) from the last
 /// logged value, at most every `ROOM_LOG_US` (30 s).
 const ROOM_LOG_DB: i32 = 10;
@@ -143,6 +148,13 @@ fn main(chan: u64) -> u8 {
             Ok(n) if &msg[..n] == b"await" => {
                 name_until = Some((zoo_rt::now_us() + ANSWER_US, "as her answer"));
             }
+            // She finished a spoken request: the next utterance may follow
+            // up on it, for Bella to accept or not.
+            Ok(n) if &msg[..n] == b"follow" => {
+                if name_until.is_none() {
+                    name_until = Some((zoo_rt::now_us() + FOLLOW_US, AS_FOLLOW_UP));
+                }
+            }
             Ok(_) | Err(Error::Again) => {}
             Err(_) => {
                 let _ = close(chan);
@@ -233,6 +245,15 @@ fn main(chan: u64) -> u8 {
                 );
                 name_until = Some((zoo_rt::now_us() + AFTER_NAME_US, "after her name"));
                 say(chan, "name", "");
+            } else if after_name == Some(AS_FOLLOW_UP) {
+                // Perhaps not for her: no words in the log; Bella decides.
+                zoo_rt::log!(
+                    "BatHandler: heard speech after her answer ({} ms at {} dB, {} ms to hear)",
+                    speech_ms,
+                    level,
+                    ms
+                );
+                say(chan, "follow:", &text);
             } else if let Some(why) = after_name {
                 zoo_rt::log!(
                     "BatHandler: heard \"{}\" {} ({} ms of speech at {} dB, {} ms to hear)",

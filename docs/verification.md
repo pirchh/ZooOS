@@ -58,6 +58,16 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Follow-ups (version 0.124.0)
+
+docs/follow-design.md.
+
+| Check | Result |
+| --- | --- |
+| `voice-follow`: a command after her answer, no name | `OK` |
+| `voice-follow-chat`: talk after her answer ignored, words unlogged | `OK` |
+| No follow window; gate always yes (negative controls) | `FAIL`, `FAIL` |
+
 ## Templates and forgetting (version 0.123.0)
 
 docs/templates-design.md.

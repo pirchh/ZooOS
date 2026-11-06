@@ -408,11 +408,15 @@ pub const SENTENCES: [(&str, &str); 4] = [
 /// Phrases recorded in the microphone voice only: `voice-pause` (her
 /// name, then the request after a pause) and `voice-confirm` (a delete,
 /// then "yes" to her question).
-pub const PAUSE_PARTS: [(&str, &str); 4] = [
+pub const PAUSE_PARTS: [(&str, &str); 7] = [
     ("hey-bella", "Hey Bella."),
     ("request", "Open notes and maximize it."),
     ("remove-milk", "Hey Bella, remove milk."),
     ("yes", "Yes."),
+    // `voice-follow` and `voice-follow-chat` (docs/follow-design.md).
+    ("open-notes-only", "Hey Bella, open notes."),
+    ("maximize-notes", "Maximize notes."),
+    ("chat", "I think it is raining again."),
 ];
 /// Quiet before "yes" in `voice-confirm`: the question comes only once
 /// the request was heard, which takes seconds under TCG (12 s).
@@ -442,11 +446,14 @@ pub fn mic_input(root: &Path, sentence: &str, silent: bool, room: bool) -> Resul
     };
     // `pause`: her name, a second of quiet, then the request.
     // `confirm`: a delete, quiet while she asks, then "yes".
-    let pcm = if sentence == "pause" || sentence == "confirm" {
-        let (first, second, gap) = if sentence == "pause" {
-            (PAUSE_PARTS[0].0, PAUSE_PARTS[1].0, 1)
-        } else {
-            (PAUSE_PARTS[2].0, PAUSE_PARTS[3].0, ANSWER_GAP_SECONDS)
+    // `follow`: a request, quiet while she does it, then a follow-up
+    // without her name; `follow-chat`: talk instead.
+    let pcm = if matches!(sentence, "pause" | "confirm" | "follow" | "follow-chat") {
+        let (first, second, gap) = match sentence {
+            "pause" => (PAUSE_PARTS[0].0, PAUSE_PARTS[1].0, 1),
+            "confirm" => (PAUSE_PARTS[2].0, PAUSE_PARTS[3].0, ANSWER_GAP_SECONDS),
+            "follow" => (PAUSE_PARTS[4].0, PAUSE_PARTS[5].0, ANSWER_GAP_SECONDS),
+            _ => (PAUSE_PARTS[4].0, PAUSE_PARTS[6].0, ANSWER_GAP_SECONDS),
         };
         let mut p = samples_of(first)?;
         p.resize(p.len() + gap * 2 * zoo_infer::hear::RATE, 0);

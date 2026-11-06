@@ -117,6 +117,9 @@ const NAME_LISTEN_US: u64 = 5_000_000;
 /// The pill shows her working on a spoken request for at least this long,
 /// so a quick one is still seen.
 const WORKING_MIN_US: u64 = 1_000_000;
+/// After a spoken request, how long she listens for a follow-up without
+/// her name: as long as BatHandler (docs/follow-design.md).
+const FOLLOW_US: u64 = 8_000_000;
 /// How often the pill's state is sent again while it is shown: well within
 /// the window server's 10 s.
 const PILL_AGAIN_US: u64 = 4_000_000;
@@ -217,6 +220,9 @@ struct App {
     working_until: u64,
     pill_shown: &'static str,
     pill_sent_at: u64,
+    /// Until when she listens for a follow-up (0: none opened for the
+    /// request in hand; docs/follow-design.md).
+    follow_until: u64,
     /// The steps of the request just done, for "save that as …"
     /// (docs/routines-design.md), and whether a routine is running (its
     /// steps are not a new request to save).
@@ -329,6 +335,7 @@ fn main(chan: u64, home: u64) -> u8 {
         working_until: 0,
         pill_shown: "off",
         pill_sent_at: 0,
+        follow_until: 0,
         done_steps: Vec::new(),
         in_routine: false,
         relayout_of: None,
@@ -1710,6 +1717,35 @@ impl App {
             self.spoken = true;
             self.name_until = 0;
             self.working_until = zoo_rt::now_us() + HEARING_MAX_US;
+        } else if let Some(text) = msg.strip_prefix("follow:") {
+            // Said after her answer, without her name
+            // (docs/follow-design.md): hers only if it is something she
+            // does without the model; otherwise not for her, and its words
+            // stay out of the log.
+            let text = text.trim().trim_end_matches(['.', '!', ',', ';']);
+            // Decided here alone: asking memory would put the words in
+            // OtterHandler's audit log before they are known to be hers.
+            let ok = matches!(self.mode, Mode::Typing)
+                && self.steps.is_empty()
+                && zoo_infer::route::needs_no_model(text, &self.registry);
+            if ok {
+                zoo_rt::log!("Bella: heard \"{}\" as a follow-up", text);
+                let mut echo = String::from("You said: ");
+                echo.push_str(text);
+                self.say(&echo);
+                self.spoken = true;
+                self.follow_until = 0;
+                self.working_until = zoo_rt::now_us() + WORKING_MIN_US;
+                self.submit(&String::from(text));
+            } else {
+                zoo_rt::log!(
+                    "Bella: speech after her answer, not a request ({} words)",
+                    text.split_whitespace().count()
+                );
+                self.working_until = 0;
+                // The window is used: the pill goes, none reopens.
+                self.follow_until = 1;
+            }
         } else if msg == "lost" {
             // Nothing could be made of it.
             self.working_until = 0;
@@ -1852,7 +1888,7 @@ impl App {
     fn update_pill(&mut self) {
         let now = zoo_rt::now_us();
         let busy = !self.steps.is_empty() || self.pending_action.is_some();
-        let want = if !self.spoken || self.bat.is_none() {
+        let mut want = if !self.spoken || self.bat.is_none() {
             "off"
         } else {
             match self.mode {
@@ -1863,8 +1899,22 @@ impl App {
                 Mode::Typing => "off",
             }
         };
+        // A spoken request done: listen for a follow-up, once.
+        if want == "off"
+            && self.spoken
+            && self.follow_until == 0
+            && let Some(b) = self.bat
+        {
+            let _ = send(b, b"follow");
+            self.follow_until = now + FOLLOW_US;
+            zoo_rt::log!("Bella: listening for a follow-up");
+        }
+        if want == "off" && now < self.follow_until && self.spoken {
+            want = "listening";
+        }
         if want == "off" {
             self.spoken = false;
+            self.follow_until = 0;
         }
         // Sent on a change, and again every few seconds while shown: the
         // window server takes the pill down when it hears nothing for
