@@ -70,6 +70,18 @@ docs/conversation-design.md. Cases run with `cargo xtask verify --accel whpx --c
 | `voice-echo`, Bella not sending `mute` (negative control) | `FAIL`: the talk passed on as a follow-up (`just before`) and rejected, `not a request (6 words)` |
 | `cargo test -p zoo-abi stop_talking` | pass |
 | clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`); `cargo fmt --check` | clean |
+| `cargo test -p xtask --locked` | 30 passed |
+| `cargo xtask verify --skip-model` (TCG) | `PASS`: 125 OK, 28 SKIP |
+| `cargo xtask verify --accel whpx` | 149 OK, 3 SKIP, 1 FAIL: `bella-live` `answered in 3019 ms` against its 3000 ms bound |
+| `bella-live` rerun 3 times | `FAIL` each: 4367, 4414, 3862 ms |
+
+The `bella-live` failure is the host, not this change. The case's log
+has no MynahHandler or BatHandler line, so nothing from this step runs
+in it; the time is the model's answer alone. While the suite ran the
+host was also running World of Warcraft, Opera and Battle.net (CPU load
+43–49% before QEMU started). The same bound failed on `main` under load
+on 11-06 (3034, 3128, 4110 ms) and passed in the 0.130.0 suite. The
+bound was not relaxed.
 
 ## Bella speaks (version 0.130.0)
 
