@@ -71,8 +71,8 @@ so the window shows the note it changed. Delete questions name the note:
 | Check | Result |
 | --- | --- |
 | `cargo test -p zoo-infer` (`titled_places`, `picks_a_note`, `new_titles`, the registry's extras) | pass |
-| `bella-titled` (QEMU, no model) | see docs/verification.md |
-| `bella-titled` with Bella not adding `^<title>` (negative control) | see docs/verification.md |
+| `bella-titled` (QEMU, no model) | `OK` (docs/verification.md) |
+| `bella-titled` with Bella not adding `^<title>` (negative control) | `FAIL`, timeout (docs/verification.md) |
 | `bella-regress` | the four new sentences as in §2; the others unchanged |
 
 ## 5. Not done

@@ -58,6 +58,20 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Titled notes (version 0.133.0)
+
+docs/titled-design.md. `cargo xtask verify --skip-model --case bella-titled` (TCG, no model).
+
+| Check | Result |
+| --- | --- |
+| `bella-titled` | `OK` (26.8 s): `names the note "packing"`; `Notes: a new note, Packing`; `Wrote "passport" in Documents/Notes/Packing.txt.`; `Wrote "socks" in Documents/Notes/Packing.txt.`; asks `Remove "passport" from your packing note?`, then `Removed "passport" from Documents/Notes/Packing.txt.`; for "holiday", `Error: there is no note called "holiday".` |
+| `bella-titled`, Bella not adding `^<title>` (negative control) | `FAIL` `timeout`: no `Notes: a new note, Packing` within 120 s; the write went to `Documents/notes.txt` |
+| `cargo xtask bella-regress` before `--accept` | 48 as recorded, 0 changed, 4 new (the four titled sentences, as in docs/titled-design.md §2) |
+| `cargo xtask bella-regress` after `--accept` | `PASS`: 52 as recorded |
+| `cargo test -p zoo-infer --locked` | 62 passed |
+| `cargo test -p xtask --locked` | 30 passed |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`, `zoo-infer`); `cargo fmt --all --check` | clean |
+
 ## Conversation, step 2 (version 0.132.0)
 
 docs/addressee-design.md. `cargo xtask bella-addressee` (release build,
