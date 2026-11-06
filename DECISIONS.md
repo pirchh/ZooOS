@@ -2013,3 +2013,9 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 - left and right read from the words.
 
 Two prompt variants that lost right answers were dropped.
+
+## Answers said quickly (2026-11-06)
+
+Version 0.126.0. Design: docs/late-design.md. BatHandler keeps the last
+sentence not for her for 3 s, in memory only, so an answer said before
+her question reaches it isn't lost on a slow processor.

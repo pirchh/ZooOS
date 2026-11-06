@@ -418,9 +418,12 @@ pub const PAUSE_PARTS: [(&str, &str); 7] = [
     ("maximize-notes", "Maximize notes."),
     ("chat", "I think it is raining again."),
 ];
-/// Quiet before "yes" in `voice-confirm`: the question comes only once
-/// the request was heard, which takes seconds under TCG (12 s).
-const ANSWER_GAP_SECONDS: usize = 12;
+/// Quiet before "yes" in `voice-confirm` and before the follow-up in
+/// `voice-follow` (3 s). Under TCG her question comes only once the
+/// request is written down, seconds later: BatHandler keeps a sentence
+/// said just before (docs/late-design.md), so the same recording works
+/// with or without a hardware accelerator.
+const ANSWER_GAP_SECONDS: usize = 3;
 /// The host voices (Windows' System.Speech), each saying every sentence.
 pub const VOICES: [&str; 2] = ["Microsoft David Desktop", "Microsoft Zira Desktop"];
 
