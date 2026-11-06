@@ -2,7 +2,9 @@
 //! with a channel when a voice model is installed. For each `say:<text>`
 //! it makes the words into phonemes (misaki's word lists, in the model
 //! file), the phonemes into 24 kHz speech with Kokoro, and plays it at
-//! 48 kHz in stereo through `AUDIO_WRITE`; then it sends `said` back.
+//! 48 kHz in stereo through `AUDIO_WRITE`. `stop` cuts it off (barge-in,
+//! docs/conversation-design.md) and drops what was queued; `quiet` goes
+//! back when nothing is left to say.
 //! `none:<why>` and an exit when there is no voice model or no sound
 //! device. It ends when Bella's channel closes.
 //!
@@ -14,10 +16,12 @@
 
 extern crate alloc;
 
+use alloc::collections::VecDeque;
+use alloc::string::String;
 use alloc::vec::Vec;
 use zoo_infer::g2p::Lexicon;
 use zoo_infer::speak::{self, Speech};
-use zoo_rt::{Error, Handle, close, recv};
+use zoo_rt::{Error, Handle, close, recv, try_recv};
 
 zoo_rt::entry!(main);
 
@@ -78,10 +82,50 @@ fn to_device(audio: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Plays `bytes` to the end; `Err` when the device is gone.
-fn play(bytes: &[u8]) -> Result<(), Error> {
+/// What Bella sent while a sentence was made or played.
+enum Heard {
+    /// Nothing that stops it.
+    Nothing,
+    /// `stop`: she was interrupted (docs/conversation-design.md).
+    Stop,
+    /// Her channel closed.
+    Gone,
+}
+
+/// Takes Bella's messages without waiting: sentences join the queue;
+/// `stop` empties it.
+fn check(chan: Handle, queue: &mut VecDeque<String>) -> Heard {
+    let mut msg = [0u8; zoo_abi::MAX_MESSAGE];
+    loop {
+        match try_recv(chan, &mut msg) {
+            Ok(n) => match core::str::from_utf8(&msg[..n]) {
+                Ok("stop") => {
+                    queue.clear();
+                    return Heard::Stop;
+                }
+                Ok(m) => {
+                    if let Some(t) = m.strip_prefix("say:") {
+                        queue.push_back(String::from(t));
+                    }
+                }
+                Err(_) => {}
+            },
+            Err(Error::Again) => return Heard::Nothing,
+            Err(_) => return Heard::Gone,
+        }
+    }
+}
+
+/// Plays `bytes` to the end, or until Bella says `stop` (`Ok(Some(at))`,
+/// the bytes played by then); `Err` when the device or Bella is gone.
+fn play(chan: Handle, bytes: &[u8], queue: &mut VecDeque<String>) -> Result<Option<usize>, Error> {
     let mut at = 0;
     while at < bytes.len() {
+        match check(chan, queue) {
+            Heard::Nothing => {}
+            Heard::Stop => return Ok(Some(at)),
+            Heard::Gone => return Err(Error::NotFound),
+        }
         let n = zoo_rt::audio_write(&bytes[at..])?;
         if n == 0 {
             // Every buffer is queued (200 ms ahead): wait a tick.
@@ -89,7 +133,7 @@ fn play(bytes: &[u8]) -> Result<(), Error> {
         }
         at += n;
     }
-    Ok(())
+    Ok(None)
 }
 
 fn main(chan: u64) -> u8 {
@@ -133,30 +177,51 @@ fn main(chan: u64) -> u8 {
     );
     send(chan, "ready", "");
     let mut msg = [0u8; zoo_abi::MAX_MESSAGE];
+    let mut queue: VecDeque<String> = VecDeque::new();
     loop {
-        let n = match recv(chan, &mut msg) {
-            Ok(n) => n,
-            Err(_) => {
+        let Some(text) = queue.pop_front() else {
+            let n = match recv(chan, &mut msg) {
+                Ok(n) => n,
+                Err(_) => {
+                    let _ = close(chan);
+                    return 0;
+                }
+            };
+            if let Some(t) = core::str::from_utf8(&msg[..n])
+                .ok()
+                .and_then(|m| m.strip_prefix("say:"))
+            {
+                queue.push_back(String::from(t));
+            }
+            continue;
+        };
+        let t0 = zoo_rt::now_us();
+        let phonemes = lexicon.phonemes(&text);
+        let made = voice.synthesize(&phonemes, 1.0);
+        // A stop that came while it was made: not played at all.
+        let stopped_early = match check(chan, &mut queue) {
+            Heard::Nothing => false,
+            Heard::Stop => true,
+            Heard::Gone => {
                 let _ = close(chan);
                 return 0;
             }
         };
-        let Ok(text) = core::str::from_utf8(&msg[..n]) else {
-            continue;
-        };
-        let Some(text) = text.strip_prefix("say:") else {
-            continue;
-        };
-        let t0 = zoo_rt::now_us();
-        let phonemes = lexicon.phonemes(text);
-        let (audio, _) = match voice.synthesize(&phonemes, 1.0) {
+        let (audio, _) = match made {
             Ok(a) => a,
             Err(e) => {
                 zoo_rt::log!("MynahHandler: cannot say \"{}\": {}", text, e.name());
-                send(chan, "said", "");
+                if queue.is_empty() {
+                    send(chan, "quiet", "");
+                }
                 continue;
             }
         };
+        if stopped_early {
+            zoo_rt::log!("MynahHandler: stopped before saying \"{}\"", text);
+            send(chan, "quiet", "");
+            continue;
+        }
         let made_ms = (zoo_rt::now_us() - t0) / 1000;
         let audio_ms = audio.len() * 1000 / speak::RATE;
         zoo_rt::log!(
@@ -165,18 +230,33 @@ fn main(chan: u64) -> u8 {
             audio_ms,
             made_ms
         );
-        match play(&to_device(&audio)) {
-            Ok(()) => {
+        let bytes = to_device(&audio);
+        match play(chan, &bytes, &mut queue) {
+            Ok(None) => {
                 zoo_rt::log!(
                     "MynahHandler: said it, {} ms after it was asked",
                     (zoo_rt::now_us() - t0) / 1000
                 );
+            }
+            Ok(Some(at)) => {
+                // 48 kHz, 4 bytes a frame.
+                zoo_rt::log!(
+                    "MynahHandler: stopped, {} of {} ms said",
+                    at / 4 * 1000 / 48_000,
+                    audio_ms
+                );
+            }
+            Err(Error::NotFound) => {
+                let _ = close(chan);
+                return 0;
             }
             Err(e) => {
                 send(chan, "none:", e.name());
                 return 0;
             }
         }
-        send(chan, "said", "");
+        if queue.is_empty() {
+            send(chan, "quiet", "");
+        }
     }
 }

@@ -2115,6 +2115,32 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "voice-barge",
+            mode: Mode::Normal,
+            custom_image: voice_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "barge-in (docs/conversation-design.md): \"Bella, stop.\" said while she answers aloud cuts her off; MynahHandler never finishes the sentence (needs --accel)",
+            interaction: Some(voice_barge_steps()),
+            screen_checks: vec![],
+        },
+        Case {
+            name: "voice-echo",
+            mode: Mode::Normal,
+            custom_image: voice_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "half-duplex (docs/conversation-design.md): talk heard while she speaks (her own voice, on a real machine) is not logged as words and does not use up the follow-up window; \"Split the screen into quarters.\" after she finishes is taken without her name (needs --accel)",
+            interaction: Some(voice_echo_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "voice-pause",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
@@ -3381,6 +3407,8 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "wine-home-2"
                 | "voice-quick"
                 | "voice-speak"
+                | "voice-barge"
+                | "voice-echo"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -3532,6 +3560,10 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 "follow"
             } else if c.name == "voice-follow-chat" {
                 "follow-chat"
+            } else if c.name == "voice-barge" {
+                "barge"
+            } else if c.name == "voice-echo" {
+                "echo"
             } else {
                 "open-notes"
             };
@@ -4614,6 +4646,51 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("2-done"));
+    Interaction { steps }
+}
+
+/// `voice-barge` (docs/conversation-design.md).
+fn voice_barge_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen("MynahHandler: ready (".into()));
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains(
+        "Bella: says aloud: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::WaitContains("while she spoke (".into()));
+    steps.push(Action::WaitContains("Bella: interrupted".into()));
+    steps.push(Action::WaitContains(
+        "Bella: stops talking, as asked".into(),
+    ));
+    steps.push(Action::WaitContains("MynahHandler: stopped".into()));
+    steps.push(Action::WaitContains("Bella: done speaking".into()));
+    steps.push(Action::Settle(QUIET));
+    // Cut off: the sentence was not said to the end.
+    steps.push(Action::NeverSeen("MynahHandler: said it".into()));
+    Interaction { steps }
+}
+
+/// `voice-echo` (docs/conversation-design.md).
+fn voice_echo_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen("MynahHandler: ready (".into()));
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains(
+        "Bella: says aloud: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "BatHandler: speech while she spoke (".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: done speaking".into()));
+    steps.push(Action::WaitContains(
+        "Bella: listening for a follow-up".into(),
+    ));
+    steps.push(Action::WaitContains("as a follow-up".into()));
+    steps.push(Action::WaitContains("PeacockHandler: layout".into()));
+    steps.push(Action::Settle(QUIET));
+    // The talk: no words in the log, and it did not use the window.
+    steps.push(Action::NeverSeen("raining".into()));
+    steps.push(Action::NeverSeen("not a request".into()));
     Interaction { steps }
 }
 

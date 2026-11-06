@@ -58,6 +58,19 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Conversation, step 1 (version 0.131.0)
+
+docs/conversation-design.md. Cases run with `cargo xtask verify --accel whpx --case NAME`.
+
+| Check | Result |
+| --- | --- |
+| `voice-barge` | `OK`: "Bella, stop." heard while she spoke (1540 ms, 116 ms to hear); `MynahHandler: stopped, 1000 of 2125 ms said`; no `said it` |
+| `voice-barge`, Bella not sending `stop` (negative control) | `FAIL`: no `MynahHandler: stopped` within 180 s |
+| `voice-echo` | `OK`: `speech while she spoke (1720 ms at -19 dB), taken as her voice`; "Split the screen into quarters" taken as a follow-up 5.5 s after she finished; 4 windows arranged |
+| `voice-echo`, Bella not sending `mute` (negative control) | `FAIL`: the talk passed on as a follow-up (`just before`) and rejected, `not a request (6 words)` |
+| `cargo test -p zoo-abi stop_talking` | pass |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`); `cargo fmt --check` | clean |
+
 ## Bella speaks (version 0.130.0)
 
 docs/speaking-design.md. `cargo xtask verify --accel whpx --case voice-speak`.

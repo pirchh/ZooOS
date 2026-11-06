@@ -5,6 +5,8 @@
 //! alone ("Hey Bella." and a pause) makes the next utterance within
 //! `AFTER_NAME_US` the request. Speech not for her is never logged as
 //! words: only its length and level (docs/listening-design.md §7).
+//! While Bella speaks (`mute` to `unmute`) only speech to her or "stop"
+//! is passed on, as `barge:<text>` (docs/conversation-design.md).
 //! `none:<why>` and an exit when there is no hearing model or no
 //! microphone. It ends when Bella's channel closes.
 
@@ -43,6 +45,10 @@ const LATE_US: u64 = 3_000_000;
 const TRY_AT_PAUSE_US: u64 = 400_000;
 /// `name_until`'s reason for a follow-up: sent to Bella to decide.
 const AS_FOLLOW_UP: &str = "as a follow-up";
+/// After she stops speaking, speech that began this soon (500 ms) is
+/// still taken as her own voice: the device plays 200 ms after the last
+/// write, and a room echoes (docs/conversation-design.md).
+const TAIL_US: u64 = 500_000;
 /// The room's level is logged when it moves this far (dB) from the last
 /// logged value, at most every `ROOM_LOG_US` (30 s).
 const ROOM_LOG_DB: i32 = 10;
@@ -195,6 +201,11 @@ fn main(chan: u64) -> u8 {
     // How long writing down takes, in µs per second of speech, from the
     // last utterance: whether trying at a pause pays.
     let mut hear_rate: Option<u64> = None;
+    // While she speaks (`mute` to `unmute`), and when she stopped: what
+    // the microphone hears then is mostly her own voice. Only speech to
+    // her, or telling her to stop, is passed on (docs/conversation-design.md).
+    let mut muted_since: Option<u64> = None;
+    let mut unmuted_at: Option<u64> = None;
     loop {
         // Bella gone: stop listening (the microphone is released at exit).
         match try_recv(chan, &mut msg) {
@@ -211,6 +222,20 @@ fn main(chan: u64) -> u8 {
                     name_until = Some((zoo_rt::now_us() + FOLLOW_US, AS_FOLLOW_UP));
                     late(chan, &mut held, &mut name_until);
                 }
+            }
+            Ok(n) if &msg[..n] == b"mute" => {
+                muted_since.get_or_insert(zoo_rt::now_us());
+            }
+            Ok(n) if &msg[..n] == b"unmute" => {
+                let now = zoo_rt::now_us();
+                if let Some(since) = muted_since.take() {
+                    // A window that opened while she spoke (her question)
+                    // counts from when she finished.
+                    if let Some((until, _)) = name_until.as_mut() {
+                        *until += now - since;
+                    }
+                }
+                unmuted_at = Some(now);
             }
             Ok(_) | Err(Error::Again) => {}
             Err(_) => {
@@ -276,10 +301,14 @@ fn main(chan: u64) -> u8 {
             };
             let audio: Vec<f32> = u.iter().map(|&s| f32::from(s) / 32768.0).collect();
             let t = zoo_rt::now_us();
+            // Said while she spoke, or so soon after that it may be her.
+            let began = t.saturating_sub((u.len() as u64) * 1_000_000 / hear::RATE as u64);
+            let over_her =
+                muted_since.is_some() || unmuted_at.is_some_and(|at| began < at + TAIL_US);
             // After her name (or her question), what follows is for her:
             // Bella shows she works on it while it is written down
             // (docs/wake-design.md). Other speech says nothing.
-            let expected = name_until.is_some_and(|(until, _)| t <= until);
+            let expected = !over_her && name_until.is_some_and(|(until, _)| t <= until);
             if expected {
                 say(chan, "hearing", "");
             }
@@ -310,6 +339,35 @@ fn main(chan: u64) -> u8 {
                 );
             }
             let level = zoo_infer::listen::level_db(&u) as i32;
+            if over_her {
+                // Her name, a request to her, or "stop": she is cut off
+                // (barge-in). Anything else is taken as her own voice:
+                // not logged as words, not kept, no window used.
+                let to_her = zoo_abi::bella::addressed(&text).is_some()
+                    || zoo_abi::bella::name_only(&text)
+                    || zoo_abi::bella::stop_talking(&text);
+                if to_her {
+                    zoo_rt::log!(
+                        "BatHandler: heard \"{}\" while she spoke ({} ms of speech at {} dB, {} ms to hear)",
+                        text,
+                        speech_ms,
+                        level,
+                        ms
+                    );
+                    if zoo_abi::bella::name_only(&text) {
+                        name_until = Some((zoo_rt::now_us() + AFTER_NAME_US, "after her name"));
+                    }
+                    held = None;
+                    say(chan, "barge:", &text);
+                } else {
+                    zoo_rt::log!(
+                        "BatHandler: speech while she spoke ({} ms at {} dB), taken as her voice",
+                        speech_ms,
+                        level
+                    );
+                }
+                continue;
+            }
             let after_name = name_until
                 .take()
                 .filter(|(until, _)| t <= *until)
