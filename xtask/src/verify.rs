@@ -3510,7 +3510,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             .join("runs")
             .join(c.name)
             .join("audio.wav");
-        if c.name.starts_with("audio-") || c.name == "voice-speak" {
+        if c.name.starts_with("audio-") {
             let _ = std::fs::remove_file(&wav);
             if let Some(dir) = wav.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -3595,14 +3595,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 }
             }
         }
-        // Her answer in the recording, heard on the host
+        // Her answer in what the sound device played (SDL's disk driver
+        // writes it next to the logs), heard on the host
         // (docs/speaking-design.md).
         if kind == "pass" && c.name == "voice-speak" {
-            match check_heard(root, &wav, "Notes fills the screen.") {
+            let played = wav.with_file_name("sdl-out.raw");
+            match check_heard(root, &played, "Notes fills the screen.") {
                 Ok(summary) => detail = format!("{detail}\n      audio: {summary}"),
                 Err(why) => {
                     kind = "audio-mismatch".into();
-                    detail = format!("audio: {why} ({})", wav.display());
+                    detail = format!("audio: {why} ({})", played.display());
                 }
             }
         }
@@ -4618,7 +4620,7 @@ fn voice_pause_steps() -> Interaction {
 /// `voice-speak` (docs/speaking-design.md).
 fn voice_speak_steps() -> Interaction {
     let mut steps = start_desktop();
-    steps.push(Action::WaitContains("MynahHandler: ready (".into()));
+    steps.push(Action::WaitSeen("MynahHandler: ready (".into()));
     steps.push(Action::WaitContains("BatHandler: listening".into()));
     steps.push(Action::WaitContains(
         "Bella: the window server says: Notes fills the screen.".into(),
@@ -6378,56 +6380,22 @@ fn bella_windows_steps() -> Interaction {
     Interaction { steps }
 }
 
-/// Measures the tone QEMU recorded (docs/audio-design.md): the loud part of
-/// the first channel must last at least 0.8 s, and its pitch, from
-/// rising zero crossings, be within 2% of `hz`.
-/// A recording's first channel and rate.
-fn read_wav(wav: &Path) -> Result<(u32, Vec<f64>), String> {
-    let b = std::fs::read(wav).map_err(|e| format!("no recording: {e}"))?;
-    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
-        return Err("not a WAV file".into());
-    }
-    let (mut rate, mut channels, mut bits) = (0u32, 0u16, 0u16);
-    let mut data: &[u8] = &[];
-    let mut at = 12;
-    while at + 8 <= b.len() {
-        let id = &b[at..at + 4];
-        let len = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
-        let body = at + 8;
-        if id == b"fmt " && body + 16 <= b.len() {
-            channels = u16::from_le_bytes([b[body + 2], b[body + 3]]);
-            rate = u32::from_le_bytes(b[body + 4..body + 8].try_into().unwrap());
-            bits = u16::from_le_bytes([b[body + 14], b[body + 15]]);
-        } else if id == b"data" {
-            let end = if len == 0 || body + len > b.len() {
-                b.len()
-            } else {
-                body + len
-            };
-            data = &b[body..end];
-            break;
-        }
-        at = body + len + (len & 1);
-    }
-    if rate == 0 || channels == 0 || bits != 16 {
-        return Err(format!(
-            "unexpected format: {rate} Hz, {channels} channels, {bits} bits"
-        ));
-    }
-    let frame = 2 * usize::from(channels);
-    Ok((
-        rate,
-        data.chunks_exact(frame)
-            .map(|f| f64::from(i16::from_le_bytes([f[0], f[1]])))
-            .collect(),
-    ))
+/// What the sound device played, as SDL's disk driver writes it: 48 kHz,
+/// 16-bit stereo (`out.fixed-settings` in qemu.rs); the first channel.
+fn read_played(raw: &Path) -> Result<Vec<f64>, String> {
+    let b = std::fs::read(raw).map_err(|e| format!("no recording: {e}"))?;
+    Ok(b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|f| f64::from(i16::from_le_bytes([f[0], f[1]])))
+        .collect())
 }
 
 /// `voice-speak`: the guest's sound, resampled to 16 kHz, cut into
 /// utterances by the voice detector and written down by the Moonshine
 /// engine on the host; one must be `want`.
-fn check_heard(root: &Path, wav: &Path, want: &str) -> Result<String, String> {
-    let (rate, left) = read_wav(wav)?;
+fn check_heard(root: &Path, raw: &Path, want: &str) -> Result<String, String> {
+    let (rate, left) = (48000u32, read_played(raw)?);
     if left.is_empty() {
         return Err("nothing was played".into());
     }
@@ -6468,6 +6436,9 @@ fn check_heard(root: &Path, wav: &Path, want: &str) -> Result<String, String> {
     }
 }
 
+/// Measures the tone QEMU recorded (docs/audio-design.md): the loud part of
+/// the first channel must last at least 0.8 s, and its pitch, from
+/// rising zero crossings, be within 2% of `hz`.
 fn check_tone(wav: &Path, hz: f64) -> Result<String, String> {
     let b = std::fs::read(wav).map_err(|e| format!("no recording: {e}"))?;
     if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {

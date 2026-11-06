@@ -2014,6 +2014,15 @@ Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
 
 Two prompt variants that lost right answers were dropped.
 
+## Bella speaks (2026-11-06)
+
+Version 0.130.0. Design: docs/speaking-design.md. A new service,
+MynahHandler, says Bella's answers to spoken requests aloud with the
+Kokoro engine; typed requests stay silent. It is a separate process so a
+long sentence never holds up Bella's loop, as BatHandler is for hearing.
+The check listens to what the guest played with the host's Moonshine
+engine, so a pass means the words were audible, not only logged.
+
 ## Bella's voice: the Kokoro engine (2026-11-06)
 
 Version 0.129.0. Design: docs/speech-design.md. Kokoro-82M runs in

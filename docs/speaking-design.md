@@ -50,16 +50,22 @@ is doing (`Bella: maximize Notes`, "You said: …") are not spoken.
 
 - The hearing image with her voice. The microphone plays "Hey Bella,
   open notes and maximize it.", as `voice-bella` does.
-- QEMU records the guest's sound (its WAV backend, as `audio-tone`).
-- After the run, the host resamples the recording to 16 kHz and cuts it
-  into utterances with the voice detector. The Moonshine engine writes
-  each down, and one must be "Notes fills the screen."
+- The sound device's output is what SDL's disk driver writes next to
+  the logs (`sdl-out.raw`, 48 kHz 16-bit stereo): the same device whose
+  microphone plays the sentence.
+- After the run, the host resamples it to 16 kHz and cuts it into
+  utterances with the voice detector. The Moonshine engine writes each
+  down, and one must be "Notes fills the screen."
+- Negative control: MynahHandler playing silence. Every serial step
+  still passes, and the case fails with `audio-mismatch`.
 
 This needs an accelerator: under TCG her voice takes minutes.
 
 ## 4. Verified
 
-See docs/verification.md.
+On one guest processor under WHPX, "Notes fills the screen." (2.1 s of
+speech) is made in 2.6–3.0 s and has finished playing about 5 s after
+Bella asked for it. Details in docs/verification.md.
 
 ## 5. Not done
 
