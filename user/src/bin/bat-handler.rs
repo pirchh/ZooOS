@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use zoo_infer::hear::{self, Hearing};
 use zoo_infer::listen::Detector;
@@ -29,6 +30,11 @@ const ANSWER_US: u64 = 10_000_000;
 /// After she finishes a spoken request, how long a follow-up may take to
 /// start, without her name (docs/follow-design.md).
 const FOLLOW_US: u64 = 8_000_000;
+/// A sentence heard just before her window opened still counts, for this
+/// long after it was written down (docs/late-design.md): on a slow
+/// processor her question comes while an answer said quickly is still
+/// being written down.
+const LATE_US: u64 = 3_000_000;
 /// `name_until`'s reason for a follow-up: sent to Bella to decide.
 const AS_FOLLOW_UP: &str = "as a follow-up";
 /// The room's level is logged when it moves this far (dB) from the last
@@ -75,6 +81,42 @@ fn model_bytes() -> Option<&'static [u8]> {
         (zoo_rt::now_us() - t) / 1000
     );
     Some(&buf[..len])
+}
+
+/// Her window just opened: a sentence written down in the last
+/// `LATE_US` is taken as said in it (docs/late-design.md), and the window
+/// is used.
+fn late(
+    chan: Handle,
+    held: &mut Option<(String, u64, usize, i32)>,
+    window: &mut Option<(u64, &str)>,
+) {
+    let Some((text, at, speech_ms, level)) = held.take() else {
+        return;
+    };
+    if zoo_rt::now_us().saturating_sub(at) > LATE_US {
+        return;
+    }
+    let Some((_, why)) = window.take() else {
+        return;
+    };
+    if why == AS_FOLLOW_UP {
+        zoo_rt::log!(
+            "BatHandler: heard speech after her answer ({} ms at {} dB, just before)",
+            speech_ms,
+            level
+        );
+        say(chan, "follow:", &text);
+    } else {
+        zoo_rt::log!(
+            "BatHandler: heard \"{}\" {} (said just before; {} ms at {} dB)",
+            text,
+            why,
+            speech_ms,
+            level
+        );
+        say(chan, "heard:", &text);
+    }
 }
 
 fn main(chan: u64) -> u8 {
@@ -140,6 +182,10 @@ fn main(chan: u64) -> u8 {
     // Until when an utterance is the request after her name alone, or
     // the answer to her question, and which.
     let mut name_until: Option<(u64, &str)> = None;
+    // The last sentence not for her, kept (never logged) for `LATE_US` in
+    // case her window opens just after it: its text, when it was written
+    // down, its length and level.
+    let mut held: Option<(String, u64, usize, i32)> = None;
     loop {
         // Bella gone: stop listening (the microphone is released at exit).
         match try_recv(chan, &mut msg) {
@@ -147,12 +193,14 @@ fn main(chan: u64) -> u8 {
             // with or without her name.
             Ok(n) if &msg[..n] == b"await" => {
                 name_until = Some((zoo_rt::now_us() + ANSWER_US, "as her answer"));
+                late(chan, &mut held, &mut name_until);
             }
             // She finished a spoken request: the next utterance may follow
             // up on it, for Bella to accept or not.
             Ok(n) if &msg[..n] == b"follow" => {
                 if name_until.is_none() {
                     name_until = Some((zoo_rt::now_us() + FOLLOW_US, AS_FOLLOW_UP));
+                    late(chan, &mut held, &mut name_until);
                 }
             }
             Ok(_) | Err(Error::Again) => {}
@@ -229,6 +277,8 @@ fn main(chan: u64) -> u8 {
                 .take()
                 .filter(|(until, _)| t <= *until)
                 .map(|(_, why)| why);
+            // Anything said to her makes an older sentence stale.
+            held = None;
             if zoo_abi::bella::addressed(&text).is_some() {
                 zoo_rt::log!(
                     "BatHandler: heard \"{}\" ({} ms of speech at {} dB, {} ms to hear)",
@@ -281,6 +331,7 @@ fn main(chan: u64) -> u8 {
                         level
                     );
                 }
+                held = Some((text, zoo_rt::now_us(), speech_ms, level));
             }
         }
     }

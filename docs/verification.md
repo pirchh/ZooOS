@@ -58,6 +58,15 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Answers said quickly (version 0.126.0)
+
+docs/late-design.md.
+
+| Check | Result |
+| --- | --- |
+| `voice-confirm`, `voice-follow`, `voice-follow-chat` with a 3 s pause, TCG and WHPX | `OK` |
+| `voice-confirm` with `LATE_US` 0 (negative control) | `FAIL` |
+
 ## Model refinement (version 0.125.0)
 
 docs/refine-design.md.
