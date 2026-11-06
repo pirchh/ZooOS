@@ -51,7 +51,7 @@ more (DECISIONS.md, "Listening").
 | Speech frame | 12 dB above the background and above −50 dBFS |
 | Background | the quietest frame of the last 3 s, leaving out digital silence (below −90 dBFS) (since 0.114.0, §6) |
 | Start | 3 speech frames in a row; the utterance keeps the 200 ms before |
-| End | 700 ms without speech (pauses between words stay inside); at most 200 ms of that tail is kept |
+| End | 700 ms without speech (pauses between words stay inside); at most 200 ms of that tail is kept. Since 0.127.0 a pause of 300 ms is offered first (docs/endpoint-design.md) |
 | Limits | 12 s at most; fewer than 10 speech frames (200 ms) is a click, dropped |
 
 Unit tests (`cargo test -p zoo-infer listen`) cover:

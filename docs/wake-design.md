@@ -91,7 +91,7 @@ taken as the user's correction, and she *learned* `Open notes` →
 
 ## Not done
 
-- **Endpointing:** the end of speech is still 700 ms of quiet.
+- Endpointing: a whole-sounding request ends at a 300 ms pause on a fast processor (docs/endpoint-design.md, 0.127.0).
 - Follow-ups without her name are in docs/follow-design.md (0.124.0).
 - **Barge-in:** stopping her mid-answer by voice.
 - The pill doesn't show her hearing level, and doesn't appear on other

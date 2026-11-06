@@ -722,7 +722,43 @@ pub fn check(root: &Path) -> Result<bool, String> {
                 in_noise.len(),
                 in_noise.iter().map(|u| u.len() / 16).collect::<Vec<_>>()
             );
-            let detected_ok = detected_ok && room_ok;
+            // Pauses (docs/endpoint-design.md): the speech so far at each
+            // 300 ms pause must not sound finished unless it is the whole
+            // sentence, or BatHandler would take half of it.
+            let mut det = zoo_infer::listen::Detector::new();
+            let mut pauses = Vec::new();
+            for ev in det.push_heard(&padded) {
+                if let zoo_infer::listen::Heard::Pause(u) = ev {
+                    let u: Vec<f32> = u.iter().map(|&s| s as f32 / 32768.0).collect();
+                    let heard = h.transcribe(&u).map_err(|e| e.name().to_string())?;
+                    let finished = zoo_abi::bella::sounds_finished(&heard);
+                    let whole = zoo_infer::hear::same_words(&heard, said);
+                    pauses.push((heard, finished, whole));
+                }
+            }
+            let cut_short = pauses.iter().any(|(_, f, w)| *f && !*w);
+            println!(
+                "     pauses: {}",
+                if pauses.is_empty() {
+                    "none".to_string()
+                } else {
+                    pauses
+                        .iter()
+                        .map(|(t, f, w)| {
+                            format!(
+                                "{t:?} {}",
+                                match (f, w) {
+                                    (true, true) => "(taken: whole)",
+                                    (true, false) => "(taken: CUT SHORT)",
+                                    (false, _) => "(waits)",
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+            let detected_ok = detected_ok && room_ok && !cut_short;
             let for_bella = zoo_abi::bella::addressed(&text).is_some();
             let gate_ok = for_bella == said.to_ascii_lowercase().starts_with("hey bella");
             println!(

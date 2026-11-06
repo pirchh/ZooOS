@@ -18,7 +18,10 @@ const FLOOR_DB: f32 = -50.0;
 const START_FRAMES: usize = 3;
 /// It ends after this many quiet frames (700 ms): pauses between words
 /// stay inside one utterance.
-const END_FRAMES: usize = 35;
+pub const END_FRAMES: usize = 35;
+/// After this many quiet frames (300 ms) the utterance so far is offered
+/// as a `Heard::Pause`: it may be over already (docs/endpoint-design.md).
+pub const PAUSE_FRAMES: usize = 15;
 /// Audio kept from before the start (200 ms), so the first sound is whole.
 const PRE_FRAMES: usize = 10;
 /// The longest utterance (12 s); a longer one is cut there.
@@ -39,6 +42,15 @@ pub fn level_db(frame: &[i16]) -> f32 {
     let sum: f64 = frame.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
     let ms = sum / frame.len().max(1) as f64 / (32768.0 * 32768.0);
     10.0 * libm::log10f(ms.max(1e-12) as f32)
+}
+
+/// What a frame of audio completed.
+pub enum Heard {
+    /// 300 ms of quiet inside an utterance: the speech so far, which may
+    /// be the whole of it. The utterance goes on unless `cut`.
+    Pause(Vec<i16>),
+    /// The end of an utterance (700 ms of quiet, or 12 s of speech).
+    End(Vec<i16>),
 }
 
 pub struct Detector {
@@ -84,6 +96,17 @@ impl Detector {
 
     /// Feeds samples; returns every utterance they complete, in order.
     pub fn push(&mut self, samples: &[i16]) -> Vec<Vec<i16>> {
+        self.push_heard(samples)
+            .into_iter()
+            .filter_map(|h| match h {
+                Heard::End(u) => Some(u),
+                Heard::Pause(_) => None,
+            })
+            .collect()
+    }
+
+    /// Feeds samples; returns every pause and end they complete, in order.
+    pub fn push_heard(&mut self, samples: &[i16]) -> Vec<Heard> {
         let mut done = Vec::new();
         self.partial.extend_from_slice(samples);
         let whole = self.partial.len() / FRAME * FRAME;
@@ -97,6 +120,15 @@ impl Detector {
         done
     }
 
+    /// Drops the utterance in progress: it was taken at a pause. What
+    /// follows starts a new one.
+    pub fn cut(&mut self) {
+        self.speech = None;
+        self.quiet_run = 0;
+        self.loud_run = 0;
+        self.before.clear();
+    }
+
     /// Ends an utterance in progress (the audio stopped).
     pub fn finish(&mut self) -> Option<Vec<i16>> {
         let u = self.speech.take()?;
@@ -104,7 +136,7 @@ impl Detector {
         (self.loud_in >= MIN_LOUD).then_some(u)
     }
 
-    fn frame(&mut self, f: Vec<i16>) -> Option<Vec<i16>> {
+    fn frame(&mut self, f: Vec<i16>) -> Option<Heard> {
         let db = level_db(&f);
         if db > SILENT_DB {
             if self.levels.len() == WINDOW {
@@ -127,7 +159,12 @@ impl Detector {
                 u.truncate(u.len().saturating_sub(cut));
                 self.quiet_run = 0;
                 self.loud_run = 0;
-                return (self.loud_in >= MIN_LOUD).then_some(u);
+                return (self.loud_in >= MIN_LOUD).then_some(Heard::End(u));
+            }
+            if self.quiet_run == PAUSE_FRAMES && self.loud_in >= MIN_LOUD {
+                // The speech so far, with the same tail an end keeps.
+                let keep = sp.len() - (PAUSE_FRAMES - PRE_FRAMES) * FRAME;
+                return Some(Heard::Pause(sp[..keep].to_vec()));
             }
             return None;
         }
@@ -257,6 +294,54 @@ mod tests {
         a.extend(tone(600, 0.3));
         a.extend(quiet(2000));
         assert_eq!(d.push(&a).len(), 1);
+    }
+
+    /// A pause of 300 ms or more is offered, once per pause, as the
+    /// speech so far; the utterance still ends whole at 700 ms.
+    #[test]
+    fn a_pause_is_offered_and_the_end_still_comes() {
+        let mut d = Detector::new();
+        let mut a = quiet(500);
+        a.extend(tone(600, 0.3));
+        a.extend(quiet(400));
+        a.extend(tone(600, 0.3));
+        a.extend(quiet(2000));
+        let hs = d.push_heard(&a);
+        let kinds: Vec<(&str, usize)> = hs
+            .iter()
+            .map(|h| match h {
+                Heard::Pause(u) => ("pause", u.len() / 16),
+                Heard::End(u) => ("end", u.len() / 16),
+            })
+            .collect();
+        assert_eq!(kinds.len(), 3, "{kinds:?}");
+        assert_eq!(kinds[0].0, "pause");
+        assert_eq!(kinds[1].0, "pause");
+        assert_eq!(kinds[2].0, "end");
+        // The first pause holds the first word and its 200 ms before and
+        // after; the end holds both words.
+        assert!((900..=1060).contains(&kinds[0].1), "{kinds:?}");
+        assert!(kinds[2].1 > 1600, "{kinds:?}");
+    }
+
+    /// Taken at the pause, the utterance is dropped: no end follows, and
+    /// the next speech is an utterance of its own.
+    #[test]
+    fn cut_at_a_pause() {
+        let mut d = Detector::new();
+        let mut a = quiet(500);
+        a.extend(tone(600, 0.3));
+        a.extend(quiet(300));
+        let hs = d.push_heard(&a);
+        assert!(matches!(hs.as_slice(), [Heard::Pause(_)]));
+        d.cut();
+        let mut b = quiet(1500);
+        b.extend(tone(600, 0.3));
+        b.extend(quiet(1500));
+        let us = d.push(&b);
+        assert_eq!(us.len(), 1);
+        let ms = us[0].len() / 16;
+        assert!((700..=1060).contains(&ms), "{ms} ms");
     }
 
     #[test]
