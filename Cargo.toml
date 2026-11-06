@@ -18,6 +18,10 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+# One unit per crate, so how fast the guest's hearing runs doesn't depend
+# on how the compiler happens to split zoo-infer: an unused module made it
+# twice as slow under TCG with the default 16 (DECISIONS.md, 0.132.0).
+codegen-units = 1
 
 # Inference is far too slow unoptimised; build it optimised even in dev
 # profile (host tests and xtask).
