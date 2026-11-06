@@ -11,7 +11,7 @@ const USER_PACKAGE: &str = "zoo-user";
 /// Custom user-program target (`user/x86_64-zoo.json`).
 const USER_TARGET: &str = "x86_64-zoo";
 /// User programs packed into the initial filesystem as `bin/<name>`.
-pub const USER_PROGRAMS: [&str; 31] = [
+pub const USER_PROGRAMS: [&str; 32] = [
     "zookeeper",
     "beluga-test",
     "lemming-test",
@@ -43,6 +43,7 @@ pub const USER_PROGRAMS: [&str; 31] = [
     "reindeer-test",
     "bat-handler",
     "lynx-test",
+    "mynah-handler",
 ];
 
 /// Sample documents packed as `home/user/...` (docs/m5c1-design.md §1).
@@ -490,7 +491,9 @@ pub fn build_model_image(
 /// image, for SnowyOwlTest. `None` when the model is not downloaded or the
 /// host cannot make the recordings. With `mislabelled`, the first
 /// recording is listed with another recording's sentence (the negative
-/// case), and only the first `files` recordings are listed.
+/// case), and only the first `files` recordings are listed. With `voice`,
+/// Kokoro (`models/speak.gguf`, docs/speaking-design.md) too, when it has
+/// been converted (`cargo xtask speak-gguf`).
 /// The marker that makes BatHandler log every transcript (`--show-heard`).
 pub const SHOW_HEARD_FILE: &str = "etc/show-heard";
 
@@ -501,6 +504,7 @@ pub fn build_hear_image(
     mislabelled: bool,
     files: usize,
     show_heard: bool,
+    voice: bool,
 ) -> Result<Option<PathBuf>, String> {
     let gguf = crate::hear::gguf_path(root);
     if !gguf.is_file() {
@@ -559,6 +563,18 @@ pub fn build_hear_image(
     let mic_path = crate::hear::mic_input(root, "open-notes", false, false)?;
     let mic_raw =
         std::fs::read(&mic_path).map_err(|e| format!("cannot read {}: {e}", mic_path.display()))?;
+    let speak_gguf = crate::kokoro::gguf_path(root);
+    let speak = if voice && speak_gguf.is_file() {
+        Some(
+            std::fs::read(&speak_gguf)
+                .map_err(|e| format!("cannot read {}: {e}", speak_gguf.display()))?,
+        )
+    } else {
+        if voice {
+            println!("[build] no voice model (cargo xtask speak-gguf): Bella stays silent");
+        }
+        None
+    };
     let mut entries: Vec<(&str, &[u8])> = vec![
         ("models/hear.gguf", &model),
         ("test/hear.txt", list.as_bytes()),
@@ -570,6 +586,9 @@ pub fn build_hear_image(
     // those for Bella (docs/listening-design.md §8).
     if show_heard {
         entries.push((SHOW_HEARD_FILE, b"on\n"));
+    }
+    if let Some(s) = &speak {
+        entries.push((zoo_abi::SPEAK_MODEL_FILE, s));
     }
     for (n, d) in &wavs {
         entries.push((n, d));
@@ -588,11 +607,15 @@ pub fn build_hear_image(
     for e in zoo_abi::tar::read(&archive) {
         e.map_err(|e| format!("hearing initrd self-check failed: {e:?}"))?;
     }
-    let out_dir = root.join("build").join(match (mode, mislabelled) {
-        (_, true) => "hear-wrong".to_string(),
-        (Mode::Normal, false) => "hear".to_string(),
-        (m, false) => format!("hear-{}", m.name()),
-    });
+    let out_dir = root
+        .join("build")
+        .join(match (mode, mislabelled, speak.is_some()) {
+            (_, true, _) => "hear-wrong".to_string(),
+            (Mode::Normal, false, false) => "hear".to_string(),
+            (Mode::Normal, false, true) => "hear-voice".to_string(),
+            (m, false, false) => format!("hear-{}", m.name()),
+            (m, false, true) => format!("hear-voice-{}", m.name()),
+        });
     std::fs::create_dir_all(&out_dir)
         .map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
     let initrd_path = out_dir.join("initrd-hear.tar");
@@ -607,8 +630,13 @@ pub fn build_hear_image(
     let img = out_dir.join("zoo-os-hear-uefi.img");
     crate::uefi_image::create(&elf, &initrd_path, None, &img)?;
     println!(
-        "[build] hearing image ({} recordings, initrd {} MB) -> {}",
+        "[build] hearing image ({} recordings{}, initrd {} MB) -> {}",
         wavs.len(),
+        if speak.is_some() {
+            ", with her voice"
+        } else {
+            ""
+        },
         archive.len() >> 20,
         img.display()
     );

@@ -394,8 +394,16 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     // Hearing (docs/hearing-design.md), when Moonshine is downloaded: all
     // recordings, and two with the first mislabelled (negative).
     let all = crate::hear::VOICES.len() * crate::hear::SENTENCES.len();
-    let hear_image = image::build_hear_image(root, tools, Mode::Normal, false, all, false)?;
-    let hear_wrong_image = image::build_hear_image(root, tools, Mode::Normal, true, 2, false)?;
+    let hear_image = image::build_hear_image(root, tools, Mode::Normal, false, all, false, false)?;
+    let hear_wrong_image =
+        image::build_hear_image(root, tools, Mode::Normal, true, 2, false, false)?;
+    // With her voice (docs/speaking-design.md), for `voice-speak`; none
+    // when Kokoro has not been converted.
+    let voice_image = if crate::kokoro::gguf_path(root).is_file() {
+        image::build_hear_image(root, tools, Mode::Normal, false, all, false, true)?
+    } else {
+        None
+    };
     let mut wine_version = fast_boot_desktop_exits(Mode::FastBoot);
     wine_version.then(&[
         "ZOO_OS SHELL line=linux /usr/bin/wine --version",
@@ -2094,6 +2102,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "voice-speak",
+            mode: Mode::Normal,
+            custom_image: voice_image.clone(),
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 6,
+            want: "pass",
+            purpose: "Bella answers aloud (docs/speaking-design.md): the microphone plays \"Hey Bella, open notes and maximize it.\"; MynahHandler says the window server's answers with Kokoro, QEMU records the sound, and the host's Moonshine engine must hear \"Notes fills the screen.\" in the recording (needs --accel)",
+            interaction: Some(voice_speak_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "voice-pause",
             mode: Mode::Normal,
             custom_image: hear_image.clone(),
@@ -3359,6 +3380,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 | "wine-home-1"
                 | "wine-home-2"
                 | "voice-quick"
+                | "voice-speak"
         ) && qemu::accel() == "tcg"
         {
             let line = format!(
@@ -3570,6 +3592,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         detail = format!("screen {name}: {why} ({})", ppm.display());
                         break;
                     }
+                }
+            }
+        }
+        // Her answer in what the sound device played (SDL's disk driver
+        // writes it next to the logs), heard on the host
+        // (docs/speaking-design.md).
+        if kind == "pass" && c.name == "voice-speak" {
+            let played = wav.with_file_name("sdl-out.raw");
+            match check_heard(root, &played, "Notes fills the screen.") {
+                Ok(summary) => detail = format!("{detail}\n      audio: {summary}"),
+                Err(why) => {
+                    kind = "audio-mismatch".into();
+                    detail = format!("audio: {why} ({})", played.display());
                 }
             }
         }
@@ -4579,6 +4614,26 @@ fn voice_pause_steps() -> Interaction {
     steps.push(Action::NeverSeen("Bella: learned".into()));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("2-done"));
+    Interaction { steps }
+}
+
+/// `voice-speak` (docs/speaking-design.md).
+fn voice_speak_steps() -> Interaction {
+    let mut steps = start_desktop();
+    steps.push(Action::WaitSeen("MynahHandler: ready (".into()));
+    steps.push(Action::WaitContains("BatHandler: listening".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: says aloud: Notes fills the screen.".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "MynahHandler: saying \"Notes fills the screen.\"".into(),
+    ));
+    steps.push(Action::WaitContains("MynahHandler: said it, ".into()));
+    // The device plays what is queued (200 ms) after the last write.
+    steps.push(Action::Settle(QUIET));
     Interaction { steps }
 }
 
@@ -6323,6 +6378,62 @@ fn bella_windows_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     Interaction { steps }
+}
+
+/// What the sound device played, as SDL's disk driver writes it: 48 kHz,
+/// 16-bit stereo (`out.fixed-settings` in qemu.rs); the first channel.
+fn read_played(raw: &Path) -> Result<Vec<f64>, String> {
+    let b = std::fs::read(raw).map_err(|e| format!("no recording: {e}"))?;
+    Ok(b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|f| f64::from(i16::from_le_bytes([f[0], f[1]])))
+        .collect())
+}
+
+/// `voice-speak`: the guest's sound, resampled to 16 kHz, cut into
+/// utterances by the voice detector and written down by the Moonshine
+/// engine on the host; one must be `want`.
+fn check_heard(root: &Path, raw: &Path, want: &str) -> Result<String, String> {
+    let (rate, left) = (48000u32, read_played(raw)?);
+    if left.is_empty() {
+        return Err("nothing was played".into());
+    }
+    // To 16 kHz: each output sample the mean of the input samples it
+    // covers (a box low-pass), enough for speech to text.
+    let step = f64::from(rate) / 16000.0;
+    let n = (left.len() as f64 / step) as usize;
+    let pcm: Vec<i16> = (0..n)
+        .map(|i| {
+            let a = (i as f64 * step) as usize;
+            let b = (((i + 1) as f64 * step) as usize).clamp(a + 1, left.len());
+            (left[a..b].iter().sum::<f64>() / (b - a) as f64) as i16
+        })
+        .collect();
+    let gguf = crate::hear::gguf_path(root);
+    let data = std::fs::read(&gguf).map_err(|e| format!("cannot read {}: {e}", gguf.display()))?;
+    let g = zoo_infer::Gguf::parse(&data).map_err(|e| format!("{e:?}"))?;
+    let h = zoo_infer::hear::Hearing::from_gguf(&g).map_err(|e| e.name().to_string())?;
+    let mut det = zoo_infer::listen::Detector::new();
+    let mut us = det.push(&pcm);
+    us.extend(det.finish());
+    let mut heard = Vec::new();
+    for u in &us {
+        let audio: Vec<f32> = u.iter().map(|&s| f32::from(s) / 32768.0).collect();
+        if let Ok(t) = h.transcribe(&audio) {
+            heard.push(t);
+        }
+    }
+    if heard.iter().any(|t| zoo_infer::hear::same_words(t, want)) {
+        Ok(format!(
+            "{} utterance(s) in {:.1} s heard as {:?}",
+            heard.len(),
+            pcm.len() as f64 / 16000.0,
+            heard
+        ))
+    } else {
+        Err(format!("{want:?} not heard; heard {heard:?}"))
+    }
 }
 
 /// Measures the tone QEMU recorded (docs/audio-design.md): the loud part of

@@ -226,7 +226,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                     return Err("--mic runs the everyday desktop (fast-boot) only".into());
                 }
                 let Some(img) =
-                    image::build_hear_image(&root, &tools, mode, false, 0, opts.show_heard)?
+                    image::build_hear_image(&root, &tools, mode, false, 0, opts.show_heard, true)?
                 else {
                     return Err(
                         "--mic needs the hearing model (tools/models/README.md, \"Voice\")".into(),
