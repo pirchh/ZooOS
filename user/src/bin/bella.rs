@@ -59,9 +59,11 @@ fn take_monitor(args: &str) -> (String, Option<String>) {
 /// Commands the memory may hold and replay (B4): never `undo`, and never
 /// anything that is not a command (`remember`, `quit`, ...). `create`
 /// still asks first.
-const RECALLABLE: [&str; 16] = [
+const RECALLABLE: [&str; 17] = [
     "search", "list", "inspect", "create", "read", "open", "move", "trash", "launch", "info",
     "maximize", "minimize", "close", "split", "show", "layout",
+    // A routine (docs/routines-design.md).
+    "steps",
 ];
 
 /// A spoken answer: yes (`Some(true)`), no (`Some(false)`), or neither.
@@ -215,6 +217,11 @@ struct App {
     working_until: u64,
     pill_shown: &'static str,
     pill_sent_at: u64,
+    /// The steps of the request just done, for "save that as …"
+    /// (docs/routines-design.md), and whether a routine is running (its
+    /// steps are not a new request to save).
+    done_steps: Vec<String>,
+    in_routine: bool,
     /// A request whose layout was not what was meant: the next confirmed
     /// layout answers it too.
     relayout_of: Option<String>,
@@ -322,6 +329,8 @@ fn main(chan: u64, home: u64) -> u8 {
         working_until: 0,
         pill_shown: "off",
         pill_sent_at: 0,
+        done_steps: Vec::new(),
+        in_routine: false,
         relayout_of: None,
         registry: {
             let (reg, skipped) = zoo_rt::registry::load();
@@ -515,6 +524,16 @@ impl App {
                         self.learn(&cmd);
                     }
                     self.say("Got it; I'll remember that.");
+                } else if let Some(rest) = req.strip_prefix("routine ") {
+                    // `routine <name>\t<command>`: saved as a phrasing
+                    // the user confirmed.
+                    let (name, cmd) = rest.split_once('\t').unwrap_or((rest, ""));
+                    let msg = alloc::format!("remember {}\t{}", name, cmd);
+                    let (name, cmd) = (String::from(name), String::from(cmd));
+                    if self.broker(&msg) {
+                        zoo_rt::log!("Bella: saved the routine `{}` -> `{}`", name, cmd);
+                        self.say(&alloc::format!("Saved. Say \"{}\" to run it.", name));
+                    }
                 } else if let Some(cmd) = req.strip_prefix("unsure ") {
                     // Confirmed: run it, and the request means it.
                     self.correction = self.request.is_some();
@@ -556,6 +575,8 @@ impl App {
                     "How should they go? Say rows, columns, quarters, or two on top and one below."
                 } else if req.starts_with("fact-forget ") || req.starts_with("app ") {
                     "Kept."
+                } else if req.starts_with("routine ") {
+                    "Not saved."
                 } else {
                     "Left where it is."
                 };
@@ -596,14 +617,26 @@ impl App {
         // opened Notes resolved from the desktop's events
         // (docs/events-design.md), then the steps (docs/regression-design.md:
         // the host's `bella-regress` takes the same path).
+        // A new request: whatever routine ran before is over.
+        self.in_routine = false;
         match zoo_infer::route::plan(text, |t| self.it_from_events(t)) {
             Plan::Negated => {
                 // "Don't delete the milk entry" (docs/targets-design.md).
                 zoo_rt::log!("Bella: a request not to: nothing done");
                 self.say("Okay, I won't.");
             }
+            Plan::Routine(name, steps) => self.offer_routine(&name, &steps),
+            Plan::SaveAs(name) => {
+                let steps = core::mem::take(&mut self.done_steps);
+                if steps.is_empty() {
+                    self.say("There is nothing to save yet: ask me something first.");
+                } else {
+                    self.offer_routine(&name, &steps);
+                }
+            }
             Plan::Steps(steps) => {
                 // Each runs on its own, in order (docs/multi-step-design.md).
+                self.done_steps.clear();
                 zoo_rt::log!("Bella: {} steps: {}", steps.len(), steps.join(" | "));
                 self.steps = steps.into();
                 self.last_step.clear();
@@ -611,6 +644,8 @@ impl App {
             }
             Plan::One(text) => {
                 self.last_step.clear();
+                self.done_steps.clear();
+                self.done_steps.push(text.clone());
                 self.submit_one(&text);
             }
         }
@@ -661,6 +696,9 @@ impl App {
         };
         let step = zoo_infer::assist::resolve_it(&step, &self.last_step);
         zoo_rt::log!("Bella: step: {}", step);
+        if !self.in_routine {
+            self.done_steps.push(step.clone());
+        }
         self.last_step = step.clone();
         self.submit_one(&step);
     }
@@ -877,6 +915,19 @@ impl App {
     /// A command, typed or chosen. `create` asks first; others that work
     /// teach the memory the request they answer.
     fn command(&mut self, text: &str) {
+        // A routine (docs/routines-design.md): its steps, run in order.
+        if let Some(body) = text.strip_prefix("steps ") {
+            let steps: VecDeque<String> = body
+                .split(" | ")
+                .map(|s| String::from(s.trim()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            zoo_rt::log!("Bella: routine: {} steps", steps.len());
+            self.steps = steps;
+            self.last_step.clear();
+            self.in_routine = true;
+            return;
+        }
         // Words instead of an action: what she cannot do yet, or what she
         // needs to know (docs/one-bella-design.md).
         // Windows arranged by a layout tree (docs/layouts-design.md); one
@@ -1755,6 +1806,22 @@ impl App {
 
     /// Asks BatHandler to pass on the next thing said, without "hey Bella"
     /// (the answer to her question).
+    /// Asks before saving a routine (docs/routines-design.md): its name
+    /// and its steps, read back.
+    fn offer_routine(&mut self, name: &str, steps: &[String]) {
+        let Some(cmd) = zoo_infer::route::routine_command(steps) else {
+            self.say("Error: I can't save those steps as a routine.");
+            return;
+        };
+        let q = alloc::format!("Save \"{}\" as: {}?", name, steps.join(" | "));
+        zoo_rt::log!("Bella: asks: {}", q);
+        self.say(&q);
+        self.status = String::from("Say yes or press y to save it; no or n doesn't.");
+        self.asked_question_at = zoo_rt::now_us();
+        self.mode = Mode::Confirm(alloc::format!("routine {}\t{}", name, cmd));
+        self.await_answer();
+    }
+
     /// What the pill should show (docs/wake-design.md), sent to the
     /// window server when it changes. Only for spoken requests, and only
     /// while she can hear.

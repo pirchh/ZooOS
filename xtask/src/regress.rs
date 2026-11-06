@@ -180,6 +180,14 @@ fn result(
             return Ok(out);
         }
         Plan::One(t) => vec![t],
+        Plan::Routine(name, steps) => {
+            let _ = write!(out, "routine {name:?} asked: {}", steps.join(" | "));
+            return Ok(out);
+        }
+        Plan::SaveAs(name) => {
+            let _ = write!(out, "the last request saved as {name:?}, asked");
+            return Ok(out);
+        }
         Plan::Steps(s) => {
             let _ = write!(out, "{} steps; ", s.len());
             s

@@ -1011,6 +1011,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-routine",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "routines (docs/routines-design.md): \"when i say notes mode, open notes and minimize it\" is read back and saved on y; \"notes mode\" runs both steps from memory, with no model; \"save that as big notes\" is asked and n saves nothing",
+            interaction: Some(bella_routine_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-actions",
             mode: Mode::Normal,
             custom_image: None,
@@ -6520,6 +6533,55 @@ fn bella_actions_model_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("noted"));
+    Interaction { steps }
+}
+
+/// `bella-routine` (docs/routines-design.md): typed, so no model.
+fn bella_routine_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed(
+        "when i say notes mode, open notes and minimize it",
+    )));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Save \"notes mode\" as: open notes | minimize it?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "OtterHandler: remembered `notes mode` -> `steps open notes | minimize it`".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: saved the routine".into()));
+    steps.push(Action::Settle(QUIET));
+    // Run it: from memory, no model in this image.
+    steps.push(Action::Keys(typed("notes mode")));
+    steps.push(Action::WaitContains(
+        "Bella: recalled `steps open notes | minimize it`".into(),
+    ));
+    steps.push(Action::WaitContains("Bella: routine: 2 steps".into()));
+    steps.push(Action::WaitContains("Bella: step: minimize Notes".into()));
+    steps.push(Action::WaitContains(
+        "PeacockHandler: window action for Notes:".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    // Back to Bella (Notes is minimized; a click makes her front).
+    let mut p = Ptr::start();
+    steps.push(p.to(title_bar(ASSISTANT_WIN)));
+    steps.push(Action::Button(true));
+    steps.push(Action::Button(false));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::Keys(typed("save that as big notes")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Save \"big notes\" as: notes mode?".into(),
+    ));
+    steps.push(Action::Keys(vec!["n"]));
+    steps.push(Action::WaitContains(
+        "Bella: answered no: Not saved.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("remembered `big notes`".into()));
+    steps.push(Action::Screenshot("routine"));
     Interaction { steps }
 }
 

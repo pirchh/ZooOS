@@ -41,3 +41,6 @@ typed Open notes => typed command
 typed What time is it? => model: close "Network", asked first (unsure)
 typed Tell me a joke => model: no command (answered in words)
 typed Shut down the computer => model: no command (answered in words)
+said Hey Bella, when I say set up my workspace, open notes and open files and split them. => for her; routine "set up my workspace" asked: open notes | open files | split them
+typed save that as notes mode => the last request saved as "notes mode", asked
+typed set up my workspace => model: split ""
