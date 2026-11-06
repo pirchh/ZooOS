@@ -12,6 +12,7 @@
 
 extern crate alloc;
 
+pub mod addressee;
 pub mod assist;
 #[allow(unsafe_code)]
 mod avx2;

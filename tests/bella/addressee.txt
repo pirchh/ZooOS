@@ -1,0 +1,47 @@
+# Speech after Bella's answer, without her name (docs/addressee-design.md),
+# run by `cargo xtask bella-addressee`.
+#
+#   for | <what she said aloud> | <what was heard next>   said to her
+#   not | <what she said aloud> | <what was heard next>   not said to her
+#
+# Written for this file; speech not for her from the owner's demos is
+# never copied here. Commands she does without the model are left out:
+# today's gate already takes those (docs/follow-design.md).
+
+# --- Said to her: questions and requests that need the model ----------
+for | Notes fills the screen. | And what about Photos?
+for | Notes fills the screen. | Can you open my files too?
+for | Notes fills the screen. | What time is it?
+for | Notes fills the screen. | Now put it on the other monitor.
+for | Notes fills the screen. | Actually, make it smaller.
+for | Notes fills the screen. | Thanks. Can you also find my budget file?
+for | Do you want me to close Network? | Wait, which one is Network?
+for | I added milk to your notes. | Did you save that?
+for | I added milk to your notes. | Read it back to me.
+for | I added milk to your notes. | Add eggs as well.
+for | I found 3 files called budget. | Open the newest one.
+for | I found 3 files called budget. | Which one did I change last?
+for | Files and Notes are side by side. | Swap them.
+for | Files and Notes are side by side. | Make the left one bigger.
+for | It is 3 o'clock. | And what's the date today?
+for | I can't find a file called taxes. | Try looking for receipts instead.
+for | Notes is closed. | Open it again.
+for | Notes fills the screen. | Could you tell me what's in my notes?
+
+# --- Not said to her: talk in the room --------------------------------
+not | Notes fills the screen. | I think it is raining again.
+not | Notes fills the screen. | Did you see the game last night?
+not | Notes fills the screen. | Mum, I'll be down in five minutes.
+not | Notes fills the screen. | She's so much faster than the old laptop.
+not | Notes fills the screen. | Bella said she would call later.
+not | I added milk to your notes. | We should get bread too, I'll text you.
+not | I added milk to your notes. | Yeah, I'm coming, hang on.
+not | I found 3 files called budget. | Ugh, I hate doing the taxes.
+not | Files and Notes are side by side. | Look, it put them next to each other.
+not | Files and Notes are side by side. | That's pretty cool, right?
+not | It is 3 o'clock. | Oh no, I'm late for the dentist.
+not | It is 3 o'clock. | Can you pick up the kids at four?
+not | Notes is closed. | Hold on, the dog needs to go out.
+not | Notes fills the screen. | What do you want for dinner tonight?
+not | Notes fills the screen. | Hello? Yeah, it's me, can you hear me?
+not | I can't find a file called taxes. | I told you it was on the other computer.

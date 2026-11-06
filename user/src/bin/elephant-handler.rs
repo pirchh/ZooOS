@@ -18,6 +18,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt::Write as _;
+use zoo_infer::addressee::Judge;
 use zoo_infer::assist::{AssistError, Bella, Step};
 use zoo_infer::talk::{Talk, TalkStep};
 use zoo_infer::{Gguf, Model, Tokenizer, chat};
@@ -242,6 +243,9 @@ fn service(chan: Handle) -> u8 {
     let mut assistant: Option<Bella> = None;
     // Replies in words, with their own system prompt (docs/talk-design.md).
     let mut talk: Option<Talk> = None;
+    // Whether speech after her answer is said to her
+    // (docs/addressee-design.md), with its own short system prompt.
+    let mut judge: Option<Judge> = None;
     // Bella asked for a warm-up: the reply prompt is warmed whenever no
     // request is waiting, and a request interrupts it (it resumes after).
     let mut warm_talk = false;
@@ -288,7 +292,7 @@ fn service(chan: Handle) -> u8 {
                     match try_recv(chan, &mut m) {
                         Ok(k) => {
                             let s = core::str::from_utf8(&m[..k]).unwrap_or("");
-                            if s.starts_with("choose ") || s.starts_with("talk ") {
+                            if s.starts_with("choose ") || s.starts_with("talk ") || s.starts_with("addressed ") {
                                 pending = Some(alloc::string::String::from(s));
                                 // Tell it at once that the set-up is under way.
                                 if let Step::Prefix { done, total } = step {
@@ -330,7 +334,7 @@ fn service(chan: Handle) -> u8 {
                     match try_recv(chan, &mut m) {
                         Ok(k) => {
                             let s = core::str::from_utf8(&m[..k]).unwrap_or("");
-                            if s.starts_with("choose ") || s.starts_with("talk ") {
+                            if s.starts_with("choose ") || s.starts_with("talk ") || s.starts_with("addressed ") {
                                 pending = Some(alloc::string::String::from(s));
                             } else if s == "cancel" && pending.take().is_some() {
                                 let _ = log("ElephantHandler: request cancelled");
@@ -353,6 +357,46 @@ fn service(chan: Handle) -> u8 {
                     );
                     talk = Some(tk);
                 }
+            }
+            // Then the judge's prompt (about 90 tokens), when nothing waits.
+            if judge.is_none() && talk.is_some() && pending.is_none() {
+                let t = zoo_rt::now_us();
+                if let Ok(j) = Judge::new(&model, &tok) {
+                    zoo_rt::log!(
+                        "ElephantHandler: warmed up: judge prompt {} tokens in {} ms",
+                        j.prefix_tokens(),
+                        (zoo_rt::now_us() - t) / 1000
+                    );
+                    judge = Some(j);
+                }
+            }
+            continue;
+        }
+        // `addressed <answer>	<heard>`: is speech heard after her answer
+        // said to her? Its words are not logged: they may not be hers.
+        if let Some(rest) = msg.strip_prefix("addressed ") {
+            let (answer, heard) = rest.split_once('	').unwrap_or(("", rest));
+            let t0 = zoo_rt::now_us();
+            if judge.is_none()
+                && let Ok(j) = Judge::new(&model, &tok)
+            {
+                judge = Some(j);
+            }
+            let sent = match judge.as_mut().map(|j| j.judge(answer, heard)) {
+                Some(Ok(v)) => {
+                    let margin = (v.margin * 100.0) as i32;
+                    zoo_rt::log!(
+                        "ElephantHandler: judged speech after her answer: margin {}, {} tokens, {} ms",
+                        margin,
+                        v.tokens,
+                        (zoo_rt::now_us() - t0) / 1000
+                    );
+                    reply(chan, format_args!("addressed {}", margin), false)
+                }
+                _ => reply(chan, format_args!("err model error"), false),
+            };
+            if sent.is_err() {
+                return 0;
             }
             continue;
         }
@@ -460,7 +504,7 @@ fn service(chan: Handle) -> u8 {
                     match try_recv(chan, &mut m) {
                         Ok(k) => {
                             let s = core::str::from_utf8(&m[..k]).unwrap_or("");
-                            if s.starts_with("choose ") || s.starts_with("talk ") {
+                            if s.starts_with("choose ") || s.starts_with("talk ") || s.starts_with("addressed ") {
                                 pending = Some(alloc::string::String::from(s));
                             }
                         }
