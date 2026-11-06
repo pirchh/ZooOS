@@ -60,6 +60,8 @@ commands:
   assist-check [--prompt S]  guided tool choice on fixed requests (host)
   bella-regress [--accept]   Bella's path for tests/bella/requests.txt,
                              against the recorded baseline (host)
+  bella-addressee            whether speech after her answer is said to her,
+                             for tests/bella/addressee.txt (host)
   draft-check               speculative decoding with the draft model against
                             the model alone (host; docs/draft-design.md)
   (run, infer, infer-check, assist-check, verify: --bella 0.5b|1.5b picks
@@ -365,6 +367,15 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         "draft-check" => {
             let ok = infer::draft_check(&root)?;
             println!("draft-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
+        "bella-addressee" => {
+            let ok = regress::bella_addressee(&root)?;
+            println!("bella-addressee: {}", if ok { "PASS" } else { "FAIL" });
             Ok(if ok {
                 ExitCode::SUCCESS
             } else {

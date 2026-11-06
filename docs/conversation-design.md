@@ -8,7 +8,7 @@ is being talked to. The order agreed on 11-06:
 2. **conversation mode: she keeps listening around her own voice and
    can be interrupted** (this step);
 3. deciding from meaning, not only her name, whether speech is for her
-   (next);
+   (measured, not used yet: docs/addressee-design.md);
 4. later, speaking up herself.
 
 ## 1. Her own voice (half-duplex)
@@ -79,4 +79,5 @@ Times and the suites are in docs/verification.md.
   the owner).
 - **Talk said over her** that is not addressed to her is lost, by
   design.
-- Telling whether speech is for her from its meaning is the next step.
+- Telling whether speech is for her from its meaning: measured with
+  Qwen3-1.7B and not good enough yet (docs/addressee-design.md).

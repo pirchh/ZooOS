@@ -253,3 +253,110 @@ fn result(
     }
     Ok(out)
 }
+
+/// Labelled speech after her answer (docs/addressee-design.md).
+pub const ADDRESSEE: &str = "tests/bella/addressee.txt";
+
+/// `cargo xtask bella-addressee`: the judge on each sentence, beside
+/// today's gate (`needs_no_model`). Fails when talk not said to her is
+/// taken at `zoo_infer::addressee::THRESHOLD`. A measurement for choosing
+/// a model: the judge is not used by Bella yet (docs/addressee-design.md).
+pub fn bella_addressee(root: &Path) -> Result<bool, String> {
+    use zoo_infer::addressee::{Judge, THRESHOLD};
+    let path = root.join(ADDRESSEE);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut cases = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('|').map(str::trim).collect();
+        let [label, answer, heard] = parts[..] else {
+            return Err(format!(
+                "{ADDRESSEE}:{}: want `label | answer | heard`",
+                n + 1
+            ));
+        };
+        let for_her = match label {
+            "for" => true,
+            "not" => false,
+            l => return Err(format!("{ADDRESSEE}:{}: unknown label `{l}`", n + 1)),
+        };
+        cases.push((for_her, answer.to_string(), heard.to_string()));
+    }
+    let data = load_model(root)?;
+    let g = Gguf::parse(&data).map_err(|e| format!("GGUF: {e:?}"))?;
+    let tok = Tokenizer::from_gguf(&g).map_err(|e| format!("tokenizer: {e:?}"))?;
+    let model = Model::from_gguf(&g).map_err(|e| format!("model: {e:?}"))?;
+    let reg = registry(root)?;
+    let t = Instant::now();
+    let mut judge = Judge::new(&model, &tok).map_err(|e| format!("{e:?}"))?;
+    println!(
+        "model {}, engine {}, {} sentences, threshold {THRESHOLD}; set up in {:.2}s",
+        model_file(),
+        zoo_infer::cpu::backend(),
+        cases.len(),
+        t.elapsed().as_secs_f64()
+    );
+    let (mut gate_for, mut judge_for, mut judge_not, mut fors, mut nots) = (0, 0, 0, 0, 0);
+    let mut times = Vec::new();
+    let mut margins = Vec::new();
+    for (for_her, answer, heard) in &cases {
+        let gate = zoo_infer::route::needs_no_model(heard.trim_end_matches(['.', '!', '?']), &reg);
+        let t = Instant::now();
+        let v = judge.judge(answer, heard).map_err(|e| format!("{e:?}"))?;
+        times.push(t.elapsed().as_secs_f64());
+        let took = v.for_her(THRESHOLD);
+        margins.push((*for_her, v.margin));
+        if *for_her {
+            fors += 1;
+            gate_for += usize::from(gate);
+            judge_for += usize::from(took || gate);
+        } else {
+            nots += 1;
+            judge_not += usize::from(took || gate);
+        }
+        let mark = match (*for_her, took || gate) {
+            (true, true) | (false, false) => "ok  ",
+            (true, false) => "MISS",
+            (false, true) => "TOOK",
+        };
+        println!(
+            "{mark} {} {:>6.2} {:>3} tok  {heard}",
+            if *for_her { "for" } else { "not" },
+            v.margin,
+            v.tokens
+        );
+    }
+    times.sort_by(f64::total_cmp);
+    let lowest_for = margins
+        .iter()
+        .filter(|m| m.0)
+        .map(|m| m.1)
+        .fold(f32::INFINITY, f32::min);
+    let highest_not = margins
+        .iter()
+        .filter(|m| !m.0)
+        .map(|m| m.1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    println!(
+        "said to her: {gate_for} of {fors} taken by today's gate, {judge_for} of {fors} with the judge"
+    );
+    println!("not said to her: {judge_not} of {nots} taken (must be 0)");
+    println!(
+        "margins: lowest for her {lowest_for:.2}, highest not for her {highest_not:.2}; \
+         judging took {:.0}-{:.0} ms (median {:.0} ms)",
+        times[0] * 1000.0,
+        times[times.len() - 1] * 1000.0,
+        times[times.len() / 2] * 1000.0
+    );
+    // The number to compare models by: how much said to her is taken at
+    // the strictest setting that takes no talk.
+    let strict = margins.iter().filter(|m| m.0 && m.1 > highest_not).count();
+    println!(
+        "strict enough to take no talk (above {highest_not:.2}): {strict} of {fors} said to her taken by the judge"
+    );
+    Ok(judge_not == 0)
+}

@@ -58,6 +58,49 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Conversation, step 2 (version 0.132.0)
+
+docs/addressee-design.md. `cargo xtask bella-addressee` (release build,
+Qwen3-1.7B Q4_0, host engine `avx2`), the method kept:
+
+```
+said to her: 1 of 18 taken by today's gate, 13 of 18 with the judge
+not said to her: 8 of 16 taken (must be 0)
+margins: lowest for her -2.05, highest not for her 4.77; judging took 7047-9648 ms (median 8336 ms)
+strict enough to take no talk (above 4.77): 5 of 18 said to her taken by the judge
+bella-addressee: FAIL
+```
+
+Hearing under TCG, `cargo xtask verify --skip-model --case voice-follow`
+("Hey Bella, open notes", BatHandler's `ms to hear`):
+
+| Build | Time to hear | Case |
+| --- | --- | --- |
+| `main` (0.131.0) | 4864 ms | `OK` |
+| this branch, 16 codegen units (default) | 9920–11327 ms, 5 runs | `FAIL`: timeout, the follow-up never heard |
+| this branch, `zoo_infer::addressee` left out of the guest | 4665 ms | `OK` |
+| this branch, `codegen-units = 1` | 5064 ms | `OK` |
+
+The `FAIL` is the result: the judge is not used by Bella. The other
+three methods each took 16 of 16 (docs/addressee-design.md §2). The
+guest is unchanged apart from the version and the one codegen unit.
+
+| Check | Result |
+| --- | --- |
+| `cargo test -p zoo-infer` | 59 passed |
+| `cargo test -p xtask --locked` | 30 passed |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`, `zoo-infer`); `cargo fmt --check` | clean |
+| `cargo xtask verify --skip-model` (TCG), 16 codegen units | 3 `FAIL`: `voice-follow`, `voice-follow-chat`, `voice-confirm` time out (the table above) |
+| `cargo xtask verify --skip-model` (TCG), `codegen-units = 1` | `PASS`: 125 OK, 28 SKIP |
+| `cargo xtask verify --accel whpx`, 16 codegen units | `PASS`: 150 OK, 3 SKIP |
+| `cargo xtask verify --accel whpx`, `codegen-units = 1` | 149 OK, 3 SKIP, 1 `FAIL`: `bella-live` `answered in 3449 ms` against its 3000 ms bound (the model's own part 1681 ms) |
+| `bella-live` rerun 3 times, `codegen-units = 1` | 1811 (`OK`), 3323 (`FAIL`), 1892 ms (`OK`) |
+
+`bella-live` is the bound that failed on 0.129.0, 0.131.0 and on
+`main` under load (sections below). Two of three reruns answered in
+under 1.9 s, so there is no sign the one unit makes it slower; the host was
+running Opera and NZXT CAM. The bound was not relaxed.
+
 ## Conversation, step 1 (version 0.131.0)
 
 docs/conversation-design.md. Cases run with `cargo xtask verify --accel whpx --case NAME`.
