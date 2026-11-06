@@ -2003,3 +2003,13 @@ Version 0.124.0. Design: docs/follow-design.md. For 8 s after a spoken
 request she takes a follow-up without her name, but only a command she
 does without the model. Its words are logged only once it is taken, and
 memory isn't asked about it, because the lookup is audited with the words.
+
+## Model refinement (2026-11-06)
+
+Version 0.125.0. Design: docs/refine-design.md. Two changes, measured:
+
+- one "none" example in the prompt (`Set an alarm for seven`), worded
+  unlike any test sentence;
+- left and right read from the words.
+
+Two prompt variants that lost right answers were dropped.

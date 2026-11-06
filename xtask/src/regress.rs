@@ -237,6 +237,9 @@ fn result(
                 let slots = slots.replace(zoo_infer::registry::SLOT_SEP, " / ");
                 let _ = write!(out, "registry words: {word} {slots:?}");
             }
+            Route::Sides(cmd) => {
+                let _ = write!(out, "left and right: {cmd}");
+            }
             Route::Layout(tree) => {
                 let _ = write!(out, "layout {}", tree.text());
             }

@@ -225,6 +225,7 @@ lands as small, separately verified steps.
 | — | Routines: "when I say …", "save that as …", run from memory (docs/routines-design.md) | done 2026-11-05 |
 | — | Templates (a confirmed phrasing for another app) and forgetting a phrasing (docs/templates-design.md) | done 2026-11-05 |
 | — | Follow-ups without her name, for commands (docs/follow-design.md) | done 2026-11-05 |
+| — | Model refinement: none example, left and right from the words; measured (docs/refine-design.md) | done 2026-11-06 |
 | — | Titled notes; endpointing; Kokoro voice (download needs approval) | open |
 | 9 | Voice: Bella speaks (Kokoro-82M) | open |
 | 10 | Model tiers | open |

@@ -58,6 +58,17 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Model refinement (version 0.125.0)
+
+docs/refine-design.md.
+
+| Check | Result |
+| --- | --- |
+| `assist-check` before / after | 44 of 46 right, 1 of 8 acted on / 44 of 46, 0 of 8 |
+| `bella-regress` | 4 changed (all better), 1 known gap left |
+| `bella-routine`: left and right without the model; with `sides` off (negative control) | `OK` / `FAIL` |
+| `bella-unsure` ("lose the network window"), `bella-tiling-model` (updated), other model cases (WHPX) | `OK` |
+
 ## Follow-ups (version 0.124.0)
 
 docs/follow-design.md.

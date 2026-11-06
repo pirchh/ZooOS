@@ -1032,7 +1032,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: desktop_then_rest(&normal),
             timeout: s.timeout * 4,
             want: "pass",
-            purpose: "routines (docs/routines-design.md): \"when i say notes mode, open notes and minimize it\" is read back and saved on y; \"notes mode\" runs both steps from memory, with no model; \"save that as big notes\" is asked and n saves nothing",
+            purpose: "routines (docs/routines-design.md): \"when i say notes mode, open notes and minimize it\" is read back and saved on y; \"notes mode\" runs both steps from memory, with no model; \"save that as big notes\" is asked and n saves nothing; \"move bella to the left and files on the right\" splits them without the model",
             interaction: Some(bella_routine_steps()),
             screen_checks: vec![],
         },
@@ -2916,11 +2916,13 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             interaction: Some(Interaction {
                 steps: vec![
                     Action::WaitFor("ZOO_OS PROC start pid=9 name=bella".into()),
-                    Action::WaitContains(
+                    // The file index and the model service start together:
+                    // their lines come in either order.
+                    Action::WaitSeen(
                         "MagpieHandler: the embedding model is in the boot image".into(),
                     ),
-                    Action::WaitContains("ElephantHandler: service ready (model mapped".into()),
-                    Action::WaitContains("ElephantHandler: warmed up: system prompt".into()),
+                    Action::WaitSeen("ElephantHandler: service ready (model mapped".into()),
+                    Action::WaitSeen("ElephantHandler: warmed up: system prompt".into()),
                     Action::Settle(QUIET),
                     // Files -> Crash Test -> Bella.
                     Action::Keys(vec!["tab", "tab"]),
@@ -3052,7 +3054,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             expectation: desktop_then_rest(&normal),
             timeout: s.timeout * 10,
             want: "pass",
-            purpose: "unsure and changing things (docs/unsure-design.md): \"what time is it\" makes the model choose `close` with a low margin; Bella asks first, n answers in words and closes nothing (needs --accel)",
+            purpose: "unsure and changing things (docs/unsure-design.md): \"lose the network window\" makes the model choose `close Network` with a low margin; Bella asks first, n answers in words and closes nothing (needs --accel)",
             interaction: Some(bella_unsure_steps()),
             screen_checks: vec![],
         },
@@ -6706,12 +6708,26 @@ fn bella_routine_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::NeverSeen("remembered `big notes`".into()));
+    // Two apps left and right, without the model (docs/refine-design.md).
+    steps.push(Action::Keys(typed(
+        "move bella to the left and files on the right",
+    )));
+    steps.push(Action::WaitContains(
+        "Bella: left and right: split Bella and Files".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Bella is on the left.".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Files is on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("routine"));
     Interaction { steps }
 }
 
-/// `bella-unsure` (docs/unsure-design.md): a question no command answers,
-/// which the model maps to `close` with a low margin.
+/// `bella-unsure` (docs/unsure-design.md): a request the model maps to
+/// `close` with a low margin.
 fn bella_unsure_steps() -> Interaction {
     let mut steps = start_desktop();
     // Files -> Crash Test -> Bella.
@@ -6720,7 +6736,9 @@ fn bella_unsure_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "ElephantHandler: warmed up: system prompt".into(),
     ));
-    steps.push(Action::Keys(typed("what time is it")));
+    // Since the prompt was refined (docs/refine-design.md), "what time is
+    // it" is no command; this one is still `close` with a low margin.
+    steps.push(Action::Keys(typed("lose the network window")));
     steps.push(Action::WaitContains("Bella: unsure (".into()));
     steps.push(Action::WaitContains(
         "Bella: asks: Do you want me to close".into(),
@@ -6981,11 +6999,13 @@ fn bella_tiling_model_steps() -> Interaction {
     steps.push(Action::WaitContains(
         "ElephantHandler: warmed up: system prompt".into(),
     ));
+    // Left and right, two apps: read from the words since
+    // docs/refine-design.md, without the model.
     steps.push(Action::Keys(typed(
         "put notes on the left and the assistant on the right",
     )));
     steps.push(Action::WaitContains(
-        "ElephantHandler: chose split `Notes and Bella`".into(),
+        "Bella: left and right: split Notes and Bella".into(),
     ));
     steps.push(Action::WaitContains(
         "PeacockHandler: placed Notes at 24x".into(),
@@ -6995,6 +7015,17 @@ fn bella_tiling_model_steps() -> Interaction {
     ));
     steps.push(Action::Settle(QUIET));
     steps.push(Action::Screenshot("halves"));
+    // The model's own `split` with two apps.
+    steps.push(Action::Keys(typed(
+        "put notes and the assistant side by side",
+    )));
+    steps.push(Action::WaitContains(
+        "ElephantHandler: chose split `Notes and Bella`".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Bella is on the right.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
     // No app named: the two front windows other than Bella's, Notes first
     // (an empty argument used to count as "no command fits").
     steps.push(Action::Keys(typed(

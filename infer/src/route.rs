@@ -17,6 +17,8 @@ pub enum Route<'a> {
     /// notes"): the command, as the model would give it
     /// (`Registry::phrased`).
     Phrased(String),
+    /// Two apps placed left and right: the `split` command (`sides`).
+    Sides(String),
     /// A layout read from the words (docs/layouts-design.md).
     Layout(Node),
     /// Save the last summary to a file.
@@ -91,6 +93,8 @@ pub fn route<'a>(text: &'a str, reg: &Registry, known: Known) -> Route<'a> {
     } else if let Some(cmd) = reg.phrased(text) {
         // Last before the model: every path above keeps its sentences.
         Route::Phrased(cmd)
+    } else if let Some(cmd) = sides(text) {
+        Route::Sides(cmd)
     } else {
         Route::Model
     }
@@ -124,7 +128,7 @@ pub fn needs_no_model(text: &str, reg: &Registry) -> bool {
     let ok = |t: &str| {
         matches!(
             route(t, reg, Known::default()),
-            Route::Typed | Route::Phrased(_) | Route::Layout(_)
+            Route::Typed | Route::Phrased(_) | Route::Sides(_) | Route::Layout(_)
         )
     };
     match plan(text, |t: &str| String::from(t)) {
@@ -137,6 +141,45 @@ pub fn needs_no_model(text: &str, reg: &Registry) -> bool {
         }),
         _ => false,
     }
+}
+
+/// Two apps placed left and right ("move Bella to the left and files on
+/// the right"): `split <left> and <right>`, without the model
+/// (docs/refine-design.md). The model chose `move` for it. Exactly two
+/// apps, and both "left" and "right", or nothing.
+pub fn sides(text: &str) -> Option<String> {
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    let left = words.iter().position(|w| w == "left")?;
+    let right = words.iter().position(|w| w == "right")?;
+    // Apps in the order named; her name counts anywhere here (the address
+    // is already off).
+    let mut apps: Vec<&str> = Vec::new();
+    for w in &words {
+        let app = match w.as_str() {
+            "bella" | "assistant" => Some("Bella"),
+            "finder" => Some("Files"),
+            _ => crate::assist::LAUNCHABLE
+                .iter()
+                .copied()
+                .find(|a| a.eq_ignore_ascii_case(w)),
+        };
+        if let Some(a) = app
+            && !apps.contains(&a)
+        {
+            apps.push(a);
+        }
+    }
+    let [a, b] = apps.as_slice() else {
+        return None;
+    };
+    // Named in the order of "left" and "right" ("files on the right and
+    // notes on the left": Notes goes left).
+    let (l, r) = if left < right { (a, b) } else { (b, a) };
+    Some(alloc::format!("split {l} and {r}"))
 }
 
 /// How a whole request starts (docs/regression-design.md): not to be done,
@@ -221,6 +264,21 @@ mod tests {
             Route::Layout(_)
         ));
         assert_eq!(route("maximize my notes", &r, k), Route::Model);
+    }
+
+    #[test]
+    fn left_and_right() {
+        assert_eq!(
+            sides("move Bella to the left and files on the right please?").as_deref(),
+            Some("split Bella and Files")
+        );
+        assert_eq!(
+            sides("put files on the right and notes on the left").as_deref(),
+            Some("split Notes and Files")
+        );
+        assert_eq!(sides("put notes on the left"), None);
+        assert_eq!(sides("notes and files and network, left and right"), None);
+        assert_eq!(sides("turn right at the light"), None);
     }
 
     #[test]

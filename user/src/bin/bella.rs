@@ -776,6 +776,15 @@ impl App {
                 self.answered("the registry's words");
                 self.exchanged(text, &cmd);
             }
+            Route::Sides(cmd) => {
+                // Two apps, left and right (docs/refine-design.md).
+                zoo_rt::log!("Bella: left and right: {}", cmd);
+                self.request = Some(String::from(text));
+                self.say(&alloc::format!("Bella: {}", cmd));
+                self.command(&cmd);
+                self.answered("left and right");
+                self.exchanged(text, &cmd);
+            }
             Route::SaveSummary => {
                 self.request = None;
                 self.save_summary();
