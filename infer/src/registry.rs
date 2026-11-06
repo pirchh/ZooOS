@@ -202,9 +202,15 @@ impl Registry {
 }
 
 /// A part of an invocation's argument that is not a slot: the request id
-/// (`#<n>`) or a chosen target (`@<text>`).
+/// (`#<n>`), a chosen target (`@<text>`), or a titled note (`^<title>`,
+/// docs/titled-design.md).
 pub fn is_extra(part: &str) -> bool {
-    part.starts_with('#') || part.starts_with('@')
+    part.starts_with('#') || part.starts_with('@') || part.starts_with('^')
+}
+
+/// The titled note an invocation's argument names (`^<title>`).
+pub fn note_of(arg: &str) -> Option<&str> {
+    arg.split(SLOT_SEP).find_map(|p| p.strip_prefix('^'))
 }
 
 /// An invocation's argument split: the slots, the request id, the target.
@@ -216,6 +222,8 @@ pub fn split_arg(arg: &str) -> (Vec<&str>, Option<&str>, Option<&str>) {
             id = Some(i);
         } else if let Some(t) = p.strip_prefix('@') {
             target = Some(t);
+        } else if p.starts_with('^') {
+            // The note: `note_of`.
         } else {
             slots.push(p);
         }
@@ -580,6 +588,14 @@ mod tests {
             split_arg("egg\u{1f}bread\u{1f}#3\u{1f}@egg two"),
             (alloc::vec!["egg", "bread"], Some("3"), Some("egg two"))
         );
+        // A titled note is not a slot either (docs/titled-design.md).
+        assert!(r.check("notes:write:socks\u{1f}^packing\u{1f}#7").is_some());
+        assert_eq!(
+            split_arg("socks\u{1f}^packing\u{1f}#7"),
+            (alloc::vec!["socks"], Some("7"), None)
+        );
+        assert_eq!(note_of("socks\u{1f}^packing\u{1f}#7"), Some("packing"));
+        assert_eq!(note_of("socks\u{1f}#7"), None);
         let o = Outcome {
             status: Status::Choose,
             id: Some(String::from("3")),
