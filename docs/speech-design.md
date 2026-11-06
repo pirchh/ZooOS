@@ -1,8 +1,8 @@
 # Bella's voice: the Kokoro engine (2026-11-06)
 
 Status: implemented as a library and checked on the host (version
-0.129.0). Bella does not speak yet: text to phonemes and the service
-that plays her answers are the next steps (§6). The owner approved
+0.129.0): text to phonemes (§6) and the voice (§1–§4). Bella does not
+speak yet: the service that plays her answers is the next step (§7). The owner approved
 Kokoro-82M on 2026-11-04 (docs/voice-plan.md) and confirmed the download
 on 2026-11-06; the files had been fetched on 11-04 and match their pinned
 hashes (tools/models/README.md, "Voice").
@@ -126,12 +126,73 @@ generated or downloaded (`.gitignore`). To reproduce:
 3. `cargo xtask speak-check`, which needs the reference venv
    (tools/reference/README.md) and the hearing model.
 
-## 6. Next
+## 6. Text to phonemes (`zoo_infer::g2p`)
 
-1. Text to phonemes: misaki's word lists (Apache-2.0, to fetch with the
-   owner's earlier approval in docs/voice-plan.md), with a fallback for
-   words not in them.
-2. Speed (§4).
+Kokoro reads phonemes, not text. misaki (hexgrad, Apache-2.0; the voice
+plan's choice, approved 2026-11-04) makes them from English with two word
+lists, a part-of-speech tagger and, for unknown words, espeak-ng (GPL,
+excluded) or a neural model.
+
+**The word lists:** `us_gold.json` and `us_silver.json`, fetched at commit
+`fba1236`, pinned in `tools/models/voice/misaki.sha256`. They are part of
+misaki's Apache-2.0 repository, with no other licence stated.
+
+`speak-gguf` merges them into the voice GGUF as `kokoro.lexicon`:
+
+- 183,593 sorted `word\tphonemes` lines (a tab between);
+- gold replaces silver;
+- an entry by part of speech keeps its default;
+- its end-of-sentence form is listed as `word|end`.
+
+**The rules, after misaki's `en.py`, without the tagger:**
+
+- **Short words** are decided by the next word's first sound:
+  - "the" is ði before a vowel, ðə otherwise;
+  - "to" is tʊ before a vowel, tə before a consonant;
+  - "a" is ɐ, "I" is ˌI;
+  - "am" and "in" also depend on what follows.
+- **The end of a sentence:** a word's `|end` form is used before
+  punctuation or at the end. Without it, "Okay, I won't." was heard as
+  "Okay, I want."
+- **Stress:** misaki's `apply_stress`, with stress from capitals
+  (capitalised 0.5, all capitals 2).
+- **Endings:** -s, -ed and -ing on a listed stem, with misaki's sound
+  rules ("minimized" `mˈɪnəmˌIzd`).
+- **Numbers in words:**
+  - cardinals;
+  - four-digit years ("2026" twenty twenty-six);
+  - ordinals ("6th");
+  - decimals ("point").
+- **Words in no list:**
+  - split at a change of case ("ZooOS" as Zoo, O, S);
+  - else into two listed words;
+  - else spelt out (misaki's `get_NNP`).
+
+**Without the tagger** a word that is said differently by part of
+speech ("read", "live", "record") always gets its default.
+
+**Checked** (`speak-check`, after the reference sentences): four
+sentences Bella says, as text, through the word lists and the engine, must
+be heard back as written.
+
+| Text | Phonemes | Heard |
+| --- | --- | --- |
+| Notes fills the screen. | nˈOts fˈɪlz ðə skɹˈin. | "Notes fills the screen." |
+| Do you want me to close Network? | dˈu ju wˈɑnt mˌi tə klˈOs nˈɛtwˌɜɹk? | "Do you want me to close network?" |
+| Okay, I won't. | ˌOkˈA, ˌI wˈOnt. | "Okay, I won't." |
+| I can only search, list, inspect or create folders. | ˌI kæn ˈOnli sˈɜɹʧ, lˈɪst, ɪnspˈɛkt ɔɹ kɹiˈAt fˈOldəɹz. | "I can only search list, inspect or create folders." |
+
+"I opened Notes and maximized it." (`ˌI ˈOpᵊnd nˈOts …`) was heard as "I
+open notes and maximized it." The d runs into the n of "Notes", as it can
+in speech. It was replaced in the check by a sentence Bella does say,
+and is noted here.
+
+Unit tests (`cargo test -p zoo-infer g2p`) cover the sentences, the
+endings, a change of case, a number and the stress rules.
+
+## 7. Next
+
+1. Speed (§4).
 3. A service that speaks Bella's answers through `AUDIO_WRITE`, checked
    in QEMU by recording the audio and hearing it back.
 4. Then conversation (the owner's direction, 2026-11-06): staying in a

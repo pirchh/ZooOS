@@ -355,6 +355,50 @@ pub fn load_pth(path: &Path) -> Result<Vec<Tensor>, String> {
     Ok(out)
 }
 
+/// misaki's US word lists (tools/models/README.md, "Voice") as sorted
+/// `word\tphonemes` lines: the gold list first, the silver list for words
+/// it lacks; an entry by part of speech keeps its default, and its form
+/// at the end of a sentence (misaki's `None`) is `word|end`.
+fn lexicon(root: &Path) -> Result<String, String> {
+    let dir = root.join("tools/models/voice/misaki");
+    let mut words: BTreeMap<String, String> = BTreeMap::new();
+    for f in ["us_silver.json", "us_gold.json"] {
+        let j = parse_json(&String::from_utf8_lossy(&read(&dir.join(f))?))?;
+        let Json::Obj(kv) = j else {
+            return Err(format!("{f}: not an object"));
+        };
+        for (w, v) in kv {
+            let p = match &v {
+                Json::Str(p) => Some(p.clone()),
+                Json::Obj(_) => v.get("DEFAULT").and_then(Json::str).map(str::to_string),
+                _ => None,
+            };
+            if let Some(p) = p
+                && !w.contains(['\t', '\n', '|'])
+                && !p.is_empty()
+            {
+                // Gold, read second, replaces silver.
+                words.insert(w.clone(), p);
+            }
+            // How it is said at the end of a sentence ("won't" stressed),
+            // as `word|end`.
+            if let Some(p) = v.get("None").and_then(Json::str)
+                && !p.is_empty()
+            {
+                words.insert(format!("{w}|end"), p.to_string());
+            }
+        }
+    }
+    let mut out = String::new();
+    for (w, p) in &words {
+        out.push_str(w);
+        out.push('\t');
+        out.push_str(p);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 // --- GGUF -----------------------------------------------------------------
 
 const GGUF_U32: u32 = 4;
@@ -504,6 +548,11 @@ pub fn convert(root: &Path) -> Result<PathBuf, String> {
     kv.extend_from_slice(&GGUF_U32.to_le_bytes());
     kv.extend_from_slice(&24000u32.to_le_bytes());
     n_kv += 1;
+    let lexicon = lexicon(root)?;
+    put_str(&mut kv, "kokoro.lexicon");
+    kv.extend_from_slice(&GGUF_STRING.to_le_bytes());
+    put_str(&mut kv, &lexicon);
+    n_kv += 1;
     put_str(&mut kv, "tokenizer.ggml.tokens");
     kv.extend_from_slice(&GGUF_ARRAY.to_le_bytes());
     kv.extend_from_slice(&GGUF_STRING.to_le_bytes());
@@ -549,11 +598,12 @@ pub fn convert(root: &Path) -> Result<PathBuf, String> {
     let path = gguf_path(root);
     std::fs::write(&path, &out).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     println!(
-        "speak-gguf: wrote {} ({} bytes, {} tensors, {} phoneme tokens)",
+        "speak-gguf: wrote {} ({} bytes, {} tensors, {} phoneme tokens, {} words)",
         path.display(),
         out.len(),
         mats.len(),
-        tokens.len()
+        tokens.len(),
+        lexicon.lines().count()
     );
     Ok(path)
 }
@@ -566,6 +616,14 @@ pub const CHECK: [(&str, &str); 3] = [
     ("həlˈO, ˌI æm bˈɛlə.", "Hello, I am Bella."),
     ("nˈOts fˈɪlz ðə skɹˈin.", "Notes fills the screen."),
     ("ðə dˈɛntɪst ɪz ˌɔn fɹˈIdA.", "The dentist is on Friday."),
+];
+
+/// Sentences given as text, through `zoo_infer::g2p`: what Bella says.
+pub const CHECK_TEXT: [&str; 4] = [
+    "Notes fills the screen.",
+    "Do you want me to close Network?",
+    "Okay, I won't.",
+    "I can only search, list, inspect or create folders.",
 ];
 
 /// 24 kHz to 16 kHz: up by 2, a windowed-sinc low pass at 8 kHz, down by 3.
@@ -725,6 +783,9 @@ pub fn check(root: &Path) -> Result<bool, String> {
             .map_err(|e| e.name().to_string())?;
         let heard_ok = zoo_infer::hear::same_words(&heard, said);
         let ok = same_frames && diff <= TOLERANCE && heard_ok;
+        if !ok {
+            println!("     {phonemes}");
+        }
         all_ok &= ok;
         println!(
             "{} {said:?}: {:.2} s of audio in {secs:.2} s; {} frames{}; relative difference {diff:.2e}; heard {heard:?}",
@@ -736,6 +797,35 @@ pub fn check(root: &Path) -> Result<bool, String> {
             } else {
                 ", NOT the reference's"
             },
+        );
+    }
+    // Text through the word lists, heard back.
+    let lex = zoo_infer::g2p::Lexicon::new(g.str("kokoro.lexicon").map_err(|e| format!("{e:?}"))?);
+    for (k, said) in CHECK_TEXT.iter().enumerate() {
+        let phonemes = lex.phonemes(said);
+        let t0 = std::time::Instant::now();
+        let (audio, _) = sp
+            .synthesize(&phonemes, 1.0)
+            .map_err(|e| e.name().to_string())?;
+        let secs = t0.elapsed().as_secs_f64();
+        let pcm: Vec<u8> = audio
+            .iter()
+            .flat_map(|v| ((v * 32767.0).clamp(-32768.0, 32767.0) as i16).to_le_bytes())
+            .collect();
+        write_wav(
+            &out_dir.join(format!("text-{k}.wav")),
+            &pcm,
+            zoo_infer::speak::RATE as u32,
+        )?;
+        let heard = hear
+            .transcribe(&to_16k(&audio))
+            .map_err(|e| e.name().to_string())?;
+        let ok = zoo_infer::hear::same_words(&heard, said);
+        all_ok &= ok;
+        println!(
+            "{} {said:?} as {phonemes:?}: {:.2} s of audio in {secs:.2} s; heard {heard:?}",
+            if ok { "OK  " } else { "FAIL" },
+            audio.len() as f64 / zoo_infer::speak::RATE as f64,
         );
     }
     Ok(all_ok)

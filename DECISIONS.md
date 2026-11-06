@@ -2021,7 +2021,9 @@ Version 0.129.0. Design: docs/speech-design.md. Kokoro-82M runs in
 unpickling them (a data-only reader). Checked against an independent
 NumPy reference, and by Moonshine hearing it back, since no PyTorch is
 installed. Too slow for conversation on one thread (21× real time on
-the host): speed comes before Bella speaks for real.
+the host): speed comes before Bella speaks for real. Text to phonemes
+follows misaki's rules with its Apache-2.0 word lists and no tagger or
+espeak-ng; words in no list are split or spelt out.
 
 ## Commands that name nothing (2026-11-06)
 

@@ -20,6 +20,7 @@ pub mod chat;
 pub mod cpu;
 pub mod draft;
 pub mod embed;
+pub mod g2p;
 pub mod gguf;
 pub mod hear;
 pub mod layout;

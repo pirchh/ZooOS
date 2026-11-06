@@ -127,4 +127,14 @@ and licence, but a plain format (a JSON header and raw tensors) that the
 NumPy reference and the Rust engine read without an ONNX runtime.
 `kokoro-v1_0.pth` is a PyTorch zip; it is read as data (its tensors), never
 unpickled with code execution. `cargo xtask speak-gguf` turns it and
-`af_bella.pt` into `voice/kokoro-82m-f32.gguf` (docs/speech-design.md §2).
+`af_bella.pt` into `voice/kokoro-82m-f32.gguf` (docs/speech-design.md §2),
+with misaki's word lists inside it (§6). The lists, from
+https://github.com/hexgrad/misaki (Apache-2.0), commit
+`fba1236595f2d2bf21d414ba6e57d25256afada3`, are pinned in
+`voice/misaki.sha256`:
+
+    M=https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3
+    for f in misaki/data/us_gold.json misaki/data/us_silver.json misaki/en.py LICENSE; do
+      curl -fsSL -o tools/models/voice/misaki/$(basename $f) $M/$f; done
+
+`en.py` is read for its rules, never run.
