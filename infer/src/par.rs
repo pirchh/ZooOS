@@ -111,6 +111,32 @@ pub fn fill(
     });
 }
 
+/// Like `fill`, but each job gets a range of rows to compute as it likes:
+/// `job(start, end, put)` calls `put(r, t, v)` to store
+/// `out[t * rows + r] = v` for its own rows `start..end` only (checked).
+pub fn fill_rows(
+    out: &mut [f32],
+    rows: usize,
+    n: usize,
+    bytes: usize,
+    job: &(dyn Fn(usize, usize, &dyn Fn(usize, usize, f32)) + Sync),
+) {
+    assert!(out.len() >= rows * n, "output too small");
+    let o = Out(out.as_mut_ptr());
+    for_rows(rows, bytes, &|a, b| {
+        let put = |r: usize, t: usize, v: f32| {
+            assert!(r >= a && r < b && t < n, "put outside the job's rows");
+            // SAFETY: `t * rows + r` < `rows * n` <= `out.len()` (asserted
+            // above and here); `r` is one of this job's rows (asserted), and
+            // `for_rows` gives each job its own rows, so no index is written
+            // by two jobs or read meanwhile; `out` is borrowed mutably for
+            // the whole call.
+            unsafe { o.put(t * rows + r, v) };
+        };
+        job(a, b, &put);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

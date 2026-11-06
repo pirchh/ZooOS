@@ -102,9 +102,54 @@ fn floats(t: &TensorInfo) -> Vec<f32> {
 }
 
 /// `outs[t * rows + r] = W[r] · xs[t]` (+ `bias[r]`) for `n` vectors.
+/// With AVX2, in tiles of four rows by two vectors (`avx2::dot_f32_4x2`).
 fn matmul(w: &TensorInfo, bias: Option<&[f32]>, xs: &[f32], n: usize) -> Vec<f32> {
     let (rows, cols) = (w.rows, w.cols);
     let mut out = vec![0f32; rows * n];
+    if w.ty == TYPE_F32 && rows >= 4 && n >= 2 && crate::cpu::avx2() {
+        crate::par::fill_rows(
+            &mut out,
+            rows,
+            n,
+            w.row_bytes() * rows * n.min(4),
+            &|a, b, put| {
+                let x = |t: usize| &xs[t * cols..(t + 1) * cols];
+                let b0 = |r: usize| bias.map_or(0.0, |b| b[r]);
+                let mut r = a;
+                while r < b {
+                    if r + 4 <= b {
+                        let ws = [w.row(r), w.row(r + 1), w.row(r + 2), w.row(r + 3)];
+                        let mut t = 0;
+                        while t + 2 <= n {
+                            #[allow(unsafe_code)]
+                            // SAFETY: `avx2()` is true only when CPUID reports
+                            // AVX2 and FMA and the OS saves the YMM registers;
+                            // each row has `cols` floats and each vector is
+                            // `cols` long.
+                            let v = unsafe { crate::avx2::dot_f32_4x2(ws, [x(t), x(t + 1)]) };
+                            for i in 0..4 {
+                                put(r + i, t, v[2 * i] + b0(r + i));
+                                put(r + i, t + 1, v[2 * i + 1] + b0(r + i));
+                            }
+                            t += 2;
+                        }
+                        if t < n {
+                            for i in 0..4 {
+                                put(r + i, t, quant::dot(w.ty, ws[i], x(t)) + b0(r + i));
+                            }
+                        }
+                        r += 4;
+                    } else {
+                        for t in 0..n {
+                            put(r, t, quant::dot(w.ty, w.row(r), x(t)) + b0(r));
+                        }
+                        r += 1;
+                    }
+                }
+            },
+        );
+        return out;
+    }
     crate::par::fill(
         &mut out,
         rows,

@@ -100,21 +100,33 @@ was the first to differ, in its phases.
 - Both now drop it: 4.9% became 0.07–0.15%.
 - With the fix undone, `speak-check` fails (docs/verification.md).
 
-## 4. Speed (measured on the host, not yet in ZooOS)
+## 4. Speed (measured on the host, one thread)
 
-On one host thread, optimised: 42.6 s for 2.00 s of audio, 51.0 s for
-2.42 s, about 21× slower than real time. Almost all of it is the
-generator's convolutions on 128–256 channels at 2,400–14,500 time steps.
-A rough count gives about 150 billion multiply-adds for 2.4 s of speech.
+Almost all of the time is the generator's convolutions on 128–256
+channels at 2,400–14,500 time steps: about 150 billion multiply-adds for
+2.4 s of speech. Two changes to the F32 products, measured by
+`speak-check`'s own timing (one host thread, optimised):
 
-**This is too slow for conversation.** Before Bella speaks for real:
+| | "Hello, I am Bella." (2.00 s of audio) | Real-time factor |
+| --- | --- | --- |
+| First engine | 40.95–43.68 s (3 runs) | about 21 |
+| **Weights loaded as they are** (`avx2::load8b`): the AVX2 F32 dot product copied each weight through `from_le_bytes` into a buffer first | 10.09 s | about 5 |
+| **Tiles of 4 rows by 2 vectors** (`avx2::dot_f32_4x2`): each weight load serves two vectors, each vector load four rows | 4.02–4.73 s (2 runs) | about 2.2 |
 
-- a blocked matrix kernel for these products (the current `matmul` takes
-  one dot product per output, memory-bound);
-- all 8 processors through the existing pool;
+The audio is the same to the last digit: `speak-check`'s differences
+didn't change (1.25e-3, 1.45e-3, 7.39e-4). The first change is in the
+dot product every F32 model uses. Moonshine's `hear-check` gave the same
+tokens for all 8 recordings, and took 0.28–0.46 s for about 3 s of audio,
+against 1.10–1.26 s before.
+
+Some runs shared the machine with QEMU test suites, so the timings vary.
+**Still too slow for conversation on one thread** (2× real time). Next,
+in ZooOS:
+
+- the 8 processors through the existing pool;
 - speaking a sentence while the next is computed.
 
-Each is to be measured in QEMU with WHPX, before and after.
+Both are to be measured in QEMU with WHPX.
 
 ## 5. Not checked into Git
 

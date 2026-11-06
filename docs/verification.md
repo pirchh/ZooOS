@@ -71,6 +71,8 @@ image changes.
 | `speak-check` with the DC/Nyquist fix undone (negative control) | `FAIL`: 4.8–5.5% apart |
 | `speak-check`, text through `g2p`: 4 of Bella's sentences heard back | `PASS`, 4 of 4 |
 | The same before the end-of-sentence forms (negative control) | `FAIL`: "Okay, I won't." heard as "Okay, I want." |
+| `speak-check` timing, "Hello, I am Bella." on one host thread | 40.95–43.68 s before, 4.02–4.73 s after the F32 kernel changes; same audio |
+| `cargo xtask hear-check` after the F32 dot product change | `PASS`, 8 of 8 with the reference's tokens; 0.28–0.46 s (was 1.10–1.26 s) |
 | `cargo test -p zoo-infer g2p`; `cargo test -p xtask kokoro` (the pickle reader refuses `os.system`, `builtins.eval`) | pass |
 | The reference heard back by Moonshine (`moonshine_ref.py`) | "Hello, I am Bella." |
 
