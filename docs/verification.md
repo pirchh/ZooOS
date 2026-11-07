@@ -71,6 +71,11 @@ docs/titled-design.md. `cargo xtask verify --skip-model --case bella-titled` (TC
 | `cargo test -p zoo-infer --locked` | 62 passed |
 | `cargo test -p xtask --locked` | 30 passed |
 | clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`, `zoo-infer`); `cargo fmt --all --check` | clean |
+| `cargo xtask verify --skip-model` (TCG) | `PASS`: 124 OK, 30 SKIP (the 4 Wine cases skipped: the worktree had no `build/wine`) |
+| `cargo xtask verify --accel whpx` | `PASS`: 147 OK, 7 SKIP (the same 4 Wine cases; `bella-live` passed) |
+| The Wine cases with `build/wine` linked in: `wine-cmd`, `wine-version` (TCG); `wine-cmd`, `wine-version`, `wine-home-1`, `wine-home-2` (WHPX) | all 6 `OK` |
+
+So 126 cases pass under TCG and 151 under WHPX: `main`'s 125 and 150, plus `bella-titled`.
 
 ## Conversation, step 2 (version 0.132.0)
 
