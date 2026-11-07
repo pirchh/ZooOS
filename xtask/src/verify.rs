@@ -14,8 +14,11 @@ use zoo_abi::ui::{self as zui, LIGHT};
 
 /// Wait this long for quiet serial output before a screenshot.
 const QUIET: Duration = Duration::from_millis(1200);
-/// Long enough for the auto-hidden dock to slide in (docs/u2e-design.md).
-const DOCK_SLIDE: Duration = Duration::from_millis(500);
+/// What PeacockHandler logs when the auto-hidden dock has slid all the
+/// way in (docs/u2e-design.md): cases wait for it before pointing at an
+/// icon, rather than a fixed time, which a busy host can exceed
+/// (docs/parallel-design.md).
+const DOCK_SHOWN: &str = "PeacockHandler: dock shown";
 
 /// Must equal the kernel crate version, which the kernel prints at boot.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -2695,7 +2698,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         // The Notes icon, then up into its window.
                         // The dock hides itself: reveal it at the bottom edge first.
                         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-                        Action::Settle(DOCK_SLIDE),
+                        Action::WaitContains(DOCK_SHOWN.into()),
                         p.to(dock_centre(3)),
                         Action::Button(true),
                         Action::Button(false),
@@ -4982,7 +4985,7 @@ fn animation_steps() -> Interaction {
         animation_done("minimize Files", 3, (310, 1500)),
         // Its thumbnail, after the dock's divider: it comes back.
         p.to((mini_centre(1, 0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(mini_centre(1, 0)),
         Action::Button(true),
         Action::Button(false),
@@ -4997,7 +5000,7 @@ fn animation_steps() -> Interaction {
         // Crash Test's dock icon: it opens again.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(1)),
         Action::Button(true),
         Action::Button(false),
@@ -5866,7 +5869,7 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
         // The Notes icon in the dock.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(3)),
         Action::Button(true),
         Action::Button(false),
@@ -8189,7 +8192,7 @@ fn remove_notes(p: &mut Ptr) -> Vec<Action> {
     let notes = [false, true, false];
     vec![
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(3)),
         Action::RightButton(true),
         Action::RightButton(false),
@@ -8238,7 +8241,7 @@ fn apps_folder_steps() -> Interaction {
         Action::WaitContains("PeacockHandler: kept Notes in the dock".into()),
         Action::WaitContains("PeacockHandler: dock saved (4 kept)".into()),
         p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         Action::Settle(QUIET),
         Action::Screenshot("2-pinned"),
     ]);
@@ -8255,7 +8258,7 @@ fn apps_folder_steps() -> Interaction {
         Action::WaitFor("ZOO_OS PROC start pid=35 name=bella".into()),
         Action::Settle(QUIET),
         p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         Action::Settle(QUIET),
         Action::Screenshot("3-reloaded"),
         Action::Keys(vec!["esc"]),
@@ -8378,7 +8381,7 @@ fn dock_magnify_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         // Onto Crash Test's icon: it grows.
         p.to(dock_centre(1)),
         Action::Settle(QUIET),
@@ -8596,7 +8599,7 @@ fn dock_bounce_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(3)),
         // Shift held: 6.4 s instead of 0.64 s.
         Action::Key("shift", true),
@@ -8728,7 +8731,7 @@ fn dock_steps() -> Interaction {
         // Onto the Files icon: its name shows above it.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(0)),
         Action::Settle(QUIET),
         Action::Screenshot("1-dock"),
@@ -8742,7 +8745,7 @@ fn dock_steps() -> Interaction {
         // The Crash Test icon.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(1)),
         Action::Settle(QUIET),
         Action::Screenshot("3-dock-closed"),
@@ -8913,7 +8916,7 @@ fn dock_menu_steps() -> Interaction {
     let notes = [false, true, false];
     steps.extend([
         p.to((dock_centre(0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(0)),
         Action::RightButton(true),
         Action::RightButton(false),
@@ -8930,7 +8933,7 @@ fn dock_menu_steps() -> Interaction {
         Action::WaitContains("PeacockHandler: new window Files (window 5)".into()),
         // Notes: Remove from Dock.
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        Action::WaitContains(DOCK_SHOWN.into()),
         p.to(dock_centre(3)),
         Action::RightButton(true),
         Action::RightButton(false),
