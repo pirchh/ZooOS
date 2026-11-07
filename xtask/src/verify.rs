@@ -1021,6 +1021,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             screen_checks: vec![],
         },
         Case {
+            name: "bella-titled",
+            mode: Mode::Normal,
+            custom_image: None,
+            disk: Disk::Fresh,
+            usb: Usb::None,
+            expectation: desktop_then_rest(&normal),
+            timeout: s.timeout * 4,
+            want: "pass",
+            purpose: "titled notes (docs/titled-design.md): \"add passport to my packing list\" makes Documents/Notes/Packing.txt and writes in it, \"add socks to the packing list\" writes in the same note, \"remove passport from my packing list\" asks about the packing note and removes it there; a note that doesn't exist is not made for a remove; Documents/notes.txt is never written",
+            interaction: Some(bella_titled_steps()),
+            screen_checks: vec![],
+        },
+        Case {
             name: "bella-pattern",
             mode: Mode::Normal,
             custom_image: None,
@@ -6898,6 +6911,71 @@ fn bella_notes_steps() -> Interaction {
     // Typed, never spoken: no pill (docs/wake-design.md).
     steps.push(Action::NeverSeen("PeacockHandler: pill".into()));
     steps.push(Action::Screenshot("edited"));
+    Interaction { steps }
+}
+
+/// `bella-titled` (docs/titled-design.md): in the registry's words, so
+/// no model; Bella is clicked again after each action, as in
+/// `bella-notes`.
+fn bella_titled_steps() -> Interaction {
+    let mut steps = start_desktop();
+    // Files -> Crash Test -> Bella.
+    steps.push(Action::Keys(vec!["tab", "tab"]));
+    steps.push(Action::Settle(QUIET));
+    let mut p = Ptr::start();
+    let mut back_to_bella = |steps: &mut Vec<Action>| {
+        steps.push(p.to(title_bar(ASSISTANT_WIN)));
+        steps.push(Action::Button(true));
+        steps.push(Action::Button(false));
+        steps.push(Action::Settle(QUIET));
+    };
+    // A note that doesn't exist yet is made when written to.
+    steps.push(Action::Keys(typed("add passport to my packing list")));
+    steps.push(Action::WaitContains(
+        "Bella: names the note \"packing\"".into(),
+    ));
+    steps.push(Action::WaitContains(
+        "Bella: in the registry's words: write passport".into(),
+    ));
+    steps.push(Action::WaitContains("Notes: a new note, Packing".into()));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"passport\" in Documents/Notes/Packing.txt.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    // The same note, named another way.
+    steps.push(Action::Keys(typed("add socks to the packing list")));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Wrote \"socks\" in Documents/Notes/Packing.txt.".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    // A delete: asked about that note, removed there.
+    steps.push(Action::Keys(typed("remove passport from my packing list")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Remove \"passport\" from your packing note?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Removed \"passport\" from Documents/Notes/Packing.txt."
+            .into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    back_to_bella(&mut steps);
+    // A remove from a note that doesn't exist makes nothing.
+    steps.push(Action::Keys(typed("remove socks from my holiday list")));
+    steps.push(Action::WaitContains(
+        "Bella: asks: Remove \"socks\" from your holiday note?".into(),
+    ));
+    steps.push(Action::Keys(vec!["y"]));
+    steps.push(Action::WaitContains(
+        "Bella: the window server says: Error: there is no note called \"holiday\".".into(),
+    ));
+    steps.push(Action::Settle(QUIET));
+    steps.push(Action::NeverSeen("Notes: a new note, Holiday".into()));
+    steps.push(Action::NeverSeen("in Documents/notes.txt".into()));
+    steps.push(Action::NeverSeen("from Documents/notes.txt".into()));
+    steps.push(Action::Screenshot("packing"));
     Interaction { steps }
 }
 

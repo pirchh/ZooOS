@@ -216,6 +216,9 @@ struct App {
     /// The last app action sent: its id and invocation, until answered
     /// (docs/targets-design.md).
     pending_action: Option<(String, String)>,
+    /// The titled note the request being handled names ("to my packing
+    /// list", docs/titled-design.md), for Notes' actions.
+    note_in: Option<String>,
     next_action: u32,
     /// When the open question was asked (`QUESTION_US`).
     asked_question_at: u64,
@@ -338,6 +341,7 @@ fn main(chan: u64, home: u64) -> u8 {
         pending_layout: None,
         layout_request: None,
         pending_action: None,
+        note_in: None,
         next_action: 0,
         asked_question_at: 0,
         spoken: false,
@@ -759,6 +763,18 @@ impl App {
     fn submit_one(&mut self, text: &str) {
         use zoo_infer::route::{Known, Route};
         self.asked_at = zoo_rt::now_us();
+        // "Add socks to my packing list": the title kept for Notes, the
+        // rest read as "add socks to my list" (docs/titled-design.md).
+        self.note_in = None;
+        let titled = zoo_infer::notes::titled_place(text);
+        let text: &str = match &titled {
+            Some((title, rest)) => {
+                zoo_rt::log!("Bella: names the note \"{}\"", title);
+                self.note_in = Some(title.clone());
+                rest
+            }
+            None => text,
+        };
         let known = Known {
             relayout: self.relayout_of.is_some(),
             summary: self.last_summary.is_some(),
@@ -1941,10 +1957,23 @@ impl App {
             ));
             return;
         }
-        let inv = alloc::format!("{}:{}:{}", action.program, action.name, filled);
+        let mut inv = alloc::format!("{}:{}:{}", action.program, action.name, filled);
+        let title = if action.program == "notes" {
+            self.note_in.take()
+        } else {
+            None
+        };
+        if let Some(title) = &title {
+            inv.push(SLOT_SEP);
+            inv.push('^');
+            inv.push_str(title);
+        }
         if action.effect == Effect::Delete {
             self.asked_question_at = zoo_rt::now_us();
-            let q = action.question(&filled);
+            let mut q = action.question(&filled);
+            if let Some(title) = &title {
+                q = q.replace("your notes", &alloc::format!("your {} note", title));
+            }
             zoo_rt::log!("Bella: asks: {}", q);
             self.say(&q);
             self.speak(&q);

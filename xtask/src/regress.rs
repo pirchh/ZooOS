@@ -203,6 +203,15 @@ fn result(
         if steps.len() > 1 {
             let _ = write!(out, "[{step}] ");
         }
+        // As Bella's `submit_one`: a titled note's name is kept for Notes
+        // and the rest routed (docs/titled-design.md).
+        let step = match zoo_infer::notes::titled_place(&step) {
+            Some((title, rest)) => {
+                let _ = write!(out, "note {title:?}: ");
+                rest
+            }
+            None => step,
+        };
         match zoo_infer::route::route(&step, reg, Known::default()) {
             Route::Model => {
                 let ch = bella

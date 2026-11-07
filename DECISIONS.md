@@ -2097,3 +2097,25 @@ code.
   guest's programs): with the module back in, 5.1 s, and the case
   passes. Speed no longer depends on how the crate happens to be split.
 - Host tools are unaffected: they build zoo-infer in the dev profile.
+
+## Titled notes (2026-11-06)
+
+Version 0.133.0, docs/titled-design.md. "Add passport to my packing
+list" used to go to the one note, `Documents/notes.txt`.
+
+- **A titled note is a file, `Documents/Notes/<Title>.txt`,** not a
+  section inside `notes.txt`: Files shows and opens it like any other
+  file, and two notes can never overwrite each other's lines. The title
+  is letters, digits, spaces and `-`, at most 40 bytes, so it can't name
+  a path outside the folder.
+- **The title is read by a pattern, before routing**
+  (`zoo_infer::notes::titled_place`), and the place is put back the way
+  the registry spells it, so the registry, the model and the regression
+  baseline see the request they always saw. It is not left to the model,
+  so the title is exactly the words said, it costs no model time, and
+  `bella-regress` checks it.
+- **Carried as an extra part, `^<title>`,** beside `#<id>` and `@<line>`,
+  so the window server's slot check is unchanged.
+- **Only a write makes a note.** A remove or change in a note that
+  doesn't exist is an error, not an empty new file. With several notes
+  matching, Notes changes nothing and names them.
