@@ -57,7 +57,7 @@ impl<'m, 't> Embedder<'m, 't> {
         let mut ids = self.tok.encode(text);
         ids.truncate(MAX_TOKENS);
         ids.push(self.tok.eos);
-        self.st.pos = 0;
+        self.st.rewind(0)?;
         self.model.feed_many(&mut self.st, &ids)?;
         let mut v = self.model.final_hidden(&self.st);
         v.truncate(dim.min(v.len()));

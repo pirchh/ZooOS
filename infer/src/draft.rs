@@ -34,6 +34,11 @@ pub fn speculate(
     max: usize,
     stop: impl Fn(u32) -> bool,
 ) -> Result<(Vec<u32>, Stats), ModelError> {
+    // Guesses are taken back by moving `pos`, which a recurrent state
+    // (Qwen3.5) can't follow.
+    if bst.recurrent() || dst.recurrent() {
+        return Err(ModelError::NoSnapshot);
+    }
     let k = k.max(1);
     let mut out = Vec::new();
     let mut stats = Stats::default();

@@ -329,6 +329,8 @@ impl<'m, 't> Bella<'m, 't> {
         })? {
             return Err(AssistError::Cancelled);
         }
+        // Every request starts from here (a recurrent model's state too).
+        st.keep(0);
         let tool_first = tool_ids.iter().map(|t| t[0]).collect();
         let mut bytes = Vec::new();
         let allowed = (0..tok.vocab_size() as u32)
@@ -427,7 +429,7 @@ impl<'m, 't> Bella<'m, 't> {
         if ids.len() > BUDGET.max_request_tokens + MAX_CONTEXT_TOKENS + 16 {
             return Err(AssistError::TooLong);
         }
-        self.st.pos = self.prefix_len;
+        self.st.rewind(self.prefix_len)?;
         // Only the last request token's scores are read.
         let total = ids.len();
         if !self.model.read_prompt(&mut self.st, &ids, true, |done| {

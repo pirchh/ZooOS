@@ -85,9 +85,10 @@ impl<'m, 't> Judge<'m, 't> {
         let mut shared = String::from(OPEN);
         shared.push_str(if answer.is_empty() { "…" } else { answer });
         let shared = self.tok.encode(&shared);
-        self.st.pos = 0;
+        self.st.rewind(0)?;
         self.model
             .read_prompt(&mut self.st, &shared, false, |_| true)?;
+        self.st.keep(0);
         let words = self.tok.encode(heard);
         let to_her = self.likelihood(shared.len(), TO_HER, &words)?;
         let to_other = self.likelihood(shared.len(), TO_OTHER, &words)?;
@@ -101,7 +102,7 @@ impl<'m, 't> Judge<'m, 't> {
     /// in) and `framing`.
     fn likelihood(&mut self, at: usize, framing: &str, words: &[u32]) -> Result<f32, AssistError> {
         let framing = self.tok.encode(framing);
-        self.st.pos = at;
+        self.st.rewind(at)?;
         self.model
             .read_prompt(&mut self.st, &framing, true, |_| true)?;
         let mut sum = 0.0;
