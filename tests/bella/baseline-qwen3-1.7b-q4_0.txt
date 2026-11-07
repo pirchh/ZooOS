@@ -49,3 +49,7 @@ typed move it somewhere => typed command
 typed get rid of that => model: trash ""
 typed close it => typed command
 typed move report.txt to Documents => typed command
+typed add passport to my packing list => note "packing": registry words: write "passport"
+said Hey Bella, remove socks from the packing note. => for her; note "packing": typed: notes remove "socks"
+typed put sunscreen on my summer holiday list => note "summer holiday": registry words: write "sunscreen"
+typed change socks to boots in the packing notes => note "packing": typed: notes change "socks / boots"

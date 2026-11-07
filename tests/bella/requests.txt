@@ -73,3 +73,9 @@ typed: move it somewhere
 typed: get rid of that
 typed: close it
 typed: move report.txt to Documents
+
+# --- Titled notes (docs/titled-design.md), written for this file ------
+typed: add passport to my packing list
+said: Hey Bella, remove socks from the packing note.
+typed: put sunscreen on my summer holiday list
+typed: change socks to boots in the packing notes

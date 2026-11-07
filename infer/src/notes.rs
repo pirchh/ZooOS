@@ -192,8 +192,217 @@ pub fn change(text: &str, old: &str, new: &str, target: Option<&str>) -> Edit {
     }
 }
 
+/// The folder of titled notes, in the home folder (docs/titled-design.md).
+pub const FOLDER: &str = "Documents/Notes";
+
+/// Longest title, in bytes.
+pub const MAX_TITLE: usize = 40;
+
+/// Words that are never a note's title.
+const NOT_TITLE: [&str; 12] = [
+    "my", "the", "a", "an", "this", "that", "notes", "note", "list", "app", "own", "new",
+];
+
+/// A request that names a note by its title at the end ("add sunscreen to
+/// my packing list", "remove socks from the packing note"): the title, and
+/// the request with the place as the registry spells it ("add sunscreen
+/// to my list"), so the routing that exists reads it unchanged. `None`
+/// when no titled place ends the request.
+pub fn titled_place(request: &str) -> Option<(String, String)> {
+    let t = request.trim().trim_end_matches(['.', '!', '?', ',']);
+    let ws: Vec<&str> = t.split(' ').filter(|w| !w.is_empty()).collect();
+    let lower: Vec<String> = ws.iter().map(|w| w.to_ascii_lowercase()).collect();
+    let kind = lower.last()?.as_str();
+    let list = match kind {
+        "list" => true,
+        "note" | "notes" => false,
+        _ => return None,
+    };
+    // Back from the kind: the title (1 to 3 words), then "my" or "the",
+    // then the preposition.
+    let end = ws.len() - 1;
+    for len in 1..=3 {
+        let Some(det) = end.checked_sub(len + 1) else {
+            break;
+        };
+        if !matches!(lower[det].as_str(), "my" | "the") || det == 0 {
+            continue;
+        }
+        let title = &lower[det + 1..end];
+        if title.iter().any(|w| {
+            NOT_TITLE.contains(&w.as_str()) || !w.chars().all(|c| c.is_alphanumeric() || c == '-')
+        }) {
+            continue;
+        }
+        let (prep, at) = if det >= 2 && lower[det - 2] == "out" && lower[det - 1] == "of" {
+            ("out of", det - 2)
+        } else {
+            (lower[det - 1].as_str(), det - 1)
+        };
+        let place = match (prep, list) {
+            ("to" | "into", true) => "to my list",
+            ("on" | "onto" | "in", true) => "on my list",
+            ("from", true) => "from my list",
+            ("off" | "out of", true) => "off my list",
+            ("to" | "into", false) => "to my notes",
+            ("in" | "on" | "onto", false) => "in my notes",
+            ("from", false) => "from my notes",
+            ("off", false) => "off my notes",
+            ("out of", false) => "out of my notes",
+            _ => continue,
+        };
+        if at == 0 {
+            continue;
+        }
+        let title = ws[det + 1..end].join(" ");
+        if title.len() > MAX_TITLE {
+            return None;
+        }
+        let mut rest = ws[..at].join(" ");
+        rest.push(' ');
+        rest.push_str(place);
+        return Some((title, rest));
+    }
+    None
+}
+
+/// Which titled note `said` names, of `titles` (the names of the notes,
+/// without `.txt`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotePick {
+    One(usize),
+    Several(Vec<usize>),
+    NoNote,
+}
+
+/// The note whose title is `said` (any case); else the notes whose
+/// titles have all of `said`'s words ("packing" names "Packing for
+/// Rome").
+pub fn pick_note(titles: &[&str], said: &str) -> NotePick {
+    if let Some(i) = titles
+        .iter()
+        .position(|t| t.eq_ignore_ascii_case(said.trim()))
+    {
+        return NotePick::One(i);
+    }
+    let want = words(said);
+    if want.is_empty() {
+        return NotePick::NoNote;
+    }
+    let found: Vec<usize> = titles
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            let have = words(t);
+            want.iter().all(|w| have.contains(w))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match found.as_slice() {
+        [] => NotePick::NoNote,
+        [one] => NotePick::One(*one),
+        _ => NotePick::Several(found),
+    }
+}
+
+/// A new note's title as its file is named: the words said, first letter
+/// upper case ("packing" → "Packing"). `None` when it has anything but
+/// letters, digits, spaces and '-', so it can't name a path.
+pub fn new_title(said: &str) -> Option<String> {
+    let said = said.trim();
+    if said.is_empty()
+        || said.len() > MAX_TITLE
+        || !said
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-')
+    {
+        return None;
+    }
+    let mut out = String::new();
+    for (i, c) in said.chars().enumerate() {
+        if i == 0 {
+            out.extend(c.to_uppercase());
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn titled_places() {
+        let t = |r: &str| titled_place(r).map(|(a, b)| (a, b));
+        assert_eq!(
+            t("Add sunscreen to my packing list."),
+            Some(("packing".into(), "Add sunscreen to my list".into()))
+        );
+        assert_eq!(
+            t("remove socks from the packing note"),
+            Some(("packing".into(), "remove socks from my notes".into()))
+        );
+        assert_eq!(
+            t("Put tickets in my summer holiday notes"),
+            Some(("summer holiday".into(), "Put tickets in my notes".into()))
+        );
+        assert_eq!(
+            t("cross socks off my Packing list"),
+            Some(("Packing".into(), "cross socks off my list".into()))
+        );
+        assert_eq!(
+            t("take socks out of my packing note"),
+            Some(("packing".into(), "take socks out of my notes".into()))
+        );
+        assert_eq!(
+            t("change socks to boots on the packing list"),
+            Some(("packing".into(), "change socks to boots on my list".into()))
+        );
+        // Not titled: the registry's own places, and other endings.
+        for r in [
+            "add milk to my notes",
+            "add milk to my list",
+            "write milk in the notes app",
+            "add milk to my notes list",
+            "add a song to my workout playlist",
+            "open the shopping list",
+            "my packing list",
+            "add milk to my very long winded shopping list",
+        ] {
+            assert_eq!(t(r), None, "{r}");
+        }
+    }
+
+    #[test]
+    fn picks_a_note() {
+        let titles = ["Packing", "Packing for Rome", "Holiday"];
+        assert_eq!(pick_note(&titles, "packing"), NotePick::One(0));
+        assert_eq!(pick_note(&titles, "rome"), NotePick::One(1));
+        assert_eq!(pick_note(&titles, "for"), NotePick::One(1));
+        assert_eq!(
+            pick_note(&["Packing for Rome", "Packing for Oslo"], "packing"),
+            NotePick::Several(vec![0, 1])
+        );
+        assert_eq!(pick_note(&titles, "shopping"), NotePick::NoNote);
+    }
+
+    #[test]
+    fn new_titles() {
+        assert_eq!(new_title("packing").as_deref(), Some("Packing"));
+        assert_eq!(
+            new_title("summer holiday").as_deref(),
+            Some("Summer holiday")
+        );
+        assert_eq!(new_title("../etc"), None);
+        assert_eq!(new_title("a/b"), None);
+        assert_eq!(new_title(""), None);
+    }
+}
+
+#[cfg(test)]
+mod edit_tests {
     use super::*;
 
     const NOTE: &str = "Shopping

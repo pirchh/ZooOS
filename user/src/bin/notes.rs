@@ -19,7 +19,10 @@ use core::fmt::Write as _;
 use zoo_abi::ui::mark;
 use zoo_abi::{MAX_MESSAGE, WAIT_FOREVER};
 use zoo_rt::app::{Event, Key, MAX_LINES, Window};
-use zoo_rt::{Error, Line, file_create, file_read, file_truncate, file_write, try_recv, wait_any};
+use zoo_rt::{
+    Error, Line, dir_create, dir_list, file_create, file_read, file_truncate, file_write, try_recv,
+    wait_any,
+};
 
 zoo_rt::entry2!(main);
 
@@ -207,7 +210,20 @@ fn main(channel: u64, home: u64) -> u8 {
                         // (docs/targets-design.md).
                         use zoo_infer::registry::{Outcome, Status, split_arg};
                         let (slots, id, target) = split_arg(text);
-                        let outcome = if action == "write" {
+                        // A titled note (docs/titled-design.md): opened
+                        // first, made when written to.
+                        let opened = match zoo_infer::registry::note_of(text) {
+                            Some(title) => ed.open_note(title, action == "write"),
+                            None => Ok(()),
+                        };
+                        let outcome = if let Err(said) = opened {
+                            Outcome {
+                                status: Status::Err,
+                                id: None,
+                                said,
+                                choices: alloc::vec::Vec::new(),
+                            }
+                        } else if action == "write" {
                             let said = ed.append_line(slots.first().copied().unwrap_or(""));
                             let status = if said.starts_with("Error") {
                                 Status::Err
@@ -278,6 +294,77 @@ fn alloc_editor(home: u64) -> &'static mut Editor {
 }
 
 impl Editor {
+    /// Opens the titled note `said` names, in `zoo_infer::notes::FOLDER`;
+    /// with `make`, a new one when none does. The sentence for Bella when
+    /// it can't.
+    fn open_note(&mut self, said: &str, make: bool) -> Result<(), alloc::string::String> {
+        use zoo_infer::notes::{FOLDER, NotePick, new_title, pick_note};
+        let mut titles: Vec<alloc::string::String> = Vec::new();
+        let mut index = 0u64;
+        while titles.len() < 64 {
+            let Ok(e) = dir_list(self.home, FOLDER, index) else {
+                break;
+            };
+            index += 1;
+            let name = &e.name[..(e.name_len as usize).min(e.name.len())];
+            if let Ok(name) = core::str::from_utf8(name)
+                && let Some(title) = name.strip_suffix(".txt")
+                && !e.is_dir()
+                && !name.starts_with('.')
+            {
+                titles.push(alloc::string::String::from(title));
+            }
+        }
+        let refs: Vec<&str> = titles.iter().map(alloc::string::String::as_str).collect();
+        let title = match pick_note(&refs, said) {
+            NotePick::One(i) => titles[i].clone(),
+            NotePick::Several(found) => {
+                let names: Vec<&str> = found.iter().map(|&i| refs[i]).collect();
+                return Err(alloc::format!(
+                    "Error: which note, {}? Say its whole title.",
+                    names.join(" or ")
+                ));
+            }
+            NotePick::NoNote if make => {
+                let Some(t) = new_title(said) else {
+                    return Err(alloc::format!(
+                        "Error: \"{}\" can't be a note's title.",
+                        said
+                    ));
+                };
+                match dir_create(self.home, FOLDER) {
+                    Ok(()) | Err(Error::Exists) => {}
+                    Err(e) => {
+                        return Err(alloc::format!(
+                            "Error: cannot make {}: {}.",
+                            FOLDER,
+                            e.name()
+                        ));
+                    }
+                }
+                zoo_rt::log!("Notes: a new note, {}", t);
+                t
+            }
+            NotePick::NoNote => {
+                return Err(alloc::format!(
+                    "Error: there is no note called \"{}\".",
+                    said
+                ));
+            }
+        };
+        let path = alloc::format!("{}/{}.txt", FOLDER, title);
+        if path != self.path() {
+            if self.editing {
+                self.save();
+                self.editing = false;
+            }
+            if !self.load(&path) {
+                return Err(alloc::format!("Error: cannot open the note {}.", title));
+            }
+        }
+        Ok(())
+    }
+
     fn path(&self) -> &str {
         core::str::from_utf8(&self.path[..self.path_len]).unwrap_or(DEFAULT)
     }
