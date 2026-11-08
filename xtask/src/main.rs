@@ -74,11 +74,13 @@ commands:
    assist-check: --portable runs the host engine without AVX2)
                             (tools/reference/) on several prompts
   verify [--timeout-secs N] [--negative-timeout-secs N] [--settle-ms N]
-         [--accel tcg|whpx|kvm] [--skip-model] [--case NAME]
+         [--accel tcg|whpx|kvm] [--skip-model] [--case NAME] [--jobs N]
                             build every mode, then run all positive and negative
                             cases headlessly (defaults: 30, 5, 1000). The
                             inference case needs tools/models/; --skip-model
-                            reports it as not run instead of failing.
+                            reports it as not run instead of failing. --jobs
+                            runs up to N cases at once (1 to 8, default 1);
+                            timing-bound cases still run alone.
 
 configuration (environment):
   QEMU_X86_64               path to qemu-system-x86_64
@@ -262,6 +264,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
                 negative_timeout: opts.negative_timeout.unwrap_or(Duration::from_secs(5)),
                 settle: opts.settle.unwrap_or(Duration::from_millis(1000)),
                 cpus: opts.cpus.unwrap_or(1),
+                jobs: opts.jobs.unwrap_or(1),
             };
             verify::run(&root, &tools, &settings)
         }
@@ -475,6 +478,8 @@ struct Options {
     f32_activations: bool,
     /// `--cpus N`: the guest's processors (docs/smp-design.md).
     cpus: Option<u8>,
+    /// `verify --jobs N`: cases run at once (docs/parallel-design.md).
+    jobs: Option<usize>,
     monitors: Option<u32>,
     /// `run --mic`: Bella listens on the host's microphone
     /// (docs/listening-design.md).
@@ -515,6 +520,15 @@ impl Options {
                             .ok()
                             .filter(|n| (1..=32).contains(n))
                             .ok_or_else(|| format!("invalid --cpus `{v}` (1 to 32)"))?,
+                    );
+                }
+                "--jobs" => {
+                    let v = value("--jobs")?;
+                    o.jobs = Some(
+                        v.parse()
+                            .ok()
+                            .filter(|n| (1..=8).contains(n))
+                            .ok_or_else(|| format!("invalid --jobs `{v}` (1 to 8)"))?,
                     );
                 }
                 "--monitors" => {

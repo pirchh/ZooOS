@@ -2120,6 +2120,22 @@ list" used to go to the one note, `Documents/notes.txt`.
   doesn't exist is an error, not an empty new file. With several notes
   matching, Notes changes nothing and names them.
 
+## Running verify cases at once (2026-11-08)
+
+Version 0.134.0, docs/parallel-design.md. `cargo xtask verify --jobs N`
+(1 to 8) runs cases on N workers; the default stays 1.
+
+- **Each case is still its own machine;** only the boot image is shared,
+  opened with `snapshot=on` so no case writes it.
+- **Cases on one shared disk stay in order on one worker,** and cases
+  whose checks bound a time, or that share microphone files, run alone
+  after the rest, so `--jobs` changes no case's bound.
+- **QEMU settings became thread-local** rather than passed through every
+  call, the smallest change to the existing harness.
+- Measured: TCG 32.1 → 14.0 min with 4 jobs, WHPX 49.8 → 22.4 min with 3
+  (docs/verification.md). Whether the everyday command uses `--jobs` is
+  the owner's call.
+
 ## Qwen3.5-2B: ported, measured, not Bella's model (2026-11-08)
 
 Version 0.135.0, docs/qwen35-design.md. The first model of the owner's
