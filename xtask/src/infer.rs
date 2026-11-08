@@ -11,7 +11,7 @@ use zoo_infer::{Gguf, Model, Tokenizer, chat};
 /// The models Bella can use: (`--bella` name, file in tools/models/), each
 /// pinned by its `.sha256` file (tools/models/README.md). The first is the
 /// default; the test suite uses it.
-pub const MODELS: [(&str, &str); 6] = [
+pub const MODELS: [(&str, &str); 8] = [
     ("0.5b", "qwen2.5-0.5b-instruct-q4_0.gguf"),
     ("1.5b", "qwen2.5-1.5b-instruct-q4_0.gguf"),
     // Under evaluation (docs/qwen3-design.md).
@@ -21,6 +21,10 @@ pub const MODELS: [(&str, &str); 6] = [
     // The draft model (docs/draft-design.md), and its 4-bit copy.
     ("qwen3-0.6b", "qwen3-0.6b-q8_0.gguf"),
     ("qwen3-0.6b-q4", "qwen3-0.6b-q4_0.gguf"),
+    // The bake-off (docs/qwen35-design.md): made by `cargo xtask
+    // qwen35-gguf`, then `requant --bella qwen3.5-2b`.
+    ("qwen3.5-2b", "qwen3.5-2b-q8_0.gguf"),
+    ("qwen3.5-2b-q4", "qwen3.5-2b-q4_0.gguf"),
 ];
 
 /// The draft model for speculative decoding (docs/draft-design.md).

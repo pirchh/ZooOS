@@ -71,6 +71,10 @@ impl<'m, 't> Talk<'m, 't> {
         })? {
             return Err(AssistError::Cancelled);
         }
+        // The conversation starts over from here (`make_room`); slot 1
+        // keeps its end.
+        st.keep(0);
+        st.keep(1);
         Ok(Talk {
             model,
             tok,
@@ -114,7 +118,7 @@ impl<'m, 't> Talk<'m, 't> {
             return Err(AssistError::TooLong);
         }
         self.make_room(ids.len());
-        self.st.pos = self.conv_end;
+        self.st.rewind(self.conv_end)?;
         let total = ids.len();
         if !self.model.read_prompt(&mut self.st, &ids, false, |done| {
             progress(TalkStep::Request { done, total })
@@ -123,6 +127,7 @@ impl<'m, 't> Talk<'m, 't> {
             return Err(AssistError::Cancelled);
         }
         self.conv_end = self.st.pos;
+        self.st.keep(1);
         Ok(())
     }
 
@@ -253,7 +258,7 @@ impl<'m, 't> Talk<'m, 't> {
         mut progress: impl FnMut(TalkStep) -> bool,
     ) -> Result<String, AssistError> {
         self.make_room(ids.len() + MAX_REPLY_TOKENS + 8);
-        self.st.pos = self.conv_end;
+        self.st.rewind(self.conv_end)?;
         let total = ids.len();
         if !self.model.read_prompt(&mut self.st, ids, true, |done| {
             progress(TalkStep::Request { done, total })
@@ -285,6 +290,7 @@ impl<'m, 't> Talk<'m, 't> {
             let close = self.tok.encode("<|im_end|>\n<|im_start|>user\n");
             self.model.feed_many(&mut self.st, &close)?;
             self.conv_end = self.st.pos;
+            self.st.keep(1);
         }
         Ok(clean(&self.tok.decode(&out)))
     }

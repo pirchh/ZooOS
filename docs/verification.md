@@ -58,6 +58,32 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Qwen3.5-2B in the engine (version 0.135.0)
+
+docs/qwen35-design.md. On the host, 2026-11-08, with `tools/models/qwen3.5-2b`
+at commit `15852e8c`.
+
+| Check | Result |
+| --- | --- |
+| `cargo xtask qwen35-gguf`, run twice | the same file both times: 2,012,005,056 bytes, SHA-256 `a921a63d…791472f` (`tools/models/qwen3.5-2b-q8_0.gguf.sha256`); and again after the clippy change to the converter |
+| `cargo xtask qwen35-check` | `PASS` (551 s): "The capital of France is", top-5 logits within 0.0643, 8 new tokens the same (" Paris.
+A. True
+B"); "def fibonacci(n):", within 0.1161, 8 the same; tolerance 0.5 |
+| `cargo xtask qwen35-check`, the attention output gate left out (negative control) | `FAIL` (572 s): top tokens `.` and a space for both prompts, logits `inf` apart, 8 new tokens different |
+| `assist-check`, `bella-addressee`, `bella-regress` with both models | docs/qwen35-design.md §6 |
+| `cargo test -p xtask --locked`; `cargo test -p zoo-infer --locked` | 31 passed; 62 passed |
+| clippy `-D warnings` (`zoo-user` on `x86_64-zoo`, `xtask`, `zoo-infer`); `cargo fmt --all --check` | clean |
+| `cargo xtask verify --skip-model --jobs 4` (TCG) | `PASS`: 126 OK, 28 SKIP (991 s) |
+| `cargo xtask verify --accel whpx --jobs 3` | 150 OK, 3 SKIP, 1 `FAIL`: `bella-live` `answered in 3280 ms` against its 3000 ms bound (1233 s) |
+| `bella-live` alone, 3 more times on this branch | `FAIL` each: 3346, 3309, 3167 ms |
+| `bella-live` alone, alternating `main` (`6139eb9`) and this branch | `main` 3246, 3350, 3106 ms; this branch 3268, 3413, 3198 ms: all `FAIL` |
+
+**The `bella-live` failure is the host, not this change:** `main` fails the
+same bound the same way. The branch's runs average about 60 ms (2%) slower,
+less than the spread between runs on either side. The suites run Qwen3
+(Bella's model), so they check that the engine's new layer types leave the
+model the guest uses unchanged; nothing in the guest runs Qwen3.5.
+
 ## Running verify cases at once (version 0.134.0)
 
 docs/parallel-design.md. All four suites on commit `976b00d`, one after

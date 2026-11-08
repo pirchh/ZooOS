@@ -2135,3 +2135,23 @@ Version 0.134.0, docs/parallel-design.md. `cargo xtask verify --jobs N`
 - Measured: TCG 32.1 → 14.0 min with 4 jobs, WHPX 49.8 → 22.4 min with 3
   (docs/verification.md). Whether the everyday command uses `--jobs` is
   the owner's call.
+
+## Qwen3.5-2B: ported, measured, not Bella's model (2026-11-08)
+
+Version 0.135.0, docs/qwen35-design.md. The first model of the owner's
+bake-off (approved 11-06).
+
+- **Converted from the official BF16 weights** (`cargo xtask
+  qwen35-gguf`), not taken from a third party's GGUF: Qwen publishes none.
+- **The engine gains Gated DeltaNet and gated attention** rather than a
+  second engine: both kinds of layer share the projections, norms and
+  feed-forward code, and Qwen2/Qwen3 run the same arithmetic as before.
+- **The recurrent state is snapshotted, not recomputed,** for Bella's two
+  rewinds (end of the system prompt, end of the conversation): 18 MiB a
+  copy, against reading the system prompt again for every request.
+- **Checked against our own NumPy reference** with the same `Q8_0`
+  weights (`cargo xtask qwen35-check`), as Qwen2.5 was.
+- **Qwen3-1.7B stays Bella's model**: Qwen3.5-2B answered 38 of 46
+  `assist-check` requests right against 44, and is better at judging
+  who speech is for (12 of 18 with no talk taken, against 5) but still
+  short of the bar, at 8.7 s a sentence. Gemma 4 E2B is not ported.

@@ -9,6 +9,9 @@
 /tools/models/*.gguf
 /tools/models/*.part
 /tools/models/.pending-commit
+# The bake-off's downloads (docs/qwen35-design.md); their hashes are kept.
+/tools/models/qwen3.5-2b/
+/tools/models/gemma-4-e2b/
 
 # Python reference environment (tools/reference/README.md)
 /tools/reference/.venv/
@@ -33,3 +36,4 @@
 # Downloaded voice models (see tools/models/README.md, "Voice")
 /tools/models/voice/**
 !/tools/models/voice/*.sha256
+/tools/reference/__pycache__/

@@ -13,6 +13,7 @@ mod musl;
 mod process;
 mod qemu;
 mod qmp;
+mod qwen35;
 mod regress;
 mod requant;
 mod screen;
@@ -50,6 +51,10 @@ commands:
                             --show-heard (with --mic): log every transcript,
                             also speech not for Bella (off by default)
   hear-gguf                 convert Moonshine Tiny to GGUF (docs/hearing-design.md)
+  qwen35-gguf               convert Qwen3.5-2B's safetensors to GGUF (Q8_0;
+                            docs/qwen35-design.md)
+  qwen35-check              Qwen3.5-2B in the engine against the NumPy
+                            reference (host)
   hear-check                speech to text against the NumPy reference
   requant --bella NAME     write a Q4_0 copy of a Q8_0 model (docs/qwen3-design.md)
   embed-check              the embedding model against its model card (docs/vectors-design.md)
@@ -289,6 +294,21 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             } else {
                 ExitCode::FAILURE
             })
+        }
+        "qwen35-check" => {
+            // The engine against the NumPy reference (docs/qwen35-design.md).
+            let ok = qwen35::check(&root)?;
+            println!("qwen35-check: {}", if ok { "PASS" } else { "FAIL" });
+            Ok(if ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
+        "qwen35-gguf" => {
+            // Qwen3.5-2B's safetensors as GGUF (docs/qwen35-design.md).
+            qwen35::convert(&root)?;
+            Ok(ExitCode::SUCCESS)
         }
         "hear-gguf" => {
             // Moonshine Tiny as one GGUF file (docs/hearing-design.md).
