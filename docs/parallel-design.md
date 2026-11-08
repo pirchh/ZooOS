@@ -40,9 +40,12 @@ With 3 at once, five cases failed, the same way every time:
 pointer to the bottom edge, waited a fixed 500 ms (`DOCK_SLIDE`) for it to
 slide in, and then pointed at an icon. With several guests on the host the
 slide takes longer, so the click landed on the dock before it was there:
-the log shows `PeacockHandler: dock shown`, and nothing opens. The cases
-now wait for that line (`DOCK_SHOWN`) instead of the fixed time. That
-also makes them sturdier one at a time on a busy host.
+nothing opens. The cases now wait until the latest
+`PeacockHandler: dock` line says `shown` (`dock_shown()`, an
+`Action::WaitLatest`) instead of the fixed time. Waiting for any `dock
+shown` line was not enough: when the dock is still in from an earlier
+reveal, that line is already in the log. This also makes the cases
+sturdier one at a time on a busy host.
 
 ## 3. Measured
 
