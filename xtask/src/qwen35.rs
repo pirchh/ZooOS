@@ -144,12 +144,16 @@ impl Source {
             .and_then(|_| self.file.read_exact(&mut raw))
             .map_err(|e| format!("{name}: {e}"))?;
         let vals = if width == 4 {
-            raw.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            raw.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&c| f32::from_le_bytes(c))
                 .collect()
         } else {
-            raw.chunks_exact(2)
-                .map(|c| f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16))
+            raw.as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| f32::from_bits(u32::from(u16::from_le_bytes(c)) << 16))
                 .collect()
         };
         Ok((shape, vals))
@@ -158,7 +162,7 @@ impl Source {
 
 /// ggml's `quantize_row_q8_0_ref` for a row of whole blocks.
 fn q8_0(x: &[f32], out: &mut Vec<u8>) {
-    for block in x.chunks_exact(32) {
+    for block in x.as_chunks::<32>().0 {
         let amax = block.iter().fold(0f32, |m, v| m.max(v.abs()));
         let d = amax / 127.0;
         let id = if d != 0.0 { 1.0 / d } else { 0.0 };
