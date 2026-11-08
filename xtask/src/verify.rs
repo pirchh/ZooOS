@@ -14,8 +14,14 @@ use zoo_abi::ui::{self as zui, LIGHT};
 
 /// Wait this long for quiet serial output before a screenshot.
 const QUIET: Duration = Duration::from_millis(1200);
-/// Long enough for the auto-hidden dock to slide in (docs/u2e-design.md).
-const DOCK_SLIDE: Duration = Duration::from_millis(500);
+/// Waits until the auto-hidden dock is all the way in (docs/u2e-design.md):
+/// PeacockHandler logs `dock shown` or `dock hidden` when a slide ends, so
+/// the last of those says where it is. Cases wait for it before pointing
+/// at an icon, rather than a fixed 500 ms, which a busy host can exceed
+/// (docs/parallel-design.md); it may already be in from the last reveal.
+fn dock_shown() -> Action {
+    Action::WaitLatest("PeacockHandler: dock ".into(), "shown".into())
+}
 
 /// Must equal the kernel crate version, which the kernel prints at boot.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,6 +38,8 @@ pub struct Settings {
     /// `--cpus N`: processors for every case (docs/smp-design.md); `smp-`
     /// cases get at least 4.
     pub cpus: u8,
+    /// `--jobs N`: cases run at once (docs/parallel-design.md).
+    pub jobs: usize,
 }
 
 /// Inspects a screenshot; `Ok` carries a summary, `Err` why it failed.
@@ -2693,7 +2701,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                         // The Notes icon, then up into its window.
                         // The dock hides itself: reveal it at the bottom edge first.
                         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-                        Action::Settle(DOCK_SLIDE),
+                        dock_shown(),
                         p.to(dock_centre(3)),
                         Action::Button(true),
                         Action::Button(false),
@@ -3298,10 +3306,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
     {
         return Err(format!("no case named `{only}`"));
     }
-    for c in &cases {
-        if s.only.as_ref().is_some_and(|o| o != c.name) {
-            continue;
-        }
+    let run_one = |c: &Case| -> Result<(String, bool), String> {
         let model_case = matches!(
             c.name,
             "inference"
@@ -3333,8 +3338,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         if model_case && c.custom_image.is_none() {
             let line = format!(
@@ -3342,8 +3346,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         if (c.name.starts_with("hear-")
             || c.name.starts_with("mic-")
@@ -3356,8 +3359,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         if c.name.starts_with("wine-") && c.custom_image.is_none() {
             let line = format!(
@@ -3366,8 +3368,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         // Under an accelerator a triple fault stops the guest instead of
         // resetting it, so QEMU never exits early: the case needs TCG.
@@ -3378,8 +3379,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         if c.name == "c-program" && crate::cprog::zig(root).is_none() {
             let line = format!(
@@ -3388,8 +3388,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         // The live model, and Wine creating its 167 MB prefix in the home
         // folder (over 8 minutes under TCG, 67-77 s with WHPX; the second
@@ -3429,8 +3428,7 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
                 c.name
             );
             print!("{line}");
-            report.push_str(&line);
-            continue;
+            return Ok((line, true));
         }
         let img = &images
             .iter()
@@ -3664,7 +3662,6 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             }
         }
         let ok = kind == c.want;
-        all_ok &= ok;
         let line = format!(
             "{:<5} {:<22} expected={:<17} got={:<17} {:>6.1}s  qemu {}\n      detail: {}\n      log: {}\n",
             if ok { "OK" } else { "FAIL" },
@@ -3677,10 +3674,19 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
             r.log.display(),
         );
         print!("{line}");
-        report.push_str(&line);
         if let (false, Outcome::Pass) = (ok, &r.outcome) {
             println!("      (a negative case passing means the verifier is not discriminating)");
         }
+        Ok((line, ok))
+    };
+    qemu::set_shared_image(s.jobs > 1);
+    let selected: Vec<&Case> = cases
+        .iter()
+        .filter(|c| s.only.as_ref().is_none_or(|o| o == c.name))
+        .collect();
+    for (line, ok) in run_cases(&selected, s.jobs, &run_one)? {
+        report.push_str(&line);
+        all_ok &= ok;
     }
     let _ = writeln!(
         report,
@@ -3703,6 +3709,117 @@ pub fn run(root: &Path, tools: &Tools, s: &Settings) -> Result<ExitCode, String>
         println!("[verify] FAIL");
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// Whether a case runs with no other case beside it under `--jobs`: its
+/// checks bound how long something takes, or (the microphone cases) its
+/// input file is shared with other cases (docs/parallel-design.md).
+fn runs_alone(c: &Case) -> bool {
+    ["voice-", "mic-", "hear-", "audio-", "smp-"]
+        .iter()
+        .any(|p| c.name.starts_with(p))
+        || matches!(
+            c.name,
+            "bella-live" | "responsiveness" | "animation" | "usb-model"
+        )
+}
+
+/// Splits cases into groups that may run at the same time and groups
+/// that run alone. Each group is case indices in order: every case on one
+/// shared data disk (`Some(name)`) is in one group, every other case is a
+/// group by itself. A group runs alone when any of its cases must.
+fn plan_groups(disks: &[Option<&str>], alone: &[bool]) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut by_disk: Vec<(&str, usize)> = Vec::new();
+    for (i, disk) in disks.iter().enumerate() {
+        if let Some(name) = disk {
+            if let Some(&(_, g)) = by_disk.iter().find(|(n, _)| n == name) {
+                groups[g].push(i);
+                continue;
+            }
+            by_disk.push((name, groups.len()));
+        }
+        groups.push(vec![i]);
+    }
+    let (alone, together): (Vec<_>, Vec<_>) = groups
+        .into_iter()
+        .partition(|g| g.iter().any(|&i| alone[i]));
+    (together, alone)
+}
+
+/// The result of one case: its report line and whether it behaved as
+/// expected.
+type CaseResult = Result<(String, bool), String>;
+
+/// Runs `cases` with up to `jobs` at once, and returns their results in
+/// the cases' order. Cases sharing a data disk run one after another on
+/// one worker, in order; the cases [`runs_alone`] picks run last, one at a
+/// time, with nothing else running.
+fn run_cases(
+    cases: &[&Case],
+    jobs: usize,
+    run_one: &(dyn Fn(&Case) -> CaseResult + Sync),
+) -> Result<Vec<(String, bool)>, String> {
+    if jobs <= 1 {
+        return cases.iter().map(|c| run_one(c)).collect();
+    }
+    let disks: Vec<Option<&str>> = cases
+        .iter()
+        .map(|c| match c.disk {
+            Disk::Shared { name, .. } => Some(name),
+            Disk::Fresh => None,
+        })
+        .collect();
+    let alone_cases: Vec<bool> = cases.iter().map(|c| runs_alone(c)).collect();
+    let (together, alone) = plan_groups(&disks, &alone_cases);
+    println!(
+        "[verify] {} case(s) in {} group(s) on {jobs} workers, then {} group(s) alone",
+        together.iter().map(Vec::len).sum::<usize>(),
+        together.len(),
+        alone.len()
+    );
+    let results: std::sync::Mutex<Vec<Option<CaseResult>>> =
+        std::sync::Mutex::new((0..cases.len()).map(|_| None).collect());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let run_group = |g: &[usize]| {
+        for &i in g {
+            let r = run_one(cases[i]);
+            results.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
+        }
+    };
+    std::thread::scope(|scope| -> Result<(), String> {
+        let mut workers = Vec::new();
+        for w in 0..jobs.min(together.len()) {
+            let worker = std::thread::Builder::new()
+                .name(format!("verify-{w}"))
+                // Screenshots are compared on this thread's stack.
+                .stack_size(64 << 20)
+                .spawn_scoped(scope, || {
+                    loop {
+                        let g = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(group) = together.get(g) else { break };
+                        run_group(group);
+                    }
+                })
+                .map_err(|e| format!("cannot start a verify worker: {e}"))?;
+            workers.push(worker);
+        }
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| "a verify worker panicked".to_string())?;
+        }
+        Ok(())
+    })?;
+    for group in &alone {
+        run_group(group);
+    }
+    results
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner())
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Err("a case was not run".into())))
+        .collect()
 }
 
 fn scroll_keys() -> Vec<&'static str> {
@@ -4871,7 +4988,7 @@ fn animation_steps() -> Interaction {
         animation_done("minimize Files", 3, (310, 1500)),
         // Its thumbnail, after the dock's divider: it comes back.
         p.to((mini_centre(1, 0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(mini_centre(1, 0)),
         Action::Button(true),
         Action::Button(false),
@@ -4886,7 +5003,7 @@ fn animation_steps() -> Interaction {
         // Crash Test's dock icon: it opens again.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(1)),
         Action::Button(true),
         Action::Button(false),
@@ -5755,7 +5872,7 @@ fn notes_case(expectation: Expectation, name: &'static str, timeout: Duration) -
         // The Notes icon in the dock.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(3)),
         Action::Button(true),
         Action::Button(false),
@@ -8078,7 +8195,7 @@ fn remove_notes(p: &mut Ptr) -> Vec<Action> {
     let notes = [false, true, false];
     vec![
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(3)),
         Action::RightButton(true),
         Action::RightButton(false),
@@ -8127,7 +8244,7 @@ fn apps_folder_steps() -> Interaction {
         Action::WaitContains("PeacockHandler: kept Notes in the dock".into()),
         Action::WaitContains("PeacockHandler: dock saved (4 kept)".into()),
         p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         Action::Settle(QUIET),
         Action::Screenshot("2-pinned"),
     ]);
@@ -8144,7 +8261,7 @@ fn apps_folder_steps() -> Interaction {
         Action::WaitFor("ZOO_OS PROC start pid=35 name=bella".into()),
         Action::Settle(QUIET),
         p.to((SCREEN.0 / 2, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         Action::Settle(QUIET),
         Action::Screenshot("3-reloaded"),
         Action::Keys(vec!["esc"]),
@@ -8267,7 +8384,7 @@ fn dock_magnify_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         // Onto Crash Test's icon: it grows.
         p.to(dock_centre(1)),
         Action::Settle(QUIET),
@@ -8485,7 +8602,7 @@ fn dock_bounce_steps() -> Interaction {
     let mut steps = start_desktop();
     steps.extend([
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(3)),
         // Shift held: 6.4 s instead of 0.64 s.
         Action::Key("shift", true),
@@ -8617,7 +8734,7 @@ fn dock_steps() -> Interaction {
         // Onto the Files icon: its name shows above it.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(0)),
         Action::Settle(QUIET),
         Action::Screenshot("1-dock"),
@@ -8631,7 +8748,7 @@ fn dock_steps() -> Interaction {
         // The Crash Test icon.
         // The dock hides itself: reveal it at the bottom edge first.
         p.to((dock_centre(1).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(1)),
         Action::Settle(QUIET),
         Action::Screenshot("3-dock-closed"),
@@ -8802,7 +8919,7 @@ fn dock_menu_steps() -> Interaction {
     let notes = [false, true, false];
     steps.extend([
         p.to((dock_centre(0).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(0)),
         Action::RightButton(true),
         Action::RightButton(false),
@@ -8819,7 +8936,7 @@ fn dock_menu_steps() -> Interaction {
         Action::WaitContains("PeacockHandler: new window Files (window 5)".into()),
         // Notes: Remove from Dock.
         p.to((dock_centre(3).0, SCREEN.1 - 1)),
-        Action::Settle(DOCK_SLIDE),
+        dock_shown(),
         p.to(dock_centre(3)),
         Action::RightButton(true),
         Action::RightButton(false),
@@ -9518,4 +9635,19 @@ fn dovekie_children() -> Vec<String> {
         lines.push(format!("ZOO_OS PROC exit pid={k} name={name} code=0"));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_groups;
+
+    #[test]
+    fn shared_disks_stay_together_and_alone_groups_split_off() {
+        // a b(disk x) c(alone) d(disk x) e(disk y, alone) f(disk y)
+        let disks = [None, Some("x"), None, Some("x"), Some("y"), Some("y")];
+        let alone = [false, false, true, false, true, false];
+        let (together, apart) = plan_groups(&disks, &alone);
+        assert_eq!(together, vec![vec![0], vec![1, 3]]);
+        assert_eq!(apart, vec![vec![2], vec![4, 5]]);
+    }
 }

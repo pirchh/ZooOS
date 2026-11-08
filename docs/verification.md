@@ -58,6 +58,36 @@ output exactly as it was then**, so they show `ORIGINS_OS` markers,
 chardev. Commas in paths are escaped as `,,`. The exact command for each run
 is saved in `build/runs/<case>/qemu-command.txt`.
 
+## Running verify cases at once (version 0.134.0)
+
+docs/parallel-design.md. All four suites on commit `976b00d`, one after
+another, on 2026-11-08 (host: 24 logical processors; `build/par-suites.sh`).
+
+| Suite | Wall time | Result |
+| --- | --- | --- |
+| `cargo xtask verify --skip-model` (TCG), `--jobs 1` | 1928 s (32.1 min) | `PASS`: 126 OK, 28 SKIP |
+| `cargo xtask verify --skip-model --jobs 4` (TCG) | 838 s (14.0 min) | `PASS`: 126 OK, 28 SKIP |
+| `cargo xtask verify --accel whpx`, `--jobs 1` | 2988 s (49.8 min) | 150 OK, 3 SKIP, 1 `FAIL`: `bella-live` `answered in 3876 ms` against its 3000 ms bound |
+| `cargo xtask verify --accel whpx --jobs 3` | 1344 s (22.4 min) | `PASS`: 151 OK, 3 SKIP (`bella-live`, run alone after the rest, passed) |
+| `cargo test -p xtask --locked` | | 31 passed (with `plan_groups`' test) |
+
+**About 2.3 times faster under TCG with 4 jobs, and 2.2 times under WHPX
+with 3.** One run of each; `cargo xtask bella-regress` also ran for about
+20 s during the TCG `--jobs 4` suite. The `bella-live` failure with one
+job at a time is the timing bound that has failed on and off since
+0.129.0 (sections below), not this change: the case is unchanged and
+runs alone with `--jobs`.
+
+**Negative control, the dock wait.** Before the dock cases waited for
+the dock, `--jobs 3` failed `dock-magnify`, `dock-bounce`, `notes-1`,
+`notes-cursor` and `notes-2` (and `dock-menu` with 4) on every run:
+the click landed before the dock had slid in. A first fix waited for any
+`PeacockHandler: dock shown` line; that broke `animations`, `dock-menu`
+and `apps-folder` with one job at a time, because the dock was still
+shown from an earlier reveal and the line was already there. The cases
+now wait until the *latest* dock line says `shown` (`Action::WaitLatest`),
+and all four suites above pass them.
+
 ## Titled notes (version 0.133.0)
 
 docs/titled-design.md. `cargo xtask verify --skip-model --case bella-titled` (TCG, no model).

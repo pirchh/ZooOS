@@ -38,7 +38,9 @@ pub enum Usb {
     Tablet,
 }
 
-static USB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+thread_local! {
+    static USB: std::sync::atomic::AtomicU8 = const { std::sync::atomic::AtomicU8::new(0) };
+}
 
 /// The display device of the next machine.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,31 +53,37 @@ pub enum Display {
     VirtioVga,
 }
 
-static VIRTIO_DISPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static VIRTIO_DISPLAY: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) };
+}
 
-/// A screen size passed to a virtio GPU guest through fw_cfg
-/// (`opt/zooos/display`, docs/u2b-design.md): width << 32 | height, 0 for
-/// none.
-static DISPLAY_SIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// A screen size passed to a virtio GPU guest through fw_cfg
+    /// (`opt/zooos/display`, docs/u2b-design.md): width << 32 | height, 0 for
+    /// none.
+    static DISPLAY_SIZE: std::sync::atomic::AtomicU64 = const { std::sync::atomic::AtomicU64::new(0) };
+}
 
-/// Monitors the next virtio GPU machine gets (docs/monitors-design.md).
-static MONITORS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+thread_local! {
+    /// Monitors the next virtio GPU machine gets (docs/monitors-design.md).
+    static MONITORS: std::sync::atomic::AtomicU32 = const { std::sync::atomic::AtomicU32::new(1) };
+}
 
 /// How many monitors (scanouts) the next virtio GPU machine has, 1 to 4:
 /// `max_outputs` on the device, and `opt/zooos/monitors` so the guest
 /// uses them all (a headless QEMU enables only the first).
 pub fn set_monitors(n: u32) {
-    MONITORS.store(n.clamp(1, 4), std::sync::atomic::Ordering::Relaxed);
+    MONITORS.with(|c| c.store(n.clamp(1, 4), std::sync::atomic::Ordering::Relaxed));
 }
 
 fn monitors() -> u32 {
-    MONITORS.load(std::sync::atomic::Ordering::Relaxed)
+    MONITORS.with(|c| c.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// The screen size the next virtio GPU machine asks for, if any.
 pub fn set_display_size(size: Option<(u32, u32)>) {
     let v = size.map_or(0, |(w, h)| u64::from(w) << 32 | u64::from(h));
-    DISPLAY_SIZE.store(v, std::sync::atomic::Ordering::Relaxed);
+    DISPLAY_SIZE.with(|c| c.store(v, std::sync::atomic::Ordering::Relaxed));
 }
 
 /// The host's primary monitor in physical pixels (Windows only).
@@ -102,10 +110,12 @@ pub fn host_screen() -> Option<(u32, u32)> {
 
 /// The display device the next machine gets.
 pub fn set_display(d: Display) {
-    VIRTIO_DISPLAY.store(
-        d == Display::VirtioVga,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    VIRTIO_DISPLAY.with(|c| {
+        c.store(
+            d == Display::VirtioVga,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+    });
 }
 
 /// The network the next machine gets (docs/n1-design.md).
@@ -120,77 +130,104 @@ pub enum Net {
     Open = 2,
 }
 
-static NET: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// A host port QEMU forwards the guest's 10.0.2.100:80 to (0: none;
-/// docs/n2-design.md).
-static GUESTFWD: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+thread_local! {
+    static NET: std::sync::atomic::AtomicU8 = const { std::sync::atomic::AtomicU8::new(0) };
+}
+thread_local! {
+    /// A host port QEMU forwards the guest's 10.0.2.100:80 to (0: none;
+    /// docs/n2-design.md).
+    static GUESTFWD: std::sync::atomic::AtomicU16 = const { std::sync::atomic::AtomicU16::new(0) };
+}
 
 /// Forwards the guest's TCP connections to 10.0.2.100:80 to host port
 /// `port` on 127.0.0.1 (even on the isolated network).
 pub fn set_guestfwd(port: Option<u16>) {
-    GUESTFWD.store(port.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    GUESTFWD.with(|c| c.store(port.unwrap_or(0), std::sync::atomic::Ordering::Relaxed));
 }
 
-/// The read-only model disk the next machine gets, if any
-/// (docs/stage2-design.md §3).
-static MODEL_DISK: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// The read-only model disk the next machine gets, if any
+    /// (docs/stage2-design.md §3).
+    static MODEL_DISK: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
-/// A sound device for the next machine, its output recorded to this WAV
-/// file (docs/audio-design.md).
-static AUDIO_WAV: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// A sound device for the next machine, its output recorded to this WAV
+    /// file (docs/audio-design.md).
+    static AUDIO_WAV: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 pub fn set_audio(wav: Option<PathBuf>) {
-    *AUDIO_WAV.lock().unwrap_or_else(|e| e.into_inner()) = wav;
+    AUDIO_WAV.with(|c| *c.borrow_mut() = wav);
 }
 
-/// A sound device for the next machine whose microphone plays this raw
-/// file (16-bit mono at 16 kHz), through SDL's disk audio driver
-/// (docs/microphone-design.md). Its output goes to `sdl-out.raw` in the
-/// run folder.
-static MIC_INPUT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+thread_local! {
+    /// A sound device for the next machine whose microphone plays this raw
+    /// file (16-bit mono at 16 kHz), through SDL's disk audio driver
+    /// (docs/microphone-design.md). Its output goes to `sdl-out.raw` in the
+    /// run folder.
+    static MIC_INPUT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 pub fn set_mic(raw: Option<PathBuf>) {
-    *MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()) = raw;
+    MIC_INPUT.with(|c| *c.borrow_mut() = raw);
 }
 
-/// A sound device whose microphone is the host's default recording
-/// device, through SDL (`run --mic`; docs/listening-design.md). Only for
-/// interactive runs the owner asked for: verify never uses it.
-static LIVE_MIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    /// A sound device whose microphone is the host's default recording
+    /// device, through SDL (`run --mic`; docs/listening-design.md). Only for
+    /// interactive runs the owner asked for: verify never uses it.
+    static LIVE_MIC: std::sync::atomic::AtomicBool = const { std::sync::atomic::AtomicBool::new(false) };
+}
 
 pub fn set_live_mic(on: bool) {
-    LIVE_MIC.store(on, std::sync::atomic::Ordering::Relaxed);
+    LIVE_MIC.with(|c| c.store(on, std::sync::atomic::Ordering::Relaxed));
 }
 
 fn mic_input() -> Option<PathBuf> {
-    MIC_INPUT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    MIC_INPUT.with(|c| c.borrow().clone())
 }
 
 pub fn set_model_disk(disk: Option<PathBuf>) {
-    *MODEL_DISK.lock().unwrap_or_else(|e| e.into_inner()) = disk;
+    MODEL_DISK.with(|c| *c.borrow_mut() = disk);
 }
 
-/// The guest's memory in GiB (2 unless changed; docs/talk-design.md).
-static MEMORY_GIB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+thread_local! {
+    /// The guest's memory in GiB (2 unless changed; docs/talk-design.md).
+    static MEMORY_GIB: std::sync::atomic::AtomicU8 = const { std::sync::atomic::AtomicU8::new(2) };
+}
 
-/// Processors the guest gets (1 unless changed; docs/smp-design.md).
-static CPUS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
+thread_local! {
+    /// Processors the guest gets (1 unless changed; docs/smp-design.md).
+    static CPUS: std::sync::atomic::AtomicU8 = const { std::sync::atomic::AtomicU8::new(1) };
+}
+
+/// Several machines may boot one image at once (`verify --jobs`): each
+/// then writes to a temporary overlay instead of the image itself.
+static SHARED_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_shared_image(shared: bool) {
+    SHARED_IMAGE.store(shared, std::sync::atomic::Ordering::Relaxed);
+}
 
 pub fn set_cpus(n: u8) {
-    CPUS.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+    CPUS.with(|c| c.store(n.max(1), std::sync::atomic::Ordering::Relaxed));
 }
 
 pub fn set_memory_gib(gib: u8) {
-    MEMORY_GIB.store(gib, std::sync::atomic::Ordering::Relaxed);
+    MEMORY_GIB.with(|c| c.store(gib, std::sync::atomic::Ordering::Relaxed));
 }
 
 pub fn set_net(net: Net) {
-    NET.store(net as u8, std::sync::atomic::Ordering::Relaxed);
+    NET.with(|c| c.store(net as u8, std::sync::atomic::Ordering::Relaxed));
 }
 
 /// The USB devices the next machine gets.
 pub fn set_usb(usb: Usb) {
-    USB.store(usb as u8, std::sync::atomic::Ordering::Relaxed);
+    USB.with(|c| c.store(usb as u8, std::sync::atomic::Ordering::Relaxed));
 }
 
 pub fn accel() -> String {
@@ -261,9 +298,13 @@ fn machine_args(
         "-accel".into(),
         accel.clone(),
         "-smp".into(),
-        CPUS.load(std::sync::atomic::Ordering::Relaxed).to_string(),
+        CPUS.with(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .to_string(),
         "-m".into(),
-        format!("{}G", MEMORY_GIB.load(std::sync::atomic::Ordering::Relaxed)),
+        format!(
+            "{}G",
+            MEMORY_GIB.with(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        ),
         "-drive".into(),
         format!(
             "if=pflash,format=raw,unit=0,readonly=on,file={}",
@@ -272,7 +313,15 @@ fn machine_args(
         "-drive".into(),
         format!("if=pflash,format=raw,unit=1,file={}", opt_path(vars)?),
         "-drive".into(),
-        format!("format=raw,media=disk,file={}", opt_path(image)?),
+        format!(
+            "format=raw,media=disk,file={}{}",
+            opt_path(image)?,
+            if SHARED_IMAGE.load(std::sync::atomic::Ordering::Relaxed) {
+                ",snapshot=on"
+            } else {
+                ""
+            }
+        ),
         // The data disk: legacy virtio (I/O-port interface), which is
         // what the kernel's driver speaks.
         "-drive".into(),
@@ -284,7 +333,7 @@ fn machine_args(
         "-no-reboot".into(),
     ];
     // A virtio sound device whose output QEMU writes to a WAV file.
-    if let Some(wav) = AUDIO_WAV.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+    if let Some(wav) = AUDIO_WAV.with(|c| c.borrow().clone()).as_ref() {
         args.extend([
             "-audiodev".into(),
             format!("wav,id=snd0,path={}", opt_path(wav)?),
@@ -293,7 +342,7 @@ fn machine_args(
         ]);
     }
     // A virtio sound device whose microphone is a file (SDL disk audio).
-    if mic_input().is_some() || LIVE_MIC.load(std::sync::atomic::Ordering::Relaxed) {
+    if mic_input().is_some() || LIVE_MIC.with(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
         args.extend([
             "-audiodev".into(),
             "sdl,id=snd0,in.mixing-engine=off,\
@@ -304,11 +353,7 @@ fn machine_args(
         ]);
     }
     // The model disk: read-only, so a guest bug cannot change it.
-    if let Some(disk) = MODEL_DISK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
+    if let Some(disk) = MODEL_DISK.with(|c| c.borrow().clone()).as_ref() {
         args.extend([
             "-drive".into(),
             format!(
@@ -335,8 +380,8 @@ fn machine_args(
     }
     // A display whose preferred mode (in its EDID) is 1920x1080, the mode
     // the firmware then starts in (docs/u1-design.md).
-    let virtio = VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed);
-    let size = DISPLAY_SIZE.load(std::sync::atomic::Ordering::Relaxed);
+    let virtio = VIRTIO_DISPLAY.with(|c| c.load(std::sync::atomic::Ordering::Relaxed));
+    let size = DISPLAY_SIZE.with(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     let device = if virtio && size != 0 {
         let (w, h) = (size >> 32, size & 0xFFFF_FFFF);
         args.extend([
@@ -362,7 +407,7 @@ fn machine_args(
     };
     args.extend(["-vga".into(), "none".into(), "-device".into(), device]);
     // The network: legacy virtio (the kernel's driver), no boot ROM.
-    let net = NET.load(std::sync::atomic::Ordering::Relaxed);
+    let net = NET.with(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     if net == Net::None as u8 {
         args.extend(["-nic".into(), "none".into()]);
     } else {
@@ -371,7 +416,7 @@ fn machine_args(
         } else {
             ""
         };
-        let fwd = match GUESTFWD.load(std::sync::atomic::Ordering::Relaxed) {
+        let fwd = match GUESTFWD.with(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
             0 => String::new(),
             port => format!(",guestfwd=tcp:10.0.2.100:80-tcp:127.0.0.1:{port}"),
         };
@@ -382,7 +427,7 @@ fn machine_args(
             "virtio-net-pci,netdev=net0,disable-modern=on,romfile=".into(),
         ]);
     }
-    let usb = USB.load(std::sync::atomic::Ordering::Relaxed);
+    let usb = USB.with(|c| c.load(std::sync::atomic::Ordering::Relaxed));
     if usb == Usb::Direct as u8 {
         args.extend([
             "-device".into(),
@@ -605,6 +650,11 @@ pub enum Action {
     /// moving past it: for lines whose order against others is not fixed
     /// (a service's start-up next to `SHELL ready`).
     WaitSeen(String),
+    /// Wait until the last line in the log containing the first text also
+    /// contains the second, without moving past it: for a state that is
+    /// logged when it changes (`PeacockHandler: dock ` … `shown`), which
+    /// may already hold.
+    WaitLatest(String, String),
     /// `WaitSeen` for any one of these: for a model's wording, which
     /// differs between models.
     WaitSeenAny(Vec<String>),
@@ -777,6 +827,14 @@ pub fn run_case(
                 Action::WaitSeen(part) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
                     find_line_containing(complete, 0, part).is_some()
+                }
+                Action::WaitLatest(about, is) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    complete
+                        .lines()
+                        .rev()
+                        .find(|l| l.contains(about.as_str()))
+                        .is_some_and(|l| l.contains(is.as_str()))
                 }
                 Action::WaitSeenAny(parts) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
@@ -1116,7 +1174,7 @@ fn screenshot(q: &mut Qmp, dir: &Path, name: &str) -> Result<PathBuf, String> {
         eprintln!("[verify] note: PNG screenshot {name} failed: {e}");
     }
     // The other monitors: `<name>-m2.png` and on (docs/monitors-design.md).
-    if VIRTIO_DISPLAY.load(std::sync::atomic::Ordering::Relaxed) {
+    if VIRTIO_DISPLAY.with(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
         for k in 1..monitors() {
             let png = dir.join(format!("{name}-m{}.png", k + 1));
             if let Err(e) = q.screendump_head(&png, "png", "vga0", k) {
