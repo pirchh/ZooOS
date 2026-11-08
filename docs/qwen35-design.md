@@ -138,7 +138,8 @@ difference of this size can't be told from the noise.
 
 - **Not run in the guest.** Nothing in the boot image chooses it;
   `verify` with `--bella qwen3.5-2b-q4` was not run. The guest runs the
-  same engine code for Qwen3, which both suites cover.
+  same engine code for Qwen3, which both suites cover
+  (docs/verification.md).
 - **Gemma 4 E2B is not ported.** Its layers (sliding and global
   attention, a per-layer embedding table, layers sharing a key/value
   cache) are more work than Qwen3.5's, and this round says a newer small
