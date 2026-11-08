@@ -650,6 +650,11 @@ pub enum Action {
     /// moving past it: for lines whose order against others is not fixed
     /// (a service's start-up next to `SHELL ready`).
     WaitSeen(String),
+    /// Wait until the last line in the log containing the first text also
+    /// contains the second, without moving past it: for a state that is
+    /// logged when it changes (`PeacockHandler: dock ` … `shown`), which
+    /// may already hold.
+    WaitLatest(String, String),
     /// `WaitSeen` for any one of these: for a model's wording, which
     /// differs between models.
     WaitSeenAny(Vec<String>),
@@ -822,6 +827,14 @@ pub fn run_case(
                 Action::WaitSeen(part) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
                     find_line_containing(complete, 0, part).is_some()
+                }
+                Action::WaitLatest(about, is) => {
+                    let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
+                    complete
+                        .lines()
+                        .rev()
+                        .find(|l| l.contains(about.as_str()))
+                        .is_some_and(|l| l.contains(is.as_str()))
                 }
                 Action::WaitSeenAny(parts) => {
                     let complete = &text[..text.rfind('\n').map_or(0, |i| i + 1)];
