@@ -57,6 +57,36 @@ The result is 1,129,782,944 bytes with SHA-256
 `23bd087a7d67959d942223d49d2978fe43d201a6c4d8e377c6cac726eae38d40`;
 the run is deterministic (docs/qwen3-design.md).
 
+A bake-off model, chosen with `--bella qwen3.5-2b` (docs/qwen35-design.md;
+measured, not Bella's model). The owner approved the bake-off's downloads
+on 2026-11-06. Qwen publishes it only as safetensors:
+
+| Field | Value |
+| --- | --- |
+| Model | Qwen3.5-2B, BF16 safetensors (text and vision; the text is used) |
+| Folder | `qwen3.5-2b/`: `model.safetensors-00001-of-00001.safetensors` (4,548,221,488 bytes), `config.json`, `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`, `LICENSE`, `model.safetensors.index.json` |
+| Source | https://huggingface.co/Qwen/Qwen3.5-2B |
+| Pinned commit | `15852e8c16360a2fea060d615a32b45270f8a8fc` |
+| SHA-256 | `aa33250c4fc64891ddfaba3a314fd9542ea371843c387178b425fbcc5ed680b1` (`qwen3.5-2b.sha256`; matches the Hugging Face LFS object id) |
+| Licence | Apache-2.0 (model card) |
+
+    mkdir tools/models/qwen3.5-2b
+    for f in config.json tokenizer.json tokenizer_config.json chat_template.jinja LICENSE              model.safetensors.index.json model.safetensors-00001-of-00001.safetensors; do
+      curl -fL -o tools/models/qwen3.5-2b/$f         https://huggingface.co/Qwen/Qwen3.5-2B/resolve/15852e8c16360a2fea060d615a32b45270f8a8fc/$f
+    done
+    cargo xtask qwen35-gguf                    # qwen3.5-2b-q8_0.gguf (2,012,005,056 bytes)
+    cargo xtask requant --bella qwen3.5-2b     # qwen3.5-2b-q4_0.gguf (1,325,646,528 bytes)
+
+The converted files' SHA-256 are in `qwen3.5-2b-q8_0.gguf.sha256` and
+`qwen3.5-2b-q4_0.gguf.sha256`.
+
+The second bake-off download, not used yet (Gemma 4 E2B is not ported):
+Google's own 4-bit GGUF, `google/gemma-4-E2B-it-qat-q4_0-gguf` at commit
+`675cff42a74c774d6cb76f76d8eacb49b48c9b93`, file
+`gemma-4-E2B_q4_0-it.gguf` (3,349,516,256 bytes, SHA-256
+`fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634`,
+`gemma-4-e2b.sha256`), Apache-2.0, in `gemma-4-e2b/`.
+
 The embedding model for Bella's file index (docs/vectors-design.md). The
 owner approved this download on 2026-11-03. When it is here, the model
 disk carries it as model 1:

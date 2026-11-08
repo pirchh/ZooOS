@@ -36,3 +36,4 @@
 # Downloaded voice models (see tools/models/README.md, "Voice")
 /tools/models/voice/**
 !/tools/models/voice/*.sha256
+/tools/reference/__pycache__/
